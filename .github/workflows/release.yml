@@ -59,6 +59,61 @@ jobs:
         with:
           files: target/jpackage/dist/*.exe
 
+  windows-arm:
+    # ARM64 Windows;Temurin 不出 Windows ARM64 的 JDK,用 Microsoft OpenJDK
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: microsoft
+          java-version: '21'
+          architecture: aarch64
+          cache: maven
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: web
+
+      # WiX 3.x 为 x86 程序,在 ARM Windows 上经仿真运行
+      - name: Ensure WiX Toolset 3.x
+        shell: pwsh
+        run: |
+          if (-not (Get-Command light.exe -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset --no-progress -y
+            $wix = Get-ChildItem "C:\Program Files (x86)\WiX Toolset v3*\bin" -Directory | Select-Object -First 1
+            if ($wix) { Add-Content $env:GITHUB_PATH $wix.FullName }
+          }
+
+      - name: Build exe installer
+        run: scripts\package-win.bat
+
+      # 重命名,避免与 x64 产物重名
+      - name: Rename exe with arch suffix
+        shell: pwsh
+        run: |
+          cd target/jpackage/dist
+          Get-ChildItem dq-tool-*.exe | Rename-Item -NewName { $_.Name -replace '\.exe$', '-arm64.exe' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dq-tool-windows-exe-arm64
+          path: target/jpackage/dist/*.exe
+          retention-days: 30
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/jpackage/dist/*.exe
+
   macos:
     # jpackage 不能交叉编译,Apple Silicon 和 Intel 分别在对应架构的 runner 上构建
     runs-on: ${{ matrix.os }}
