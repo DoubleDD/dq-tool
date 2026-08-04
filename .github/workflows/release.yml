@@ -47,6 +47,13 @@ jobs:
       - name: Build exe installer
         run: scripts\package-win.bat
 
+      # 统一命名: dq-tool-<版本>-<系统>-<架构>.exe
+      - name: Rename exe with platform suffix
+        shell: pwsh
+        run: |
+          cd target/jpackage/dist
+          Get-ChildItem dq-tool-*.exe | Rename-Item -NewName { $_.Name -replace '\.exe$', '-windows-x64.exe' }
+
       - uses: actions/upload-artifact@v4
         with:
           name: dq-tool-windows-exe
@@ -95,12 +102,12 @@ jobs:
       - name: Build exe installer
         run: scripts\package-win.bat
 
-      # 重命名,避免与 x64 产物重名
-      - name: Rename exe with arch suffix
+      # 统一命名: dq-tool-<版本>-<系统>-<架构>.exe
+      - name: Rename exe with platform suffix
         shell: pwsh
         run: |
           cd target/jpackage/dist
-          Get-ChildItem dq-tool-*.exe | Rename-Item -NewName { $_.Name -replace '\.exe$', '-arm64.exe' }
+          Get-ChildItem dq-tool-*.exe | Rename-Item -NewName { $_.Name -replace '\.exe$', '-windows-arm64.exe' }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -145,11 +152,11 @@ jobs:
       - name: Build dmg
         run: scripts/package-mac.sh
 
-      # 按架构重命名,避免两个 job 的产物互相覆盖
-      - name: Rename dmg with arch suffix
+      # 统一命名: dq-tool-<版本>-macos-<架构>.dmg
+      - name: Rename dmg with platform suffix
         run: |
           cd target/jpackage/dist
-          for f in dq-tool-*.dmg; do mv "$f" "${f%.dmg}-${{ matrix.arch }}.dmg"; done
+          for f in dq-tool-*.dmg; do mv "$f" "${f%.dmg}-macos-${{ matrix.arch }}.dmg"; done
 
       - uses: actions/upload-artifact@v4
         with:
@@ -190,6 +197,15 @@ jobs:
 
       - name: Build deb installer
         run: scripts/package-linux.sh
+
+      # 统一命名: dq-tool-<版本>-linux-amd64.deb(deb 原生命名为 dq-tool_<版本>_amd64.deb)
+      - name: Rename deb with platform suffix
+        run: |
+          cd target/jpackage/dist
+          for f in dq-tool_*.deb; do
+            v=$(echo "$f" | sed -E 's/dq-tool_(.*)_amd64\.deb/\1/')
+            mv "$f" "dq-tool-${v}-linux-amd64.deb"
+          done
 
       - uses: actions/upload-artifact@v4
         with:
