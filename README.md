@@ -53,21 +53,20 @@ java -jar target/dq-tool-0.1.0.jar
 # macOS → target/jpackage/dist/dq-tool-1.0.dmg
 scripts/package-mac.sh
 
-# Windows(在 Windows 机器上执行)→ target/jpackage/dist/dq-tool-1.0.exe
+# Windows(在 Windows 机器上执行)→ target/jpackage/dist/dq-tool-1.0.zip(免安装,解压后双击 dq-tool.exe)
 scripts\package-win.bat
 
 # Linux(Debian/Ubuntu,需 fakeroot)→ target/jpackage/dist/dq-tool_1.0_amd64.deb
 scripts/package-linux.sh
 ```
 
-推荐走 CI 全平台构建:推 `v*` tag(如 `git tag v1.0 && git push origin v1.0`)触发 `.github/workflows/release.yml`,云端并行构建 Windows exe、macOS dmg(Apple Silicon + Intel 两个架构)、Linux deb,全部自动挂到 GitHub Release。jpackage 不支持交叉编译,各平台包都在对应系统的 runner 上原生构建。
+推荐走 CI 全平台构建:推 `v*` tag(如 `git tag v1.0 && git push origin v1.0`)触发 `.github/workflows/release.yml`,云端并行构建 Windows 免安装 zip(x64 + ARM64)、macOS dmg(Apple Silicon + Intel)、Linux deb,全部自动挂到 GitHub Release。jpackage 不支持交叉编译,各平台包都在对应系统的 runner 上原生构建。
 
 - 脚本自动完成前端构建 + `mvn package` + jpackage;只重打包可加 `--skip-build`
-- dmg/exe 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.0` 映射为安装包版本 `1.0`
+- dmg/deb 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.0` 映射为安装包版本 `1.0`
 - 安装版的数据目录固定为 `~/.dq-tool/data`(Windows 为 `%USERPROFILE%\.dq-tool\data`),与 jar 方式的 `./data` 不同
-- Windows 生成 exe 安装包需 WiX Toolset 3.x;无 WiX 时把脚本里 `--type exe` 改为 `--type app-image`(免安装绿色目录)
-- Windows 包带控制台窗口(显示启动日志);启动后浏览器访问 http://localhost:8080
-- 安装包双击启动后会自动用默认浏览器打开首页(headless 服务器部署不受影响);应用本身是 Web 服务,没有桌面窗口,Dock/任务栏图标常驻即表示运行中
+- Windows 包为免安装 zip:解压后双击 `dq-tool.exe`,带控制台窗口显示启动日志;无需管理员权限,删除目录即卸载
+- 安装包启动后会自动用默认浏览器打开首页(headless 服务器部署不受影响);应用本身是 Web 服务,没有桌面窗口,Dock/任务栏图标常驻即表示运行中
 
 ## 功能
 

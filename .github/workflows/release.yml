@@ -1,5 +1,5 @@
 # 打 tag(如 v1.0)触发:全平台构建安装包并附加到 GitHub Release
-#   Windows → exe,macOS → dmg(arm64 + x86_64),Linux → deb
+#   Windows → 免安装 zip,macOS → dmg(arm64 + x86_64),Linux → deb
 # 也可在 Actions 页面手动触发(workflow_dispatch),产物以 artifact 形式下载
 name: release
 
@@ -34,37 +34,27 @@ jobs:
         run: npm ci
         working-directory: web
 
-      # jpackage 生成 exe 需要 WiX 3.x,windows-latest 镜像不自带
-      - name: Ensure WiX Toolset 3.x
-        shell: pwsh
-        run: |
-          if (-not (Get-Command light.exe -ErrorAction SilentlyContinue)) {
-            choco install wixtoolset --no-progress -y
-            $wix = Get-ChildItem "C:\Program Files (x86)\WiX Toolset v3*\bin" -Directory | Select-Object -First 1
-            if ($wix) { Add-Content $env:GITHUB_PATH $wix.FullName }
-          }
-
-      - name: Build exe installer
+      - name: Build portable zip
         run: scripts\package-win.bat
 
-      # 统一命名: dq-tool-<版本>-<系统>-<架构>.exe
-      - name: Rename exe with platform suffix
+      # 统一命名: dq-tool-<版本>-<系统>-<架构>.zip
+      - name: Rename zip with platform suffix
         shell: pwsh
         run: |
           cd target/jpackage/dist
-          Get-ChildItem dq-tool-*.exe | Rename-Item -NewName { $_.Name -replace '\.exe$', '-windows-x64.exe' }
+          Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-x64.zip' }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dq-tool-windows-exe
-          path: target/jpackage/dist/*.exe
+          name: dq-tool-windows-x64
+          path: target/jpackage/dist/*.zip
           retention-days: 30
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/jpackage/dist/*.exe
+          files: target/jpackage/dist/*.zip
 
   windows-arm:
     # ARM64 Windows;Temurin 不出 Windows ARM64 的 JDK,用 Microsoft OpenJDK
@@ -89,37 +79,27 @@ jobs:
         run: npm ci
         working-directory: web
 
-      # WiX 3.x 为 x86 程序,在 ARM Windows 上经仿真运行
-      - name: Ensure WiX Toolset 3.x
-        shell: pwsh
-        run: |
-          if (-not (Get-Command light.exe -ErrorAction SilentlyContinue)) {
-            choco install wixtoolset --no-progress -y
-            $wix = Get-ChildItem "C:\Program Files (x86)\WiX Toolset v3*\bin" -Directory | Select-Object -First 1
-            if ($wix) { Add-Content $env:GITHUB_PATH $wix.FullName }
-          }
-
-      - name: Build exe installer
+      - name: Build portable zip
         run: scripts\package-win.bat
 
-      # 统一命名: dq-tool-<版本>-<系统>-<架构>.exe
-      - name: Rename exe with platform suffix
+      # 统一命名: dq-tool-<版本>-<系统>-<架构>.zip
+      - name: Rename zip with platform suffix
         shell: pwsh
         run: |
           cd target/jpackage/dist
-          Get-ChildItem dq-tool-*.exe | Rename-Item -NewName { $_.Name -replace '\.exe$', '-windows-arm64.exe' }
+          Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-arm64.zip' }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dq-tool-windows-exe-arm64
-          path: target/jpackage/dist/*.exe
+          name: dq-tool-windows-arm64
+          path: target/jpackage/dist/*.zip
           retention-days: 30
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/jpackage/dist/*.exe
+          files: target/jpackage/dist/*.zip
 
   macos:
     # jpackage 不能交叉编译,Apple Silicon 和 Intel 分别在对应架构的 runner 上构建

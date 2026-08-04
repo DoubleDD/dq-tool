@@ -1,7 +1,6 @@
 @echo off
-rem Windows 打包脚本:构建前端 + fat jar,再用 jpackage 生成带内嵌 JRE 的 .exe 安装包
-rem 前置要求: JDK 21+ (含 jpackage)、Maven、Node 18+;生成 exe 安装包还需 WiX Toolset 3.x
-rem 若无 WiX,把下面的 --type exe 改为 --type app-image,产物为免安装的绿色目录
+rem Windows 打包脚本:构建前端 + fat jar,再用 jpackage 生成带内嵌 JRE 的免安装 zip
+rem 前置要求: JDK 21+ (含 jpackage)、Maven、Node 18+
 setlocal
 cd /d %~dp0\..
 
@@ -12,7 +11,7 @@ if /i not "%~1"=="--skip-build" (
 
 rem 版本号需与 pom.xml 保持一致
 set APP_VERSION=0.1.0
-rem exe 安装包要求主版本号 >= 1,去掉开头的 "0."(0.1.0 -> 1.0)
+rem 与其他平台安装包版本保持一致,去掉开头的 "0."(0.1.0 -> 1.0)
 set PKG_VERSION=1.0
 set JAR=target\dq-tool-%APP_VERSION%.jar
 if not exist "%JAR%" (echo 找不到 %JAR%,请先执行 mvn package & exit /b 1)
@@ -23,10 +22,10 @@ if exist "%INPUT%" rmdir /s /q "%INPUT%"
 mkdir "%INPUT%"
 copy "%JAR%" "%INPUT%\" >nul
 
-rem 数据目录:安装到 Program Files 后目录不可写,改为存到 %%USERPROFILE%%\.dq-tool\data
-rem (${user.home} 由 Spring 在运行时解析)
+rem 免安装绿色目录(app-image),解压后双击 dq-tool.exe 即用
+rem 数据目录固定为 %%USERPROFILE%%\.dq-tool\data(${user.home} 由 Spring 在运行时解析)
 jpackage ^
-  --type exe ^
+  --type app-image ^
   --name dq-tool ^
   --app-version %PKG_VERSION% ^
   --input "%INPUT%" ^
@@ -37,5 +36,8 @@ jpackage ^
   --win-console ^
   --dest "%DIST%" || exit /b 1
 
-echo 产物: %DIST%\dq-tool-%PKG_VERSION%.exe
+rem 打成 zip 便于分发
+powershell -NoProfile -Command "Compress-Archive -Force -Path '%DIST%\dq-tool' -DestinationPath '%DIST%\dq-tool-%PKG_VERSION%.zip'" || exit /b 1
+
+echo 产物: %DIST%\dq-tool-%PKG_VERSION%.zip
 endlocal
