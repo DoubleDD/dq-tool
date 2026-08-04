@@ -2,6 +2,9 @@
 # 也可在 Actions 页面手动触发(workflow_dispatch),产物以 artifact 形式下载
 name: release
 
+permissions:
+  contents: write   # 挂 Release 附件需要
+
 on:
   push:
     tags:
