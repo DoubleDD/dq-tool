@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.sql.SQLException;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -51,8 +52,13 @@ public class DataSourceController {
     @PostMapping("/test")
     public Map<String, Object> test(@Valid @RequestBody TestConnectionRequest req) {
         try {
-            service.testConnection(req.jdbcUrl(), req.username(), req.password());
-            return Map.of("success", true);
+            String dbMode = service.testConnection(req.jdbcUrl(), req.username(), req.password());
+            Map<String, Object> ok = new HashMap<>();
+            ok.put("success", true);
+            if (dbMode != null) {
+                ok.put("dbMode", dbMode);
+            }
+            return ok;
         } catch (SQLException e) {
             return Map.of("success", false, "message", e.getMessage());
         }

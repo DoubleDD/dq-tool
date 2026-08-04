@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS data_source (
     password_enc  VARCHAR(2048),                  -- 对称加密后的密码
     row_threshold BIGINT,                         -- 可空,覆盖全局采样行数阈值
     size_threshold_bytes BIGINT,                  -- 可空,覆盖全局采样体积阈值
+    db_mode       VARCHAR(32),                    -- 可空,保存时探测的数据库兼容模式(如 Kingbase 的 pg/oracle/mysql)
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -91,3 +92,4 @@ ALTER TABLE scan_column ADD COLUMN IF NOT EXISTS column_comment VARCHAR(1024);
 ALTER TABLE scan_column ADD COLUMN IF NOT EXISTS nullable BOOLEAN;
 ALTER TABLE scan_column ADD COLUMN IF NOT EXISTS default_value VARCHAR(1024);
 ALTER TABLE scan_column ADD COLUMN IF NOT EXISTS key_label VARCHAR(8);
+ALTER TABLE data_source ADD COLUMN IF NOT EXISTS db_mode VARCHAR(32);

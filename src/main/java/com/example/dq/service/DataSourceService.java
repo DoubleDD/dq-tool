@@ -55,6 +55,7 @@ public class DataSourceService {
     public long create(DataSourceRequest req) {
         DataSourceConfig c = new DataSourceConfig();
         apply(c, req);
+        c.setDbMode(detectDbMode(req));
         c.setPassword(crypto.encrypt(req.password()));
         return repo.insert(c);
     }
@@ -62,7 +63,11 @@ public class DataSourceService {
     public void update(long id, DataSourceRequest req) {
         DataSourceConfig c = repo.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("数据源不存在: " + id));
+        // 密码留空表示沿用旧密码;探测需用真实密码连接
+        String plainPassword = (req.password() != null && !req.password().isEmpty())
+                ? req.password() : crypto.decrypt(c.getPassword());
         apply(c, req);
+        c.setDbMode(detectDbMode(req, plainPassword));
         c.setId(id);
         boolean updatePassword = req.password() != null && !req.password().isEmpty();
         if (updatePassword) {
@@ -77,8 +82,8 @@ public class DataSourceService {
         evictPool(id);
     }
 
-    /** 测试连接(不落库,直接用请求参数) */
-    public void testConnection(String jdbcUrl, String username, String password) throws SQLException {
+    /** 测试连接(不落库,直接用请求参数);返回探测到的数据库兼容模式,无为 null */
+    public String testConnection(String jdbcUrl, String username, String password) throws SQLException {
         DbType type = DbType.fromJdbcUrl(jdbcUrl);
         DbDialect dialect = dialectFactory.get(type);
         try {
@@ -86,8 +91,25 @@ public class DataSourceService {
         } catch (ClassNotFoundException e) {
             throw new SQLException("JDBC 驱动未加载: " + dialect.driverClassName(), e);
         }
-        try (Connection ignored = DriverManager.getConnection(jdbcUrl, username, password)) {
-            // 能建立连接即成功
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password)) {
+            return dialect.detectDbMode(conn);
+        }
+    }
+
+    /** 探测数据库兼容模式(如 Kingbase 的 database_mode);失败返回 null,不影响保存 */
+    private String detectDbMode(DataSourceRequest req) {
+        return detectDbMode(req, req.password());
+    }
+
+    private String detectDbMode(DataSourceRequest req, String password) {
+        try {
+            DbDialect dialect = dialectFactory.get(DbType.fromJdbcUrl(req.jdbcUrl()));
+            Class.forName(dialect.driverClassName());
+            try (Connection conn = DriverManager.getConnection(req.jdbcUrl(), req.username(), password)) {
+                return dialect.detectDbMode(conn);
+            }
+        } catch (Exception e) {
+            return null;
         }
     }
 

@@ -21,6 +21,11 @@ public interface DbDialect {
     /** 标识符引号 */
     String quote(String identifier);
 
+    /** 探测数据库兼容模式(如 Kingbase 的 database_mode);无此概念的方言返回 null */
+    default String detectDbMode(Connection conn) throws SQLException {
+        return null;
+    }
+
     /** 数据库列表;不支持多库选择的方言返回空 */
     default List<String> listDatabases(Connection conn) throws SQLException {
         return List.of();

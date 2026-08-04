@@ -12,6 +12,8 @@ public class DataSourceConfig {
     private String password;
     private Long rowThreshold;
     private Long sizeThresholdBytes;
+    /** 数据库兼容模式(如 Kingbase 的 pg/oracle/mysql),保存数据源时探测,可空 */
+    private String dbMode;
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -29,4 +31,6 @@ public class DataSourceConfig {
     public void setRowThreshold(Long rowThreshold) { this.rowThreshold = rowThreshold; }
     public Long getSizeThresholdBytes() { return sizeThresholdBytes; }
     public void setSizeThresholdBytes(Long sizeThresholdBytes) { this.sizeThresholdBytes = sizeThresholdBytes; }
+    public String getDbMode() { return dbMode; }
+    public void setDbMode(String dbMode) { this.dbMode = dbMode; }
 }

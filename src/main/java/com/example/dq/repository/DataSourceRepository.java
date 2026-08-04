@@ -35,6 +35,7 @@ public class DataSourceRepository {
         c.setRowThreshold(rs.wasNull() ? null : rt);
         long st = rs.getLong("size_threshold_bytes");
         c.setSizeThresholdBytes(rs.wasNull() ? null : st);
+        c.setDbMode(rs.getString("db_mode"));
         return c;
     };
 
@@ -42,8 +43,8 @@ public class DataSourceRepository {
         KeyHolder kh = new GeneratedKeyHolder();
         jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement(
-                    "INSERT INTO data_source(name, db_type, jdbc_url, username, password_enc, row_threshold, size_threshold_bytes) "
-                            + "VALUES (?,?,?,?,?,?,?)", new String[]{"ID"});
+                    "INSERT INTO data_source(name, db_type, jdbc_url, username, password_enc, row_threshold, size_threshold_bytes, db_mode) "
+                            + "VALUES (?,?,?,?,?,?,?,?)", new String[]{"ID"});
             ps.setString(1, c.getName());
             ps.setString(2, c.getDbType().name());
             ps.setString(3, c.getJdbcUrl());
@@ -51,13 +52,14 @@ public class DataSourceRepository {
             ps.setString(5, c.getPassword());
             if (c.getRowThreshold() != null) ps.setLong(6, c.getRowThreshold()); else ps.setNull(6, java.sql.Types.BIGINT);
             if (c.getSizeThresholdBytes() != null) ps.setLong(7, c.getSizeThresholdBytes()); else ps.setNull(7, java.sql.Types.BIGINT);
+            ps.setString(8, c.getDbMode());
             return ps;
         }, kh);
         return Objects.requireNonNull(kh.getKey()).longValue();
     }
 
     public void update(DataSourceConfig c, boolean updatePassword) {
-        String sql = "UPDATE data_source SET name=?, db_type=?, jdbc_url=?, username=?, row_threshold=?, size_threshold_bytes=?, updated_at=CURRENT_TIMESTAMP"
+        String sql = "UPDATE data_source SET name=?, db_type=?, jdbc_url=?, username=?, row_threshold=?, size_threshold_bytes=?, db_mode=?, updated_at=CURRENT_TIMESTAMP"
                 + (updatePassword ? ", password_enc=?" : "") + " WHERE id=?";
         jdbc.update(conn -> {
             PreparedStatement ps = conn.prepareStatement(sql);
@@ -67,7 +69,8 @@ public class DataSourceRepository {
             ps.setString(4, c.getUsername());
             if (c.getRowThreshold() != null) ps.setLong(5, c.getRowThreshold()); else ps.setNull(5, java.sql.Types.BIGINT);
             if (c.getSizeThresholdBytes() != null) ps.setLong(6, c.getSizeThresholdBytes()); else ps.setNull(6, java.sql.Types.BIGINT);
-            int idx = 7;
+            ps.setString(7, c.getDbMode());
+            int idx = 8;
             if (updatePassword) ps.setString(idx++, c.getPassword());
             ps.setLong(idx, c.getId());
             return ps;
