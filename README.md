@@ -55,9 +55,12 @@ scripts/package-mac.sh
 
 # Windows(在 Windows 机器上执行)→ target/jpackage/dist/dq-tool-1.0.exe
 scripts\package-win.bat
+
+# Linux(Debian/Ubuntu,需 fakeroot)→ target/jpackage/dist/dq-tool_1.0_amd64.deb
+scripts/package-linux.sh
 ```
 
-也可以走 CI:推 `v*` tag(如 `git tag v1.0 && git push origin v1.0`)触发 `.github/workflows/release.yml`,在云端 Windows runner 构建 exe 并自动挂到 GitHub Release;Mac dmg 仍用本地脚本构建后手动上传到该 Release 即可。
+推荐走 CI 全平台构建:推 `v*` tag(如 `git tag v1.0 && git push origin v1.0`)触发 `.github/workflows/release.yml`,云端并行构建 Windows exe、macOS dmg(Apple Silicon + Intel 两个架构)、Linux deb,全部自动挂到 GitHub Release。jpackage 不支持交叉编译,各平台包都在对应系统的 runner 上原生构建。
 
 - 脚本自动完成前端构建 + `mvn package` + jpackage;只重打包可加 `--skip-build`
 - dmg/exe 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.0` 映射为安装包版本 `1.0`
