@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: dq-tool
+  datasource:
+    url: jdbc:h2:file:./data/dqconfig;AUTO_SERVER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+dq:
+  scan:
+    workers: 8                 # 全局扫描工作线程数
+    chunks-per-table: 100      # 每张表的分段数
+    row-threshold: 1000000     # 超过该估算行数默认采样
+    size-threshold-bytes: 10737418240   # 超过该体积(10GB)默认采样
+    sample-rows: 100000        # 采样行数
+    statement-timeout-seconds: 1800     # 单条统计 SQL 超时
+  security:
+    secret: change-me-32bytes-secret-key-0000   # 数据源密码对称加密密钥(本地部署自行修改)

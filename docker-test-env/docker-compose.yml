@@ -1,0 +1,49 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64   # Apple Silicon 上通过 Rosetta 仿真运行
+    container_name: test-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Test@12345"
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$$MSSQL_SA_PASSWORD" -C -Q "SELECT 1" -l 5 || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
+  oracle:
+    image: gvenzl/oracle-free:23-slim   # 原生支持 arm64
+    container_name: test-oracle
+    environment:
+      ORACLE_PASSWORD: "Test@12345"
+      APP_USER: testuser
+      APP_USER_PASSWORD: "Test@12345"
+    ports:
+      - "1521:1521"
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
+volumes:
+  mssql-data:
+  oracle-data:

@@ -1,0 +1,57 @@
+# 打 tag(如 v1.0)触发:在 windows-latest 上构建 exe 安装包并附加到 GitHub Release
+# 也可在 Actions 页面手动触发(workflow_dispatch),产物以 artifact 形式下载
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: web
+
+      # jpackage 生成 exe 需要 WiX 3.x,windows-latest 镜像不自带
+      - name: Ensure WiX Toolset 3.x
+        shell: pwsh
+        run: |
+          if (-not (Get-Command light.exe -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset --no-progress -y
+            $wix = Get-ChildItem "C:\Program Files (x86)\WiX Toolset v3*\bin" -Directory | Select-Object -First 1
+            if ($wix) { Add-Content $env:GITHUB_PATH $wix.FullName }
+          }
+
+      - name: Build exe installer
+        run: scripts\package-win.bat
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dq-tool-windows-exe
+          path: target/jpackage/dist/*.exe
+          retention-days: 30
+
+      # tag 触发时把 exe 挂到 GitHub Release
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/jpackage/dist/*.exe
