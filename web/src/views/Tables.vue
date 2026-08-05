@@ -18,7 +18,7 @@
       <el-checkbox v-model="onlyEmpty">只看空表(行数为 0)</el-checkbox>
     </div>
 
-    <el-alert v-if="tables.length" type="info" :closable="false" style="margin-bottom: 12px">
+    <el-alert v-if="tables.length" type="success" :closable="false" style="margin-bottom: 12px">
       <span style="margin-right: 24px">总行数: 约 {{ formatNumber(totalEstRows) }}</span>
       <span style="margin-right: 24px">总大小: {{ formatBytes(totalSizeBytes) }}</span>
       <span style="margin-right: 24px">表数量: {{ tables.length }}</span>

@@ -13,7 +13,7 @@
       <el-checkbox v-model="onlyEmpty">只看空字段(有值数为 0)</el-checkbox>
     </div>
 
-    <el-alert v-if="tableInfo || columns.length" type="info" :closable="false" style="margin-bottom: 16px">
+    <el-alert v-if="tableInfo || columns.length" type="success" :closable="false" style="margin-bottom: 16px">
       <template v-if="tableInfo">
         <span style="margin-right: 24px">总行数: {{ formatNumber(tableInfo.totalRows ?? tableInfo.scannedRows) }}</span>
         <span style="margin-right: 24px">
