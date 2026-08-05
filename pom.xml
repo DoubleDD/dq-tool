@@ -13,7 +13,7 @@
 
     <groupId>com.example</groupId>
     <artifactId>dq-tool</artifactId>
-    <version>0.1.2</version>
+    <version>0.1.3</version>
     <name>dq-tool</name>
     <description>数据质量检测工具</description>
 
@@ -44,7 +44,7 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- 五个目标数据库的 JDBC 驱动 -->
+        <!-- 七个目标数据库的 JDBC 驱动 -->
         <dependency>
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>

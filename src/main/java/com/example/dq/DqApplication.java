@@ -3,12 +3,14 @@ package com.example.dq;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 import java.io.IOException;
 import java.net.ServerSocket;
 
 @SpringBootApplication
 @ConfigurationPropertiesScan
+@EnableScheduling
 public class DqApplication {
 
     private static final int DEFAULT_PORT = 8080;

@@ -7,6 +7,8 @@ public class DqProperties {
 
     private final Scan scan = new Scan();
     private final Security security = new Security();
+    private final License license = new License();
+    private final Desktop desktop = new Desktop();
 
     public Scan getScan() {
         return scan;
@@ -14,6 +16,14 @@ public class DqProperties {
 
     public Security getSecurity() {
         return security;
+    }
+
+    public License getLicense() {
+        return license;
+    }
+
+    public Desktop getDesktop() {
+        return desktop;
     }
 
     public static class Scan {
@@ -50,5 +60,21 @@ public class DqProperties {
 
         public String getSecret() { return secret; }
         public void setSecret(String secret) { this.secret = secret; }
+    }
+
+    public static class License {
+        /** 授权码验签公钥(Ed25519,base64 的 X.509 编码);为空时激活接口报"未配置授权公钥" */
+        private String publicKey = "";
+
+        public String getPublicKey() { return publicKey; }
+        public void setPublicKey(String publicKey) { this.publicKey = publicKey; }
+    }
+
+    public static class Desktop {
+        /** 页面心跳超时(秒):--app 窗口关闭后超过该时长未收到心跳则退出进程;<=0 禁用看门狗 */
+        private int shutdownTimeoutSeconds = 45;
+
+        public int getShutdownTimeoutSeconds() { return shutdownTimeoutSeconds; }
+        public void setShutdownTimeoutSeconds(int shutdownTimeoutSeconds) { this.shutdownTimeoutSeconds = shutdownTimeoutSeconds; }
     }
 }

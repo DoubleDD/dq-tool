@@ -26,6 +26,12 @@ public class BrowserOpener {
 
     private static final Logger log = LoggerFactory.getLogger(BrowserOpener.class);
 
+    private final DesktopSession session;
+
+    public BrowserOpener(DesktopSession session) {
+        this.session = session;
+    }
+
     @EventListener(ApplicationReadyEvent.class)
     public void openBrowser(ApplicationReadyEvent event) {
         if (GraphicsEnvironment.isHeadless()) {
@@ -49,6 +55,7 @@ public class BrowserOpener {
         }
         try {
             new ProcessBuilder(browser, "--app=" + url).start();
+            session.markAppModeOpened();
             log.info("已用应用模式打开 {} ({})", url, browser);
             return true;
         } catch (Exception e) {

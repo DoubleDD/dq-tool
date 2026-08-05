@@ -99,6 +99,8 @@
         <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
       </template>
     </el-dialog>
+
+    <LicenseFooter />
   </div>
 </template>
 
@@ -109,6 +111,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../api'
 import { formatBytes, formatNumber } from '../utils/format'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
+import LicenseFooter from '../components/LicenseFooter.vue'
 
 const router = useRouter()
 const list = ref([])
@@ -329,6 +332,13 @@ onActivated(loadList)
 </script>
 
 <style scoped>
+/* 授权栏钉在视口底部:卡片撑满主区域,flex 布局配合 LicenseFooter 的 margin-top:auto */
+.page-card {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100% - 40px);
+  box-sizing: border-box;
+}
 .ds-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

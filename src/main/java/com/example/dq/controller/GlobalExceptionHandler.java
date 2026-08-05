@@ -1,5 +1,6 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.LicenseRequiredException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -28,6 +29,11 @@ public class GlobalExceptionHandler {
                 .map(f -> f.getField() + " " + f.getDefaultMessage())
                 .orElse("参数校验失败");
         return ResponseEntity.badRequest().body(Map.of("message", msg));
+    }
+
+    @ExceptionHandler(LicenseRequiredException.class)
+    public ResponseEntity<Map<String, String>> licenseRequired(LicenseRequiredException e) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", e.getMessage()));
     }
 
     @ExceptionHandler(IllegalStateException.class)

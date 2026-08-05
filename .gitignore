@@ -19,5 +19,8 @@ data/
 logs/
 *.log
 
+# 授权码签发私钥(分发方自行保管,勿提交)
+license-private.key
+
 # 系统文件
 .DS_Store

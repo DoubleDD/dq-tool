@@ -1,0 +1,6 @@
+# Gradle / Compose 构建产物
+build/
+.gradle/
+
+# 运行时数据(H2 库,含连接信息与扫描结果)
+data/
