@@ -33,7 +33,7 @@ public class ExportService {
         String header();
     }
 
-    /** 字段明细 sheet 的可选列定义;"字段"列恒为第一列,不参与选择 */
+    /** 字段明细 sheet 的可选列定义;"表名/表注释/字段"为固定前列,不参与选择 */
     private record Col(String key, String header, Function<ScanColumnView, Object> value) implements Keyed {}
 
     /** 表列表 sheet 的可选列定义;"表名"列恒为第一列,不参与选择;value 第二参为该表字段平均有值率 */
@@ -75,7 +75,7 @@ public class ExportService {
      * 导出扫描结果。
      *
      * @param tableCols 表列表 sheet 要导出的列 key(见 TABLE_DEFS);null = 全部列,空集 = 只要固定首列
-     * @param cols      字段明细 sheet 要导出的列 key(见 COLUMN_DEFS);null = 全部列,空集 = 只要固定首列
+     * @param cols      字段明细 sheet 要导出的列 key(见 COLUMN_DEFS);null = 全部列,空集 = 只要固定列(表名/表注释/字段)
      */
     public void export(long jobId, List<String> tableCols, List<String> cols, OutputStream out) throws IOException {
         ScanJobView job = scanService.getJob(jobId);
@@ -154,7 +154,7 @@ public class ExportService {
     private void writeTables(SXSSFWorkbook wb, ScanJobView job, List<String> tableCols) {
         List<TCol> selected = selectCols(TABLE_DEFS, tableCols);
         Sheet sheet = wb.createSheet("表列表");
-        writeHeader(sheet.createRow(0), "表名", selected);
+        writeHeader(sheet.createRow(0), selected, "表名");
         int r = 1;
         for (ScanTableView t : job.tables()) {
             List<ScanColumnView> cols = scanService.getColumns(job.id(), t.tableName());
@@ -176,11 +176,13 @@ public class ExportService {
                 continue;
             }
             Sheet sheet = wb.createSheet(sheetName(t.tableName(), usedNames));
-            writeHeader(sheet.createRow(0), "字段", selected);
+            writeHeader(sheet.createRow(0), selected, "表名", "表注释", "字段");
             int r = 1;
             for (ScanColumnView col : scanService.getColumns(job.id(), t.tableName())) {
                 Row row = sheet.createRow(r++);
                 int c = 0;
+                row.createCell(c++).setCellValue(t.tableName());
+                row.createCell(c++).setCellValue(nullSafe(t.comment()));
                 row.createCell(c++).setCellValue(col.columnName());
                 for (Col def : selected) {
                     cell(row.createCell(c++), def.value().apply(col));
@@ -189,11 +191,14 @@ public class ExportService {
         }
     }
 
-    /** 表头:固定首列 + 选中的可选列 */
-    private static void writeHeader(Row head, String firstCol, List<? extends Keyed> selected) {
-        head.createCell(0).setCellValue(firstCol);
-        for (int i = 0; i < selected.size(); i++) {
-            head.createCell(i + 1).setCellValue(selected.get(i).header());
+    /** 表头:固定前列 + 选中的可选列 */
+    private static void writeHeader(Row head, List<? extends Keyed> selected, String... fixedCols) {
+        int c = 0;
+        for (String fixed : fixedCols) {
+            head.createCell(c++).setCellValue(fixed);
+        }
+        for (Keyed def : selected) {
+            head.createCell(c++).setCellValue(def.header());
         }
     }
 

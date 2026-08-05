@@ -1,8 +1,8 @@
 <template>
   <el-button :size="size" @click="open">导出 Excel</el-button>
-  <el-dialog v-model="visible" title="导出 Excel" width="780px" append-to-body>
+  <el-dialog v-model="visible" title="导出 Excel" width="min(1440px, 94vw)" append-to-body>
     <div class="tip">
-      导出文件结构预览(示例数据)。「表列表」「字段明细」页签内可勾选要导出的列,下方表格实时预览最终样式;首列固定导出。
+      导出文件结构预览(示例数据)。「表列表」「字段明细」页签内可勾选要导出的列,下方表格实时预览最终样式;灰色固定列始终导出。
     </div>
 
     <!-- Excel 风格 sheet 页签 -->
@@ -56,12 +56,16 @@
         <table class="preview-table">
           <thead>
             <tr>
+              <th class="fixed-col">表名</th>
+              <th class="fixed-col">表注释</th>
               <th class="fixed-col">字段</th>
               <th v-for="c in visibleFieldCols" :key="c.key">{{ c.label }}</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="row in FIELD_SAMPLE" :key="row.name">
+              <td>{{ row.table }}</td>
+              <td>{{ row.tableComment }}</td>
               <td>{{ row.name }}</td>
               <td v-for="c in visibleFieldCols" :key="c.key">{{ row[c.key] }}</td>
             </tr>
@@ -153,8 +157,8 @@ const TABLE_SAMPLE = [
 ]
 
 const FIELD_SAMPLE = [
-  { name: 'id', comment: '主键', type: 'bigint(20)', key: 'PK', nullable: '否', default: '', totalRows: '12,500,000', nullCount: '0', emptyCount: '0', ruleHitCount: '0', valueCount: '12,500,000', fillRate: '100' },
-  { name: 'mobile', comment: '手机号', type: 'varchar(20)', key: '', nullable: '是', default: '', totalRows: '12,500,000', nullCount: '3,200', emptyCount: '150', ruleHitCount: '0', valueCount: '12,496,650', fillRate: '99.97' }
+  { table: 'user_order', tableComment: '订单表', name: 'id', comment: '主键', type: 'bigint(20)', key: 'PK', nullable: '否', default: '', totalRows: '12,500,000', nullCount: '0', emptyCount: '0', ruleHitCount: '0', valueCount: '12,500,000', fillRate: '100' },
+  { table: 'user_order', tableComment: '订单表', name: 'mobile', comment: '手机号', type: 'varchar(20)', key: '', nullable: '是', default: '', totalRows: '12,500,000', nullCount: '3,200', emptyCount: '150', ruleHitCount: '0', valueCount: '12,496,650', fillRate: '99.97' }
 ]
 
 const props = defineProps({
@@ -184,7 +188,7 @@ function open() {
 }
 
 function doExport() {
-  // 全选时不带参数(默认行为);一列不选时传空串,表示只留固定首列
+  // 全选时不带参数(默认行为);一列不选时传空串,表示只留固定列
   const params = new URLSearchParams()
   if (tableChecked.value.length < TABLE_COLS.length) params.set('tableCols', tableChecked.value.join(','))
   if (fieldChecked.value.length < FIELD_COLS.length) params.set('cols', fieldChecked.value.join(','))
