@@ -10,9 +10,9 @@ if /i not "%~1"=="--skip-build" (
 )
 
 rem 版本号需与 pom.xml 保持一致
-set APP_VERSION=0.1.0
-rem 与其他平台安装包版本保持一致,去掉开头的 "0."(0.1.0 -> 1.0)
-set PKG_VERSION=1.0
+set APP_VERSION=0.1.2
+rem 与其他平台安装包版本保持一致,去掉开头的 "0."(0.1.2 -> 1.2)
+set PKG_VERSION=1.2
 set JAR=target\dq-tool-%APP_VERSION%.jar
 if not exist "%JAR%" (echo 找不到 %JAR%,请先执行 mvn package & exit /b 1)
 
