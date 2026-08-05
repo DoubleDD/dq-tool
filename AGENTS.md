@@ -8,7 +8,8 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 
 - 表级:估算行数、数据+索引占用一览
 - 字段级:NULL / 空串 / 自定义空值规则统计与有值率
-- 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫、Excel 导出
+- 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫、Excel 导出(概览/表列表/每表字段明细多 sheet,列可选)
+- AI 表说明:大模型(OpenAI 兼容接口)根据表结构生成表用途描述,页面配置接口信息,手动触发生成,结果存 H2
 - 数据源连接信息存本地 H2 文件库,密码 AES-GCM 加密
 
 支持 7 种数据库:MySQL、PostgreSQL、SQL Server、Oracle、达梦 DM8、人大金仓 KingbaseES、OceanBase(仅 MySQL 模式)。驱动全部来自 Maven 中央仓库。
@@ -29,18 +30,19 @@ pom.xml                      后端构建(7 个 JDBC 驱动、前端产物拷贝
 src/main/java/com/example/dq/
   DqApplication.java         入口;启动时自动避让被占用的端口(8080 起向后探测 100 个)
   config/                    DqProperties(配置绑定)、SpaWebConfig(SPA 路由回退)、BrowserOpener(安装版自动开浏览器)
-  controller/                REST API:/api/datasources、/api/datasources/{dsId}/{databases,schemas,schema-stats,schemas/{schema}/tables}、/api/scans
+  controller/                REST API:/api/datasources、/api/datasources/{dsId}/{databases,schemas,schema-stats,schemas/{schema}/tables}、/api/scans、/api/ai-config
   dialect/                   核心抽象 DbDialect + 7 个方言实现 + DialectFactory + AbstractDialect
   model/                     DTO/枚举(DbType、ScanStatus、NullRule、Range 等)
   repository/                手写 JdbcTemplate 仓储(无 JPA/MyBatis)
   scan/                      ScanExecutor(全局线程池,调度单元=分段)、ChunkRunner(分段执行)、InterruptRecovery
-  service/                   DataSourceService(连接池/密码加解密)、MetadataService、ScanService(任务生命周期)、ExportService(POI 流式导出)
+  service/                   DataSourceService(连接池/密码加解密)、MetadataService、ScanService(任务生命周期)、ExportService(POI 流式导出)、AiService(OpenAI 兼容 LLM 调用)、AiConfigService/TableDocService(AI 表说明)
   util/CryptoUtil.java       AES-GCM 加解密
 src/main/resources/
   application.yml            全部可调配置(dq.scan.* / dq.security.secret)
-  schema.sql                 H2 建表(含 scan_job_event 任务状态变更事件表)+ 老库升级的 ALTER ... IF NOT EXISTS,启动自动执行
+  schema.sql                 H2 建表(含 scan_job_event 任务状态变更事件表、ai_config/table_doc AI 表说明)+ 老库升级的 ALTER ... IF NOT EXISTS,启动自动执行
 src/test/java/com/example/dq/
   dialect/                   方言 SQL 生成、分段规划单元测试
+  service/AiServiceTest.java AI 表说明 prompt 组装单元测试
   scan/ScanFlowTest.java     Testcontainers 端到端(MySQL/PG/SQLServer 三容器)
 web/                         前端 Vue 工程(src/views 六个页面含 Dashboard 任务看板 + router + api)
 docker-test-env/             手动验证用的 SQL Server / Oracle docker-compose(非 CI 使用)
@@ -79,6 +81,7 @@ mvn test
     `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock mvn test`
   - Testcontainers 版本固定 1.21.4(pom.xml 有注释:旧版默认 API 1.32 被 Docker 29+ 拒绝)
 - **达梦 / 人大金仓 / OceanBase / Oracle 无自动化覆盖**,相关方言改动只能接真实环境手动验证(`docker-test-env/` 有 SQL Server 和 Oracle 的 compose)
+- **LLM 实际调用无自动化覆盖**(prompt 组装有单测),AI 表说明功能需配置真实接口后手动验证
 
 ## 代码约定
 
@@ -94,6 +97,7 @@ mvn test
 ## 安全考虑
 
 - 数据源密码用 AES-GCM 加密存 H2(`password_enc` 列),密钥在 `application.yml` 的 `dq.security.secret`,默认值 `change-me-...`,改动密钥逻辑时注意向后兼容已存数据
+- AI 配置的 API Key 同样 AES-GCM 加密存 H2(`ai_config.api_key_enc`),GET 接口只回传 hasKey 不回传明文;「生成表说明」会把表结构元数据(表名/字段/注释)发给配置的第三方 LLM 接口,不发送业务数据,属用户显式触发
 - 应用无认证,任何能访问端口的人都能操作所有数据源,不要暴露到公网
 - 自定义空值规则(如 `status IN (0,-1)`)会原样拼进统计 SQL,属设计如此的"信任内网用户"行为;不要在方言层之外引入新的 SQL 拼接,标识符必须经 `DbDialect.quote()` 处理
 - H2 数据文件含连接信息与扫描结果,`data/` 目录不应提交或外发

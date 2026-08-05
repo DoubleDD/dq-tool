@@ -1,0 +1,5 @@
+package com.example.dq.model;
+
+/** 手动编辑表描述的入参 */
+public record TableDocUpdateRequest(String description) {
+}

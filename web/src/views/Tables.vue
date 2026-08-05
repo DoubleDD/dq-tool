@@ -5,6 +5,10 @@
       <div>
         <el-button @click="goBack">返回</el-button>
         <el-button @click="$router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${dbQuery()}`)">扫描记录</el-button>
+        <AiConfigDialog />
+        <el-button :disabled="!selectedTables.length" :loading="batchDocLoading" @click="generateDocsBatch">
+          生成描述{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
+        </el-button>
         <el-button type="primary" @click="openScanDialog">开始扫描</el-button>
       </div>
     </div>
@@ -37,6 +41,31 @@
         <template #default="{ row }">
           <span v-if="row.comment">{{ row.comment }}</span>
           <span v-else style="color: #c0c4cc">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="描述" min-width="220">
+        <template #header>
+          <el-tooltip placement="top" :show-after="200">
+            <template #content>
+              <div>由大模型根据表结构(表名/字段/注释)生成的描述,比表注释更能体现表的用途</div>
+              <div>生成只发送表结构元数据,不发送业务数据</div>
+            </template>
+            <span>描述 <el-icon style="vertical-align: -2px"><QuestionFilled /></el-icon></span>
+          </el-tooltip>
+        </template>
+        <template #default="{ row }">
+          <div class="doc-cell">
+            <!-- 已有描述:刷新按钮重新生成;无描述:显示生成入口 -->
+            <el-tooltip v-if="docs[row.name]" content="重新生成描述(基于最新表结构,覆盖现有描述)" placement="top" :show-after="200">
+              <el-button link type="primary" :loading="docLoading[row.name]" @click="generateDoc(row)">
+                <el-icon v-if="!docLoading[row.name]"><Refresh /></el-icon>
+              </el-button>
+            </el-tooltip>
+            <el-button v-else link type="primary" :loading="docLoading[row.name]" @click="generateDoc(row)">生成描述</el-button>
+            <el-tooltip v-if="docs[row.name]" :content="docs[row.name]" placement="top" :show-after="200">
+              <span class="doc-text" @click="openDocEdit(row)">{{ docs[row.name] }}</span>
+            </el-tooltip>
+          </div>
         </template>
       </el-table-column>
       <el-table-column prop="storageInfo" label="引擎/表空间" width="130">
@@ -136,6 +165,16 @@
         <el-button type="primary" :loading="submitting" @click="submitScan">提交扫描</el-button>
       </template>
     </el-dialog>
+
+    <!-- 手动编辑表描述 -->
+    <el-dialog v-model="docEditVisible" :title="`编辑描述 - ${docEditTable}`" width="560px" append-to-body>
+      <el-input v-model="docEditText" type="textarea" :rows="5" maxlength="2000" show-word-limit
+                placeholder="输入该表的用途描述" />
+      <template #footer>
+        <el-button @click="docEditVisible = false">取消</el-button>
+        <el-button type="primary" :loading="docEditSaving" @click="saveDocEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -143,8 +182,9 @@
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { QuestionFilled } from '@element-plus/icons-vue'
+import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import request from '../api'
+import AiConfigDialog from '../components/AiConfigDialog.vue'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { goBack as historyBack } from '../utils/back'
 
@@ -162,6 +202,16 @@ const selectedTables = ref([])
 const latestScans = ref({})
 // 运行中任务里每张未完成表的分段进度(表名 -> { jobId, status, doneChunks, totalChunks })
 const runningScans = ref({})
+// AI 生成的表说明(表名 -> 说明文字),本地 H2 查询
+const docs = ref({})
+// 行内「说明」按钮的生成中状态(表名 -> bool)
+const docLoading = ref({})
+const batchDocLoading = ref(false)
+// 手动编辑描述弹窗
+const docEditVisible = ref(false)
+const docEditTable = ref('')
+const docEditText = ref('')
+const docEditSaving = ref(false)
 
 const scanDialogVisible = ref(false)
 const submitting = ref(false)
@@ -210,13 +260,15 @@ async function load() {
   loading.value = true
   try {
     const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
-    // 最新扫描映射查的是本地 H2,失败时仅影响表名是否可点,不阻塞表列表
-    const [tableList, latest] = await Promise.all([
+    // 最新扫描映射/表说明查的是本地 H2,失败时仅影响表名是否可点与说明展示,不阻塞表列表
+    const [tableList, latest, tableDocs] = await Promise.all([
       request.get(`${base}/tables${dbQuery()}`),
-      request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({}))
+      request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({})),
+      request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({}))
     ])
     tables.value = tableList
     latestScans.value = latest || {}
+    docs.value = tableDocs || {}
   } finally {
     loading.value = false
   }
@@ -256,6 +308,72 @@ function goRunningJob(row) {
 function scanSingle(row) {
   openScanDialog()
   singleTable.value = row.name
+}
+
+// 生成单表 AI 说明;大模型响应较慢,单请求超时放宽到 130s(后端读超时 120s)
+async function generateDoc(row) {
+  docLoading.value[row.name] = true
+  try {
+    const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
+    const res = await request.post(`${base}/tables/${encodeURIComponent(row.name)}/doc${dbQuery()}`, null, { timeout: 130000 })
+    docs.value[row.name] = res.description
+    ElMessage.success(`已生成「${row.name}」的表说明`)
+  } finally {
+    docLoading.value[row.name] = false
+  }
+}
+
+// 打开手动编辑描述弹窗
+function openDocEdit(row) {
+  docEditTable.value = row.name
+  docEditText.value = docs.value[row.name] || ''
+  docEditVisible.value = true
+}
+
+// 保存手动编辑的描述
+async function saveDocEdit() {
+  const text = docEditText.value.trim()
+  if (!text) {
+    ElMessage.warning('描述不能为空')
+    return
+  }
+  docEditSaving.value = true
+  try {
+    const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
+    await request.put(`${base}/tables/${encodeURIComponent(docEditTable.value)}/doc${dbQuery()}`, { description: text })
+    docs.value[docEditTable.value] = text
+    docEditVisible.value = false
+    ElMessage.success('已保存')
+  } finally {
+    docEditSaving.value = false
+  }
+}
+
+// 批量生成勾选的表说明:并发 2 逐表调单表接口,单表失败不影响其他
+async function generateDocsBatch() {
+  const queue = [...selectedTables.value]
+  batchDocLoading.value = true
+  let ok = 0
+  let fail = 0
+  async function worker() {
+    while (queue.length) {
+      const row = queue.shift()
+      try {
+        const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
+        const res = await request.post(`${base}/tables/${encodeURIComponent(row.name)}/doc${dbQuery()}`, null, { timeout: 130000 })
+        docs.value[row.name] = res.description
+        ok++
+      } catch {
+        fail++ // 单表错误消息已由拦截器弹出
+      }
+    }
+  }
+  try {
+    await Promise.all([worker(), worker()])
+    ElMessage.success(`表说明生成完成:成功 ${ok} 张,失败 ${fail} 张`)
+  } finally {
+    batchDocLoading.value = false
+  }
 }
 
 // 排序用:该表最近扫描完成时间的毫秒值,未扫描过排最前
@@ -341,6 +459,18 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
+.doc-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.doc-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
 .rule-row {
   display: flex;
   gap: 8px;

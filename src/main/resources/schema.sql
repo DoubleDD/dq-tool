@@ -93,6 +93,27 @@ CREATE TABLE IF NOT EXISTS scan_column (
 );
 CREATE INDEX IF NOT EXISTS idx_scan_column_table ON scan_column(scan_table_id);
 
+-- AI 表说明:大模型接口配置(单行,id 固定 1)+ 已生成的表说明
+CREATE TABLE IF NOT EXISTS ai_config (
+    id           BIGINT PRIMARY KEY,
+    base_url     VARCHAR(1024),                   -- OpenAI 兼容接口地址,如 https://api.deepseek.com
+    api_key_enc  VARCHAR(2048),                   -- 对称加密后的 API key
+    model        VARCHAR(128),
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS table_doc (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    datasource_id BIGINT NOT NULL,
+    db_name       VARCHAR(256) NOT NULL DEFAULT '', -- 无库概念的方言存空串,保证唯一键
+    schema_name   VARCHAR(256) NOT NULL,
+    table_name    VARCHAR(256) NOT NULL,
+    description   CLOB,                             -- 大模型生成的表说明
+    model         VARCHAR(128),                     -- 生成时用的模型
+    updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_table_doc ON table_doc(datasource_id, db_name, schema_name, table_name);
+
 -- 老库升级:补充元数据列(H2 支持 IF NOT EXISTS)
 ALTER TABLE scan_job ADD COLUMN IF NOT EXISTS db_name VARCHAR(256);
 ALTER TABLE scan_table ADD COLUMN IF NOT EXISTS comment VARCHAR(1024);
