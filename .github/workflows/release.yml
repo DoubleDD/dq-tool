@@ -39,14 +39,17 @@ jobs:
 
       # 统一命名: dq-tool-<版本>-<系统>-<架构>.zip
       - name: Rename zip with platform suffix
+        id: pkg
         shell: pwsh
         run: |
           cd target/jpackage/dist
           Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-x64.zip' }
+          # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
+          "name=$((Get-ChildItem dq-tool-*.zip | Select-Object -First 1).BaseName)" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v7
         with:
-          name: dq-tool-windows-x64
+          name: ${{ steps.pkg.outputs.name }}
           path: target/jpackage/dist/*.zip
           retention-days: 30
 
@@ -84,14 +87,17 @@ jobs:
 
       # 统一命名: dq-tool-<版本>-<系统>-<架构>.zip
       - name: Rename zip with platform suffix
+        id: pkg
         shell: pwsh
         run: |
           cd target/jpackage/dist
           Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-arm64.zip' }
+          # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
+          "name=$((Get-ChildItem dq-tool-*.zip | Select-Object -First 1).BaseName)" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v7
         with:
-          name: dq-tool-windows-arm64
+          name: ${{ steps.pkg.outputs.name }}
           path: target/jpackage/dist/*.zip
           retention-days: 30
 
@@ -134,13 +140,16 @@ jobs:
 
       # 统一命名: dq-tool-<版本>-macos-<架构>.dmg
       - name: Rename dmg with platform suffix
+        id: pkg
         run: |
           cd target/jpackage/dist
           for f in dq-tool-*.dmg; do mv "$f" "${f%.dmg}-macos-${{ matrix.arch }}.dmg"; done
+          # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
+          echo "name=$(ls dq-tool-*.dmg | head -1 | sed 's/\.dmg$//')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: dq-tool-macos-dmg-${{ matrix.arch }}
+          name: ${{ steps.pkg.outputs.name }}
           path: target/jpackage/dist/*.dmg
           retention-days: 30
 
@@ -180,16 +189,19 @@ jobs:
 
       # 统一命名: dq-tool-<版本>-linux-amd64.deb(deb 原生命名为 dq-tool_<版本>_amd64.deb)
       - name: Rename deb with platform suffix
+        id: pkg
         run: |
           cd target/jpackage/dist
           for f in dq-tool_*.deb; do
             v=$(echo "$f" | sed -E 's/dq-tool_(.*)_amd64\.deb/\1/')
             mv "$f" "dq-tool-${v}-linux-amd64.deb"
           done
+          # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
+          echo "name=$(ls dq-tool-*.deb | head -1 | sed 's/\.deb$//')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: dq-tool-linux-deb
+          name: ${{ steps.pkg.outputs.name }}
           path: target/jpackage/dist/*.deb
           retention-days: 30
 
