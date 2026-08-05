@@ -13,9 +13,11 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 
@@ -40,6 +42,17 @@ public abstract class AbstractDialect implements DbDialect {
             }
         }
         return counts;
+    }
+
+    /** 执行 "分组键, SUM(字节)" 两列聚合查询,供 sumSizeBySchema 各实现复用 */
+    protected Map<String, Long> queryLongByGroup(Connection conn, String sql) throws SQLException {
+        Map<String, Long> sums = new LinkedHashMap<>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                sums.put(rs.getString(1), rs.getLong(2));
+            }
+        }
+        return sums;
     }
 
     @Override
@@ -99,6 +112,29 @@ public abstract class AbstractDialect implements DbDialect {
             }
         }
         return cols;
+    }
+
+    /** 统计指定库/schema 下所有基表的字段总数;只算基表(与 listTables 一致),不含视图 */
+    @Override
+    public long countColumns(Connection conn, String schema) throws SQLException {
+        DatabaseMetaData meta = conn.getMetaData();
+        String catalog = catalogBased() ? schema : null;
+        String schemaPattern = catalogBased() ? null : schema;
+        Set<String> baseTables = new HashSet<>();
+        try (ResultSet rs = meta.getTables(catalog, schemaPattern, null, new String[]{"TABLE"})) {
+            while (rs.next()) {
+                baseTables.add(rs.getString("TABLE_NAME"));
+            }
+        }
+        long count = 0;
+        try (ResultSet rs = meta.getColumns(catalog, schemaPattern, null, null)) {
+            while (rs.next()) {
+                if (baseTables.contains(rs.getString("TABLE_NAME"))) {
+                    count++;
+                }
+            }
+        }
+        return count;
     }
 
     /** 由类型名+长度+小数位拼展示类型:varchar(50)、decimal(10,2)、bigint */

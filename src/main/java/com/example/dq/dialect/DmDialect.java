@@ -49,6 +49,16 @@ public class DmDialect extends AbstractDialect {
     }
 
     @Override
+    public Map<String, Long> sumSizeBySchema(Connection conn) throws SQLException {
+        try {
+            return queryLongByGroup(conn, "SELECT owner, SUM(bytes) FROM all_segments GROUP BY owner");
+        } catch (SQLException e) {
+            // 部分 DM 实例或受限账号没有 ALL_SEGMENTS 视图,降级为不统计体积
+            return Map.of();
+        }
+    }
+
+    @Override
     public List<TableStat> listTables(Connection conn, String schema) throws SQLException {
         try {
             return queryTables(conn, schema, listTablesSql(true));

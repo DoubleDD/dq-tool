@@ -22,6 +22,7 @@
       <span style="margin-right: 24px">总行数: 约 {{ formatNumber(totalEstRows) }}</span>
       <span style="margin-right: 24px">总大小: {{ formatBytes(totalSizeBytes) }}</span>
       <span style="margin-right: 24px">表数量: {{ tables.length }}</span>
+      <span style="margin-right: 24px">字段数量: {{ columnCount === null ? '-' : formatNumber(columnCount) }}</span>
       <span>
         空表数量:
         <el-link type="primary" :disabled="!emptyTables.length" @click="onlyEmpty = true">{{ emptyTables.length }}</el-link>
@@ -196,6 +197,8 @@ const db = route.query.db || ''
 
 const tables = ref([])
 const loading = ref(false)
+// schema 下所有基表的字段总数(业务库元数据查询,失败时显示 -)
+const columnCount = ref(null)
 const keyword = ref('')
 const selectedTables = ref([])
 // 每张表最近一次 DONE 扫描的信息(表名 -> { jobId, finishedAt }),有值的表名渲染为链接
@@ -261,14 +264,17 @@ async function load() {
   try {
     const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
     // 最新扫描映射/表说明查的是本地 H2,失败时仅影响表名是否可点与说明展示,不阻塞表列表
-    const [tableList, latest, tableDocs] = await Promise.all([
+    // 字段总数走业务库元数据,失败时也不阻塞表列表(显示 -)
+    const [tableList, latest, tableDocs, colCount] = await Promise.all([
       request.get(`${base}/tables${dbQuery()}`),
       request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({})),
-      request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({}))
+      request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({})),
+      request.get(`${base}/column-count${dbQuery()}`).catch(() => null)
     ])
     tables.value = tableList
     latestScans.value = latest || {}
     docs.value = tableDocs || {}
+    columnCount.value = colCount
   } finally {
     loading.value = false
   }

@@ -83,6 +83,15 @@ public class SqlServerDialect extends AbstractDialect {
                         + "JOIN sys.schemas s ON s.schema_id = t.schema_id GROUP BY s.name");
     }
 
+    /** 与 listTables 同口径:全部(含索引)分区的已用页 × 8KB */
+    @Override
+    public Map<String, Long> sumSizeBySchema(Connection conn) throws SQLException {
+        return queryLongByGroup(conn,
+                "SELECT s.name, SUM(d.used_page_count) * 8192 FROM sys.dm_db_partition_stats d "
+                        + "JOIN sys.tables t ON t.object_id = d.object_id "
+                        + "JOIN sys.schemas s ON s.schema_id = t.schema_id GROUP BY s.name");
+    }
+
     @Override
     public List<TableStat> listTables(Connection conn, String schema) throws SQLException {
         List<TableStat> tables = new ArrayList<>();

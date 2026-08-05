@@ -79,6 +79,15 @@ public class PostgresDialect extends AbstractDialect {
                         + "AND n.nspname <> 'information_schema' GROUP BY n.nspname");
     }
 
+    @Override
+    public Map<String, Long> sumSizeBySchema(Connection conn) throws SQLException {
+        return queryLongByGroup(conn,
+                "SELECT n.nspname, SUM(pg_total_relation_size(c.oid)) FROM pg_class c "
+                        + "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        + "WHERE c.relkind = 'r' AND n.nspname NOT LIKE 'pg\\_%' "
+                        + "AND n.nspname <> 'information_schema' GROUP BY n.nspname");
+    }
+
     /** PG 用 TABLESAMPLE 块级采样,速度快且近似随机 */
     @Override
     protected String sampledFrom(String qualifiedTable, long sampleRows, Long estRows) {

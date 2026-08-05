@@ -24,3 +24,8 @@ dq:
     statement-timeout-seconds: 1800     # 单条统计 SQL 超时
   security:
     secret: change-me-32bytes-secret-key-0000   # 数据源密码对称加密密钥(本地部署自行修改)
+# AI 大模型接口默认配置:页面「AI 配置」未设置的字段回落到这里的值
+ai:
+  api-key: user1
+  base-url: http://192.168.100.11:30001
+  model: Qwen2.5-72B-Instruct

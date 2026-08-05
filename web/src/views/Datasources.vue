@@ -250,6 +250,8 @@ function openDialog(row) {
     form.password = ''
     form.rowThreshold = row.rowThreshold ?? null
     form.sizeThresholdBytes = row.sizeThresholdBytes ?? null
+    // 编辑时把已存 JDBC URL 反解析回主机/端口/数据库,回填拆分填写模式的表单
+    parseJdbcUrl()
   }
   dialogVisible.value = true
 }

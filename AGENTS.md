@@ -39,7 +39,7 @@ src/main/java/com/example/dq/
   util/CryptoUtil.java       AES-GCM 加解密
 src/main/resources/
   application.yml            全部可调配置(dq.scan.* / dq.security.secret)
-  schema.sql                 H2 建表(含 scan_job_event 任务状态变更事件表、ai_config/table_doc AI 表说明)+ 老库升级的 ALTER ... IF NOT EXISTS,启动自动执行
+  schema.sql                 H2 建表(含 scan_job_event 任务状态变更事件表、schema_stat 库列表统计缓存、ai_config/table_doc AI 表说明)+ 老库升级的 ALTER ... IF NOT EXISTS,启动自动执行
 src/test/java/com/example/dq/
   dialect/                   方言 SQL 生成、分段规划单元测试
   service/AiServiceTest.java AI 表说明 prompt 组装单元测试
@@ -97,7 +97,7 @@ mvn test
 ## 安全考虑
 
 - 数据源密码用 AES-GCM 加密存 H2(`password_enc` 列),密钥在 `application.yml` 的 `dq.security.secret`,默认值 `change-me-...`,改动密钥逻辑时注意向后兼容已存数据
-- AI 配置的 API Key 同样 AES-GCM 加密存 H2(`ai_config.api_key_enc`),GET 接口只回传 hasKey 不回传明文;「生成表说明」会把表结构元数据(表名/字段/注释)发给配置的第三方 LLM 接口,不发送业务数据,属用户显式触发
+- AI 配置的 API Key 同样 AES-GCM 加密存 H2(`ai_config.api_key_enc`),GET 接口只回传 hasKey 不回传明文;`application.yml` 的 `ai.*` 是默认配置,页面未设置的字段逐字段回落到默认值(默认 key 为明文,仅适合内网);默认配置不对外暴露 —— 不回显、报错不带细节,默认不可用时只提示用户自行配置;「生成表说明」会把表结构元数据(表名/字段/注释)发给配置的第三方 LLM 接口,不发送业务数据,属用户显式触发
 - 应用无认证,任何能访问端口的人都能操作所有数据源,不要暴露到公网
 - 自定义空值规则(如 `status IN (0,-1)`)会原样拼进统计 SQL,属设计如此的"信任内网用户"行为;不要在方言层之外引入新的 SQL 拼接,标识符必须经 `DbDialect.quote()` 处理
 - H2 数据文件含连接信息与扫描结果,`data/` 目录不应提交或外发

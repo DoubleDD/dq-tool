@@ -55,6 +55,20 @@ public class OracleDialect extends AbstractDialect {
     }
 
     @Override
+    public Map<String, Long> sumSizeBySchema(Connection conn) throws SQLException {
+        // 23ai 起 ALL_SEGMENTS 被移除,只能统计当前用户自己的段
+        if (oracleMajor(conn) >= 23) {
+            try (Statement st = conn.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT SYS_CONTEXT('USERENV','SESSION_USER'), "
+                         + "(SELECT SUM(bytes) FROM user_segments) FROM dual")) {
+                rs.next();
+                return Map.of(rs.getString(1), rs.getLong(2));
+            }
+        }
+        return queryLongByGroup(conn, "SELECT owner, SUM(bytes) FROM all_segments GROUP BY owner");
+    }
+
+    @Override
     public List<TableStat> listTables(Connection conn, String schema) throws SQLException {
         // 总大小 = 表段 + 该表全部索引段;存储信息取表空间,注释取 ALL_TAB_COMMENTS
         List<TableStat> tables = new ArrayList<>();

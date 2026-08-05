@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS scan_job_event (
 );
 CREATE INDEX IF NOT EXISTS idx_scan_job_event_job ON scan_job_event(job_id);
 
+-- 库列表页统计缓存:表数量/占用空间,首次进页面从业务库元数据拉取落库,之后只读本地,扫描创建时刷新对应 schema
+CREATE TABLE IF NOT EXISTS schema_stat (
+    id            BIGINT AUTO_INCREMENT PRIMARY KEY,
+    datasource_id BIGINT NOT NULL,
+    db_name       VARCHAR(256),                   -- 与 scan_job 口径一致,可空
+    schema_name   VARCHAR(256) NOT NULL,
+    table_count   INT,
+    size_bytes    BIGINT,                          -- 数据+索引总字节
+    refreshed_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_schema_stat_ds ON schema_stat(datasource_id, db_name, schema_name);
+
 CREATE TABLE IF NOT EXISTS scan_table (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     job_id        BIGINT NOT NULL,

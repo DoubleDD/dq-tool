@@ -17,6 +17,7 @@ import com.example.dq.model.ScanTableView;
 import com.example.dq.model.TableStat;
 import com.example.dq.repository.DataSourceRepository;
 import com.example.dq.repository.ScanRepository;
+import com.example.dq.repository.SchemaStatRepository;
 import com.example.dq.scan.ChunkRunner;
 import com.example.dq.scan.ScanExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -42,6 +43,7 @@ public class ScanService {
 
     private final ScanRepository repo;
     private final DataSourceRepository dsRepo;
+    private final SchemaStatRepository schemaStatRepo;
     private final DataSourceService dataSourceService;
     private final DialectFactory dialectFactory;
     private final DqProperties props;
@@ -49,11 +51,13 @@ public class ScanService {
     private final ChunkRunner chunkRunner;
     private final ObjectMapper objectMapper;
 
-    public ScanService(ScanRepository repo, DataSourceRepository dsRepo, DataSourceService dataSourceService,
+    public ScanService(ScanRepository repo, DataSourceRepository dsRepo, SchemaStatRepository schemaStatRepo,
+                       DataSourceService dataSourceService,
                        DialectFactory dialectFactory, DqProperties props, ScanExecutor executor,
                        ChunkRunner chunkRunner, ObjectMapper objectMapper) {
         this.repo = repo;
         this.dsRepo = dsRepo;
+        this.schemaStatRepo = schemaStatRepo;
         this.dataSourceService = dataSourceService;
         this.dialectFactory = dialectFactory;
         this.props = props;
@@ -72,6 +76,9 @@ public class ScanService {
             dialect.useDatabase(conn, dataSourceService.resolveDatabase(req.datasourceId(), req.database()));
             all = dialect.listTables(conn, req.schema());
         }
+        // 顺带刷新库列表缓存:all 是该 schema 的全量表清单,聚合计数与体积即可,零额外查询
+        schemaStatRepo.upsert(req.datasourceId(), req.database(),
+                new SchemaStatRepository.CachedStat(req.schema(), all.size(), sumSize(all)));
         List<TableStat> targets = all;
         if (req.tables() != null && !req.tables().isEmpty()) {
             Set<String> wanted = new HashSet<>(req.tables());
@@ -158,6 +165,15 @@ public class ScanService {
             return true;
         }
         return table.sizeBytes() != null && table.sizeBytes() > sizeThreshold;
+    }
+
+    /** 表清单的数据+索引总字节;全部为 null(方言不支持)时返回 null */
+    private static Long sumSize(List<TableStat> tables) {
+        boolean any = tables.stream().anyMatch(t -> t.sizeBytes() != null);
+        if (!any) {
+            return null;
+        }
+        return tables.stream().mapToLong(t -> t.sizeBytes() == null ? 0 : t.sizeBytes()).sum();
     }
 
     // ---------- 查询 ----------

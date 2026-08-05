@@ -56,6 +56,13 @@ public class MetadataController {
         return service.listTables(dsId, db, schema);
     }
 
+    /** 表列表页汇总:schema 下所有基表的字段总数 */
+    @GetMapping("/schemas/{schema}/column-count")
+    public long countColumns(@PathVariable long dsId, @PathVariable String schema,
+                             @RequestParam(required = false) String db) throws SQLException {
+        return service.countColumns(dsId, db, schema);
+    }
+
     /** 每张表最近一次 DONE 扫描的信息(表名 -> {jobId, finishedAt}),表列表页点击表名直达最新结果、展示最近扫描时间 */
     @GetMapping("/schemas/{schema}/latest-scan-jobs")
     public Map<String, ScanRepository.LatestScan> latestScanJobs(@PathVariable long dsId, @PathVariable String schema,

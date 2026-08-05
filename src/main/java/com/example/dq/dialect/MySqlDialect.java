@@ -75,6 +75,13 @@ public class MySqlDialect extends AbstractDialect {
                         + "WHERE TABLE_TYPE = 'BASE TABLE' GROUP BY TABLE_SCHEMA");
     }
 
+    @Override
+    public Map<String, Long> sumSizeBySchema(Connection conn) throws SQLException {
+        return queryLongByGroup(conn,
+                "SELECT TABLE_SCHEMA, SUM(COALESCE(DATA_LENGTH,0) + COALESCE(INDEX_LENGTH,0)) "
+                        + "FROM information_schema.TABLES WHERE TABLE_TYPE = 'BASE TABLE' GROUP BY TABLE_SCHEMA");
+    }
+
     /** MySQL 走 information_schema 拿准确的字段注释与完整类型(含长度) */
     @Override
     public List<com.example.dq.model.ColumnMeta> listColumns(Connection conn, String schema, String table)

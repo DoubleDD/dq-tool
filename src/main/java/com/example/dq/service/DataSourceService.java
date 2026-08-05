@@ -7,6 +7,7 @@ import com.example.dq.model.DataSourceConfig;
 import com.example.dq.model.DataSourceRequest;
 import com.example.dq.model.DbType;
 import com.example.dq.repository.DataSourceRepository;
+import com.example.dq.repository.SchemaStatRepository;
 import com.example.dq.util.CryptoUtil;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -27,16 +28,19 @@ public class DataSourceService {
     private final CryptoUtil crypto;
     private final DialectFactory dialectFactory;
     private final DqProperties props;
+    private final SchemaStatRepository schemaStatRepo;
     private final Map<Long, HikariDataSource> pools = new ConcurrentHashMap<>();
     /** 各数据源的默认库(建池时首个连接的 catalog);多库方言在 database 为空时回落到这里 */
     private final Map<Long, String> defaultCatalogs = new ConcurrentHashMap<>();
 
     public DataSourceService(DataSourceRepository repo, CryptoUtil crypto,
-                             DialectFactory dialectFactory, DqProperties props) {
+                             DialectFactory dialectFactory, DqProperties props,
+                             SchemaStatRepository schemaStatRepo) {
         this.repo = repo;
         this.crypto = crypto;
         this.dialectFactory = dialectFactory;
         this.props = props;
+        this.schemaStatRepo = schemaStatRepo;
     }
 
     public List<DataSourceConfig> list() {
@@ -79,6 +83,7 @@ public class DataSourceService {
 
     public void delete(long id) {
         repo.delete(id);
+        schemaStatRepo.deleteByDatasource(id);
         evictPool(id);
     }
 

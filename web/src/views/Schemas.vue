@@ -29,6 +29,9 @@
           <span :style="!row.tableCount ? 'color: #909399' : ''">{{ formatNumber(row.tableCount ?? 0) }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="占用空间" width="110" align="right" sortable :sort-method="(a, b) => (a.sizeBytes ?? -1) - (b.sizeBytes ?? -1)">
+        <template #default="{ row }">{{ formatBytes(row.sizeBytes) }}</template>
+      </el-table-column>
       <el-table-column label="最近扫描" min-width="260" sortable :sort-method="(a, b) => scanAtMs(a) - scanAtMs(b)">
         <template #default="{ row }">
           <template v-if="row.lastScanStatus">
@@ -62,7 +65,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../api'
 import { setDsName, syncTab } from '../stores/tabs'
-import { formatDateTime, formatNumber, statusTagType, statusText } from '../utils/format'
+import { formatBytes, formatDateTime, formatNumber, statusTagType, statusText } from '../utils/format'
 import { goBack as historyBack } from '../utils/back'
 
 const route = useRoute()

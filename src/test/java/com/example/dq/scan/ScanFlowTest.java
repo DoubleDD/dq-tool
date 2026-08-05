@@ -75,6 +75,13 @@ class ScanFlowTest {
         long dsId = dataSourceService.create(new DataSourceRequest(
                 "it-mysql", MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword(), null, null));
 
+        // 首次访问库列表:从业务库元数据拉取表数量/占用空间并落缓存(覆盖方言聚合 SQL)
+        SchemaStat before = metadataService.listSchemaStats(dsId, null).stream()
+                .filter(s -> s.name().equals("dqtest")).findFirst().orElseThrow();
+        assertEquals(1, before.tableCount());
+        assertNotNull(before.sizeBytes());
+        assertTrue(before.sizeBytes() > 0);
+
         long jobId = scanService.createScan(new ScanRequest(dsId, "dqtest", null, null, true,
                 List.of(new NullRule("status", List.of("0", "-1")),
                         new NullRule("remark", List.of("N/A"))), null));
@@ -126,10 +133,11 @@ class ScanFlowTest {
             assertTrue(expected.getMessage().contains("续扫"));
         }
 
-        // 库列表页概览:表数量 + 最近扫描状态
+        // 库列表页概览:表数量 + 占用空间 + 最近扫描状态(扫描后读缓存)
         SchemaStat dqtest = metadataService.listSchemaStats(dsId, null).stream()
                 .filter(s -> s.name().equals("dqtest")).findFirst().orElseThrow();
         assertEquals(1, dqtest.tableCount());
+        assertNotNull(dqtest.sizeBytes());
         assertEquals("DONE", dqtest.lastScanStatus());
         assertNotNull(dqtest.lastScanAt());
     }
@@ -162,6 +170,7 @@ class ScanFlowTest {
         SchemaStat pub = metadataService.listSchemaStats(dsId, null).stream()
                 .filter(s -> s.name().equals("public")).findFirst().orElseThrow();
         assertEquals(1, pub.tableCount());
+        assertNotNull(pub.sizeBytes());
         assertEquals("DONE", pub.lastScanStatus());
     }
 
@@ -236,6 +245,7 @@ class ScanFlowTest {
         SchemaStat dbo = metadataService.listSchemaStats(dsId, "testdb2").stream()
                 .filter(s -> s.name().equals("dbo")).findFirst().orElseThrow();
         assertEquals(1, dbo.tableCount());
+        assertNotNull(dbo.sizeBytes());
         assertEquals("DONE", dbo.lastScanStatus());
     }
 

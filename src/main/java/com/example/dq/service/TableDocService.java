@@ -54,9 +54,20 @@ public class TableDocService {
                     .orElseThrow(() -> new IllegalArgumentException("表不存在:" + table));
             columns = dialect.listColumns(conn, schema, table);
         }
-        String description = aiService.describeTable(config, stat, columns);
-        repository.upsert(datasourceId, normalizeDb(database), schema, table, description, config.model());
-        return new TableDocView(table, description, config.model(), LocalDateTime.now());
+        String description;
+        try {
+            description = aiService.describeTable(config, stat, columns);
+        } catch (RuntimeException e) {
+            if (config.usingDefault()) {
+                // 默认配置不可用时不暴露任何默认接口细节,只引导用户自行配置
+                throw new IllegalStateException("AI 服务暂不可用,请在「AI 配置」中填写自己的大模型接口信息(接口地址 / API Key / 模型)", e);
+            }
+            throw e;
+        }
+        // 使用默认配置生成时不落库/回显模型名,避免暴露默认配置
+        String modelLabel = config.usingDefault() ? null : config.model();
+        repository.upsert(datasourceId, normalizeDb(database), schema, table, description, modelLabel);
+        return new TableDocView(table, description, modelLabel, LocalDateTime.now());
     }
 
     /** 手动编辑描述(只改文字,保留生成模型标记) */
