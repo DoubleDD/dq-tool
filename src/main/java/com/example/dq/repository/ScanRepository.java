@@ -112,8 +112,11 @@ public class ScanRepository {
         return latest;
     }
 
-    /** 每张表最近一次 DONE 扫描的信息:任务 id + 该表的完成时间 */
-    public record LatestScan(long jobId, LocalDateTime finishedAt) {
+    /**
+     * 每张表最近一次 DONE 扫描的信息:任务 id、该表的完成时间、统计行数、扫描时记录的大小快照、是否采样。
+     * totalRows 仅对非采样表是 COUNT(*) 精确值;采样表只是采样行数,展示层不应据此替换估算值。
+     */
+    public record LatestScan(long jobId, LocalDateTime finishedAt, Long totalRows, Long sizeBytes, boolean sampled) {
     }
 
     /** 运行中任务里每张未完成表的进度:任务 id、表级状态(PENDING/RUNNING)、分段进度 */
@@ -142,7 +145,8 @@ public class ScanRepository {
     }
 
     /**
-     * 每张表最近一次扫描完成(表级 DONE)的任务 id 与完成时间,供表列表页"点击表名直达最新结果"及"最近扫描时间"列。
+     * 每张表最近一次扫描完成(表级 DONE)的任务 id、完成时间及该表统计行数/大小快照,
+     * 供表列表页"点击表名直达最新结果"、"最近扫描时间"列,以及用扫描准确值覆盖元数据估算的行数/大小。
      * 同一表可能出现在多个任务里,按 job_id 升序遍历、后者覆盖前者,最终留下 job_id 最大者;
      * dbName 为空的口径与 latestJobsBySchema 一致。
      */
@@ -152,13 +156,20 @@ public class ScanRepository {
         args.add(datasourceId);
         if (dbName != null && !dbName.isBlank()) args.add(dbName);
         args.add(schemaName);
-        String sql = "SELECT t.table_name, t.job_id, t.finished_at FROM scan_table t "
+        String sql = "SELECT t.table_name, t.job_id, t.finished_at, t.total_rows, t.size_bytes, t.sampled FROM scan_table t "
                 + "JOIN scan_job j ON t.job_id=j.id "
                 + "WHERE j.datasource_id=? AND " + dbCond + " AND j.schema_name=? AND t.status='DONE' "
                 + "ORDER BY t.job_id";
         Map<String, LatestScan> result = new HashMap<>();
         jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler)
-                rs -> result.put(rs.getString(1), new LatestScan(rs.getLong(2), ts(rs, "finished_at"))), args.toArray());
+                rs -> {
+                    long totalRows = rs.getLong("total_rows");
+                    boolean totalNull = rs.wasNull(); // wasNull 只反映最近一次读取,需即时判断
+                    long sizeBytes = rs.getLong("size_bytes");
+                    boolean sizeNull = rs.wasNull();
+                    result.put(rs.getString(1), new LatestScan(rs.getLong(2), ts(rs, "finished_at"),
+                            totalNull ? null : totalRows, sizeNull ? null : sizeBytes, rs.getBoolean("sampled")));
+                }, args.toArray());
         return result;
     }
 

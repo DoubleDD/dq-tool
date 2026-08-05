@@ -15,7 +15,7 @@
 
     <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
       <el-input v-model="keyword" placeholder="按表名或注释搜索" clearable style="width: 280px" />
-      <el-checkbox v-model="onlyEmpty">只看空表(约行数为 0)</el-checkbox>
+      <el-checkbox v-model="onlyEmpty">只看空表(行数为 0)</el-checkbox>
     </div>
 
     <el-alert v-if="tables.length" type="info" :closable="false" style="margin-bottom: 12px">
@@ -75,31 +75,34 @@
           <span v-else style="color: #c0c4cc">-</span>
         </template>
       </el-table-column>
-      <el-table-column prop="estRows" label="约行数" width="140" sortable>
+      <el-table-column label="行数" width="140" sortable :sort-method="(a, b) => (effectiveRows(a).value ?? -1) - (effectiveRows(b).value ?? -1)">
         <template #header>
           <el-tooltip placement="top" :show-after="200">
             <template #content>
-              <div>来自数据库元数据的估算行数,不是 COUNT(*) 精确值</div>
+              <div>已全量扫描的表显示 COUNT(*) 精确值;未扫描或采样扫描的表显示元数据估算值(带"约"前缀)</div>
               <div>超过采样阈值(默认 100 万行或 10GB,可在数据源配置)的表,扫描时默认只采样统计</div>
             </template>
-            <span>约行数 <el-icon style="vertical-align: -2px"><QuestionFilled /></el-icon></span>
+            <span>行数 <el-icon style="vertical-align: -2px"><QuestionFilled /></el-icon></span>
           </el-tooltip>
         </template>
         <template #default="{ row }">
-          <span v-if="row.estRows !== null && row.estRows !== undefined">约 {{ formatNumber(row.estRows) }}</span>
+          <template v-if="effectiveRows(row).value !== null && effectiveRows(row).value !== undefined">
+            <span v-if="effectiveRows(row).exact">{{ formatNumber(effectiveRows(row).value) }}</span>
+            <span v-else>约 {{ formatNumber(effectiveRows(row).value) }}</span>
+          </template>
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column prop="sizeBytes" label="总大小" width="140" sortable>
+      <el-table-column label="总大小" width="140" sortable :sort-method="(a, b) => (effectiveSize(a) ?? -1) - (effectiveSize(b) ?? -1)">
         <template #header>
           <el-tooltip placement="top" :show-after="200">
             <template #content>
-              <div>数据 + 索引占用的估算值,来自数据库元数据</div>
+              <div>数据 + 索引占用;已扫描的表取最近一次扫描时记录的值,未扫描的表取当前元数据值</div>
             </template>
             <span>总大小 <el-icon style="vertical-align: -2px"><QuestionFilled /></el-icon></span>
           </el-tooltip>
         </template>
-        <template #default="{ row }">{{ formatBytes(row.sizeBytes) }}</template>
+        <template #default="{ row }">{{ formatBytes(effectiveSize(row)) }}</template>
       </el-table-column>
       <el-table-column label="最近扫描时间" width="170" sortable :sort-method="(a, b) => latestScanTime(a) - latestScanTime(b)">
         <template #default="{ row }">
@@ -201,7 +204,8 @@ const loading = ref(false)
 const columnCount = ref(null)
 const keyword = ref('')
 const selectedTables = ref([])
-// 每张表最近一次 DONE 扫描的信息(表名 -> { jobId, finishedAt }),有值的表名渲染为链接
+// 每张表最近一次 DONE 扫描的信息(表名 -> { jobId, finishedAt, totalRows, sizeBytes, sampled }),
+// 有值的表名渲染为链接;非采样表的 totalRows 为精确行数,优先于元数据估算展示
 const latestScans = ref({})
 // 运行中任务里每张未完成表的分段进度(表名 -> { jobId, status, doneChunks, totalChunks })
 const runningScans = ref({})
@@ -223,12 +227,28 @@ const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null,
 // 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走
 const singleTable = ref('')
 
-// 空表:估算行数为 0(含估算缺失)的表
+// 行数取值:非采样的最新完成扫描给的是 COUNT(*) 精确值,优先于元数据估算;
+// 采样表的 totalRows 只是采样行数,不能当作全表行数,仍用估算值
+function effectiveRows(row) {
+  const s = latestScans.value[row.name]
+  if (s && !s.sampled && s.totalRows !== null && s.totalRows !== undefined) {
+    return { value: s.totalRows, exact: true }
+  }
+  return { value: row.estRows, exact: false }
+}
+
+// 大小取值:已扫描的表用最近一次扫描时记录的快照(比当前元数据更接近扫描口径),否则用元数据
+function effectiveSize(row) {
+  const s = latestScans.value[row.name]
+  return s && s.sizeBytes !== null && s.sizeBytes !== undefined ? s.sizeBytes : row.sizeBytes
+}
+
+// 空表:行数为 0(含未知)的表,已全量扫描的按精确值算
 const onlyEmpty = ref(false)
-const emptyTables = computed(() => tables.value.filter((t) => !t.estRows))
-// 库级汇总:行数/大小均为各表估算值之和
-const totalEstRows = computed(() => tables.value.reduce((sum, t) => sum + (t.estRows || 0), 0))
-const totalSizeBytes = computed(() => tables.value.reduce((sum, t) => sum + (t.sizeBytes || 0), 0))
+const emptyTables = computed(() => tables.value.filter((t) => !effectiveRows(t).value))
+// 库级汇总:行数/大小按各表有效值(扫描准确值优先)求和
+const totalEstRows = computed(() => tables.value.reduce((sum, t) => sum + (effectiveRows(t).value || 0), 0))
+const totalSizeBytes = computed(() => tables.value.reduce((sum, t) => sum + (effectiveSize(t) || 0), 0))
 
 // 当前扫描范围内的表:单表 > 勾选 > 全库
 const scopeTables = computed(() => {
@@ -447,14 +467,20 @@ async function submitScan() {
   }
 }
 
+// 首次挂载标记:onActivated 在首次挂载后也会触发,避免与 onMounted 重复加载
+const mounted = ref(false)
+
 onMounted(async () => {
   await load()
+  mounted.value = true
   fetchRunning()
   startPolling()
 })
 
-// 页签下钻时是失活而非卸载:停掉轮询,回来时立即刷新并恢复
+// 页签下钻时是失活而非卸载:停掉轮询,回来时重载表列表(行数/大小/最近扫描/表说明)并恢复轮询
 onActivated(() => {
+  if (!mounted.value) return // 首次挂载由 onMounted 处理
+  load()
   fetchRunning()
   startPolling()
 })
