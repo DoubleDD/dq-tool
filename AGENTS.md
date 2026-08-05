@@ -29,7 +29,7 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 pom.xml                      后端构建(7 个 JDBC 驱动、前端产物拷贝配置)
 src/main/java/com/example/dq/
   DqApplication.java         入口;启动时自动避让被占用的端口(8080 起向后探测 100 个)
-  config/                    DqProperties(配置绑定)、SpaWebConfig(SPA 路由回退)、BrowserOpener(安装版自动开浏览器)
+  config/                    DqProperties(配置绑定)、SpaWebConfig(SPA 路由回退)、BrowserOpener(安装版自动开浏览器,优先 Chrome/Edge --app 应用模式)
   controller/                REST API:/api/datasources、/api/datasources/{dsId}/{databases,schemas,schema-stats,schemas/{schema}/tables}、/api/scans、/api/ai-config
   dialect/                   核心抽象 DbDialect + 7 个方言实现 + DialectFactory + AbstractDialect
   model/                     DTO/枚举(DbType、ScanStatus、NullRule、Range 等)
