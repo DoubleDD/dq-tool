@@ -16,15 +16,15 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -44,7 +44,7 @@ jobs:
           cd target/jpackage/dist
           Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-x64.zip' }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dq-tool-windows-x64
           path: target/jpackage/dist/*.zip
@@ -52,7 +52,7 @@ jobs:
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: target/jpackage/dist/*.zip
 
@@ -60,16 +60,16 @@ jobs:
     # ARM64 Windows;Temurin 不出 Windows ARM64 的 JDK,用 Microsoft OpenJDK
     runs-on: windows-11-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: microsoft
           java-version: '21'
           architecture: aarch64
           cache: maven
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -89,7 +89,7 @@ jobs:
           cd target/jpackage/dist
           Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-arm64.zip' }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dq-tool-windows-arm64
           path: target/jpackage/dist/*.zip
@@ -97,7 +97,7 @@ jobs:
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: target/jpackage/dist/*.zip
 
@@ -111,15 +111,15 @@ jobs:
           - { os: macos-14, arch: arm64 }         # Apple Silicon
           - { os: macos-15-intel, arch: x86_64 }  # Intel(macos-13 已于 2025-12 退役,此为替代标签,支持到 2027-08)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -138,7 +138,7 @@ jobs:
           cd target/jpackage/dist
           for f in dq-tool-*.dmg; do mv "$f" "${f%.dmg}-macos-${{ matrix.arch }}.dmg"; done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dq-tool-macos-dmg-${{ matrix.arch }}
           path: target/jpackage/dist/*.dmg
@@ -146,22 +146,22 @@ jobs:
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: target/jpackage/dist/*.dmg
 
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
           cache: maven
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -187,7 +187,7 @@ jobs:
             mv "$f" "dq-tool-${v}-linux-amd64.deb"
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dq-tool-linux-deb
           path: target/jpackage/dist/*.deb
@@ -195,6 +195,6 @@ jobs:
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: target/jpackage/dist/*.deb
