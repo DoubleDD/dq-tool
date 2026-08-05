@@ -38,6 +38,11 @@ public interface DbDialect {
     /** 库/schema 列表 */
     List<String> listSchemas(Connection conn) throws SQLException;
 
+    /** 各库/schema 的表数量(schema 名 → 表数);用于库列表页展示,单条聚合 SQL */
+    default java.util.Map<String, Integer> countTablesBySchema(Connection conn) throws SQLException {
+        return java.util.Map.of();
+    }
+
     /** 表列表:表名 + 估算行数 + 数据索引总字节 */
     List<TableStat> listTables(Connection conn, String schema) throws SQLException;
 

@@ -52,40 +52,5 @@ html, body, #app {
 .layout {
   height: 100%;
 }
-.header {
-  background: #fff;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex;
-  align-items: center;
-}
-.header .title {
-  font-size: 16px;
-  font-weight: 600;
-}
-.tab-bar {
-  background: #fff;
-  padding: 6px 12px 0;
-  border-bottom: 1px solid #e4e7ed;
-}
-.tab-bar .el-tabs {
-  --el-tabs-header-height: 34px;
-}
-.tab-bar .el-tabs__header {
-  margin: 0;
-  border-bottom: none;
-}
-.main {
-  background: #f0f2f5;
-}
-.page-card {
-  background: #fff;
-  padding: 16px;
-  border-radius: 4px;
-}
-.toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
+/* 布局骨架与组件细化见 style.css(全局设计令牌) */
 </style>

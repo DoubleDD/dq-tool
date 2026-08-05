@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /** PostgreSQL 方言 */
 public class PostgresDialect extends AbstractDialect {
@@ -67,6 +68,15 @@ public class PostgresDialect extends AbstractDialect {
             }
         }
         return tables;
+    }
+
+    @Override
+    public Map<String, Integer> countTablesBySchema(Connection conn) throws SQLException {
+        return queryCountByGroup(conn,
+                "SELECT n.nspname, COUNT(*) FROM pg_class c "
+                        + "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        + "WHERE c.relkind = 'r' AND n.nspname NOT LIKE 'pg\\_%' "
+                        + "AND n.nspname <> 'information_schema' GROUP BY n.nspname");
     }
 
     /** PG 用 TABLESAMPLE 块级采样,速度快且近似随机 */

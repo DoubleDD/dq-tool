@@ -1,0 +1,207 @@
+/**
+ * 全局视觉基调
+ * 策略:保留 Element Plus 组件体系,只覆盖设计令牌(颜色/圆角/阴影/字体/密度)。
+ * 中性冷灰底 + 单一品牌蓝,统一圆角与阴影层级。
+ */
+
+:root {
+  /* 品牌色:沉稳的专业蓝,配套浅色阶 */
+  --el-color-primary: #2563eb;
+  --el-color-primary-dark-2: #1d4fc4;
+  --el-color-primary-light-3: #6791f0;
+  --el-color-primary-light-5: #92b1f5;
+  --el-color-primary-light-7: #bdd0f9;
+  --el-color-primary-light-8: #d6e2fb;
+  --el-color-primary-light-9: #ebf1fd;
+
+  /* 中性色:统一的冷灰阶 */
+  --el-text-color-primary: #1f2733;
+  --el-text-color-regular: #47505e;
+  --el-text-color-secondary: #7a8494;
+  --el-text-color-placeholder: #a4adbB;
+  --el-border-color: #d7dee9;
+  --el-border-color-light: #e3e8f0;
+  --el-border-color-lighter: #eaeef5;
+  --el-border-color-extra-light: #f1f4f9;
+  --el-fill-color-light: #f4f6fa;
+  --el-fill-color-lighter: #f8fafc;
+  --el-bg-color-page: #f3f5f9;
+
+  /* 圆角体系:基础 6px / 小型 4px,全局统一 */
+  --el-border-radius-base: 6px;
+  --el-border-radius-small: 4px;
+
+  /* 阴影层级:带灰蓝色调,不用纯黑投影 */
+  --el-box-shadow-light: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --el-box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+
+  /* 卡片与弹窗圆角 */
+  --el-card-border-radius: 8px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* 表格数字等宽对齐,列表更整齐 */
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 布局骨架 ---------- */
+
+.header {
+  background: #fff;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  display: flex;
+  align-items: center;
+}
+
+.header .title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--el-text-color-primary);
+}
+
+.tab-bar {
+  background: #fff;
+  padding: 6px 12px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  position: relative;
+  z-index: 1;
+}
+
+.tab-bar .el-tabs {
+  --el-tabs-header-height: 34px;
+}
+
+.tab-bar .el-tabs__header {
+  margin: 0;
+  border-bottom: none;
+}
+
+/* 卡片式页签:圆角收窄,激活态更干净 */
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item {
+  border-left: none;
+  border-radius: 6px 6px 0 0;
+  color: var(--el-text-color-secondary);
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active {
+  background: var(--el-bg-color-page);
+  border-bottom-color: var(--el-bg-color-page);
+  color: var(--el-color-primary);
+  font-weight: 500;
+}
+
+.main {
+  background: var(--el-bg-color-page);
+  /* padding 改由 page-card 的 margin 承担:滚动时内容在 padding 条带内透出会破坏表头吸顶 */
+  padding: 0;
+}
+
+/* 页面卡片:细边框 + 极浅阴影,比单纯灰底更有层次 */
+.page-card {
+  background: #fff;
+  margin: 20px;
+  padding: 20px;
+  border-radius: 8px;
+  border: 1px solid var(--el-border-color-extra-light);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.toolbar h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+/* ---------- Element Plus 组件细化 ---------- */
+
+/* 表格:表头浅灰底 + 次级文字色,行 hover 更轻 */
+.el-table {
+  --el-table-header-bg-color: #f8fafc;
+  --el-table-header-text-color: #47505e;
+  --el-table-row-hover-bg-color: #f6f8fc;
+  --el-table-border-color: var(--el-border-color-lighter);
+}
+
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
+
+/* 表头吸顶:滚动时表头超过父容器(.main)顶部则钉住。
+   Element 表头/表体是两棵独立的 table,th 被约束在表头表内无法 sticky,
+   需钉住整个表头包裹层。sticky 只要求祖先链放开 overflow,
+   表头/表体包裹层保持默认 overflow:hidden,由 EP 原生横向滚动条接管,
+   表体横滚时 EP 会自动同步表头 scrollLeft */
+.el-table,
+.el-table__inner-wrapper {
+  overflow: visible;
+}
+
+.el-table__header-wrapper {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+/* 弹窗圆角与阴影 */
+.el-dialog {
+  border-radius: 10px;
+  --el-dialog-title-font-size: 15px;
+}
+
+.el-dialog__title {
+  font-weight: 600;
+}
+
+/* 按钮过渡 */
+.el-button {
+  transition: all 0.2s ease;
+}
+
+/* 标签圆角与字重 */
+.el-tag {
+  font-weight: 500;
+}
+
+/* 进度条圆角 */
+.el-progress-bar__outer,
+.el-progress-bar__inner {
+  border-radius: 4px;
+}
+
+/* 描述列表标题底色 */
+.el-descriptions__label {
+  color: var(--el-text-color-secondary) !important;
+}
+
+/* 全局滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c6cedb;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a9b4c6;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}

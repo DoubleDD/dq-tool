@@ -3,11 +3,12 @@
     <div class="toolbar">
       <h3 style="margin: 0">扫描记录{{ schema ? ` - ${db ? db + '.' + schema : schema}` : '' }}</h3>
       <div>
-        <el-button @click="$router.push(`/datasources/${dsId}/schemas`)">返回</el-button>
+        <el-button @click="goBack">返回</el-button>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
       </div>
     </div>
     <el-table :data="jobs" v-loading="loading" border style="width: 100%">
+      <el-table-column type="index" label="序号" width="60" />
       <el-table-column prop="id" label="任务ID" width="90" />
       <el-table-column v-if="!schema" prop="datasourceName" label="数据源" min-width="140" />
       <el-table-column v-if="!schema" label="库/Schema" min-width="140">
@@ -23,18 +24,31 @@
       </el-table-column>
       <el-table-column label="状态" width="110">
         <template #default="{ row }">
-          <el-tag :type="statusTagType(row.status)">{{ statusText(row.status) }}</el-tag>
+          <JobTimeline :events="row.events">
+            <el-tag :type="statusTagType(row.status)">{{ statusText(row.status) }}</el-tag>
+          </JobTimeline>
         </template>
       </el-table-column>
-      <el-table-column label="创建时间" width="170">
+      <el-table-column label="创建时间" min-width="170">
         <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="260" fixed="right">
+      <el-table-column label="开始时间" min-width="170">
+        <template #default="{ row }">{{ formatDateTime(row.startedAt) }}</template>
+      </el-table-column>
+      <el-table-column label="完成时间" min-width="170">
+        <template #default="{ row }">{{ formatDateTime(row.finishedAt) }}</template>
+      </el-table-column>
+      <el-table-column label="耗时" width="110">
+        <template #default="{ row }">{{ formatDuration(row.startedAt, row.finishedAt) }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="goDetail(row)">查看</el-button>
           <el-button v-if="['CANCELED','INTERRUPTED','FAILED'].includes(row.status)"
                      size="small" type="warning" @click="resume(row)">继续扫描</el-button>
-          <el-button size="small" @click="exportXlsx(row)">导出 Excel</el-button>
+          <ExportButton :job-id="row.id" size="small" />
+          <el-button v-if="!['PENDING','RUNNING'].includes(row.status)"
+                     size="small" type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -45,9 +59,12 @@
 import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
-import { formatDateTime, statusTagType, statusText } from '../utils/format'
+import ExportButton from '../components/ExportButton.vue'
+import JobTimeline from '../components/JobTimeline.vue'
+import { formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
+import { goBack as historyBack } from '../utils/back'
 
 const route = useRoute()
 const router = useRouter()
@@ -80,24 +97,32 @@ async function resume(row) {
   load()
 }
 
+async function remove(row) {
+  await ElMessageBox.confirm(`确定删除任务 #${row.id} 的扫描记录吗?`, '删除确认', { type: 'warning' })
+  await api.delete(`/scans/${row.id}`)
+  ElMessage.success('删除成功')
+  load()
+}
+
 // 带上库名标签,供页签标题展示
 function goDetail(row) {
   const schema = row.dbName ? `${row.dbName}.${row.schemaName}` : row.schemaName
   router.push(`/scans/${row.id}?schema=${encodeURIComponent(schema)}`)
 }
 
-function exportXlsx(row) {
-  window.open(`/api/scans/${row.id}/export`, '_blank')
+// 原路返回;无历史记录(直接打开)时兜底回库列表
+function goBack() {
+  historyBack(router, `/datasources/${dsId}/schemas`)
 }
 
 onActivated(() => {
   load()
-  // 有进行中的任务时每 5 秒自动刷新
+  // 有进行中的任务时每 2 秒自动刷新
   timer = setInterval(() => {
     if (jobs.value.some(j => ['PENDING', 'RUNNING'].includes(j.status))) {
       load()
     }
-  }, 5000)
+  }, 2000)
 })
 
 function clearTimer() {

@@ -7,6 +7,7 @@ import com.example.dq.model.ScanJobView;
 import com.example.dq.model.ScanRequest;
 import com.example.dq.model.ScanStatus;
 import com.example.dq.model.ScanTableView;
+import com.example.dq.model.SchemaStat;
 import com.example.dq.service.DataSourceService;
 import com.example.dq.service.ExportService;
 import com.example.dq.service.MetadataService;
@@ -76,7 +77,7 @@ class ScanFlowTest {
 
         long jobId = scanService.createScan(new ScanRequest(dsId, "dqtest", null, null, true,
                 List.of(new NullRule("status", List.of("0", "-1")),
-                        new NullRule("remark", List.of("N/A")))));
+                        new NullRule("remark", List.of("N/A"))), null));
 
         ScanJobView job = awaitDone(jobId);
         assertEquals(ScanStatus.DONE, job.status(), () -> "任务失败: " + job.error());
@@ -124,6 +125,13 @@ class ScanFlowTest {
         } catch (IllegalStateException expected) {
             assertTrue(expected.getMessage().contains("续扫"));
         }
+
+        // 库列表页概览:表数量 + 最近扫描状态
+        SchemaStat dqtest = metadataService.listSchemaStats(dsId, null).stream()
+                .filter(s -> s.name().equals("dqtest")).findFirst().orElseThrow();
+        assertEquals(1, dqtest.tableCount());
+        assertEquals("DONE", dqtest.lastScanStatus());
+        assertNotNull(dqtest.lastScanAt());
     }
 
     @Test
@@ -133,7 +141,7 @@ class ScanFlowTest {
                 "it-pg", PG.getJdbcUrl(), PG.getUsername(), PG.getPassword(), null, null));
 
         long jobId = scanService.createScan(new ScanRequest(dsId, "public", null, null, true,
-                List.of(new NullRule("status", List.of("0", "-1")))));
+                List.of(new NullRule("status", List.of("0", "-1"))), null));
 
         ScanJobView job = awaitDone(jobId);
         assertEquals(ScanStatus.DONE, job.status(), () -> "任务失败: " + job.error());
@@ -149,6 +157,12 @@ class ScanFlowTest {
                 .filter(t -> t.tableName().equals("users")).findFirst().orElseThrow();
         assertEquals("用户表", users.comment());
         assertEquals("姓名", cols.get("name").columnComment());
+
+        // 库列表页概览:public 有 1 张表且最近扫描 DONE
+        SchemaStat pub = metadataService.listSchemaStats(dsId, null).stream()
+                .filter(s -> s.name().equals("public")).findFirst().orElseThrow();
+        assertEquals(1, pub.tableCount());
+        assertEquals("DONE", pub.lastScanStatus());
     }
 
     @Test
@@ -160,7 +174,7 @@ class ScanFlowTest {
                 "it-mssql", url, MSSQL.getUsername(), MSSQL.getPassword(), null, null));
 
         long jobId = scanService.createScan(new ScanRequest(dsId, "dbo", null, null, true,
-                List.of(new NullRule("status", List.of("0", "-1")))));
+                List.of(new NullRule("status", List.of("0", "-1"))), null));
 
         ScanJobView job = awaitDone(jobId);
         assertEquals(ScanStatus.DONE, job.status(), () -> "任务失败: " + job.error());
@@ -210,13 +224,19 @@ class ScanFlowTest {
         assertTrue(metadataService.listTables(dsId, null, "dbo").stream()
                 .noneMatch(t -> t.name().equals("t2")));
 
-        long jobId = scanService.createScan(new ScanRequest(dsId, "dbo", "testdb2", null, true, List.of()));
+        long jobId = scanService.createScan(new ScanRequest(dsId, "dbo", "testdb2", null, true, List.of(), null));
         ScanJobView job = awaitDone(jobId);
         assertEquals(ScanStatus.DONE, job.status(), () -> "任务失败: " + job.error());
         assertEquals("testdb2", job.dbName());
         ScanTableView t2 = job.tables().stream()
                 .filter(t -> t.tableName().equals("t2")).findFirst().orElseThrow();
         assertEquals(100, t2.totalRows());
+
+        // 库列表页概览按 database 隔离:testdb2 的 dbo 有 1 张表且最近扫描 DONE
+        SchemaStat dbo = metadataService.listSchemaStats(dsId, "testdb2").stream()
+                .filter(s -> s.name().equals("dbo")).findFirst().orElseThrow();
+        assertEquals(1, dbo.tableCount());
+        assertEquals("DONE", dbo.lastScanStatus());
     }
 
     /** 造数:name 每 10 行 NULL、每 7 行空串;status 每 10 行 NULL、每 20 行 0、每 20 行错开 -1;remark 每 20 行 'N/A' */

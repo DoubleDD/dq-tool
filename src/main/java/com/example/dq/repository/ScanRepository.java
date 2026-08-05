@@ -2,6 +2,7 @@ package com.example.dq.repository;
 
 import com.example.dq.model.ChunkRecord;
 import com.example.dq.model.ScanColumnView;
+import com.example.dq.model.ScanJobEvent;
 import com.example.dq.model.ScanStatus;
 import com.example.dq.model.ScanTableView;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -14,7 +15,9 @@ import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -60,7 +63,9 @@ public class ScanRepository {
             ps.setInt(6, totalTables);
             return ps;
         }, kh);
-        return Objects.requireNonNull(kh.getKey()).longValue();
+        long jobId = Objects.requireNonNull(kh.getKey()).longValue();
+        insertJobEvent(jobId, ScanStatus.PENDING);
+        return jobId;
     }
 
     public Optional<JobRow> findJob(long jobId) {
@@ -86,17 +91,90 @@ public class ScanRepository {
         return jdbc.query(sql.toString(), jobMapper, args.toArray());
     }
 
+    /**
+     * 每个 schema 最近一次扫描任务(按 id 最大),供库列表页展示"最近扫描"。
+     * dbName 为空时只匹配 db_name 为 NULL 的任务(与 ScanRequest.database 的落库口径一致)。
+     */
+    public Map<String, JobRow> latestJobsBySchema(long datasourceId, String dbName) {
+        String dbCond = (dbName != null && !dbName.isBlank()) ? "db_name=?" : "db_name IS NULL";
+        List<Object> args = new ArrayList<>();
+        args.add(datasourceId);
+        if (dbName != null && !dbName.isBlank()) args.add(dbName);
+        String sql = "SELECT * FROM scan_job WHERE datasource_id=? AND " + dbCond
+                + " AND id IN (SELECT MAX(id) FROM scan_job WHERE datasource_id=? AND " + dbCond
+                + " GROUP BY schema_name)";
+        args.add(datasourceId);
+        if (dbName != null && !dbName.isBlank()) args.add(dbName);
+        Map<String, JobRow> latest = new HashMap<>();
+        for (JobRow row : jdbc.query(sql, jobMapper, args.toArray())) {
+            latest.put(row.schemaName(), row);
+        }
+        return latest;
+    }
+
+    /** 每张表最近一次 DONE 扫描的信息:任务 id + 该表的完成时间 */
+    public record LatestScan(long jobId, LocalDateTime finishedAt) {
+    }
+
+    /** 运行中任务里每张未完成表的进度:任务 id、表级状态(PENDING/RUNNING)、分段进度 */
+    public record RunningScan(long jobId, String status, int doneChunks, int totalChunks) {
+    }
+
+    /**
+     * 运行中任务里每张未完成表的分段进度,供表列表页"扫描中显示进度"。
+     * 只取 j.status='RUNNING' 的任务内 t.status 为 PENDING/RUNNING 的表;dbName 口径与 latestJobsBySchema 一致。
+     */
+    public Map<String, RunningScan> runningScansByTable(long datasourceId, String dbName, String schemaName) {
+        String dbCond = (dbName != null && !dbName.isBlank()) ? "j.db_name=?" : "j.db_name IS NULL";
+        List<Object> args = new ArrayList<>();
+        args.add(datasourceId);
+        if (dbName != null && !dbName.isBlank()) args.add(dbName);
+        args.add(schemaName);
+        String sql = "SELECT t.table_name, t.job_id, t.status, t.done_chunks, t.total_chunks FROM scan_table t "
+                + "JOIN scan_job j ON t.job_id=j.id "
+                + "WHERE j.datasource_id=? AND " + dbCond + " AND j.schema_name=? AND j.status='RUNNING' "
+                + "AND t.status IN ('PENDING','RUNNING') ORDER BY t.job_id";
+        Map<String, RunningScan> result = new HashMap<>();
+        jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler)
+                rs -> result.put(rs.getString(1),
+                        new RunningScan(rs.getLong(2), rs.getString(3), rs.getInt(4), rs.getInt(5))), args.toArray());
+        return result;
+    }
+
+    /**
+     * 每张表最近一次扫描完成(表级 DONE)的任务 id 与完成时间,供表列表页"点击表名直达最新结果"及"最近扫描时间"列。
+     * 同一表可能出现在多个任务里,按 job_id 升序遍历、后者覆盖前者,最终留下 job_id 最大者;
+     * dbName 为空的口径与 latestJobsBySchema 一致。
+     */
+    public Map<String, LatestScan> latestDoneJobsByTable(long datasourceId, String dbName, String schemaName) {
+        String dbCond = (dbName != null && !dbName.isBlank()) ? "j.db_name=?" : "j.db_name IS NULL";
+        List<Object> args = new ArrayList<>();
+        args.add(datasourceId);
+        if (dbName != null && !dbName.isBlank()) args.add(dbName);
+        args.add(schemaName);
+        String sql = "SELECT t.table_name, t.job_id, t.finished_at FROM scan_table t "
+                + "JOIN scan_job j ON t.job_id=j.id "
+                + "WHERE j.datasource_id=? AND " + dbCond + " AND j.schema_name=? AND t.status='DONE' "
+                + "ORDER BY t.job_id";
+        Map<String, LatestScan> result = new HashMap<>();
+        jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler)
+                rs -> result.put(rs.getString(1), new LatestScan(rs.getLong(2), ts(rs, "finished_at"))), args.toArray());
+        return result;
+    }
+
     public void updateJobStatus(long jobId, ScanStatus status) {
         jdbc.update("UPDATE scan_job SET status=? WHERE id=?", status.name(), jobId);
     }
 
     public void markJobRunning(long jobId) {
         jdbc.update("UPDATE scan_job SET status='RUNNING', started_at=CURRENT_TIMESTAMP, finished_at=NULL, error=NULL WHERE id=?", jobId);
+        insertJobEvent(jobId, ScanStatus.RUNNING);
     }
 
     public void finishJob(long jobId, ScanStatus status, String error) {
         jdbc.update("UPDATE scan_job SET status=?, finished_at=CURRENT_TIMESTAMP, error=? WHERE id=?",
                 status.name(), error, jobId);
+        insertJobEvent(jobId, status);
     }
 
     /** done_tables + 1,返回自增后的值 */
@@ -106,7 +184,54 @@ public class ScanRepository {
     }
 
     public int markRunningJobsInterrupted() {
-        return jdbc.update("UPDATE scan_job SET status='INTERRUPTED' WHERE status IN ('PENDING','RUNNING')");
+        // 先取出受影响任务,逐条补 INTERRUPTED 事件(重启恢复场景,量不大)
+        List<Long> ids = jdbc.queryForList(
+                "SELECT id FROM scan_job WHERE status IN ('PENDING','RUNNING')", Long.class);
+        if (ids.isEmpty()) {
+            return 0;
+        }
+        int n = jdbc.update("UPDATE scan_job SET status='INTERRUPTED' WHERE status IN ('PENDING','RUNNING')");
+        ids.forEach(id -> insertJobEvent(id, ScanStatus.INTERRUPTED));
+        return n;
+    }
+
+    // ---------- scan_job_event ----------
+
+    private final RowMapper<ScanJobEvent> eventMapper = (rs, i) ->
+            new ScanJobEvent(ScanStatus.valueOf(rs.getString("status")), ts(rs, "created_at"));
+
+    public void insertJobEvent(long jobId, ScanStatus status) {
+        jdbc.update("INSERT INTO scan_job_event(job_id, status) VALUES (?,?)", jobId, status.name());
+    }
+
+    public List<ScanJobEvent> listJobEvents(long jobId) {
+        return jdbc.query("SELECT status, created_at FROM scan_job_event WHERE job_id=? ORDER BY id",
+                eventMapper, jobId);
+    }
+
+    /** 批量取多个任务的事件并按任务分组,供列表接口避免逐任务查询 */
+    public Map<Long, List<ScanJobEvent>> listJobEventsByJob(List<Long> jobIds) {
+        if (jobIds.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = String.join(", ", jobIds.stream().map(id -> "?").toList());
+        Map<Long, List<ScanJobEvent>> result = new HashMap<>();
+        jdbc.query("SELECT job_id, status, created_at FROM scan_job_event WHERE job_id IN (" + placeholders
+                        + ") ORDER BY id",
+                (org.springframework.jdbc.core.RowCallbackHandler) rs -> result
+                        .computeIfAbsent(rs.getLong("job_id"), k -> new ArrayList<>())
+                        .add(new ScanJobEvent(ScanStatus.valueOf(rs.getString("status")), ts(rs, "created_at"))),
+                jobIds.toArray());
+        return result;
+    }
+
+    /** 删除任务及其全部明细(表/分段/字段结果),由 service 层在事务中调用 */
+    public void deleteJob(long jobId) {
+        jdbc.update("DELETE FROM scan_chunk WHERE scan_table_id IN (SELECT id FROM scan_table WHERE job_id=?)", jobId);
+        jdbc.update("DELETE FROM scan_column WHERE scan_table_id IN (SELECT id FROM scan_table WHERE job_id=?)", jobId);
+        jdbc.update("DELETE FROM scan_table WHERE job_id=?", jobId);
+        jdbc.update("DELETE FROM scan_job_event WHERE job_id=?", jobId);
+        jdbc.update("DELETE FROM scan_job WHERE id=?", jobId);
     }
 
     // ---------- scan_table ----------

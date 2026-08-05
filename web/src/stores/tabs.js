@@ -10,7 +10,8 @@ import { reactive } from 'vue'
  */
 export const tabState = reactive({
   tabs: [
-    { key: 'home', title: '首页', path: '/datasources', closable: false }
+    { key: 'home', title: '首页', path: '/datasources', closable: false },
+    { key: 'dashboard', title: '任务看板', path: '/dashboard', closable: false }
   ],
   activeKey: 'home'
 })
@@ -18,6 +19,16 @@ export const tabState = reactive({
 // 路由里拿不到名称时的兜底缓存:数据源 id -> 数据源名,任务 id -> 库名标签
 const dsNames = reactive({})
 const scanSchemas = reactive({})
+
+/** 页面从接口拿到数据源名后回写,供页签标题使用 */
+export function setDsName(id, name) {
+  if (name) dsNames[id] = name
+}
+
+/** 任务详情页从接口拿到库名后回写,供页签标题使用 */
+export function setScanSchema(jobId, schema) {
+  if (schema) scanSchemas[jobId] = schema
+}
 
 /** 库名标签:有数据库实例时拼成 db.schema */
 function schemaLabel(route) {
@@ -28,6 +39,9 @@ function schemaLabel(route) {
 /** 根据路由解析所属页签及标题 */
 function resolveTab(route) {
   const p = route.path
+  if (p === '/dashboard') {
+    return { key: 'dashboard', title: '任务看板', closable: false }
+  }
   if (p.startsWith('/datasources/')) {
     const id = route.params.id
     if (route.query.name) dsNames[id] = route.query.name

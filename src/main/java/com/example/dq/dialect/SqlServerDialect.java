@@ -77,6 +77,13 @@ public class SqlServerDialect extends AbstractDialect {
     }
 
     @Override
+    public Map<String, Integer> countTablesBySchema(Connection conn) throws SQLException {
+        return queryCountByGroup(conn,
+                "SELECT s.name, COUNT(*) FROM sys.tables t "
+                        + "JOIN sys.schemas s ON s.schema_id = t.schema_id GROUP BY s.name");
+    }
+
+    @Override
     public List<TableStat> listTables(Connection conn, String schema) throws SQLException {
         List<TableStat> tables = new ArrayList<>();
         String sql = "SELECT t.name, "

@@ -7,8 +7,7 @@
           <el-button @click="goBack">返回</el-button>
           <el-button v-if="job.status === 'RUNNING'" type="danger" :loading="acting" @click="onCancel">取消</el-button>
           <el-button v-if="['CANCELED', 'INTERRUPTED', 'FAILED'].includes(job.status)" type="primary" :loading="acting" @click="onResume">继续扫描</el-button>
-          <el-button @click="onExport">导出 Excel</el-button>
-        </div>
+          <ExportButton :job-id="jobId" />        </div>
       </div>
 
       <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
@@ -39,36 +38,56 @@
       </div>
 
       <el-table :data="job.tables || []" border>
-        <el-table-column prop="tableName" label="表名" min-width="180" show-overflow-tooltip>
+        <el-table-column type="index" label="序号" width="60" />
+        <el-table-column prop="tableName" label="表名" min-width="180" sortable show-overflow-tooltip>
           <template #default="{ row }">
             <el-link v-if="row.status === 'DONE'" type="primary" @click="goColumns(row)">{{ row.tableName }}</el-link>
             <span v-else>{{ row.tableName }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="进度" width="200">
+        <el-table-column label="进度" width="200" sortable :sort-method="(a, b) => chunkPercent(a) - chunkPercent(b)">
           <template #default="{ row }">
             <el-progress v-if="row.totalChunks > 0" :percentage="chunkPercent(row)" :stroke-width="10" />
             <span v-else-if="row.status === 'RUNNING'" style="color: #909399; font-size: 12px">运行中</span>
             <span v-else style="color: #909399; font-size: 12px">-</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="100">
+        <el-table-column label="状态" width="100" sortable :sort-method="(a, b) => statusText(a.status).localeCompare(statusText(b.status), 'zh-CN')">
           <template #default="{ row }">
             <el-tag :type="statusTagType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="采样" width="90">
+        <el-table-column label="采样" width="90" sortable :sort-method="(a, b) => Number(a.sampled) - Number(b.sampled)">
+          <template #header>
+            <el-tooltip placement="top" :show-after="200">
+              <template #content>
+                <div>超过阈值(默认 100 万行或 10GB)的表只统计样本(默认 10 万行),结果为估算值</div>
+                <div>MySQL / 达梦 / OceanBase 为 LIMIT 顺序采样,结果可能有偏</div>
+                <div>扫描时勾选"强制全量"可逐行精确统计</div>
+              </template>
+              <span>采样 <el-icon style="vertical-align: -2px"><QuestionFilled /></el-icon></span>
+            </el-tooltip>
+          </template>
           <template #default="{ row }">
             <el-tag v-if="row.sampled" type="warning" size="small">采样</el-tag>
             <span v-else style="color: #909399; font-size: 12px">全量</span>
           </template>
         </el-table-column>
-        <el-table-column label="已扫行数 / 估算行数" width="200">
+        <el-table-column label="已扫行数 / 估算行数" width="200" sortable :sort-method="(a, b) => (a.scannedRows ?? -1) - (b.scannedRows ?? -1)">
+          <template #header>
+            <el-tooltip placement="top" :show-after="200">
+              <template #content>
+                <div>已扫行数:本次实际扫描的行数(采样表即样本行数)</div>
+                <div>估算行数:来自数据库元数据,不是 COUNT(*) 精确值,可能不准确</div>
+              </template>
+              <span>已扫行数 / 估算行数 <el-icon style="vertical-align: -2px"><QuestionFilled /></el-icon></span>
+            </el-tooltip>
+          </template>
           <template #default="{ row }">
             {{ formatNumber(row.scannedRows) }} / {{ formatNumber(row.totalRows ?? row.estRows) }}
           </template>
         </el-table-column>
-        <el-table-column label="耗时" width="120">
+        <el-table-column label="耗时" width="120" sortable :sort-method="(a, b) => durationMs(a) - durationMs(b)">
           <template #default="{ row }">{{ formatDuration(row.startedAt, row.finishedAt) }}</template>
         </el-table-column>
         <el-table-column label="失败原因" min-width="140">
@@ -88,8 +107,12 @@
 import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import request from '../api'
+import ExportButton from '../components/ExportButton.vue'
 import { formatDateTime, formatDuration, formatNumber, statusTagType, statusText } from '../utils/format'
+import { goBack as historyBack } from '../utils/back'
+import { setScanSchema, syncTab } from '../stores/tabs'
 
 const route = useRoute()
 const router = useRouter()
@@ -106,6 +129,12 @@ async function fetchJob() {
   loading.value = true
   try {
     job.value = await request.get(`/scans/${jobId}`)
+    // 回写库名标签并刷新页签标题(进入时 URL 可能没带 ?schema=)
+    const schema = job.value.dbName ? `${job.value.dbName}.${job.value.schemaName}` : job.value.schemaName
+    if (schema && !route.query.schema) {
+      setScanSchema(jobId, schema)
+      syncTab(route)
+    }
     if (TERMINAL.includes(job.value.status)) stopPolling()
   } finally {
     loading.value = false
@@ -127,6 +156,14 @@ function stopPolling() {
 function chunkPercent(row) {
   if (!row.totalChunks) return 0
   return Math.min(100, Math.round((row.doneChunks / row.totalChunks) * 100))
+}
+
+/** 耗时毫秒数,供耗时列排序;未开始的排最后 */
+function durationMs(row) {
+  if (!row.startedAt) return -1
+  const start = new Date(row.startedAt).getTime()
+  const end = row.finishedAt ? new Date(row.finishedAt).getTime() : Date.now()
+  return Math.max(0, end - start)
 }
 
 async function onCancel() {
@@ -153,18 +190,13 @@ async function onResume() {
   }
 }
 
-function onExport() {
-  window.open(`/api/scans/${jobId}/export`, '_blank')
-}
-
 function goColumns(row) {
   router.push(`/scans/${jobId}/tables/${encodeURIComponent(row.tableName)}`)
 }
 
-// 返回该任务所属数据源/库的扫描记录列表
+// 原路返回;无历史记录(直接打开)时兜底回该任务的扫描记录列表
 function goBack() {
-  const q = job.value.dbName ? `?db=${encodeURIComponent(job.value.dbName)}` : ''
-  router.push(`/datasources/${job.value.datasourceId}/schemas/${encodeURIComponent(job.value.schemaName)}/scans${q}`)
+  historyBack(router, `/datasources/${job.value.datasourceId}/schemas/${encodeURIComponent(job.value.schemaName)}/scans${job.value.dbName ? `?db=${encodeURIComponent(job.value.dbName)}` : ''}`)
 }
 
 onMounted(async () => {

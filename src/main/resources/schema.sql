@@ -31,6 +31,15 @@ CREATE TABLE IF NOT EXISTS scan_job (
 );
 CREATE INDEX IF NOT EXISTS idx_scan_job_ds ON scan_job(datasource_id);
 
+-- 任务状态变更事件:创建/开始/继续/完成/取消/中断等,供历史列表展示时间线
+CREATE TABLE IF NOT EXISTS scan_job_event (
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    job_id     BIGINT NOT NULL,
+    status     VARCHAR(16) NOT NULL,                -- 事件发生后的任务状态
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_scan_job_event_job ON scan_job_event(job_id);
+
 CREATE TABLE IF NOT EXISTS scan_table (
     id            BIGINT AUTO_INCREMENT PRIMARY KEY,
     job_id        BIGINT NOT NULL,

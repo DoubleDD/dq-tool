@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Oracle 方言。
@@ -46,6 +47,11 @@ public class OracleDialect extends AbstractDialect {
             }
         }
         return schemas;
+    }
+
+    @Override
+    public Map<String, Integer> countTablesBySchema(Connection conn) throws SQLException {
+        return queryCountByGroup(conn, "SELECT owner, COUNT(*) FROM all_tables GROUP BY owner");
     }
 
     @Override

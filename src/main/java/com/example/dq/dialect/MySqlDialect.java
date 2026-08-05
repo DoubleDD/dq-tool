@@ -68,6 +68,13 @@ public class MySqlDialect extends AbstractDialect {
         return tables;
     }
 
+    @Override
+    public Map<String, Integer> countTablesBySchema(Connection conn) throws SQLException {
+        return queryCountByGroup(conn,
+                "SELECT TABLE_SCHEMA, COUNT(*) FROM information_schema.TABLES "
+                        + "WHERE TABLE_TYPE = 'BASE TABLE' GROUP BY TABLE_SCHEMA");
+    }
+
     /** MySQL 走 information_schema 拿准确的字段注释与完整类型(含长度) */
     @Override
     public List<com.example.dq.model.ColumnMeta> listColumns(Connection conn, String schema, String table)

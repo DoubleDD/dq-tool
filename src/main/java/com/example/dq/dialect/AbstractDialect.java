@@ -31,6 +31,17 @@ public abstract class AbstractDialect implements DbDialect {
         return false;
     }
 
+    /** 执行 "分组键, COUNT(*)" 两列聚合查询,供 countTablesBySchema 各实现复用 */
+    protected Map<String, Integer> queryCountByGroup(Connection conn, String sql) throws SQLException {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            while (rs.next()) {
+                counts.put(rs.getString(1), rs.getInt(2));
+            }
+        }
+        return counts;
+    }
+
     @Override
     public List<ColumnMeta> listColumns(Connection conn, String schema, String table) throws SQLException {
         DatabaseMetaData meta = conn.getMetaData();

@@ -34,12 +34,12 @@
     </div>
 
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑数据源' : '新增数据源'" width="560px" destroy-on-close>
-      <el-form :model="form" label-width="110px">
+      <el-form :model="form" label-width="110px" autocomplete="off">
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="数据源名称" />
         </el-form-item>
         <el-form-item label="数据库类型">
-          <el-select v-model="form.dbType" placeholder="选择类型以填充示例地址" style="width: 100%">
+          <el-select v-model="form.dbType" placeholder="选择类型以填充示例地址" style="width: 100%" @change="onDbTypeChange">
             <el-option v-for="t in DB_TYPES" :key="t" :label="t" :value="t">
               <span class="db-option">
                 <DbTypeIcon :type="t" />
@@ -54,15 +54,35 @@
             </template>
           </el-select>
         </el-form-item>
-        <el-form-item label="JDBC 地址" required>
+        <el-form-item label="填写方式">
+          <el-radio-group v-model="form.inputMode" @change="onInputModeChange">
+            <el-radio-button value="fields">默认</el-radio-button>
+            <el-radio-button value="url">JDBC 地址</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="form.inputMode === 'url'" label="JDBC 地址" required>
           <el-input v-model="form.jdbcUrl" :placeholder="urlPlaceholder" />
         </el-form-item>
+        <template v-else>
+          <el-form-item label="主机 / 端口" required>
+            <div style="display: flex; gap: 8px; width: 100%">
+              <el-input v-model="form.host" placeholder="IP 或主机名" style="flex: 1" />
+              <el-input-number v-model="form.port" :min="1" :max="65535" :controls="false" placeholder="端口" style="width: 120px" />
+            </div>
+          </el-form-item>
+          <el-form-item v-if="form.dbType !== 'DM'" :label="form.dbType === 'ORACLE' ? '服务名' : '数据库'">
+            <el-input v-model="form.database" :placeholder="form.dbType === 'ORACLE' ? 'Oracle 服务名,可留空' : '数据库名,可留空'" />
+          </el-form-item>
+        </template>
         <el-form-item label="用户名" required>
-          <el-input v-model="form.username" />
+          <el-input v-model="form.username" autocomplete="off" />
         </el-form-item>
         <el-form-item label="密码" :required="!form.id">
-          <el-input v-model="form.password" type="password" show-password
+          <el-input v-model="form.password" type="password" show-password autocomplete="new-password"
             :placeholder="form.id ? '留空表示不修改' : '请输入密码'" />
+        </el-form-item>
+        <el-form-item v-if="form.inputMode === 'fields'" label="JDBC 地址">
+          <el-input :model-value="urlPreview" readonly placeholder="填写主机和端口后自动生成" />
         </el-form-item>
         <el-form-item label="行数阈值">
           <el-input-number v-model="form.rowThreshold" :min="0" :step="100000" style="width: 100%" />
@@ -106,11 +126,25 @@ const URL_PLACEHOLDERS = {
   ORACLE: 'jdbc:oracle:thin:@//host:1521/service'
 }
 
+const DEFAULT_PORTS = {
+  MYSQL: 3306,
+  POSTGRESQL: 5432,
+  DM: 5236,
+  KINGBASE: 54321,
+  OCEANBASE: 2881,
+  SQLSERVER: 1433,
+  ORACLE: 1521
+}
+
 const emptyForm = () => ({
   id: null,
   name: '',
   dbType: 'MYSQL',
+  inputMode: 'fields',
   jdbcUrl: '',
+  host: '',
+  port: null,
+  database: '',
   username: '',
   password: '',
   rowThreshold: null,
@@ -119,6 +153,79 @@ const emptyForm = () => ({
 const form = reactive(emptyForm())
 
 const urlPlaceholder = computed(() => URL_PLACEHOLDERS[form.dbType] || 'jdbc:...')
+
+/** 拆分填写模式下实时预览拼出的 JDBC URL(主机未填时不显示) */
+const urlPreview = computed(() => {
+  if (!form.host || !form.host.trim() || !form.port) return ''
+  return buildJdbcUrl()
+})
+
+function onDbTypeChange(type) {
+  form.port = DEFAULT_PORTS[type] || null
+}
+
+/** 解析现有 JDBC URL 到主机/端口/数据库(支持 host:// 和 Oracle @// 两种形式) */
+function parseJdbcUrl() {
+  const url = (form.jdbcUrl || '').trim()
+  if (!url) return
+  const m = url.match(/(?:@\/\/|:\/\/)([^/:;?]+)(?::(\d+))?/)
+  if (m) {
+    form.host = m[1]
+    form.port = m[2] ? Number(m[2]) : (DEFAULT_PORTS[form.dbType] || null)
+  }
+  if (form.dbType === 'DM') {
+    form.database = ''
+    return
+  }
+  if (form.dbType === 'SQLSERVER') {
+    const d = url.match(/databaseName=([^;]+)/i)
+    form.database = d ? d[1] : ''
+    return
+  }
+  const d = url.match(/(?:@\/\/|:\/\/)[^/:;?]+(?::\d+)?\/([^?;]+)/)
+  form.database = d ? d[1] : ''
+}
+
+/** 填写方式切换时双向转换:拆分 → 拼 URL;URL → 解析拆分 */
+function onInputModeChange(mode) {
+  if (mode === 'fields') {
+    parseJdbcUrl()
+  } else if (form.host && form.host.trim()) {
+    form.jdbcUrl = buildJdbcUrl()
+  }
+}
+
+/** 拆分填写模式下,按数据库类型模板拼出 JDBC URL */
+function buildJdbcUrl() {
+  const h = (form.host || '').trim()
+  const db = (form.database || '').trim()
+  const p = form.port
+  switch (form.dbType) {
+    case 'MYSQL': return `jdbc:mysql://${h}:${p}/${db}`
+    case 'POSTGRESQL': return `jdbc:postgresql://${h}:${p}/${db}`
+    case 'DM': return `jdbc:dm://${h}:${p}`
+    case 'KINGBASE': return `jdbc:kingbase8://${h}:${p}/${db}`
+    case 'OCEANBASE': return `jdbc:oceanbase://${h}:${p}/${db}`
+    case 'SQLSERVER': return `jdbc:sqlserver://${h}:${p}${db ? `;databaseName=${db}` : ''}`
+    case 'ORACLE': return `jdbc:oracle:thin:@//${h}:${p}/${db}`
+    default: return ''
+  }
+}
+
+/** 拆分填写模式下校验字段并把拼好的 URL 写回 form.jdbcUrl */
+function syncJdbcUrl() {
+  if (form.inputMode !== 'fields') return true
+  if (!form.host || !form.host.trim()) {
+    ElMessage.warning('请填写主机')
+    return false
+  }
+  if (!form.port) {
+    ElMessage.warning('请填写端口')
+    return false
+  }
+  form.jdbcUrl = buildJdbcUrl()
+  return true
+}
 
 async function loadList() {
   loading.value = true
@@ -131,6 +238,7 @@ async function loadList() {
 
 function openDialog(row) {
   Object.assign(form, emptyForm())
+  form.port = DEFAULT_PORTS[form.dbType] || null
   if (row) {
     form.id = row.id
     form.name = row.name
@@ -145,6 +253,7 @@ function openDialog(row) {
 }
 
 async function onTest() {
+  if (!syncJdbcUrl()) return
   if (!form.jdbcUrl || !form.username) {
     ElMessage.warning('请先填写 JDBC 地址和用户名')
     return
@@ -168,6 +277,7 @@ async function onTest() {
 }
 
 async function onSave() {
+  if (!syncJdbcUrl()) return
   if (!form.name || !form.jdbcUrl || !form.username) {
     ElMessage.warning('请填写名称、JDBC 地址和用户名')
     return
@@ -227,7 +337,7 @@ onActivated(loadList)
   position: absolute;
   right: 6px;
   bottom: 6px;
-  opacity: 0.5;
+  opacity: 0.12;
   pointer-events: none;
 }
 .ds-card-header {

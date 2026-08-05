@@ -9,6 +9,7 @@ import com.example.dq.model.DataSourceConfig;
 import com.example.dq.model.NullRule;
 import com.example.dq.model.Range;
 import com.example.dq.model.ScanColumnView;
+import com.example.dq.model.ScanJobEvent;
 import com.example.dq.model.ScanJobView;
 import com.example.dq.model.ScanRequest;
 import com.example.dq.model.ScanStatus;
@@ -22,6 +23,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Connection;
 import java.util.ArrayList;
@@ -76,6 +78,15 @@ public class ScanService {
             targets = all.stream().filter(t -> wanted.contains(t.name())).toList();
             if (targets.isEmpty()) {
                 throw new IllegalArgumentException("选中的表在库中不存在");
+            }
+        }
+        // 表大小上限:超过上限的表直接不纳入任务;大小未知的表(null)不参与过滤
+        if (req.maxTableSizeBytes() != null) {
+            targets = targets.stream()
+                    .filter(t -> t.sizeBytes() == null || t.sizeBytes() <= req.maxTableSizeBytes())
+                    .toList();
+            if (targets.isEmpty()) {
+                throw new IllegalArgumentException("没有不超过大小上限的表可扫描");
             }
         }
         if (targets.isEmpty()) {
@@ -154,8 +165,12 @@ public class ScanService {
     public List<ScanJobView> listJobs(Long datasourceId, String dbName, String schemaName) {
         Map<Long, String> dsNames = dsRepo.findAll().stream()
                 .collect(Collectors.toMap(DataSourceConfig::getId, DataSourceConfig::getName));
-        return repo.listJobs(datasourceId, dbName, schemaName).stream()
-                .map(j -> toView(j, dsNames.get(j.datasourceId()), null))
+        List<ScanRepository.JobRow> jobs = repo.listJobs(datasourceId, dbName, schemaName);
+        Map<Long, List<ScanJobEvent>> eventsByJob =
+                repo.listJobEventsByJob(jobs.stream().map(ScanRepository.JobRow::id).toList());
+        return jobs.stream()
+                .map(j -> toView(j, dsNames.get(j.datasourceId()), null,
+                        eventsByJob.getOrDefault(j.id(), List.of())))
                 .toList();
     }
 
@@ -163,7 +178,7 @@ public class ScanService {
         ScanRepository.JobRow job = repo.findJob(jobId)
                 .orElseThrow(() -> new IllegalArgumentException("任务不存在: " + jobId));
         String dsName = dsRepo.findById(job.datasourceId()).map(DataSourceConfig::getName).orElse(null);
-        return toView(job, dsName, repo.listScanTables(jobId));
+        return toView(job, dsName, repo.listScanTables(jobId), repo.listJobEvents(jobId));
     }
 
     public List<ScanColumnView> getColumns(long jobId, String tableName) {
@@ -177,7 +192,8 @@ public class ScanService {
                 .orElseThrow(() -> new IllegalArgumentException("任务中不存在该表: " + tableName));
     }
 
-    private ScanJobView toView(ScanRepository.JobRow j, String dsName, List<ScanTableView> tables) {
+    private ScanJobView toView(ScanRepository.JobRow j, String dsName, List<ScanTableView> tables,
+                               List<ScanJobEvent> events) {
         List<NullRule> rules = List.of();
         if (j.nullRulesJson() != null && !j.nullRulesJson().isBlank()) {
             try {
@@ -190,7 +206,7 @@ public class ScanService {
                 .map(DataSourceConfig::getDbType).orElse(null);
         return new ScanJobView(j.id(), j.datasourceId(), dsName, dbType, j.dbName(), j.schemaName(), j.status(),
                 j.forceFull(), rules, j.totalTables(), j.doneTables(), progress(j, tables), j.error(),
-                j.createdAt(), j.startedAt(), j.finishedAt(), tables);
+                j.createdAt(), j.startedAt(), j.finishedAt(), events, tables);
     }
 
     /** 任务总进度:按各表估算行数加权 */
@@ -218,6 +234,17 @@ public class ScanService {
     }
 
     // ---------- 取消 / 断点续扫 ----------
+
+    /** 删除任务:进行中(PENDING/RUNNING)的任务需先取消,删除会清掉全部分段与字段统计 */
+    @Transactional
+    public void delete(long jobId) {
+        ScanRepository.JobRow job = repo.findJob(jobId)
+                .orElseThrow(() -> new IllegalArgumentException("任务不存在: " + jobId));
+        if (job.status() == ScanStatus.PENDING || job.status() == ScanStatus.RUNNING) {
+            throw new IllegalStateException("任务正在进行中,请先取消再删除");
+        }
+        repo.deleteJob(jobId);
+    }
 
     public void cancel(long jobId) {
         ScanRepository.JobRow job = repo.findJob(jobId)

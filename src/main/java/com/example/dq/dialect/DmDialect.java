@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /** 达梦 DM8 方言 */
 public class DmDialect extends AbstractDialect {
@@ -40,6 +41,11 @@ public class DmDialect extends AbstractDialect {
             }
         }
         return schemas;
+    }
+
+    @Override
+    public Map<String, Integer> countTablesBySchema(Connection conn) throws SQLException {
+        return queryCountByGroup(conn, "SELECT owner, COUNT(*) FROM all_tables GROUP BY owner");
     }
 
     @Override

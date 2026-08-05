@@ -21,6 +21,7 @@ public record ScanJobView(
         LocalDateTime createdAt,
         LocalDateTime startedAt,
         LocalDateTime finishedAt,
+        List<ScanJobEvent> events,      // 状态变更时间线(创建/开始/继续/完成等)
         List<ScanTableView> tables      // 仅详情接口填充
 ) {
 }
