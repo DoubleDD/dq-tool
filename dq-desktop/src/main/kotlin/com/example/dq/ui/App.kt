@@ -1,23 +1,10 @@
 package com.example.dq.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.clickable
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.dq.ui.views.DashboardView
 import com.example.dq.ui.views.DatasourcesView
 import com.example.dq.ui.views.ScanDetailView
@@ -25,48 +12,31 @@ import com.example.dq.ui.views.ScansView
 import com.example.dq.ui.views.SchemasView
 import com.example.dq.ui.views.TableColumnsView
 import com.example.dq.ui.views.TablesView
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.TabData
+import org.jetbrains.jewel.ui.component.TabStrip
+import org.jetbrains.jewel.ui.component.Text
+import org.jetbrains.jewel.ui.theme.editorTabStyle
 
 /** 应用根组件:顶部页签条 + 当前页签内容 */
 @Composable
 fun App(env: AppEnv, tabs: TabsModel) {
-    Column(Modifier.fillMaxSize()) {
-        // 页签条(对应原 App.vue 的顶部 tab)
-        // 不用 m3 ScrollableTabRow:动态增删页签时其内部会用旧索引取 tabPositions,
-        // 存在已知的 IndexOutOfBounds 竞态;自绘页签条简单可靠
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-        ) {
-            tabs.tabs.forEach { tab ->
-                val selected = tab.key == tabs.activeKey.value
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .clickable { tabs.activeKey.value = tab.key }
-                        .background(if (selected) MaterialTheme.colorScheme.surface else Color.Transparent)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                ) {
-                    Text(
-                        tab.title.value,
-                        fontSize = 13.sp,
-                        maxLines = 1,
-                        color = if (selected) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (tab.closable) {
-                        Text(
-                            "  ✕",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.clickable { tabs.close(tab.key) },
-                        )
-                    }
-                }
-            }
-        }
-        HorizontalDivider()
+    // 显式铺面板底色:DecoratedWindow 内容区默认不绘制背景,
+    // 不铺会透出 AWT 窗口默认色,导致深色主题下出现"标题栏深、内容白"的割裂
+    Column(Modifier.fillMaxSize().background(JewelTheme.globalColors.panelBackground)) {
+        // 页签条(对应原 App.vue 的顶部 tab),Jewel TabStrip 提供 IDE 风格的外观与关闭按钮
+        TabStrip(
+            tabs = tabs.tabs.map { tab ->
+                TabData.Default(
+                    selected = tab.key == tabs.activeKey.value,
+                    closable = tab.closable,
+                    onClose = { tabs.close(tab.key) },
+                    onClick = { tabs.activeKey.value = tab.key },
+                    content = { Text(tab.title.value) },
+                )
+            },
+            style = JewelTheme.editorTabStyle,
+        )
 
         // 当前页签内容
         val tab = tabs.active()

@@ -27,7 +27,8 @@ dq:
   desktop:
     shutdown-timeout-seconds: 45   # 桌面安装版 --app 窗口关闭后,超过该时长未收到页面心跳则退出进程;<=0 禁用看门狗(注意:机器休眠超过该时长也会触发退出)
   license:
-    public-key: "MCowBQYDK2VwAyEA7mCvdJjk397irsYJgQ6LRe5sfvTht6XEdpbWruUd+lo="   # 授权码验签公钥(Ed25519),私钥在 license-private.key(不入库)
+    # public-key: "MCowBQYDK2VwAyEA7mCvdJjk397irsYJgQ6LRe5sfvTht6XEdpbWruUd+lo="   # 授权码验签公钥(Ed25519),私钥在 license-private.key(不入库)
+    public-key: "MCowBQYDK2VwAyEAZYA6efEOwPUb9KsUXRKXmqN975X8JhD4JBv6HSDNmG8="
 # AI 大模型接口默认配置:页面「AI 配置」未设置的字段回落到这里的值
 ai:
   api-key: user1

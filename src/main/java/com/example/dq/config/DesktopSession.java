@@ -50,7 +50,12 @@ public class DesktopSession {
         long idleMillis = System.currentTimeMillis() - lastBeatMillis;
         if (idleMillis > timeoutSeconds * 1000L) {
             log.info("超过 {} 秒未收到页面心跳,判定应用窗口已关闭,退出进程", timeoutSeconds);
-            System.exit(SpringApplication.exit(ctx, () -> 0));
+            // 必须换线程退出:当前方法跑在 taskScheduler 自己的调度线程上,原地关上下文
+            // 会等 taskScheduler 停止(即等自己)僵持到 30 秒超时,并打断 Hikari 连接池关闭
+            Thread exitThread = new Thread(() -> System.exit(SpringApplication.exit(ctx, () -> 0)),
+                    "desktop-exit");
+            exitThread.setDaemon(false);
+            exitThread.start();
         }
     }
 }

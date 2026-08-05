@@ -1,5 +1,5 @@
 # 打 tag(如 v1.0)触发:全平台构建安装包并附加到 GitHub Release
-#   Windows → 免安装 zip,macOS → dmg(arm64 + x86_64),Linux → deb
+#   Windows → 免安装 zip,macOS → dmg(arm64 + x86_64),Linux → deb + rpm
 # 也可在 Actions 页面手动触发(workflow_dispatch),产物以 artifact 形式下载
 name: release
 
@@ -180,15 +180,19 @@ jobs:
         run: npm ci
         working-directory: web
 
-      # jpackage 打 deb 需要 fakeroot
-      - name: Install fakeroot
-        run: sudo apt-get update && sudo apt-get install -y fakeroot
+      # jpackage 打 deb 需要 fakeroot,打 rpm 需要 rpmbuild(rpm 包)
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
 
       - name: Build deb installer
         run: scripts/package-linux.sh
 
-      # 统一命名: dq-tool-<版本>-linux-amd64.deb(deb 原生命名为 dq-tool_<版本>_amd64.deb)
-      - name: Rename deb with platform suffix
+      - name: Build rpm installer
+        run: scripts/package-linux.sh --skip-build --type rpm
+
+      # 统一命名: dq-tool-<版本>-linux-amd64.{deb,rpm}
+      # (deb 原生命名为 dq-tool_<版本>_amd64.deb,rpm 为 dq-tool-<版本>-1.x86_64.rpm)
+      - name: Rename packages with platform suffix
         id: pkg
         run: |
           cd target/jpackage/dist
@@ -196,17 +200,30 @@ jobs:
             v=$(echo "$f" | sed -E 's/dq-tool_(.*)_amd64\.deb/\1/')
             mv "$f" "dq-tool-${v}-linux-amd64.deb"
           done
+          for f in dq-tool-*-1.x86_64.rpm; do
+            v=$(echo "$f" | sed -E 's/dq-tool-(.*)-1\.x86_64\.rpm/\1/')
+            mv "$f" "dq-tool-${v}-linux-amd64.rpm"
+          done
           # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
-          echo "name=$(ls dq-tool-*.deb | head -1 | sed 's/\.deb$//')" >> "$GITHUB_OUTPUT"
+          echo "name_deb=$(ls dq-tool-*.deb | head -1 | sed 's/\.deb$//')" >> "$GITHUB_OUTPUT"
+          echo "name_rpm=$(ls dq-tool-*.rpm | head -1 | sed 's/\.rpm$//')" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.pkg.outputs.name }}
+          name: ${{ steps.pkg.outputs.name_deb }}
           path: target/jpackage/dist/*.deb
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pkg.outputs.name_rpm }}
+          path: target/jpackage/dist/*.rpm
           retention-days: 30
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: target/jpackage/dist/*.deb
+          files: |
+            target/jpackage/dist/*.deb
+            target/jpackage/dist/*.rpm

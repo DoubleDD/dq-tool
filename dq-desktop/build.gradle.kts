@@ -20,6 +20,14 @@ dependencies {
     implementation(compose.materialIconsExtended)
     implementation(compose.components.resources)
 
+    // Jewel(IntelliJ 风格桌面主题;兼容矩阵:CMP 1.11.0 / JDK 25)
+    // 版本号后缀 262.* 是 IntelliJ Platform 构建号,非 CMP 版本
+    val jewelVersion = "0.39.1-262.9437.29"
+    implementation("org.jetbrains.jewel:jewel-int-ui-standalone:$jewelVersion")
+    implementation("org.jetbrains.jewel:jewel-int-ui-decorated-window:$jewelVersion")
+    // Jewel standalone 运行所需的平台图标资源(下拉箭头、勾选框等),缺了会渲染成品红色方块
+    implementation("com.jetbrains.intellij.platform:icons:262.9437.142")
+
     // 协程(UI 侧异步/轮询)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.11.0")
@@ -57,9 +65,22 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+// Jewel 的 DecoratedWindow 及字体加载依赖 JetBrains Runtime;
+// 开发运行和打包统一使用 JBR(下载:https://github.com/JetBrains/JetBrainsRuntime/releases)
+val jbrHome = File(System.getProperty("user.home"), ".jdks/jbrsdk-25.0.4-linux-x64-b508.27")
+
 compose.desktop {
     application {
         mainClass = "com.example.dq.MainKt"
+
+        if (jbrHome.exists()) {
+            javaHome = jbrHome.absolutePath
+        } else {
+            logger.warn("JBR 未安装于 $jbrHome,DecoratedWindow 将无法运行")
+        }
+
+        // 注意:JBR 的 Wayland 工具包(WLToolkit)与当前 Skiko 不兼容(Can't lock DrawingSurface,
+        // 软件渲染同样失败),勿开启;Linux 下文本清晰度受 KWin 对 X11 应用的缩放策略影响
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)

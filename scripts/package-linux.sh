@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
-# Linux 打包脚本:构建前端 + fat jar,再用 jpackage 生成带内嵌 JRE 的 .deb
-# 前置要求: JDK 21+ (含 jpackage)、Maven、Node 18+、fakeroot(deb 打包需要)
-# 用法: scripts/package-linux.sh [--skip-build]
-# 需要 rpm 时把 --type deb 改为 --type rpm(需安装 rpm-build)
+# Linux 打包脚本:构建前端 + fat jar,再用 jpackage 生成带内嵌 JRE 的 .deb / .rpm
+# 前置要求: JDK 21+ (含 jpackage)、Maven、Node 18+;deb 需要 fakeroot,rpm 需要 rpmbuild
+# 用法: scripts/package-linux.sh [--skip-build] [--type deb|rpm](默认 deb)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-if [[ "${1:-}" != "--skip-build" ]]; then
+SKIP_BUILD=0
+PKG_TYPE=deb
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-build) SKIP_BUILD=1; shift ;;
+    --type) PKG_TYPE="${2:?--type 需要参数 deb 或 rpm}"; shift 2 ;;
+    *) echo "未知参数: $1" >&2; exit 1 ;;
+  esac
+done
+[[ "$PKG_TYPE" == deb || "$PKG_TYPE" == rpm ]] || { echo "--type 只支持 deb 或 rpm" >&2; exit 1; }
+
+if [[ "$SKIP_BUILD" == 0 ]]; then
   (cd web && npm run build)
   mvn -q -DskipTests package
 fi
@@ -24,7 +34,7 @@ cp "$JAR" "$INPUT/"
 
 # 数据目录存到 ~/.dq-tool/data(${user.home} 由 Spring 在运行时解析)
 jpackage \
-  --type deb \
+  --type "$PKG_TYPE" \
   --name dq-tool \
   --app-version "$PKG_VERSION" \
   --linux-package-name dq-tool \
@@ -36,4 +46,8 @@ jpackage \
   --java-options '-Djava.awt.headless=false' \
   --dest "$DIST"
 
-echo "产物: $DIST/dq-tool_${PKG_VERSION}_amd64.deb"
+if [[ "$PKG_TYPE" == deb ]]; then
+  echo "产物: $DIST/dq-tool_${PKG_VERSION}_amd64.deb"
+else
+  echo "产物: $DIST/dq-tool-${PKG_VERSION}-1.x86_64.rpm"
+fi

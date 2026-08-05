@@ -23,7 +23,7 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - 后端:Java 25、Spring Boot 3.4.5(web / jdbc / validation)、H2(本地存储)、Apache POI(Excel 导出)、Maven
 - 前端:Vue 3 + Vue Router + Element Plus + axios,Vite 5 构建(无 TypeScript、无状态库,`stores/tabs.js` 为自写简易 store)
 - 测试:JUnit 5 + Spring Boot Test + Testcontainers(MySQL 8 / PG 15 / SQL Server 2019)
-- 交付:Spring Boot fat jar(内嵌前端);jpackage 生成 macOS dmg / Linux deb 安装包与 Windows 免安装 zip(均内嵌 JRE)
+- 交付:Spring Boot fat jar(内嵌前端);jpackage 生成 macOS dmg / Linux deb+rpm 安装包与 Windows 免安装 zip(均内嵌 JRE)
 
 ## 项目结构
 
@@ -116,9 +116,9 @@ mvn test
 ## 发布流程
 
 - 推 `v*` tag(如 `git tag v1.2 && git push origin v1.2`)触发 `.github/workflows/release.yml`;也支持 workflow_dispatch 手动触发(产物以 artifact 下载,保留 30 天,名称带版本号)
-- 并行构建:Windows 免安装 zip(x64 + ARM64,jpackage `--type app-image`,**已不用 exe/WiX**)、macOS dmg(Apple Silicon + Intel,Intel 用 macos-15-intel runner)、Linux deb,tag 触发时全部挂到 GitHub Release
+- 并行构建:Windows 免安装 zip(x64 + ARM64,jpackage `--type app-image`,**已不用 exe/WiX**)、macOS dmg(Apple Silicon + Intel,Intel 用 macos-15-intel runner)、Linux deb + rpm,tag 触发时全部挂到 GitHub Release
 - jpackage 不支持交叉编译,各平台包在对应系统的 runner 上原生构建
-- 本地打包用 `scripts/package-{mac,linux}.sh` / `scripts\package-win.bat`,可加 `--skip-build` 只重打包
+- 本地打包用 `scripts/package-{mac,linux}.sh` / `scripts\package-win.bat`,可加 `--skip-build` 只重打包;Linux 脚本默认打 deb,加 `--type rpm` 打 rpm(需 rpmbuild)
 - 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.3` 映射为安装包版本 `1.3`
 - 安装版数据目录固定为 `~/.dq-tool/data`(jar 方式为 `./data`),由 jpackage 的 `--java-options` 注入,修改打包脚本时保持这一区分
 - Windows 包无控制台窗口,启动日志通过 `--java-options "-Dlogging.file.name=..."` 写入 `~/.dq-tool/logs/dq-tool.log`
