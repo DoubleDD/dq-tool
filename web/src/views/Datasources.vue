@@ -2,7 +2,7 @@
   <div class="page-card">
     <div class="toolbar">
       <h3 style="margin: 0">数据源管理</h3>
-      <el-button type="primary" @click="openDialog()">新增数据源</el-button>
+      <el-button v-if="list.length" type="primary" @click="openDialog()">新增数据源</el-button>
     </div>
 
     <div class="ds-grid" v-loading="loading">
@@ -30,7 +30,9 @@
           <el-button link type="danger" @click="onDelete(row)">删除</el-button>
         </div>
       </el-card>
-      <el-empty v-if="!loading && !list.length" description="暂无数据源,点击右上角新增" style="grid-column: 1 / -1" />
+      <el-empty v-if="!loading && !list.length" description="暂无数据源" style="grid-column: 1 / -1">
+        <el-button type="primary" @click="openDialog()">新增数据源</el-button>
+      </el-empty>
     </div>
 
     <el-dialog v-model="dialogVisible" :title="form.id ? '编辑数据源' : '新增数据源'" width="560px" destroy-on-close>

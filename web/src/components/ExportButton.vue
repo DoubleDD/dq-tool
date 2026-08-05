@@ -26,6 +26,7 @@
 
       <!-- 表列表:勾选列 + 实时预览 -->
       <template v-else-if="activeSheet === 'tables'">
+        <div class="section-title">表头设置</div>
         <el-checkbox-group v-model="tableChecked" class="col-checks">
           <el-checkbox v-for="c in TABLE_COLS" :key="c.key" :value="c.key" size="small">{{ c.label }}</el-checkbox>
         </el-checkbox-group>
@@ -48,6 +49,7 @@
       <!-- 字段明细:每张 DONE 的表一个 sheet,结构相同;勾选列 + 实时预览 -->
       <template v-else-if="activeSheet === 'fields'">
         <div class="sheet-note">每张扫描完成的表生成一个 sheet(sheet 名 = 表名),结构相同,此处以 user_order 为例:</div>
+        <div class="section-title">表头设置</div>
         <el-checkbox-group v-model="fieldChecked" class="col-checks">
           <el-checkbox v-for="c in FIELD_COLS" :key="c.key" :value="c.key" size="small">{{ c.label }}</el-checkbox>
         </el-checkbox-group>
@@ -161,7 +163,8 @@ const props = defineProps({
 })
 
 const visible = ref(false)
-const activeSheet = ref('overview')
+// 默认打开「字段明细」页签
+const activeSheet = ref('fields')
 const tableChecked = ref(TABLE_COLS.map((c) => c.key))
 const fieldChecked = ref(FIELD_COLS.map((c) => c.key))
 
@@ -176,7 +179,7 @@ function reset() {
 
 function open() {
   reset()
-  activeSheet.value = 'overview'
+  activeSheet.value = 'fields'
   visible.value = true
 }
 
@@ -230,6 +233,13 @@ function doExport() {
   margin-bottom: 8px;
   color: #909399;
   font-size: 12px;
+}
+
+.section-title {
+  margin-bottom: 8px;
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .col-checks {
