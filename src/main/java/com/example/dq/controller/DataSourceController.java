@@ -5,6 +5,8 @@ import com.example.dq.model.DataSourceRequest;
 import com.example.dq.model.TestConnectionRequest;
 import com.example.dq.service.DataSourceService;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -22,6 +24,8 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/datasources")
 public class DataSourceController {
+
+    private static final Logger log = LoggerFactory.getLogger(DataSourceController.class);
 
     private final DataSourceService service;
 
@@ -60,6 +64,7 @@ public class DataSourceController {
             }
             return ok;
         } catch (SQLException e) {
+            log.warn("测试连接失败 {}: {}", req.jdbcUrl(), e.getMessage(), e);
             return Map.of("success", false, "message", e.getMessage());
         }
     }

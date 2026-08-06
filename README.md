@@ -29,10 +29,10 @@
 开发模式:
 
 ```bash
-# 后端(8080)
+# 后端(10000)
 mvn spring-boot:run
 
-# 前端(5173,代理 /api 到 8080)
+# 前端(5173,代理 /api 到 10000)
 cd web && npm install && npm run dev
 ```
 
@@ -44,7 +44,7 @@ cd .. && mvn package                     # prepare-package 阶段自动把 web/d
 java -jar target/dq-tool-0.1.3.jar
 ```
 
-> 访问 http://localhost:8080 即可使用(开发模式前端在 5173)。8080 被占用时会自动向后探测可用端口;也可用 `--server.port=` 参数或 `SERVER_PORT` 环境变量指定。
+> 访问 http://localhost:10000 即可使用(开发模式前端在 5173)。10000 被占用时会自动向后探测可用端口;也可用 `--server.port=` 参数或 `SERVER_PORT` 环境变量指定。
 
 原生安装包(jpackage,内嵌 JRE,目标机器无需安装 Java):
 
@@ -64,7 +64,8 @@ scripts/package-linux.sh
 - 脚本自动完成前端构建 + `mvn package` + jpackage;只重打包可加 `--skip-build`
 - dmg/deb 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.3` 映射为安装包版本 `1.3`
 - 安装版的数据目录固定为 `~/.dq-tool/data`(Windows 为 `%USERPROFILE%\.dq-tool\data`),与 jar 方式的 `./data` 不同
-- Windows 包为免安装 zip:解压后双击 `dq-tool.exe`,无控制台窗口,启动日志写入 `%USERPROFILE%\.dq-tool\logs\dq-tool.log`;无需管理员权限,删除目录即卸载
+- 运行日志输出到数据目录的 `logs/` 子目录,按天滚动(`dq-tool.yyyy-MM-dd.log`,保留 30 天)
+- Windows 包为免安装 zip:解压后双击 `dq-tool.exe`,无控制台窗口,日志写入 `%USERPROFILE%\.dq-tool\data\logs\`;无需管理员权限,删除目录即卸载
 - 安装包启动后会自动用默认浏览器打开首页(headless 服务器部署不受影响);应用本身是 Web 服务,没有桌面窗口,Dock/任务栏图标常驻即表示运行中
 
 ## 功能
@@ -91,11 +92,11 @@ scripts/package-linux.sh
 # 1) 生成密钥对(只需一次),把输出的公钥填入 application.yml 的 dq.license.public-key
 make license-keypair
 
-# 2) 签发授权码
-make license customer="某某公司" expires=2026-12-31
+# 2) 签发授权码(交互式;默认值:客户=内部测试,有效期=30 天后,有效期也可输入 permanent 永久授权)
+make license
 
-# 永久授权(不过期)
-make license customer="某某公司" expires=permanent
+# 也可以直接传参,跳过交互
+make license customer="某某公司" expires=2026-12-31
 ```
 
 (等价于直接运行 `java scripts/LicenseKeygen.java ...`,私钥文件默认 `license-private.key`,可用 `KEY=` 覆盖。)

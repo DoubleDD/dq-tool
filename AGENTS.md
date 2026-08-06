@@ -12,7 +12,8 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - AI 表说明:大模型(OpenAI 兼容接口)根据表结构生成表用途描述,页面配置接口信息,手动触发生成,也支持手动编辑,结果存 H2
 - 授权码:离线 Ed25519 签名授权码(含客户标识+有效期,`expires=permanent` 可签发永久授权),未激活/过期时除 `/api/license/**` 外所有接口 401,前端强制跳激活页;签发用 `scripts/LicenseKeygen.java`(或 `make license`),公钥在 `application.yml` 的 `dq.license.public-key`,私钥 `license-private.key` 不入库
 - 数据源连接信息存本地 H2 文件库,密码 AES-GCM 加密
-- 桌面安装版生命周期:前端每 5 秒上报 `/api/heartbeat`,看门狗(DesktopSession)在 `--app` 窗口关闭、超过 `dq.desktop.shutdown-timeout-seconds`(默认 45s,<=0 禁用)未收到心跳后自动退出后端进程;只在本进程成功拉起 --app 窗口后才武装,java -jar 服务器部署不受影响;机器休眠超时也会误判退出,进行中的扫描中断后可断点续扫
+- 桌面安装版生命周期:系统托盘图标(TrayManager)常驻,右键菜单「打开窗口/退出」,退出=关窗口+结束后端进程;托盘生效时后端以守护进程方式常驻、心跳看门狗停用;托盘不可用(headless/部分 Linux 桌面)时退回心跳看门狗(DesktopSession):前端每 5 秒上报 `/api/heartbeat`,超过 `dq.desktop.shutdown-timeout-seconds`(默认 45s,<=0 禁用)未收到心跳自动退出;只在本进程成功拉起 --app 窗口后才武装,java -jar 服务器部署不受影响;机器休眠超时也会误判退出,进行中的扫描中断后可断点续扫
+- 注意:Spring Boot 默认把 `java.awt.headless` 设为 true,本地 `java -jar`/`mvn spring-boot:run` 调试窗口与托盘需显式加 `-Djava.awt.headless=false`(打包脚本已注入)
 
 支持 7 种数据库:MySQL、PostgreSQL、SQL Server、Oracle、达梦 DM8、人大金仓 KingbaseES、OceanBase(仅 MySQL 模式)。驱动全部来自 Maven 中央仓库。
 
@@ -20,7 +21,7 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 
 ## 技术栈
 
-- 后端:Java 25、Spring Boot 3.4.5(web / jdbc / validation)、H2(本地存储)、Apache POI(Excel 导出)、Maven
+- 后端:Java 25、Spring Boot 3.4.5(web / jdbc / validation,内嵌容器用 Jetty 而非默认 Tomcat,本地单机更轻量;Undertow 不支持 Servlet 6.1 已被 Spring Boot 3.4 移除)、H2(本地存储)、Apache POI(Excel 导出)、Maven
 - 前端:Vue 3 + Vue Router + Element Plus + axios,Vite 5 构建(无 TypeScript、无状态库,`stores/tabs.js` 为自写简易 store)
 - 测试:JUnit 5 + Spring Boot Test + Testcontainers(MySQL 8 / PG 15 / SQL Server 2019)
 - 交付:Spring Boot fat jar(内嵌前端);jpackage 生成 macOS dmg / Linux deb+rpm 安装包与 Windows 免安装 zip(均内嵌 JRE)
@@ -28,10 +29,11 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 ## 项目结构
 
 ```
+Makefile                     常用命令快捷方式(make 查看全部:dev/build/run/package/clean;macOS 自动探测 JDK 25)
 pom.xml                      后端构建(7 个 JDBC 驱动、前端产物拷贝配置)
 src/main/java/com/example/dq/
-  DqApplication.java         入口;启动时自动避让被占用的端口(8080 起向后探测 100 个;支持 --server.port= 参数与 SERVER_PORT 环境变量,server.port=0 时跳过避让)
-  config/                    DqProperties(dq.* 配置绑定)、AiProperties(ai.* 默认配置绑定)、SpaWebConfig(SPA 路由回退 + 注册授权拦截器)、LicenseInterceptor(/api/** 未激活/过期抛 401)、BrowserOpener(安装版自动开浏览器,优先 Chrome/Edge --app 应用模式)、DesktopSession(页面心跳看门狗,--app 窗口关闭后自动退出进程)
+  DqApplication.java         入口;启动时自动避让被占用的端口(10000 起向后探测 100 个;支持 --server.port= 参数与 SERVER_PORT 环境变量,server.port=0 时跳过避让)
+  config/                    DqProperties(dq.* 配置绑定)、AiProperties(ai.* 默认配置绑定)、SpaWebConfig(SPA 路由回退 + 注册授权拦截器)、LicenseInterceptor(/api/** 未激活/过期抛 401)、BrowserOpener(安装版自动开浏览器,优先 Chrome/Edge --app 应用模式,用独立 --user-data-dir ~/.dq-tool/browser-profile 保证进程句柄有效、退出时能关闭窗口;open/closeWindow 供托盘复用)、TrayManager(系统托盘图标:打开窗口/退出,图标运行时绘制)、DesktopSession(页面心跳看门狗,托盘不可用时的进程退出兜底)
   controller/                REST API:/api/datasources、/api/scans、/api/ai-config、/api/license(授权状态/激活,不被拦截)、/api/heartbeat(页面心跳,不被拦截),以及 /api/datasources/{dsId}/ 下的 databases、schemas、schema-stats、schemas/{schema}/{tables,column-count,latest-scan-jobs,running-scans,table-docs}、schemas/{schema}/tables/{table}/doc(POST 生成 / PUT 手动编辑);GlobalExceptionHandler 统一异常映射为 {message}(401/400/409/502/500),前端 axios 拦截器直接弹 message
   dialect/                   核心抽象 DbDialect + 7 个方言实现 + DialectFactory + AbstractDialect
   license/                   LicenseCodec 授权码编解码与 Ed25519 验签(纯函数;格式 DQ1.<base64url(客户名|yyyy-MM-dd)>.<base64url(签名)>)
@@ -41,7 +43,7 @@ src/main/java/com/example/dq/
   service/                   DataSourceService(连接池/密码加解密)、MetadataService、ScanService(任务生命周期)、ExportService(POI 流式导出)、AiService(OpenAI 兼容 LLM 调用)、AiConfigService/TableDocService(AI 表说明)、LicenseService(授权验签/激活/状态缓存)
   util/CryptoUtil.java       AES-GCM 加解密
 src/main/resources/
-  application.yml            全部可调配置(dq.scan.* / dq.security.secret / ai.* 默认配置)
+  application.yml            全部可调配置(dq.data-dir 数据目录 / dq.scan.* / dq.security.secret / ai.* 默认配置 / logging.* 按天滚动文件日志)
   schema.sql                 H2 建表(10 张表,含 scan_job_event 任务状态变更事件表、schema_stat 库列表统计缓存、ai_config/table_doc AI 表说明、license_info 授权信息单行表)+ 老库升级的 ALTER ... IF NOT EXISTS,启动自动执行
 src/test/java/com/example/dq/
   dialect/                   方言 SQL 生成、分段规划单元测试
@@ -65,17 +67,19 @@ data/                        运行期生成的 H2 数据文件(勿提交改动)
 要求:JDK 25+、Maven 3.8+、Node 24+(仅开发模式)。
 
 ```bash
-# 开发模式:后端 8080 + 前端 5173(代理 /api 到 8080)
+# 开发模式:后端 10000 + 前端 5173(代理 /api 到 10000)
 mvn spring-boot:run
 cd web && npm install && npm run dev
 
 # 交付:单 jar 内嵌前端 —— 必须先构建前端,再 mvn package
 cd web && npm install && npm run build     # 产物 web/dist
 cd .. && mvn package                        # prepare-package 阶段自动把 web/dist 拷进 jar 的 static/
-java -jar target/dq-tool-0.1.3.jar          # 访问 http://localhost:8080
+java -jar target/dq-tool-0.1.3.jar          # 访问 http://localhost:10000
 ```
 
 注意:`mvn package` 不会自动构建前端;`web/dist` 缺失或过期时 jar 内静态资源即为旧版/缺失。
+
+日常操作也可以用根目录的 `Makefile`(`make` 查看全部):`make dev` / `make dev-web`(开发)、`make build` / `make run`(jar)、`make test`、`make package`(mac dmg)/ `make package-linux`(deb)、`make clean`;macOS 上会自动探测 JDK 25 覆盖 JAVA_HOME,`dev`/`run` 显式带 `-Djava.awt.headless=false`(否则 Spring Boot 默认 headless,窗口和托盘都不会启动),服务器方式调试用 `make dev-headless` / `make run-headless`。
 
 ## 测试
 
@@ -103,6 +107,7 @@ mvn test
 - 前端无 lint/格式化配置,跟随现有代码风格(2 空格缩进、单文件组件)
 - 大表默认采样估算(行数 > 100 万或体积 > 10GB,阈值可在数据源级别覆盖);MySQL/达梦/OB 的采样是 LIMIT 顺序采样,结果有偏,UI 需标注"估算值"
 - Oracle 把空字符串存为 NULL,空串统计恒为 0,这是数据库本身行为,不是 bug
+- 所有错误(程序异常、业务错误)都必须落日志:`GlobalExceptionHandler` 各分支 warn(带堆栈)/error,业务 catch 不允许静默吞掉;预期内的降级(驱动能力缺失、DM ALL_SEGMENTS 受限)用 debug/warn 说明降级后果;唯一例外是未激活期间的授权拦截(每请求触发,只记 debug 防刷屏)
 
 ## 安全考虑
 
@@ -116,9 +121,9 @@ mvn test
 ## 发布流程
 
 - 推 `v*` tag(如 `git tag v1.2 && git push origin v1.2`)触发 `.github/workflows/release.yml`;也支持 workflow_dispatch 手动触发(产物以 artifact 下载,保留 30 天,名称带版本号)
-- 并行构建:Windows 免安装 zip(x64 + ARM64,jpackage `--type app-image`,**已不用 exe/WiX**)、macOS dmg(Apple Silicon + Intel,Intel 用 macos-15-intel runner)、Linux deb + rpm,tag 触发时全部挂到 GitHub Release
+- 并行构建:Windows 免安装 zip(x64 + ARM64,jpackage `--type app-image`,**已不用 exe/WiX**)、macOS dmg(Apple Silicon + Intel,Intel 用 macos-15-intel runner)、Linux deb + rpm,tag 触发时全部挂到 GitHub Release。**当前 CI 只启用 Windows x64,ARM64/macOS/Linux 任务在 release.yml 中整体注释停用,需要时取消注释恢复**
 - jpackage 不支持交叉编译,各平台包在对应系统的 runner 上原生构建
 - 本地打包用 `scripts/package-{mac,linux}.sh` / `scripts\package-win.bat`,可加 `--skip-build` 只重打包;Linux 脚本默认打 deb,加 `--type rpm` 打 rpm(需 rpmbuild)
 - 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.3` 映射为安装包版本 `1.3`
-- 安装版数据目录固定为 `~/.dq-tool/data`(jar 方式为 `./data`),由 jpackage 的 `--java-options` 注入,修改打包脚本时保持这一区分
-- Windows 包无控制台窗口,启动日志通过 `--java-options "-Dlogging.file.name=..."` 写入 `~/.dq-tool/logs/dq-tool.log`
+- 安装版数据目录固定为 `~/.dq-tool/data`(jar 方式为 `./data`),由打包脚本注入 `--java-options "-Ddq.data-dir=..."`(`spring.datasource.url` 与日志路径都引用该配置),修改打包脚本时保持这一区分
+- 运行日志输出到数据目录 `logs/` 子目录,按天滚动(`dq-tool.yyyy-MM-dd.log`,保留 30 天,配置见 `application.yml` 的 `logging.*`);Windows 包无控制台窗口,日志文件是唯一排障入口

@@ -125,7 +125,7 @@ public class ChunkRunner {
                 repo.markChunkStatus(chunkId, ScanStatus.CANCELED, null);
                 return;
             }
-            log.warn("分段执行失败 chunkId={} table={}: {}", chunkId, table.tableName(), e.getMessage());
+            log.warn("分段执行失败 chunkId={} table={}: {}", chunkId, table.tableName(), e.getMessage(), e);
             if (!retried && chunk.attempts() < MAX_ATTEMPTS) {
                 repo.markChunkStatus(chunkId, ScanStatus.PENDING, null);
                 run(chunkId, true);
@@ -253,6 +253,7 @@ public class ChunkRunner {
         try {
             return objectMapper.readValue(json, new TypeReference<List<NullRule>>() {});
         } catch (Exception e) {
+            log.warn("空值规则解析失败,按空规则处理: {}", e.getMessage());
             return List.of();
         }
     }

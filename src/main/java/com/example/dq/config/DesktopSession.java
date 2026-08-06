@@ -12,8 +12,9 @@ import org.springframework.stereotype.Component;
  * 问题背景:安装包隐藏终端,用户关闭浏览器 --app 窗口后没有地方能结束后端进程,残留孤儿进程。
  * 方案:前端每 5 秒上报一次心跳(/api/heartbeat),本进程拉起的 --app 窗口存在时武装看门狗,
  * 超过 dq.desktop.shutdown-timeout-seconds 未收到心跳即判定窗口已关闭,优雅退出进程。
- * 只在 BrowserOpener 成功拉起 --app 窗口后才生效:java -jar 服务器部署、
- * 页面开在普通浏览器标签页(未由本进程拉起 app 窗口)等场景不受影响。
+ * 系统托盘(TrayManager)可用时以后台守护进程方式运行,托盘提供「打开窗口/退出」入口,
+ * 看门狗停用;本类仅作为托盘不可用环境的兜底。
+ * java -jar 服务器部署、页面开在普通浏览器标签页(未由本进程拉起 app 窗口)等场景不受影响。
  * 已知边界:机器休眠超过超时时长会被误判为窗口关闭;进行中的扫描随进程退出中断,重开后可断点续扫。
  */
 @Component
@@ -25,6 +26,8 @@ public class DesktopSession {
     private final ApplicationContext ctx;
     /** 本进程是否成功拉起了 --app 应用模式窗口(只有这种情况才需要看门狗) */
     private volatile boolean appModeOpened;
+    /** 托盘图标(TrayManager)生效时后端以守护进程方式常驻,看门狗停用 */
+    private volatile boolean trayActive;
     /** 最近一次页面心跳时间;0 表示还没收到过心跳,看门狗尚未武装 */
     private volatile long lastBeatMillis;
 
@@ -37,6 +40,10 @@ public class DesktopSession {
         this.appModeOpened = true;
     }
 
+    public void markTrayActive() {
+        this.trayActive = true;
+    }
+
     public void beat() {
         this.lastBeatMillis = System.currentTimeMillis();
     }
@@ -44,7 +51,7 @@ public class DesktopSession {
     @Scheduled(fixedDelay = 5000)
     public void watchdog() {
         int timeoutSeconds = props.getDesktop().getShutdownTimeoutSeconds();
-        if (!appModeOpened || timeoutSeconds <= 0 || lastBeatMillis == 0) {
+        if (trayActive || !appModeOpened || timeoutSeconds <= 0 || lastBeatMillis == 0) {
             return;
         }
         long idleMillis = System.currentTimeMillis() - lastBeatMillis;

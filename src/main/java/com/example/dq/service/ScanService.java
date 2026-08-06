@@ -215,7 +215,8 @@ public class ScanService {
             try {
                 rules = objectMapper.readValue(j.nullRulesJson(),
                         new com.fasterxml.jackson.core.type.TypeReference<List<NullRule>>() {});
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                log.warn("任务空值规则解析失败,按空规则处理 jobId={}: {}", j.id(), e.getMessage());
             }
         }
         com.example.dq.model.DbType dbType = dsRepo.findById(j.datasourceId())

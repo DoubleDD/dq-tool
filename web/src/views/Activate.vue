@@ -57,7 +57,8 @@ import { markActivated } from '../router'
 
 const router = useRouter()
 const status = ref(null)
-const code = ref('')
+// 内测版:授权码输入框默认填入内测授权码,打开激活页即可直接点「激活」
+const code = ref('DQ1.5YaF6YOo5rWL6K-VfDIwMjYtMTItMzE.6bBigE1c98FlYdwWdVUPdG75VG4IQNXWVeND-Bivq_i4DDIWNzFdz9vwT2iBxqYfpXlR3zD901FIE08004VkBw')
 const submitting = ref(false)
 const showRenew = ref(false)
 

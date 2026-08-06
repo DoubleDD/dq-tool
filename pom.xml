@@ -27,6 +27,17 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+            <exclusions>
+                <!-- 本地单机使用,内嵌容器用更轻量的 Jetty;Undertow 不支持 Servlet 6.1,Spring Boot 3.4 已移除 -->
+                <exclusion>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-starter-tomcat</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jetty</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -83,6 +94,13 @@
         <dependency>
             <groupId>com.oracle.database.jdbc</groupId>
             <artifactId>ojdbc11</artifactId>
+            <version>23.26.3.0.0</version>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- orai18n:23c 起 ojdbc 移除了部分 NLS 字符集支持,Oracle 老库(ZHS16GBK 等)连接需要,否则报 ORA-17056 -->
+        <dependency>
+            <groupId>com.oracle.database.nls</groupId>
+            <artifactId>orai18n</artifactId>
             <version>23.26.3.0.0</version>
             <scope>runtime</scope>
         </dependency>

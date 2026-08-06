@@ -1,5 +1,5 @@
-# 打 tag(如 v1.0)触发:全平台构建安装包并附加到 GitHub Release
-#   Windows → 免安装 zip,macOS → dmg(arm64 + x86_64),Linux → deb + rpm
+# 打 tag(如 v1.0)触发:构建安装包并附加到 GitHub Release
+#   当前仅构建 Windows x64 免安装 zip;Windows ARM64 / macOS dmg / Linux deb+rpm 暂时注释停用,需要时取消注释即可
 # 也可在 Actions 页面手动触发(workflow_dispatch),产物以 artifact 形式下载
 name: release
 
@@ -59,171 +59,173 @@ jobs:
         with:
           files: target/jpackage/dist/*.zip
 
-  windows-arm:
-    # ARM64 Windows;Temurin 不出 Windows ARM64 的 JDK,用 Microsoft OpenJDK
-    runs-on: windows-11-arm
-    steps:
-      - uses: actions/checkout@v7
+  # ── 以下平台暂时停用(2026-08),需要时取消注释恢复 ──────────────────────────
+  #
+  # windows-arm:
+  #   # ARM64 Windows;Temurin 不出 Windows ARM64 的 JDK,用 Microsoft OpenJDK
+  #   runs-on: windows-11-arm
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #
+  #     - uses: actions/setup-java@v5
+  #       with:
+  #         distribution: microsoft
+  #         java-version: '25'
+  #         architecture: aarch64
+  #         cache: maven
+  #
+  #     - uses: actions/setup-node@v7
+  #       with:
+  #         node-version: '24'
+  #         cache: npm
+  #         cache-dependency-path: web/package-lock.json
+  #
+  #     - name: Install dependencies
+  #       run: npm ci
+  #       working-directory: web
+  #
+  #     - name: Build portable zip
+  #       run: scripts\package-win.bat
+  #
+  #     # 统一命名: dq-tool-<版本>-<系统>-<架构>.zip
+  #     - name: Rename zip with platform suffix
+  #       id: pkg
+  #       shell: pwsh
+  #       run: |
+  #         cd target/jpackage/dist
+  #         Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-arm64.zip' }
+  #         # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
+  #         "name=$((Get-ChildItem dq-tool-*.zip | Select-Object -First 1).BaseName)" >> $env:GITHUB_OUTPUT
+  #
+  #     - uses: actions/upload-artifact@v7
+  #       with:
+  #         name: ${{ steps.pkg.outputs.name }}
+  #         path: target/jpackage/dist/*.zip
+  #         retention-days: 30
+  #
+  #     - name: Attach to GitHub Release
+  #       if: startsWith(github.ref, 'refs/tags/')
+  #       uses: softprops/action-gh-release@v3
+  #       with:
+  #         files: target/jpackage/dist/*.zip
 
-      - uses: actions/setup-java@v5
-        with:
-          distribution: microsoft
-          java-version: '25'
-          architecture: aarch64
-          cache: maven
+  # macos:
+  #   # jpackage 不能交叉编译,Apple Silicon 和 Intel 分别在对应架构的 runner 上构建
+  #   runs-on: ${{ matrix.os }}
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       include:
+  #         - { os: macos-14, arch: arm64 }         # Apple Silicon
+  #         - { os: macos-15-intel, arch: x86_64 }  # Intel(macos-13 已于 2025-12 退役,此为替代标签,支持到 2027-08)
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #
+  #     - uses: actions/setup-java@v5
+  #       with:
+  #         distribution: temurin
+  #         java-version: '25'
+  #         cache: maven
+  #
+  #     - uses: actions/setup-node@v7
+  #       with:
+  #         node-version: '24'
+  #         cache: npm
+  #         cache-dependency-path: web/package-lock.json
+  #
+  #     - name: Install dependencies
+  #       run: npm ci
+  #       working-directory: web
+  #
+  #     - name: Build dmg
+  #       run: scripts/package-mac.sh
+  #
+  #     # 统一命名: dq-tool-<版本>-macos-<架构>.dmg
+  #     - name: Rename dmg with platform suffix
+  #       id: pkg
+  #       run: |
+  #         cd target/jpackage/dist
+  #         for f in dq-tool-*.dmg; do mv "$f" "${f%.dmg}-macos-${{ matrix.arch }}.dmg"; done
+  #         # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
+  #         echo "name=$(ls dq-tool-*.dmg | head -1 | sed 's/\.dmg$//')" >> "$GITHUB_OUTPUT"
+  #
+  #     - uses: actions/upload-artifact@v7
+  #       with:
+  #         name: ${{ steps.pkg.outputs.name }}
+  #         path: target/jpackage/dist/*.dmg
+  #         retention-days: 30
+  #
+  #     - name: Attach to GitHub Release
+  #       if: startsWith(github.ref, 'refs/tags/')
+  #       uses: softprops/action-gh-release@v3
+  #       with:
+  #         files: target/jpackage/dist/*.dmg
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-        working-directory: web
-
-      - name: Build portable zip
-        run: scripts\package-win.bat
-
-      # 统一命名: dq-tool-<版本>-<系统>-<架构>.zip
-      - name: Rename zip with platform suffix
-        id: pkg
-        shell: pwsh
-        run: |
-          cd target/jpackage/dist
-          Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-arm64.zip' }
-          # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
-          "name=$((Get-ChildItem dq-tool-*.zip | Select-Object -First 1).BaseName)" >> $env:GITHUB_OUTPUT
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.pkg.outputs.name }}
-          path: target/jpackage/dist/*.zip
-          retention-days: 30
-
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
-        with:
-          files: target/jpackage/dist/*.zip
-
-  macos:
-    # jpackage 不能交叉编译,Apple Silicon 和 Intel 分别在对应架构的 runner 上构建
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: macos-14, arch: arm64 }         # Apple Silicon
-          - { os: macos-15-intel, arch: x86_64 }  # Intel(macos-13 已于 2025-12 退役,此为替代标签,支持到 2027-08)
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '25'
-          cache: maven
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-        working-directory: web
-
-      - name: Build dmg
-        run: scripts/package-mac.sh
-
-      # 统一命名: dq-tool-<版本>-macos-<架构>.dmg
-      - name: Rename dmg with platform suffix
-        id: pkg
-        run: |
-          cd target/jpackage/dist
-          for f in dq-tool-*.dmg; do mv "$f" "${f%.dmg}-macos-${{ matrix.arch }}.dmg"; done
-          # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
-          echo "name=$(ls dq-tool-*.dmg | head -1 | sed 's/\.dmg$//')" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.pkg.outputs.name }}
-          path: target/jpackage/dist/*.dmg
-          retention-days: 30
-
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
-        with:
-          files: target/jpackage/dist/*.dmg
-
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '25'
-          cache: maven
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-        working-directory: web
-
-      # jpackage 打 deb 需要 fakeroot,打 rpm 需要 rpmbuild(rpm 包)
-      - name: Install packaging tools
-        run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
-
-      - name: Build deb installer
-        run: scripts/package-linux.sh
-
-      - name: Build rpm installer
-        run: scripts/package-linux.sh --skip-build --type rpm
-
-      # 统一命名: dq-tool-<版本>-linux-amd64.{deb,rpm}
-      # (deb 原生命名为 dq-tool_<版本>_amd64.deb,rpm 为 dq-tool-<版本>-1.x86_64.rpm)
-      - name: Rename packages with platform suffix
-        id: pkg
-        run: |
-          cd target/jpackage/dist
-          for f in dq-tool_*.deb; do
-            v=$(echo "$f" | sed -E 's/dq-tool_(.*)_amd64\.deb/\1/')
-            mv "$f" "dq-tool-${v}-linux-amd64.deb"
-          done
-          for f in dq-tool-*-1.x86_64.rpm; do
-            v=$(echo "$f" | sed -E 's/dq-tool-(.*)-1\.x86_64\.rpm/\1/')
-            mv "$f" "dq-tool-${v}-linux-amd64.rpm"
-          done
-          # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
-          echo "name_deb=$(ls dq-tool-*.deb | head -1 | sed 's/\.deb$//')" >> "$GITHUB_OUTPUT"
-          echo "name_rpm=$(ls dq-tool-*.rpm | head -1 | sed 's/\.rpm$//')" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.pkg.outputs.name_deb }}
-          path: target/jpackage/dist/*.deb
-          retention-days: 30
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ steps.pkg.outputs.name_rpm }}
-          path: target/jpackage/dist/*.rpm
-          retention-days: 30
-
-      - name: Attach to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            target/jpackage/dist/*.deb
-            target/jpackage/dist/*.rpm
+  # linux:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v7
+  #
+  #     - uses: actions/setup-java@v5
+  #       with:
+  #         distribution: temurin
+  #         java-version: '25'
+  #         cache: maven
+  #
+  #     - uses: actions/setup-node@v7
+  #       with:
+  #         node-version: '24'
+  #         cache: npm
+  #         cache-dependency-path: web/package-lock.json
+  #
+  #     - name: Install dependencies
+  #       run: npm ci
+  #       working-directory: web
+  #
+  #     # jpackage 打 deb 需要 fakeroot,打 rpm 需要 rpmbuild(rpm 包)
+  #     - name: Install packaging tools
+  #       run: sudo apt-get update && sudo apt-get install -y fakeroot rpm
+  #
+  #     - name: Build deb installer
+  #       run: scripts/package-linux.sh
+  #
+  #     - name: Build rpm installer
+  #       run: scripts/package-linux.sh --skip-build --type rpm
+  #
+  #     # 统一命名: dq-tool-<版本>-linux-amd64.{deb,rpm}
+  #     # (deb 原生命名为 dq-tool_<版本>_amd64.deb,rpm 为 dq-tool-<版本>-1.x86_64.rpm)
+  #     - name: Rename packages with platform suffix
+  #       id: pkg
+  #       run: |
+  #         cd target/jpackage/dist
+  #         for f in dq-tool_*.deb; do
+  #           v=$(echo "$f" | sed -E 's/dq-tool_(.*)_amd64\.deb/\1/')
+  #           mv "$f" "dq-tool-${v}-linux-amd64.deb"
+  #         done
+  #         for f in dq-tool-*-1.x86_64.rpm; do
+  #           v=$(echo "$f" | sed -E 's/dq-tool-(.*)-1\.x86_64\.rpm/\1/')
+  #           mv "$f" "dq-tool-${v}-linux-amd64.rpm"
+  #         done
+  #         # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
+  #         echo "name_deb=$(ls dq-tool-*.deb | head -1 | sed 's/\.deb$//')" >> "$GITHUB_OUTPUT"
+  #         echo "name_rpm=$(ls dq-tool-*.rpm | head -1 | sed 's/\.rpm$//')" >> "$GITHUB_OUTPUT"
+  #
+  #     - uses: actions/upload-artifact@v7
+  #       with:
+  #         name: ${{ steps.pkg.outputs.name_deb }}
+  #         path: target/jpackage/dist/*.deb
+  #         retention-days: 30
+  #
+  #     - uses: actions/upload-artifact@v7
+  #       with:
+  #         name: ${{ steps.pkg.outputs.name_rpm }}
+  #         path: target/jpackage/dist/*.rpm
+  #         retention-days: 30
+  #
+  #     - name: Attach to GitHub Release
+  #       if: startsWith(github.ref, 'refs/tags/')
+  #       uses: softprops/action-gh-release@v3
+  #       with:
+  #         files: |
+  #           target/jpackage/dist/*.deb
+  #           target/jpackage/dist/*.rpm

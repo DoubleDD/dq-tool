@@ -2,6 +2,8 @@ package com.example.dq.dialect;
 
 import com.example.dq.model.DbType;
 import com.example.dq.model.TableStat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -14,6 +16,8 @@ import java.util.Map;
 
 /** 达梦 DM8 方言 */
 public class DmDialect extends AbstractDialect {
+
+    private static final Logger log = LoggerFactory.getLogger(DmDialect.class);
 
     @Override
     public DbType type() {
@@ -54,6 +58,7 @@ public class DmDialect extends AbstractDialect {
             return queryLongByGroup(conn, "SELECT owner, SUM(bytes) FROM all_segments GROUP BY owner");
         } catch (SQLException e) {
             // 部分 DM 实例或受限账号没有 ALL_SEGMENTS 视图,降级为不统计体积
+            log.warn("达梦 ALL_SEGMENTS 查询失败,降级为不统计体积: {}", e.getMessage());
             return Map.of();
         }
     }
@@ -64,6 +69,7 @@ public class DmDialect extends AbstractDialect {
             return queryTables(conn, schema, listTablesSql(true));
         } catch (SQLException e) {
             // 部分 DM 实例或受限账号没有 ALL_SEGMENTS 视图,降级为不统计表大小
+            log.warn("达梦 ALL_SEGMENTS 查询失败,降级为不统计表大小: {}", e.getMessage());
             return queryTables(conn, schema, listTablesSql(false));
         }
     }

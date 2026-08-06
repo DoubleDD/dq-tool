@@ -13,7 +13,7 @@ import java.net.ServerSocket;
 @EnableScheduling
 public class DqApplication {
 
-    private static final int DEFAULT_PORT = 8080;
+    private static final int DEFAULT_PORT = 10000;
     private static final int MAX_PORT_OFFSET = 100;
 
     public static void main(String[] args) {
@@ -31,7 +31,7 @@ public class DqApplication {
     }
 
     /**
-     * 解析用户显式配置的端口,优先级: --server.port 启动参数 > SERVER_PORT 环境变量 > 默认 8080。
+     * 解析用户显式配置的端口,优先级: --server.port 启动参数 > SERVER_PORT 环境变量 > 默认 10000。
      */
     private static int resolveConfiguredPort(String[] args) {
         for (String arg : args) {

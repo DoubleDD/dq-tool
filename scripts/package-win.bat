@@ -31,9 +31,8 @@ jpackage ^
   --input "%INPUT%" ^
   --main-jar dq-tool-%APP_VERSION%.jar ^
   --main-class org.springframework.boot.loader.launch.JarLauncher ^
-  --java-options "-Dspring.datasource.url=jdbc:h2:file:${user.home}/.dq-tool/data/dqconfig;AUTO_SERVER=TRUE" ^
+  --java-options "-Ddq.data-dir=${user.home}/.dq-tool/data" ^
   --java-options "-Djava.awt.headless=false" ^
-  --java-options "-Dlogging.file.name=${user.home}/.dq-tool/logs/dq-tool.log" ^
   --dest "%DIST%" || exit /b 1
 
 rem 打成 zip 便于分发

@@ -3,6 +3,8 @@ package com.example.dq.dialect;
 import com.example.dq.model.ColumnMeta;
 import com.example.dq.model.NullRule;
 import com.example.dq.model.Range;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -23,6 +25,8 @@ import java.util.regex.Pattern;
 
 /** 各方言的通用实现:元数据读取、分段规划、统计 SQL 模板 */
 public abstract class AbstractDialect implements DbDialect {
+
+    private static final Logger log = LoggerFactory.getLogger(AbstractDialect.class);
 
     private static final Pattern NUMERIC_LITERAL = Pattern.compile("-?\\d+(\\.\\d+)?");
     /** 每条统计 SQL 最多包含的列数(防 SQL 过长) */
@@ -84,8 +88,9 @@ public abstract class AbstractDialect implements DbDialect {
                     uniqueFirst.put(idx, col);
                 }
             }
-        } catch (SQLException ignored) {
+        } catch (SQLException e) {
             // 部分驱动不支持 getIndexInfo,忽略,仅影响分段键选择
+            log.debug("读取索引元数据失败,唯一键分段键可能不可用 table={}: {}", table, e.getMessage());
         }
 
         List<ColumnMeta> cols = new ArrayList<>();
@@ -103,8 +108,9 @@ public abstract class AbstractDialect implements DbDialect {
                 int digits = 0;
                 try {
                     digits = rs.getInt("DECIMAL_DIGITS");
-                } catch (SQLException ignored) {
+                } catch (SQLException e) {
                     // 部分驱动不支持 DECIMAL_DIGITS
+                    log.debug("读取 DECIMAL_DIGITS 失败,按 0 处理 column={}: {}", name, e.getMessage());
                 }
                 cols.add(new ColumnMeta(name, typeName, displayType(typeName, size, digits), jdbcType,
                         nullable, defaultValue, comment == null ? "" : comment,

@@ -1,11 +1,11 @@
 server:
-  port: 8080
+  port: 10000
 
 spring:
   application:
     name: dq-tool
   datasource:
-    url: jdbc:h2:file:./data/dqconfig;AUTO_SERVER=TRUE
+    url: jdbc:h2:file:${dq.data-dir}/dqconfig;AUTO_SERVER=TRUE
     driver-class-name: org.h2.Driver
     username: sa
     password: ""
@@ -14,7 +14,19 @@ spring:
       mode: always
       schema-locations: classpath:schema.sql
 
+# 运行日志输出到数据目录,按天滚动(dq-tool.yyyy-MM-dd.log),保留 30 天
+logging:
+  file:
+    name: ${dq.data-dir}/logs/dq-tool.log
+  logback:
+    rollingpolicy:
+      file-name-pattern: ${dq.data-dir}/logs/dq-tool.%d{yyyy-MM-dd}.%i.log
+      max-file-size: 100MB      # 单文件上限,正常一天一个,%i 仅作超限兜底
+      max-history: 30
+      total-size-cap: 2GB
+
 dq:
+  data-dir: ./data           # 数据目录(H2 数据文件与运行日志);安装版由打包脚本注入为 ${user.home}/.dq-tool/data
   scan:
     workers: 8                 # 全局扫描工作线程数
     chunks-per-table: 100      # 每张表的分段数
@@ -28,7 +40,7 @@ dq:
     shutdown-timeout-seconds: 45   # 桌面安装版 --app 窗口关闭后,超过该时长未收到页面心跳则退出进程;<=0 禁用看门狗(注意:机器休眠超过该时长也会触发退出)
   license:
     # public-key: "MCowBQYDK2VwAyEA7mCvdJjk397irsYJgQ6LRe5sfvTht6XEdpbWruUd+lo="   # 授权码验签公钥(Ed25519),私钥在 license-private.key(不入库)
-    public-key: "MCowBQYDK2VwAyEAZYA6efEOwPUb9KsUXRKXmqN975X8JhD4JBv6HSDNmG8="
+    public-key: "MCowBQYDK2VwAyEA5ffTpP6O+Zj7uZGVaKvRTFvQuNnNZ0FIVUHfM8BVeHI="
 # AI 大模型接口默认配置:页面「AI 配置」未设置的字段回落到这里的值
 ai:
   api-key: user1

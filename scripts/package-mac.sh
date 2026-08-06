@@ -30,8 +30,9 @@ jpackage \
   --input "$INPUT" \
   --main-jar "dq-tool-${APP_VERSION}.jar" \
   --main-class org.springframework.boot.loader.launch.JarLauncher \
-  --java-options '-Dspring.datasource.url=jdbc:h2:file:${user.home}/.dq-tool/data/dqconfig;AUTO_SERVER=TRUE' \
+  --java-options '-Ddq.data-dir=${user.home}/.dq-tool/data' \
   --java-options '-Djava.awt.headless=false' \
+  --java-options '-Dapple.awt.UIElement=true' \
   --dest "$DIST"
 
 echo "产物: $DIST/dq-tool-${PKG_VERSION}.dmg"

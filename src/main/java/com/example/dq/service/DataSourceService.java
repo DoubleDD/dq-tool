@@ -11,6 +11,8 @@ import com.example.dq.repository.SchemaStatRepository;
 import com.example.dq.util.CryptoUtil;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.sql.Connection;
@@ -23,6 +25,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /** 数据源配置管理 + 动态连接池 */
 @Service
 public class DataSourceService {
+
+    private static final Logger log = LoggerFactory.getLogger(DataSourceService.class);
 
     private final DataSourceRepository repo;
     private final CryptoUtil crypto;
@@ -114,6 +118,7 @@ public class DataSourceService {
                 return dialect.detectDbMode(conn);
             }
         } catch (Exception e) {
+            log.warn("探测数据库兼容模式失败,按未知模式保存 {}: {}", req.jdbcUrl(), e.getMessage());
             return null;
         }
     }

@@ -6,6 +6,8 @@ import com.example.dq.model.LicenseRequiredException;
 import com.example.dq.model.LicenseStatusView;
 import com.example.dq.repository.LicenseRepository;
 import com.example.dq.util.CryptoUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.security.KeyFactory;
@@ -21,6 +23,8 @@ import java.util.Base64;
  */
 @Service
 public class LicenseService {
+
+    private static final Logger log = LoggerFactory.getLogger(LicenseService.class);
 
     private final LicenseRepository repository;
     private final CryptoUtil crypto;
@@ -95,6 +99,7 @@ public class LicenseService {
                         : Math.max(ChronoUnit.DAYS.between(today, payload.expiresAt()), 0);
                 return new LicenseStatusView(true, expired, payload.customer(), payload.expiresAt(), daysLeft);
             } catch (RuntimeException e) {
+                log.warn("库存授权码校验失败,按未激活处理: {}", e.getMessage());
                 return LicenseStatusView.notActivated();
             }
         }).orElseGet(LicenseStatusView::notActivated);
