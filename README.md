@@ -24,13 +24,13 @@
 
 ## 快速开始
 
-要求:JDK 25+、Node 24+(仅开发模式需要)、Maven 3.8+。
+要求:JDK 25+、Node 24+(仅开发模式需要)。构建用 Gradle(仓库自带 wrapper,无需安装)。
 
 开发模式:
 
 ```bash
-# 后端(10000)
-mvn spring-boot:run
+# 后端(10000;窗口/托盘需显式 -Djava.awt.headless=false,见 Makefile 的 dev 目标)
+./gradlew :server:bootRun
 
 # 前端(5173,代理 /api 到 10000)
 cd web && npm install && npm run dev
@@ -40,8 +40,8 @@ cd web && npm install && npm run dev
 
 ```bash
 cd web && npm install && npm run build   # 产物在 web/dist
-cd .. && mvn package                     # prepare-package 阶段自动把 web/dist 拷进 jar
-java -jar target/dq-tool-0.1.3.jar
+cd .. && ./gradlew :server:bootJar       # processResources 自动把 web/dist 拷进 jar
+java -jar server/build/libs/dq-tool-0.1.3.jar
 ```
 
 > 访问 http://localhost:10000 即可使用(开发模式前端在 5173)。10000 被占用时会自动向后探测可用端口;也可用 `--server.port=` 参数或 `SERVER_PORT` 环境变量指定。
@@ -49,19 +49,19 @@ java -jar target/dq-tool-0.1.3.jar
 原生安装包(jpackage,内嵌 JRE,目标机器无需安装 Java):
 
 ```bash
-# macOS → target/jpackage/dist/dq-tool-1.2.dmg
+# macOS → server/build/jpackage/dist/dq-tool-1.2.dmg
 scripts/package-mac.sh
 
-# Windows(在 Windows 机器上执行)→ target/jpackage/dist/dq-tool-1.2.zip(免安装,解压后双击 dq-tool.exe)
+# Windows(在 Windows 机器上执行)→ server/build/jpackage/dist/dq-tool-1.2.zip(免安装,解压后双击 dq-tool.exe)
 scripts\package-win.bat
 
-# Linux(Debian/Ubuntu,需 fakeroot)→ target/jpackage/dist/dq-tool_1.2_amd64.deb
+# Linux(Debian/Ubuntu,需 fakeroot)→ server/build/jpackage/dist/dq-tool_1.2_amd64.deb
 scripts/package-linux.sh
 ```
 
 推荐走 CI 全平台构建:推 `v*` tag(如 `git tag v1.2 && git push origin v1.2`)触发 `.github/workflows/release.yml`,云端并行构建 Windows 免安装 zip(x64 + ARM64)、macOS dmg(Apple Silicon + Intel)、Linux deb,全部自动挂到 GitHub Release;也支持 workflow_dispatch 手动触发(产物以 artifact 下载,保留 30 天)。jpackage 不支持交叉编译,各平台包都在对应系统的 runner 上原生构建。
 
-- 脚本自动完成前端构建 + `mvn package` + jpackage;只重打包可加 `--skip-build`
+- 脚本自动完成前端构建 + `./gradlew :server:bootJar` + jpackage;只重打包可加 `--skip-build`
 - dmg/deb 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.3` 映射为安装包版本 `1.3`
 - 安装版的数据目录固定为 `~/.dq-tool/data`(Windows 为 `%USERPROFILE%\.dq-tool\data`),与 jar 方式的 `./data` 不同
 - 运行日志输出到数据目录的 `logs/` 子目录,按天滚动(`dq-tool.yyyy-MM-dd.log`,保留 30 天)
@@ -131,13 +131,13 @@ make license customer="某某公司" expires=2026-12-31
 ## 测试
 
 ```bash
-mvn test
+./gradlew :server:test
 ```
 
 - 单元测试:方言 SQL 生成、规则谓词转义、分段键选择、AI 表说明 prompt 组装
 - H2 测试(不需要 Docker):分段累加 == 全表一条 SQL;任务删除的级联清理(分段/字段/表/任务四级)
 - Testcontainers 集成测试(需要 Docker):真实 MySQL 8 / PG 15 / SQL Server 2019 上的并发分段全链路、空值规则、表与字段注释、导出。
   OrbStack 用户若报 "Could not find a valid Docker environment",带上 socket 再跑:
-  `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock mvn test`
+  `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock ./gradlew :server:test`
 - 达梦 / 人大金仓 / OceanBase / Oracle 未做自动化验证,接入真实环境后请先用小库验证
 - LLM 实际调用无自动化覆盖,AI 表说明功能需配置真实接口后手动验证

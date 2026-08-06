@@ -6,17 +6,17 @@ cd "$(dirname "$0")/.."
 
 if [[ "${1:-}" != "--skip-build" ]]; then
   (cd web && npm run build)
-  mvn -q -DskipTests package
+  ./gradlew :server:bootJar
 fi
 
-APP_VERSION=$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)
+APP_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/build.gradle.kts | head -1)
 # dmg/msi 要求主版本号 >= 1,去掉开头的 "0."(0.1.0 -> 1.0)
 PKG_VERSION="${APP_VERSION#0.}"
-JAR="target/dq-tool-${APP_VERSION}.jar"
-[[ -f "$JAR" ]] || { echo "找不到 $JAR,请先执行 mvn package" >&2; exit 1; }
+JAR="server/build/libs/dq-tool-${APP_VERSION}.jar"
+[[ -f "$JAR" ]] || { echo "找不到 $JAR,请先执行 ./gradlew :server:bootJar" >&2; exit 1; }
 
-INPUT=target/jpackage/input
-DIST=target/jpackage/dist
+INPUT=server/build/jpackage/input
+DIST=server/build/jpackage/dist
 rm -rf "$INPUT" && mkdir -p "$INPUT"
 cp "$JAR" "$INPUT/"
 

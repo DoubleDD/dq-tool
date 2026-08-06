@@ -13,7 +13,7 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - 授权码:离线 Ed25519 签名授权码(含客户标识+有效期,`expires=permanent` 可签发永久授权),未激活/过期时除 `/api/license/**` 外所有接口 401,前端强制跳激活页;签发用 `scripts/LicenseKeygen.java`(或 `make license`),公钥在 `application.yml` 的 `dq.license.public-key`,私钥 `license-private.key` 不入库
 - 数据源连接信息存本地 H2 文件库,密码 AES-GCM 加密
 - 桌面安装版生命周期:双击启动立即出现托盘图标(TrayManager.installEarly,main 阶段安装)+ 启动画面(DesktopSplash),服务完全就绪后关启动画面并打开 --app 窗口(BrowserOpener);早期反馈只在显式 `-Djava.awt.headless=false`(打包脚本注入)时启用,普通 java -jar 不触发;托盘右键菜单「打开窗口/退出」,退出=关窗口+结束后端进程;托盘生效时后端以守护进程方式常驻、心跳看门狗停用;托盘不可用(headless/部分 Linux 桌面)时退回心跳看门狗(DesktopSession):前端每 5 秒上报 `/api/heartbeat`,超过 `dq.desktop.shutdown-timeout-seconds`(默认 45s,<=0 禁用)未收到心跳自动退出;只在本进程成功拉起 --app 窗口后才武装,java -jar 服务器部署不受影响;机器休眠超时也会误判退出,进行中的扫描中断后可断点续扫
-- 注意:Spring Boot 默认把 `java.awt.headless` 设为 true,本地 `java -jar`/`mvn spring-boot:run` 调试窗口与托盘需显式加 `-Djava.awt.headless=false`(打包脚本已注入)
+- 注意:Spring Boot 默认把 `java.awt.headless` 设为 true,本地 `java -jar`/`./gradlew :server:bootRun` 调试窗口与托盘需显式加 `-Djava.awt.headless=false`(打包脚本已注入)
 
 支持 7 种数据库:MySQL、PostgreSQL、SQL Server、Oracle、达梦 DM8、人大金仓 KingbaseES、OceanBase(仅 MySQL 模式)。驱动全部来自 Maven 中央仓库。
 
@@ -21,7 +21,8 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 
 ## 技术栈
 
-- 后端:Java 25、Spring Boot 3.4.5(web / jdbc / validation,内嵌容器用 Jetty 而非默认 Tomcat,本地单机更轻量;Undertow 不支持 Servlet 6.1 已被 Spring Boot 3.4 移除)、H2(本地存储)、Apache POI(Excel 导出)、Maven
+- 构建:Gradle 多模块(根 wrapper 9.2.1),子模块 `server`(Java Web 版)与 `desktop`(Kotlin Compose 桌面重写版,见 desktop/AGENTS.md),共享依赖版本统一在 `gradle/libs.versions.toml`;`web/` 为独立 npm 工程,不纳入 Gradle
+- 后端(server/):Java 25、Spring Boot 4.1.0(web / jdbc / validation,内嵌容器用 Jetty 而非默认 Tomcat,本地单机更轻量;Undertow 不支持 Servlet 6.1 已被移除)、Jackson 3(`tools.jackson` 包名,Boot 4 起默认)、H2(本地存储)、Apache POI(Excel 导出)
 - 前端:Vue 3 + Vue Router + Element Plus + axios,Vite 5 构建(无 TypeScript、无状态库,`stores/tabs.js` 为自写简易 store)
 - 测试:JUnit 5 + Spring Boot Test + Testcontainers(MySQL 8 / PG 15 / SQL Server 2019)
 - 交付:Spring Boot fat jar(内嵌前端);jpackage 生成 macOS dmg / Linux deb+rpm 安装包与 Windows 免安装 zip(均内嵌 JRE)
@@ -30,27 +31,33 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 
 ```
 Makefile                     常用命令快捷方式(make 查看全部:dev/build/run/package/clean;macOS 自动探测 JDK 25)
-pom.xml                      后端构建(7 个 JDBC 驱动、前端产物拷贝配置)
-src/main/java/com/example/dq/
-  DqApplication.java         入口;启动时自动避让被占用的端口(10000 起向后探测 100 个;支持 --server.port= 参数与 SERVER_PORT 环境变量,server.port=0 时跳过避让)
-  config/                    DqProperties(dq.* 配置绑定)、AiProperties(ai.* 默认配置绑定)、SpaWebConfig(SPA 路由回退 + 注册授权拦截器)、LicenseInterceptor(/api/** 未激活/过期抛 401)、BrowserOpener(安装版自动开浏览器,优先 Chrome/Edge --app 应用模式,用独立 --user-data-dir ~/.dq-tool/browser-profile 保证进程句柄有效、退出时能关闭窗口;open/closeWindow 供托盘复用)、TrayManager(系统托盘图标:打开窗口/退出,图标运行时绘制,installEarly 支持 main 阶段提前安装;右键菜单全平台统一用 Swing JPopupMenu + 系统外观 —— Windows 的 AWT 原生菜单 peer 渲染中文必现方块,设字体无效;托盘图标本身只有 AWT SystemTray API)、DesktopSplash(安装版启动画面,就绪后由 BrowserOpener 关闭)、DesktopSession(页面心跳看门狗,托盘不可用时的进程退出兜底)
-  controller/                REST API:/api/datasources、/api/scans、/api/ai-config、/api/license(授权状态/激活,不被拦截)、/api/heartbeat(页面心跳,不被拦截),以及 /api/datasources/{dsId}/ 下的 databases、schemas、schema-stats、schemas/{schema}/{tables,column-count,latest-scan-jobs,running-scans,table-docs}、schemas/{schema}/tables/{table}/doc(POST 生成 / PUT 手动编辑);GlobalExceptionHandler 统一异常映射为 {message}(401/400/409/502/500),前端 axios 拦截器直接弹 message
-  dialect/                   核心抽象 DbDialect + 7 个方言实现 + DialectFactory + AbstractDialect
-  license/                   LicenseCodec 授权码编解码与 Ed25519 验签(纯函数;格式 DQ1.<base64url(客户名|yyyy-MM-dd)>.<base64url(签名)>)
-  model/                     DTO/枚举(DbType、ScanStatus、NullRule、Range 等)
-  repository/                手写 JdbcTemplate 仓储(无 JPA/MyBatis)
-  scan/                      ScanExecutor(全局线程池,调度单元=分段)、ChunkRunner(分段执行)、InterruptRecovery
-  service/                   DataSourceService(连接池/密码加解密)、MetadataService、ScanService(任务生命周期)、ExportService(POI 流式导出)、AiService(OpenAI 兼容 LLM 调用)、AiConfigService/TableDocService(AI 表说明)、LicenseService(授权验签/激活/状态缓存)
-  util/CryptoUtil.java       AES-GCM 加解密
-src/main/resources/
-  application.yml            全部可调配置(dq.data-dir 数据目录 / dq.scan.* / dq.security.secret / ai.* 默认配置 / logging.* 按天滚动文件日志)
-  schema.sql                 H2 建表(10 张表,含 scan_job_event 任务状态变更事件表、schema_stat 库列表统计缓存、ai_config/table_doc AI 表说明、license_info 授权信息单行表)+ 老库升级的 ALTER ... IF NOT EXISTS,启动自动执行
-src/test/java/com/example/dq/
-  dialect/                   方言 SQL 生成、分段规划单元测试
-  license/LicenseCodecTest.java  授权码签发/验签/篡改/过期判定单元测试(不需要 Docker)
-  service/AiServiceTest.java AI 表说明 prompt 组装单元测试
-  repository/ScanJobDeleteTest.java  H2 内存库验证任务删除的级联清理(分段/字段/表/任务四级,不需要 Docker)
-  scan/ScanFlowTest.java     Testcontainers 端到端(MySQL/PG/SQLServer 三容器)
+settings.gradle.kts          根多模块配置(include server、desktop;插件与依赖仓库)
+build.gradle.kts             根:仅声明插件版本(kotlin/compose/spring-boot,apply false)
+gradle/libs.versions.toml    版本目录:server/desktop 共享依赖版本(7 个 JDBC 驱动、POI、H2、testcontainers)
+gradlew / gradle/wrapper/    Gradle 9.2.1 wrapper(Spring Boot 4.1 官方要求 8.14+ 或 9.x)
+server/                      Java Web 版(Spring Boot):
+  build.gradle.kts           后端构建(BOM 用 platform(SpringBootPlugin.BOM_COORDINATES);bootJar 产物 server/build/libs/dq-tool-<version>.jar;processResources 拷 web/dist 到 static/;bootRun workingDir=仓库根)
+  src/main/java/com/example/dq/
+    DqApplication.java       入口;启动时自动避让被占用的端口(10000 起向后探测 100 个;支持 --server.port= 参数与 SERVER_PORT 环境变量,server.port=0 时跳过避让)
+    config/                  DqProperties(dq.* 配置绑定)、AiProperties(ai.* 默认配置绑定)、SpaWebConfig(SPA 路由回退 + 注册授权拦截器)、LicenseInterceptor(/api/** 未激活/过期抛 401)、BrowserOpener(安装版自动开浏览器,优先 Chrome/Edge --app 应用模式,用独立 --user-data-dir ~/.dq-tool/browser-profile 保证进程句柄有效、退出时能关闭窗口;open/closeWindow 供托盘复用)、TrayManager(系统托盘图标:打开窗口/退出,图标运行时绘制,installEarly 支持 main 阶段提前安装;右键菜单全平台统一用 Swing JPopupMenu + 系统外观 —— Windows 的 AWT 原生菜单 peer 渲染中文必现方块,设字体无效;托盘图标本身只有 AWT SystemTray API)、DesktopSplash(安装版启动画面,就绪后由 BrowserOpener 关闭)、DesktopSession(页面心跳看门狗,托盘不可用时的进程退出兜底)
+    controller/              REST API:/api/datasources、/api/scans、/api/ai-config、/api/license(授权状态/激活,不被拦截)、/api/heartbeat(页面心跳,不被拦截),以及 /api/datasources/{dsId}/ 下的 databases、schemas、schema-stats、schemas/{schema}/{tables,column-count,latest-scan-jobs,running-scans,table-docs}、schemas/{schema}/tables/{table}/doc(POST 生成 / PUT 手动编辑);GlobalExceptionHandler 统一异常映射为 {message}(401/400/409/502/500),前端 axios 拦截器直接弹 message
+    dialect/                 核心抽象 DbDialect + 7 个方言实现 + DialectFactory + AbstractDialect
+    license/                 LicenseCodec 授权码编解码与 Ed25519 验签(纯函数;格式 DQ1.<base64url(客户名|yyyy-MM-dd)>.<base64url(签名)>)
+    model/                   DTO/枚举(DbType、ScanStatus、NullRule、Range 等)
+    repository/              手写 JdbcTemplate 仓储(无 JPA/MyBatis)
+    scan/                    ScanExecutor(全局线程池,调度单元=分段)、ChunkRunner(分段执行)、InterruptRecovery
+    service/                 DataSourceService(连接池/密码加解密)、MetadataService、ScanService(任务生命周期)、ExportService(POI 流式导出)、AiService(OpenAI 兼容 LLM 调用)、AiConfigService/TableDocService(AI 表说明)、LicenseService(授权验签/激活/状态缓存)
+    util/CryptoUtil.java     AES-GCM 加解密
+  src/main/resources/
+    application.yml          全部可调配置(dq.data-dir 数据目录 / dq.scan.* / dq.security.secret / ai.* 默认配置 / logging.* 按天滚动文件日志)
+    schema.sql               H2 建表(10 张表,含 scan_job_event 任务状态变更事件表、schema_stat 库列表统计缓存、ai_config/table_doc AI 表说明、license_info 授权信息单行表)+ 老库升级的 ALTER ... IF NOT EXISTS,启动自动执行
+  src/test/java/com/example/dq/
+    dialect/                 方言 SQL 生成、分段规划单元测试
+    license/LicenseCodecTest.java  授权码签发/验签/篡改/过期判定单元测试(不需要 Docker)
+    service/AiServiceTest.java AI 表说明 prompt 组装单元测试
+    repository/ScanJobDeleteTest.java  H2 内存库验证任务删除的级联清理(分段/字段/表/任务四级,不需要 Docker)
+    scan/ScanFlowTest.java   Testcontainers 端到端(MySQL/PG/SQLServer 三容器)
+desktop/                     Kotlin + Compose Desktop 桌面重写版(同一 Gradle 构建的子模块,业务口径与 Web 版一致;详见 desktop/AGENTS.md)
 web/                         前端 Vue 工程:
   src/views/                 八个页面:Dashboard(任务看板)、Datasources、Schemas、Tables、Scans、ScanDetail、TableColumns、Activate(授权激活,全屏独立页不进页签体系)
   src/components/            AiConfigDialog、DbTypeIcon、ExportButton、JobTimeline(对应 scan_job_event 的任务时间线)、LicenseFooter(首页底部授权信息 + 更换授权码弹窗)
@@ -64,27 +71,27 @@ data/                        运行期生成的 H2 数据文件(勿提交改动)
 
 ## 构建与运行
 
-要求:JDK 25+、Maven 3.8+、Node 24+(仅开发模式)。
+要求:JDK 25+、Node 24+(仅开发模式)。构建用仓库自带 Gradle wrapper,无需安装 Maven/Gradle。
 
 ```bash
 # 开发模式:后端 10000 + 前端 5173(代理 /api 到 10000)
-mvn spring-boot:run
+./gradlew :server:bootRun
 cd web && npm install && npm run dev
 
-# 交付:单 jar 内嵌前端 —— 必须先构建前端,再 mvn package
+# 交付:单 jar 内嵌前端 —— 必须先构建前端,再 bootJar
 cd web && npm install && npm run build     # 产物 web/dist
-cd .. && mvn package                        # prepare-package 阶段自动把 web/dist 拷进 jar 的 static/
-java -jar target/dq-tool-0.1.3.jar          # 访问 http://localhost:10000
+cd .. && ./gradlew :server:bootJar          # processResources 自动把 web/dist 拷进 jar 的 static/
+java -jar server/build/libs/dq-tool-0.1.3.jar   # 访问 http://localhost:10000
 ```
 
-注意:`mvn package` 不会自动构建前端;`web/dist` 缺失或过期时 jar 内静态资源即为旧版/缺失。
+注意:`./gradlew :server:bootJar` 不会自动构建前端;`web/dist` 缺失或过期时 jar 内静态资源即为旧版/缺失。
 
 日常操作也可以用根目录的 `Makefile`(`make` 查看全部):`make dev` / `make dev-web`(开发)、`make build` / `make run`(jar)、`make test`、`make package`(mac dmg)/ `make package-linux`(deb)、`make clean`;macOS 上会自动探测 JDK 25 覆盖 JAVA_HOME,`dev`/`run` 显式带 `-Djava.awt.headless=false`(否则 Spring Boot 默认 headless,窗口和托盘都不会启动),服务器方式调试用 `make dev-headless` / `make run-headless`。
 
 ## 测试
 
 ```bash
-mvn test
+./gradlew :server:test
 ```
 
 - 单元测试:方言 SQL 生成、规则谓词转义、分段键选择(不需要 Docker)
@@ -92,8 +99,8 @@ mvn test
 - H2 任务删除级联清理(ScanJobDeleteTest,不需要 Docker)
 - Testcontainers 集成测试(需要 Docker):MySQL 8 / PG 15 / SQL Server 2019 真实容器上的并发分段全链路、空值规则、注释、导出
   - OrbStack 用户若报 "Could not find a valid Docker environment":
-    `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock mvn test`
-  - Testcontainers 版本固定 1.21.4(pom.xml 有注释:旧版默认 API 1.32 被 Docker 29+ 拒绝)
+    `DOCKER_HOST=unix://$HOME/.orbstack/run/docker.sock ./gradlew :server:test`
+  - Testcontainers 版本固定 1.21.4(gradle/libs.versions.toml 有注释:旧版默认 API 1.32 被 Docker 29+ 拒绝;不随 Spring Boot 4.1 BOM 管理的 2.x 走)
 - **达梦 / 人大金仓 / OceanBase / Oracle 无自动化覆盖**,相关方言改动只能接真实环境手动验证(`docker-test-env/` 有 SQL Server 和 Oracle 的 compose)
 - **LLM 实际调用无自动化覆盖**(prompt 组装有单测),AI 表说明功能需配置真实接口后手动验证
 
@@ -101,7 +108,7 @@ mvn test
 
 - 注释、提交信息、文档全部使用中文;代码标识符用英文
 - 分层:controller(薄)→ service(业务)→ repository(手写 JdbcTemplate)→ dialect(库差异抽象)。**所有数据库差异都必须收敛在 `dialect/` 包内**,service/scan 层不允许出现库特定的 SQL 或分支
-- 新增数据库支持 = 实现 `DbDialect` 接口 + 在 `DialectFactory` 注册 + `DbType` 枚举 + pom 加驱动 + README 更新
+- 新增数据库支持 = 实现 `DbDialect` 接口 + 在 `DialectFactory` 注册 + `DbType` 枚举 + `gradle/libs.versions.toml` 加驱动 + README 更新
 - 扫描的调度单元是"分段(chunk)",不是表:分段状态持久化在 `scan_chunk` 表,断点续扫只重跑未完成分段
 - 修改库表结构时:`schema.sql` 用 `CREATE TABLE IF NOT EXISTS` + 文件末尾追加 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 兼容老库,不允许破坏性变更
 - 前端无 lint/格式化配置,跟随现有代码风格(2 空格缩进、单文件组件)

@@ -12,8 +12,8 @@ export JAVA_HOME := $(JDK25)
 endif
 endif
 
-VERSION = $(shell mvn -q help:evaluate -Dexpression=project.version -DforceStdout 2>/dev/null | tail -1)
-JAR = target/dq-tool-$(VERSION).jar
+VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' server/build.gradle.kts | head -1)
+JAR = server/build/libs/dq-tool-$(VERSION).jar
 
 KEY ?= license-private.key
 
@@ -23,20 +23,20 @@ help: ## 显示全部可用命令
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  make %-14s %s\n", $$1, $$2}'
 
 dev: ## 后端开发模式,带窗口/托盘(显式关闭 headless)
-	mvn spring-boot:run -Dspring-boot.run.jvmArguments="-Djava.awt.headless=false"
+	JAVA_TOOL_OPTIONS="-Djava.awt.headless=false" ./gradlew :server:bootRun
 
 dev-headless: ## 后端开发模式,无窗口/托盘(服务器调试)
-	mvn spring-boot:run
+	./gradlew :server:bootRun
 
 dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
 	cd web && npm run dev
 
 build: ## 构建前端 + 后端 fat jar(跳过测试)
 	cd web && npm run build
-	mvn -q -DskipTests package
+	./gradlew :server:bootJar
 
 test: ## 全部测试(含 Testcontainers,需要 Docker)
-	mvn test
+	./gradlew :server:test
 
 run: build ## 构建并运行 fat jar,带窗口/托盘
 	java -Djava.awt.headless=false -jar $(JAR)
@@ -64,6 +64,6 @@ license: ## 签发授权码(交互式;默认客户=内部测试、有效期=30 �
 			read -r -p "有效期(yyyy-MM-dd 或 permanent,回车=$$d 即 30 天后): " e; e=$${e:-$$d}; }; \
 		java scripts/LicenseKeygen.java --key $(KEY) --customer "$$c" --expires "$$e"'
 
-clean: ## 清理构建产物(target/ 与 web/dist/)
-	mvn -q clean
+clean: ## 清理构建产物(server/build/ 与 web/dist/)
+	./gradlew :server:clean
 	rm -rf web/dist

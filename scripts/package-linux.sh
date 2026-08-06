@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Linux 打包脚本:构建前端 + fat jar,再用 jpackage 生成带内嵌 JRE 的 .deb / .rpm
-# 前置要求: JDK 21+ (含 jpackage)、Maven、Node 18+;deb 需要 fakeroot,rpm 需要 rpmbuild
+# 前置要求: JDK 21+ (含 jpackage)、Node 18+;deb 需要 fakeroot,rpm 需要 rpmbuild
 # 用法: scripts/package-linux.sh [--skip-build] [--type deb|rpm](默认 deb)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,17 +18,17 @@ done
 
 if [[ "$SKIP_BUILD" == 0 ]]; then
   (cd web && npm run build)
-  mvn -q -DskipTests package
+  ./gradlew :server:bootJar
 fi
 
-APP_VERSION=$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)
+APP_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/build.gradle.kts | head -1)
 # 与其他平台安装包版本保持一致,去掉开头的 "0."(0.1.0 -> 1.0)
 PKG_VERSION="${APP_VERSION#0.}"
-JAR="target/dq-tool-${APP_VERSION}.jar"
-[[ -f "$JAR" ]] || { echo "找不到 $JAR,请先执行 mvn package" >&2; exit 1; }
+JAR="server/build/libs/dq-tool-${APP_VERSION}.jar"
+[[ -f "$JAR" ]] || { echo "找不到 $JAR,请先执行 ./gradlew :server:bootJar" >&2; exit 1; }
 
-INPUT=target/jpackage/input
-DIST=target/jpackage/dist
+INPUT=server/build/jpackage/input
+DIST=server/build/jpackage/dist
 rm -rf "$INPUT" && mkdir -p "$INPUT"
 cp "$JAR" "$INPUT/"
 

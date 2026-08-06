@@ -22,7 +22,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-          cache: maven
+          cache: gradle
 
       - uses: actions/setup-node@v7
         with:
@@ -42,7 +42,7 @@ jobs:
         id: pkg
         shell: pwsh
         run: |
-          cd target/jpackage/dist
+          cd server/build/jpackage/dist
           Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-x64.zip' }
           # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
           "name=$((Get-ChildItem dq-tool-*.zip | Select-Object -First 1).BaseName)" >> $env:GITHUB_OUTPUT
@@ -50,14 +50,14 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.pkg.outputs.name }}
-          path: target/jpackage/dist/*.zip
+          path: server/build/jpackage/dist/*.zip
           retention-days: 30
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: target/jpackage/dist/*.zip
+          files: server/build/jpackage/dist/*.zip
 
   # ── 以下平台暂时停用(2026-08),需要时取消注释恢复 ──────────────────────────
   #
@@ -72,7 +72,7 @@ jobs:
   #         distribution: microsoft
   #         java-version: '25'
   #         architecture: aarch64
-  #         cache: maven
+  #         cache: gradle
   #
   #     - uses: actions/setup-node@v7
   #       with:
@@ -92,7 +92,7 @@ jobs:
   #       id: pkg
   #       shell: pwsh
   #       run: |
-  #         cd target/jpackage/dist
+  #         cd server/build/jpackage/dist
   #         Get-ChildItem dq-tool-*.zip | Rename-Item -NewName { $_.Name -replace '\.zip$', '-windows-arm64.zip' }
   #         # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
   #         "name=$((Get-ChildItem dq-tool-*.zip | Select-Object -First 1).BaseName)" >> $env:GITHUB_OUTPUT
@@ -100,14 +100,14 @@ jobs:
   #     - uses: actions/upload-artifact@v7
   #       with:
   #         name: ${{ steps.pkg.outputs.name }}
-  #         path: target/jpackage/dist/*.zip
+  #         path: server/build/jpackage/dist/*.zip
   #         retention-days: 30
   #
   #     - name: Attach to GitHub Release
   #       if: startsWith(github.ref, 'refs/tags/')
   #       uses: softprops/action-gh-release@v3
   #       with:
-  #         files: target/jpackage/dist/*.zip
+  #         files: server/build/jpackage/dist/*.zip
 
   # macos:
   #   # jpackage 不能交叉编译,Apple Silicon 和 Intel 分别在对应架构的 runner 上构建
@@ -125,7 +125,7 @@ jobs:
   #       with:
   #         distribution: temurin
   #         java-version: '25'
-  #         cache: maven
+  #         cache: gradle
   #
   #     - uses: actions/setup-node@v7
   #       with:
@@ -144,7 +144,7 @@ jobs:
   #     - name: Rename dmg with platform suffix
   #       id: pkg
   #       run: |
-  #         cd target/jpackage/dist
+  #         cd server/build/jpackage/dist
   #         for f in dq-tool-*.dmg; do mv "$f" "${f%.dmg}-macos-${{ matrix.arch }}.dmg"; done
   #         # 产物名(不含扩展名)传给 upload-artifact,让手动触发时下载的 artifact 也带版本号
   #         echo "name=$(ls dq-tool-*.dmg | head -1 | sed 's/\.dmg$//')" >> "$GITHUB_OUTPUT"
@@ -152,14 +152,14 @@ jobs:
   #     - uses: actions/upload-artifact@v7
   #       with:
   #         name: ${{ steps.pkg.outputs.name }}
-  #         path: target/jpackage/dist/*.dmg
+  #         path: server/build/jpackage/dist/*.dmg
   #         retention-days: 30
   #
   #     - name: Attach to GitHub Release
   #       if: startsWith(github.ref, 'refs/tags/')
   #       uses: softprops/action-gh-release@v3
   #       with:
-  #         files: target/jpackage/dist/*.dmg
+  #         files: server/build/jpackage/dist/*.dmg
 
   # linux:
   #   runs-on: ubuntu-latest
@@ -170,7 +170,7 @@ jobs:
   #       with:
   #         distribution: temurin
   #         java-version: '25'
-  #         cache: maven
+  #         cache: gradle
   #
   #     - uses: actions/setup-node@v7
   #       with:
@@ -197,7 +197,7 @@ jobs:
   #     - name: Rename packages with platform suffix
   #       id: pkg
   #       run: |
-  #         cd target/jpackage/dist
+  #         cd server/build/jpackage/dist
   #         for f in dq-tool_*.deb; do
   #           v=$(echo "$f" | sed -E 's/dq-tool_(.*)_amd64\.deb/\1/')
   #           mv "$f" "dq-tool-${v}-linux-amd64.deb"
@@ -213,13 +213,13 @@ jobs:
   #     - uses: actions/upload-artifact@v7
   #       with:
   #         name: ${{ steps.pkg.outputs.name_deb }}
-  #         path: target/jpackage/dist/*.deb
+  #         path: server/build/jpackage/dist/*.deb
   #         retention-days: 30
   #
   #     - uses: actions/upload-artifact@v7
   #       with:
   #         name: ${{ steps.pkg.outputs.name_rpm }}
-  #         path: target/jpackage/dist/*.rpm
+  #         path: server/build/jpackage/dist/*.rpm
   #         retention-days: 30
   #
   #     - name: Attach to GitHub Release
@@ -227,5 +227,5 @@ jobs:
   #       uses: softprops/action-gh-release@v3
   #       with:
   #         files: |
-  #           target/jpackage/dist/*.deb
-  #           target/jpackage/dist/*.rpm
+  #           server/build/jpackage/dist/*.deb
+  #           server/build/jpackage/dist/*.rpm
