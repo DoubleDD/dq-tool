@@ -11,21 +11,32 @@ import org.springframework.stereotype.Component;
 import java.awt.AWTException;
 import java.awt.Color;
 import java.awt.Font;
+import java.awt.Frame;
 import java.awt.Graphics2D;
 import java.awt.GraphicsEnvironment;
 import java.awt.Image;
-import java.awt.MenuItem;
-import java.awt.PopupMenu;
 import java.awt.RenderingHints;
 import java.awt.SystemTray;
 import java.awt.TrayIcon;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
+
+import javax.swing.JDialog;
+import javax.swing.JMenuItem;
+import javax.swing.JPopupMenu;
+import javax.swing.UIManager;
+import javax.swing.event.PopupMenuEvent;
+import javax.swing.event.PopupMenuListener;
 
 /**
  * 系统托盘图标:桌面安装版以后台守护进程方式常驻,
  * 右键菜单提供「打开窗口」(重新拉起 --app 窗口)和「退出」(关窗口 + 结束后端进程)。
  * 托盘生效后心跳看门狗(DesktopSession)停用;托盘不可用的环境(headless、部分 Linux 桌面)自动跳过。
  * 图标为运行时绘制,不依赖外部图片资源。
+ * 右键菜单全平台统一用 Swing JPopupMenu(托盘图标本身是 AWT SystemTray API,没有 Swing 替代品):
+ * Windows 的 AWT 原生菜单 peer 渲染中文必现方块(显式设字体也无效),Swing 由 Java2D 绘制,
+ * 字体回退正常,并设置系统外观让菜单字体/样式跟随操作系统默认。
  * 安装版在 main 阶段(Spring 就绪前)即调用 installEarly 安装,让双击启动的用户第一时间看到托盘图标;
  * Spring 就绪后 onReady 回填菜单动作依赖的引用并标记看门狗停用。
  */
@@ -62,24 +73,26 @@ public class TrayManager {
             return false;
         }
 
-        PopupMenu menu = new PopupMenu();
-        MenuItem openItem = new MenuItem("打开窗口");
-        // open 会先等旧实例退出(最多 3 秒),单独线程执行,避免阻塞 AWT 事件线程
-        openItem.addActionListener(e -> new Thread(() -> openWindow(url), "tray-open-window").start());
-        MenuItem exitItem = new MenuItem("退出");
-        exitItem.addActionListener(e -> shutdown());
-        // Windows 上 MenuItem 默认的 Dialog 逻辑字体可能映射到不含中文字形的物理字体(显示方块),
-        // 显式指定支持中文的字体;macOS/Linux 探测不到中文字体时回退默认字体,行为不变
-        Font menuFont = pickChineseFont(12);
-        if (menuFont != null) {
-            openItem.setFont(menuFont);
-            exitItem.setFont(menuFont);
-        }
-        menu.add(openItem);
-        menu.add(exitItem);
-
-        TrayIcon icon = new TrayIcon(createImage(), "dq-tool 数据质量检测工具", menu);
+        TrayIcon icon = new TrayIcon(createImage(), "dq-tool 数据质量检测工具", null);
         icon.setImageAutoSize(true);
+        // 全平台统一用 Swing 菜单:Windows 的 AWT 菜单 peer 渲染中文必现方块(设字体无效),
+        // Swing 由 Java2D 绘制,字体回退正常;系统外观让菜单字体/样式跟随操作系统默认
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (Exception e) {
+            log.debug("设置系统外观失败,托盘菜单使用默认外观: {}", e.getMessage());
+        }
+        icon.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mousePressed(MouseEvent e) {
+                maybeShowSwingMenu(e, url);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent e) {
+                maybeShowSwingMenu(e, url);
+            }
+        });
         try {
             SystemTray.getSystemTray().add(icon);
             installedIcon = icon;
@@ -125,10 +138,55 @@ public class TrayManager {
         }, "tray-shutdown").start();
     }
 
+    /** 托盘右键(press/release 都可能带 popup 标记,两个事件都检查) */
+    private static void maybeShowSwingMenu(MouseEvent e, String url) {
+        if (e.isPopupTrigger()) {
+            showSwingMenu(e.getX(), e.getY(), url);
+        }
+    }
+
+    /**
+     * 在鼠标位置弹出 Swing 托盘菜单(TrayIcon 鼠标事件报告的是屏幕坐标,可直接用)。
+     * Swing 菜单需要一个可见的 invoker 才能正常工作(点其他位置失焦自动关闭),
+     * 用 0 大小的隐藏 JDialog 做锚点;菜单关闭后销毁锚点,避免句柄泄漏。
+     */
+    private static void showSwingMenu(int x, int y, String url) {
+        JDialog anchor = new JDialog((Frame) null);
+        anchor.setUndecorated(true);
+        anchor.setSize(0, 0);
+        anchor.setLocation(x, y);
+
+        JPopupMenu menu = new JPopupMenu();
+        JMenuItem openItem = new JMenuItem("打开窗口");
+        openItem.addActionListener(e -> new Thread(() -> openWindow(url), "tray-open-window").start());
+        JMenuItem exitItem = new JMenuItem("退出");
+        exitItem.addActionListener(e -> shutdown());
+        menu.add(openItem);
+        menu.add(exitItem);
+        menu.addPopupMenuListener(new PopupMenuListener() {
+            @Override
+            public void popupMenuWillBecomeVisible(PopupMenuEvent e) {
+            }
+
+            @Override
+            public void popupMenuWillBecomeInvisible(PopupMenuEvent e) {
+                anchor.dispose();
+            }
+
+            @Override
+            public void popupMenuCanceled(PopupMenuEvent e) {
+                anchor.dispose();
+            }
+        });
+
+        anchor.setVisible(true);
+        menu.show(anchor, 0, 0);
+    }
+
     /**
      * 选一个能显示中文的字体:Windows 上 Dialog 逻辑字体在部分区域设置/精简 JRE 下
      * 不含中文字形(界面显示方块),按候选顺序用 canDisplay 探测;都找不到时返回 null 保持默认。
-     * 托盘菜单与启动画面(DesktopSplash)共用。
+     * 启动画面(DesktopSplash)使用。
      */
     static Font pickChineseFont(int size) {
         String[] candidates = {"Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "PingFang SC", "Noto Sans CJK SC"};
