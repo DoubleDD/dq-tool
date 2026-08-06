@@ -15,6 +15,8 @@ import java.awt.Frame;
 import java.awt.Graphics2D;
 import java.awt.GraphicsEnvironment;
 import java.awt.Image;
+import java.awt.MouseInfo;
+import java.awt.Point;
 import java.awt.RenderingHints;
 import java.awt.SystemTray;
 import java.awt.TrayIcon;
@@ -141,20 +143,23 @@ public class TrayManager {
     /** 托盘右键(press/release 都可能带 popup 标记,两个事件都检查) */
     private static void maybeShowSwingMenu(MouseEvent e, String url) {
         if (e.isPopupTrigger()) {
-            showSwingMenu(e.getX(), e.getY(), url);
+            showSwingMenu(url);
         }
     }
 
     /**
-     * 在鼠标位置弹出 Swing 托盘菜单(TrayIcon 鼠标事件报告的是屏幕坐标,可直接用)。
+     * 在鼠标位置弹出 Swing 托盘菜单。
+     * 位置不取 TrayIcon 鼠标事件坐标 —— 该坐标在 Windows 高分屏缩放下是错的(JDK 已知问题),
+     * 直接读指针当前位置:右键那一刻指针就停在托盘图标上。
      * Swing 菜单需要一个可见的 invoker 才能正常工作(点其他位置失焦自动关闭),
      * 用 0 大小的隐藏 JDialog 做锚点;菜单关闭后销毁锚点,避免句柄泄漏。
      */
-    private static void showSwingMenu(int x, int y, String url) {
+    private static void showSwingMenu(String url) {
+        Point pointer = MouseInfo.getPointerInfo().getLocation();
         JDialog anchor = new JDialog((Frame) null);
         anchor.setUndecorated(true);
         anchor.setSize(0, 0);
-        anchor.setLocation(x, y);
+        anchor.setLocation(pointer);
 
         JPopupMenu menu = new JPopupMenu();
         JMenuItem openItem = new JMenuItem("打开窗口");
