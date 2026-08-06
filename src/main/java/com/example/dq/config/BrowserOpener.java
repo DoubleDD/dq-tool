@@ -41,6 +41,8 @@ public class BrowserOpener {
 
     @EventListener(ApplicationReadyEvent.class)
     public void openBrowser(ApplicationReadyEvent event) {
+        // 服务已完全就绪:关闭启动画面(未显示时为空操作),紧接着打开应用窗口
+        DesktopSplash.close();
         if (GraphicsEnvironment.isHeadless()) {
             return;
         }

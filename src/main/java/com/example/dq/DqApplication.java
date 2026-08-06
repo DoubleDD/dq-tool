@@ -1,5 +1,7 @@
 package com.example.dq;
 
+import com.example.dq.config.DesktopSplash;
+import com.example.dq.config.TrayManager;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
@@ -26,8 +28,23 @@ public class DqApplication {
             }
             // 通过系统属性覆盖 application.yml 中的 server.port(命令行参数优先级更高,不受影响)
             System.setProperty("server.port", String.valueOf(port));
+            earlyDesktopFeedback(port);
         }
         SpringApplication.run(DqApplication.class, args);
+    }
+
+    /**
+     * 桌面安装版(打包脚本注入 -Djava.awt.headless=false)在 Spring 启动前先给出视觉反馈:
+     * 第一时间安装系统托盘图标并弹出启动画面,服务就绪后由 BrowserOpener 关启动画面并打开窗口。
+     * 显式判断 headless=false 而不是 !isHeadless():普通 java -jar 在桌面机器上运行时该属性未设置
+     * (由 Spring 置为 headless),不能误装托盘/弹窗,保持服务器部署的原行为。
+     */
+    private static void earlyDesktopFeedback(int port) {
+        if (!"false".equalsIgnoreCase(System.getProperty("java.awt.headless"))) {
+            return;
+        }
+        TrayManager.installEarly("http://localhost:" + port);
+        DesktopSplash.showEarly();
     }
 
     /**

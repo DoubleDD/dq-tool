@@ -12,7 +12,7 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - AI 表说明:大模型(OpenAI 兼容接口)根据表结构生成表用途描述,页面配置接口信息,手动触发生成,也支持手动编辑,结果存 H2
 - 授权码:离线 Ed25519 签名授权码(含客户标识+有效期,`expires=permanent` 可签发永久授权),未激活/过期时除 `/api/license/**` 外所有接口 401,前端强制跳激活页;签发用 `scripts/LicenseKeygen.java`(或 `make license`),公钥在 `application.yml` 的 `dq.license.public-key`,私钥 `license-private.key` 不入库
 - 数据源连接信息存本地 H2 文件库,密码 AES-GCM 加密
-- 桌面安装版生命周期:系统托盘图标(TrayManager)常驻,右键菜单「打开窗口/退出」,退出=关窗口+结束后端进程;托盘生效时后端以守护进程方式常驻、心跳看门狗停用;托盘不可用(headless/部分 Linux 桌面)时退回心跳看门狗(DesktopSession):前端每 5 秒上报 `/api/heartbeat`,超过 `dq.desktop.shutdown-timeout-seconds`(默认 45s,<=0 禁用)未收到心跳自动退出;只在本进程成功拉起 --app 窗口后才武装,java -jar 服务器部署不受影响;机器休眠超时也会误判退出,进行中的扫描中断后可断点续扫
+- 桌面安装版生命周期:双击启动立即出现托盘图标(TrayManager.installEarly,main 阶段安装)+ 启动画面(DesktopSplash),服务完全就绪后关启动画面并打开 --app 窗口(BrowserOpener);早期反馈只在显式 `-Djava.awt.headless=false`(打包脚本注入)时启用,普通 java -jar 不触发;托盘右键菜单「打开窗口/退出」,退出=关窗口+结束后端进程;托盘生效时后端以守护进程方式常驻、心跳看门狗停用;托盘不可用(headless/部分 Linux 桌面)时退回心跳看门狗(DesktopSession):前端每 5 秒上报 `/api/heartbeat`,超过 `dq.desktop.shutdown-timeout-seconds`(默认 45s,<=0 禁用)未收到心跳自动退出;只在本进程成功拉起 --app 窗口后才武装,java -jar 服务器部署不受影响;机器休眠超时也会误判退出,进行中的扫描中断后可断点续扫
 - 注意:Spring Boot 默认把 `java.awt.headless` 设为 true,本地 `java -jar`/`mvn spring-boot:run` 调试窗口与托盘需显式加 `-Djava.awt.headless=false`(打包脚本已注入)
 
 支持 7 种数据库:MySQL、PostgreSQL、SQL Server、Oracle、达梦 DM8、人大金仓 KingbaseES、OceanBase(仅 MySQL 模式)。驱动全部来自 Maven 中央仓库。
@@ -33,7 +33,7 @@ Makefile                     常用命令快捷方式(make 查看全部:dev/buil
 pom.xml                      后端构建(7 个 JDBC 驱动、前端产物拷贝配置)
 src/main/java/com/example/dq/
   DqApplication.java         入口;启动时自动避让被占用的端口(10000 起向后探测 100 个;支持 --server.port= 参数与 SERVER_PORT 环境变量,server.port=0 时跳过避让)
-  config/                    DqProperties(dq.* 配置绑定)、AiProperties(ai.* 默认配置绑定)、SpaWebConfig(SPA 路由回退 + 注册授权拦截器)、LicenseInterceptor(/api/** 未激活/过期抛 401)、BrowserOpener(安装版自动开浏览器,优先 Chrome/Edge --app 应用模式,用独立 --user-data-dir ~/.dq-tool/browser-profile 保证进程句柄有效、退出时能关闭窗口;open/closeWindow 供托盘复用)、TrayManager(系统托盘图标:打开窗口/退出,图标运行时绘制)、DesktopSession(页面心跳看门狗,托盘不可用时的进程退出兜底)
+  config/                    DqProperties(dq.* 配置绑定)、AiProperties(ai.* 默认配置绑定)、SpaWebConfig(SPA 路由回退 + 注册授权拦截器)、LicenseInterceptor(/api/** 未激活/过期抛 401)、BrowserOpener(安装版自动开浏览器,优先 Chrome/Edge --app 应用模式,用独立 --user-data-dir ~/.dq-tool/browser-profile 保证进程句柄有效、退出时能关闭窗口;open/closeWindow 供托盘复用)、TrayManager(系统托盘图标:打开窗口/退出,图标运行时绘制,installEarly 支持 main 阶段提前安装)、DesktopSplash(安装版启动画面,就绪后由 BrowserOpener 关闭)、DesktopSession(页面心跳看门狗,托盘不可用时的进程退出兜底)
   controller/                REST API:/api/datasources、/api/scans、/api/ai-config、/api/license(授权状态/激活,不被拦截)、/api/heartbeat(页面心跳,不被拦截),以及 /api/datasources/{dsId}/ 下的 databases、schemas、schema-stats、schemas/{schema}/{tables,column-count,latest-scan-jobs,running-scans,table-docs}、schemas/{schema}/tables/{table}/doc(POST 生成 / PUT 手动编辑);GlobalExceptionHandler 统一异常映射为 {message}(401/400/409/502/500),前端 axios 拦截器直接弹 message
   dialect/                   核心抽象 DbDialect + 7 个方言实现 + DialectFactory + AbstractDialect
   license/                   LicenseCodec 授权码编解码与 Ed25519 验签(纯函数;格式 DQ1.<base64url(客户名|yyyy-MM-dd)>.<base64url(签名)>)
