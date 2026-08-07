@@ -1,7 +1,10 @@
 /**
- * 全局视觉基调
+ * 全局视觉基调:明暗双主题
  * 策略:保留 Element Plus 组件体系,只覆盖设计令牌(颜色/圆角/阴影/字体/密度)。
- * 中性冷灰底 + 单一品牌蓝,统一圆角与阴影层级。
+ *  - 浅色(默认):中性冷灰底 + 单一品牌蓝,柔和纵向渐变页面背景
+ *  - 深色(html.dark):参考 JetBrains IDE 的中性深灰蓝,区块靠细边框 + 表面微色差隔离,
+ *    弱化阴影;圆角层级与浅色一致
+ * 项目级语义变量用 --dq-* 前缀;Element 组件通过覆盖 --el-* 令牌跟随主题。
  */
 
 :root {
@@ -18,7 +21,7 @@
   --el-text-color-primary: #1f2733;
   --el-text-color-regular: #47505e;
   --el-text-color-secondary: #7a8494;
-  --el-text-color-placeholder: #a4adbB;
+  --el-text-color-placeholder: #a4adbb;
   --el-border-color: #d7dee9;
   --el-border-color-light: #e3e8f0;
   --el-border-color-lighter: #eaeef5;
@@ -37,6 +40,84 @@
 
   /* 卡片与弹窗圆角 */
   --el-card-border-radius: 8px;
+
+  /* 项目级:页面背景(柔和渐变)+ 纯色近似值(供页签激活态融合,渐变无法对齐) */
+  --dq-page-bg: linear-gradient(180deg, #f6f8fc 0%, #eef1f7 100%);
+  --dq-page-bg-solid: #f2f4fa;
+  /* 表面与滚动条 */
+  --dq-surface: #ffffff;
+  --dq-surface-border: var(--el-border-color-extra-light);
+  --dq-surface-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  --dq-scrollbar-thumb: #c6cedb;
+  --dq-scrollbar-thumb-hover: #a9b4c6;
+  /* 表格 */
+  --dq-table-header-bg: #f8fafc;
+  --dq-table-row-hover-bg: #f6f8fc;
+}
+
+/* ---------- 深色主题(html.dark,配合 EP 官方暗色变量包) ---------- */
+
+html.dark {
+  color-scheme: dark;
+
+  /* 品牌蓝提亮,light-* 阶在深色下为暗色底阶 */
+  --el-color-primary: #4f8cff;
+  --el-color-primary-dark-2: #6ea1ff;
+  --el-color-primary-light-3: #2c4a80;
+  --el-color-primary-light-5: #26395e;
+  --el-color-primary-light-7: #212d47;
+  --el-color-primary-light-8: #1f2740;
+  --el-color-primary-light-9: #1d2338;
+
+  /* 文字阶 */
+  --el-text-color-primary: #e8eaf0;
+  --el-text-color-regular: #b9bec9;
+  --el-text-color-secondary: #8a919e;
+  --el-text-color-placeholder: #6b7280;
+
+  /* 边框阶:区块隔离主要靠这套细边框 + 表面微色差 */
+  --el-border-color: #43474d;
+  --el-border-color-light: #3b3e44;
+  --el-border-color-lighter: #35383e;
+  --el-border-color-extra-light: #2f3238;
+  --el-border-color-darker: #565b64;
+  --el-border-color-hover: #565b64;
+  --el-fill-color: #383b41;
+  --el-fill-color-light: #303338;
+  --el-fill-color-lighter: #2b2e33;
+  --el-fill-color-extra-light: #27292e;
+  --el-fill-color-dark: #3f4249;
+  --el-fill-color-darker: #464a51;
+  --el-fill-color-blank: #2b2d31;
+
+  /* 表面层级:卡片/输入框略高于页面,弹窗/下拉再高一级 */
+  --el-bg-color: #2b2d31;
+  --el-bg-color-overlay: #313439;
+  --el-bg-color-page: #202329;
+
+  /* 禁用态与遮罩 */
+  --el-text-color-disabled: #565b64;
+  --el-disabled-bg-color: #2b2e33;
+  --el-disabled-text-color: #565b64;
+  --el-disabled-border-color: #3b3e44;
+  --el-mask-color: rgba(0, 0, 0, 0.65);
+
+  /* 深色弱化阴影,仅靠低透明黑给弹窗一点浮起感 */
+  --el-box-shadow-light: 0 1px 3px rgba(0, 0, 0, 0.25);
+  --el-box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  --el-box-shadow-lighter: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --el-box-shadow-dark: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+  /* 项目级:页面深灰蓝渐变 */
+  --dq-page-bg: linear-gradient(180deg, #23262b 0%, #1d2024 100%);
+  --dq-page-bg-solid: #202329;
+  --dq-surface: #2b2d31;
+  --dq-surface-border: var(--el-border-color-lighter);
+  --dq-surface-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --dq-scrollbar-thumb: #4a4e55;
+  --dq-scrollbar-thumb-hover: #5c616a;
+  --dq-table-header-bg: #26292e;
+  --dq-table-row-hover-bg: #303338;
 }
 
 body {
@@ -51,7 +132,7 @@ body {
 /* ---------- 布局骨架 ---------- */
 
 .header {
-  background: #fff;
+  background: var(--dq-surface);
   border-bottom: 1px solid var(--el-border-color-lighter);
   display: flex;
   align-items: center;
@@ -64,13 +145,23 @@ body {
   color: var(--el-text-color-primary);
 }
 
+/* 主题切换按钮推到头栏右侧 */
+.header .theme-toggle {
+  margin-left: auto;
+  color: var(--el-text-color-secondary);
+}
+
 .tab-bar {
-  background: #fff;
+  background: var(--dq-surface);
   padding: 6px 12px 0;
   border-bottom: 1px solid var(--el-border-color-lighter);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
   position: relative;
   z-index: 1;
+}
+
+html.dark .tab-bar {
+  box-shadow: none;
 }
 
 .tab-bar .el-tabs {
@@ -91,26 +182,26 @@ body {
 }
 
 .tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active {
-  background: var(--el-bg-color-page);
-  border-bottom-color: var(--el-bg-color-page);
+  background: var(--dq-page-bg-solid);
+  border-bottom-color: var(--dq-page-bg-solid);
   color: var(--el-color-primary);
   font-weight: 500;
 }
 
 .main {
-  background: var(--el-bg-color-page);
+  background: var(--dq-page-bg);
   /* padding 改由 page-card 的 margin 承担:滚动时内容在 padding 条带内透出会破坏表头吸顶 */
   padding: 0;
 }
 
 /* 页面卡片:细边框 + 极浅阴影,比单纯灰底更有层次 */
 .page-card {
-  background: #fff;
+  background: var(--dq-surface);
   margin: 20px;
   padding: 20px;
   border-radius: 8px;
-  border: 1px solid var(--el-border-color-extra-light);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  border: 1px solid var(--dq-surface-border);
+  box-shadow: var(--dq-surface-shadow);
 }
 
 .toolbar {
@@ -128,11 +219,14 @@ body {
 
 /* ---------- Element Plus 组件细化 ---------- */
 
-/* 表格:表头浅灰底 + 次级文字色,行 hover 更轻 */
+/* 表格:表头浅灰底 + 次级文字色,行 hover 更轻;
+   bg/tr 底色必须显式覆盖(EP 2.7 基座用 light-dark() 编译,不走 --el-bg-color 继承) */
 .el-table {
-  --el-table-header-bg-color: #f8fafc;
-  --el-table-header-text-color: #47505e;
-  --el-table-row-hover-bg-color: #f6f8fc;
+  --el-table-bg-color: var(--dq-surface);
+  --el-table-tr-bg-color: var(--dq-surface);
+  --el-table-header-bg-color: var(--dq-table-header-bg);
+  --el-table-header-text-color: var(--el-text-color-regular);
+  --el-table-row-hover-bg-color: var(--dq-table-row-hover-bg);
   --el-table-border-color: var(--el-border-color-lighter);
 }
 
@@ -194,12 +288,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #c6cedb;
+  background: var(--dq-scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a9b4c6;
+  background: var(--dq-scrollbar-thumb-hover);
 }
 
 ::-webkit-scrollbar-track {

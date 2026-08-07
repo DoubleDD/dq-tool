@@ -1,12 +1,11 @@
-import org.springframework.boot.gradle.plugin.SpringBootPlugin
-
 plugins {
     java
-    id("org.springframework.boot")
+    application
+    id("com.gradleup.shadow")
 }
 
 group = "com.example"
-version = "0.1.3"
+version = "0.1.5"
 
 java {
     toolchain {
@@ -15,47 +14,58 @@ java {
 }
 
 dependencies {
-    // BOM 由 Spring Boot 插件坐标直接导入(不使用 io.spring.dependency-management 插件)
-    implementation(platform(SpringBootPlugin.BOM_COORDINATES))
-    testImplementation(platform(SpringBootPlugin.BOM_COORDINATES))
+    // 共享内核:业务逻辑(dialect/repository/scan/service/license/config)全部在此
+    implementation(project(":common"))
 
-    implementation("org.springframework.boot:spring-boot-starter-web") {
-        // 本地单机使用,内嵌容器用更轻量的 Jetty;Undertow 不支持 Servlet 6.1,Spring Boot 3.4 已移除
-        exclude(group = "org.springframework.boot", module = "spring-boot-starter-tomcat")
-    }
-    implementation("org.springframework.boot:spring-boot-starter-jetty")
-    implementation("org.springframework.boot:spring-boot-starter-jdbc")
-    implementation("org.springframework.boot:spring-boot-starter-validation")
+    // Web 层:Javalin(内嵌 Jetty 12 ee10);JSON 用 Jackson 3(io.javalin.json.JavalinJackson3)
+    implementation(libs.javalin)
+    implementation(libs.jackson3.databind)
+    // Kotlin data class(内核模型)的序列化/反序列化
+    implementation(libs.jackson3.module.kotlin)
 
-    // Excel 导出
-    implementation(libs.poi.ooxml)
+    // 日志:logback 按天滚动(配置见 resources/logback.xml)
+    implementation(libs.slf4j.api)
+    implementation(libs.logback.classic)
 
-    // 本地配置/结果存储
-    runtimeOnly(libs.h2)
+    // 配置加载(yaml);连接池由内核 ServiceEnv 管理
+    implementation(libs.snakeyaml)
 
-    // 七个目标数据库的 JDBC 驱动
-    runtimeOnly(libs.jdbc.mysql)
-    runtimeOnly(libs.jdbc.postgresql)
-    runtimeOnly(libs.jdbc.dameng)
-    runtimeOnly(libs.jdbc.kingbase)
-    runtimeOnly(libs.jdbc.oceanbase)
-    runtimeOnly(libs.jdbc.mssql)
-    runtimeOnly(libs.jdbc.oracle)
-    runtimeOnly(libs.jdbc.oracle.nls)
+    // 入参校验(jakarta validation);tomcat-embed-el 为校验消息插值的 EL 实现
+    implementation(libs.hibernate.validator)
+    runtimeOnly(libs.tomcat.embed.el)
 
-    // 测试
-    testImplementation("org.springframework.boot:spring-boot-starter-test")
+    // 测试(与 desktop 模块一致:junit-jupiter + assertj)
+    testImplementation(libs.junit.jupiter)
+    testImplementation(libs.assertj.core)
     // 测试直接编译期引用 org.h2.jdbcx.JdbcDataSource(runtimeOnly 不进测试编译类路径)
     testImplementation(libs.h2)
-    testImplementation(libs.testcontainers.junit)
-    testImplementation(libs.testcontainers.mysql)
-    testImplementation(libs.testcontainers.postgresql)
-    testImplementation(libs.testcontainers.mssqlserver)
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-tasks.bootJar {
+application {
+    mainClass.set("com.example.dq.DqApplication")
+}
+
+tasks.jar {
+    // 可执行产物由 shadowJar 承担;plain jar 仅留档,避免与 shadowJar 产物同名冲突
+    archiveClassifier.set("plain")
+}
+
+tasks.shadowJar {
     // 产物:server/build/libs/dq-tool-<version>.jar(打包脚本按此命名引用)
     archiveBaseName.set("dq-tool")
+    archiveClassifier.set("")
+    mergeServiceFiles()
+    manifest {
+        attributes("Main-Class" to "com.example.dq.DqApplication")
+    }
+}
+
+tasks.named<JavaExec>("run") {
+    // 工作目录固定为仓库根,保持 ./data 数据目录口径与 java -jar 方式一致
+    workingDir = rootDir
+    // 统一使用 ZGC(JDK 25 默认即为分代模式,无需其他 GC 参数)
+    jvmArgs("-XX:+UseZGC")
 }
 
 tasks.processResources {
@@ -63,11 +73,6 @@ tasks.processResources {
     from("../web/dist") {
         into("static")
     }
-}
-
-tasks.bootRun {
-    // 工作目录固定为仓库根,保持 ./data 数据目录口径与 java -jar 方式一致
-    workingDir = rootDir
 }
 
 tasks.test {

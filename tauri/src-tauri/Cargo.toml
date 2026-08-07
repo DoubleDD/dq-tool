@@ -1,0 +1,18 @@
+[package]
+name = "dq-tool-tauri"
+version = "0.1.0"
+description = "dq-tool 的 Tauri 2 桌面壳"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# 侧车拉起/端口探测/就绪轮询全部用 std 实现;libc 仅用于 Ctrl+C/SIGTERM 兜底杀子进程
+tauri = { version = "2", features = [] }
+libc = "0.2"
+
+[features]
+# tauri 的默认特性集(自定义协议等)在本壳里用不到,保持最小
+default = []

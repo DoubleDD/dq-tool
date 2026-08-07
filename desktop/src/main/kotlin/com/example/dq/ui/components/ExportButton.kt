@@ -16,15 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,11 +29,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import com.example.dq.ui.AppEnv
+import com.example.dq.env.ServiceEnv
+import com.example.dq.ui.theme.LocalStatusColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.Orientation
+import org.jetbrains.jewel.ui.component.DefaultButton
+import org.jetbrains.jewel.ui.component.Divider
+import org.jetbrains.jewel.ui.component.CheckboxRow
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.Text
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
@@ -134,10 +132,10 @@ private val FIELD_SAMPLE = listOf(
  * 选保存路径后调用 ExportService 生成 xlsx。
  */
 @Composable
-fun ExportButton(env: AppEnv, jobId: Long, modifier: Modifier = Modifier) {
+fun ExportButton(env: ServiceEnv, jobId: Long, modifier: Modifier = Modifier) {
     var visible by remember { mutableStateOf(false) }
     var resultMsg by remember { mutableStateOf<String?>(null) }
-    TextButton(onClick = { visible = true }, modifier = modifier) {
+    OutlinedButton(onClick = { visible = true }, modifier = modifier) {
         Text("导出 Excel", fontSize = 12.sp)
     }
     if (visible) {
@@ -148,18 +146,19 @@ fun ExportButton(env: AppEnv, jobId: Long, modifier: Modifier = Modifier) {
             onDismiss = { visible = false },
         )
     }
+    // 导出结果提示(成功/失败),「确定」「取消」都只是关闭
     resultMsg?.let { msg ->
-        AlertDialog(
-            onDismissRequest = { resultMsg = null },
-            title = { Text("导出 Excel") },
-            text = { Text(msg) },
-            confirmButton = { TextButton(onClick = { resultMsg = null }) { Text("确定") } },
+        ConfirmDialog(
+            title = "导出 Excel",
+            message = msg,
+            onConfirm = { resultMsg = null },
+            onDismiss = { resultMsg = null },
         )
     }
 }
 
 @Composable
-private fun ExportDialog(env: AppEnv, jobId: Long, onResult: (String) -> Unit, onDismiss: () -> Unit) {
+private fun ExportDialog(env: ServiceEnv, jobId: Long, onResult: (String) -> Unit, onDismiss: () -> Unit) {
     // 默认打开「字段明细」页签;每次打开对话框状态都是全新的(相当于 Vue 的 open() 里 reset)
     var activeSheet by remember { mutableStateOf("fields") }
     var tableChecked by remember { mutableStateOf(TABLE_COLS.map { it.first }.toSet()) }
@@ -203,76 +202,71 @@ private fun ExportDialog(env: AppEnv, jobId: Long, onResult: (String) -> Unit, o
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(12.dp),
-            tonalElevation = 6.dp,
-            modifier = Modifier.width(920.dp),
-        ) {
-            Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState())) {
-                Text("导出 Excel", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "导出文件结构预览(示例数据)。「表列表」「字段明细」页签内可勾选要导出的列," +
-                        "下方表格实时预览最终样式;灰色固定列始终导出。",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
+    // JewelDialog 已带 20dp 内边距与纵向滚动,内层 Column 保持原有子项间距不变
+    JewelDialog(onDismissRequest = onDismiss, width = 920.dp) {
+        Column {
+            Text("导出 Excel", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "导出文件结构预览(示例数据)。「表列表」「字段明细」页签内可勾选要导出的列," +
+                    "下方表格实时预览最终样式;灰色固定列始终导出。",
+                fontSize = 13.sp,
+                color = JewelTheme.globalColors.text.disabled,
+            )
+            Spacer(Modifier.height(12.dp))
 
-                // Excel 风格 sheet 页签
-                Row {
-                    SHEETS.forEach { (key, name) ->
-                        SheetTab(name, active = activeSheet == key) { activeSheet = key }
-                    }
+            // Excel 风格 sheet 页签
+            Row {
+                SHEETS.forEach { (key, name) ->
+                    SheetTab(name, active = activeSheet == key) { activeSheet = key }
                 }
-                HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(12.dp))
+            }
+            Divider(Orientation.Horizontal, thickness = 2.dp, color = LocalStatusColors.current.primary)
+            Spacer(Modifier.height(12.dp))
 
-                when (activeSheet) {
-                    // 概览:固定 KV,不可配置
-                    "overview" -> OverviewPreview()
-                    // 表列表:勾选列 + 实时预览
-                    "tables" -> {
-                        SectionTitle("表头设置")
-                        ColChecks(TABLE_COLS, tableChecked) { tableChecked = it }
-                        val visibleCols = TABLE_COLS.filter { it.first in tableChecked }
-                        PreviewTable(
-                            headers = listOf("表名") + visibleCols.map { it.second },
-                            rows = TABLE_SAMPLE.map { r -> listOf(r["name"]!!) + visibleCols.map { r[it.first] ?: "" } },
-                        )
-                    }
-                    // 字段明细:每张 DONE 的表一个 sheet,结构相同;勾选列 + 实时预览
-                    "fields" -> {
-                        SheetNote("每张扫描完成的表生成一个 sheet(sheet 名 = 表名),结构相同,此处以 user_order 为例:")
-                        SectionTitle("表头设置")
-                        ColChecks(FIELD_COLS, fieldChecked) { fieldChecked = it }
-                        val visibleCols = FIELD_COLS.filter { it.first in fieldChecked }
-                        PreviewTable(
-                            headers = listOf("表名", "表注释", "字段") + visibleCols.map { it.second },
-                            rows = FIELD_SAMPLE.map { r ->
-                                listOf(r["table"]!!, r["tableComment"]!!, r["name"]!!) +
-                                    visibleCols.map { r[it.first] ?: "" }
-                            },
-                        )
-                    }
-                    // 异常表:固定,仅有失败表时出现
-                    else -> {
-                        SheetNote("仅当存在扫描失败的表时才会生成该 sheet。")
-                        PreviewTable(
-                            headers = listOf("表名", "错误信息"),
-                            rows = listOf(listOf("pay_record", "Lock wait timeout exceeded; try restarting transaction")),
-                        )
-                    }
+            when (activeSheet) {
+                // 概览:固定 KV,不可配置
+                "overview" -> OverviewPreview()
+                // 表列表:勾选列 + 实时预览
+                "tables" -> {
+                    SectionTitle("表头设置")
+                    ColChecks(TABLE_COLS, tableChecked) { tableChecked = it }
+                    val visibleCols = TABLE_COLS.filter { it.first in tableChecked }
+                    PreviewTable(
+                        headers = listOf("表名") + visibleCols.map { it.second },
+                        rows = TABLE_SAMPLE.map { r -> listOf(r["name"]!!) + visibleCols.map { r[it.first] ?: "" } },
+                    )
                 }
+                // 字段明细:每张 DONE 的表一个 sheet,结构相同;勾选列 + 实时预览
+                "fields" -> {
+                    SheetNote("每张扫描完成的表生成一个 sheet(sheet 名 = 表名),结构相同,此处以 user_order 为例:")
+                    SectionTitle("表头设置")
+                    ColChecks(FIELD_COLS, fieldChecked) { fieldChecked = it }
+                    val visibleCols = FIELD_COLS.filter { it.first in fieldChecked }
+                    PreviewTable(
+                        headers = listOf("表名", "表注释", "字段") + visibleCols.map { it.second },
+                        rows = FIELD_SAMPLE.map { r ->
+                            listOf(r["table"]!!, r["tableComment"]!!, r["name"]!!) +
+                                visibleCols.map { r[it.first] ?: "" }
+                        },
+                    )
+                }
+                // 异常表:固定,仅有失败表时出现
+                else -> {
+                    SheetNote("仅当存在扫描失败的表时才会生成该 sheet。")
+                    PreviewTable(
+                        headers = listOf("表名", "错误信息"),
+                        rows = listOf(listOf("pay_record", "Lock wait timeout exceeded; try restarting transaction")),
+                    )
+                }
+            }
 
-                Spacer(Modifier.height(16.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = { reset() }) { Text("重置") }
-                    TextButton(onClick = onDismiss) { Text("取消") }
-                    Button(onClick = { doExport() }, enabled = !exporting) {
-                        Text(if (exporting) "导出中…" else "导出")
-                    }
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                OutlinedButton(onClick = { reset() }) { Text("重置") }
+                OutlinedButton(onClick = onDismiss) { Text("取消") }
+                DefaultButton(onClick = { doExport() }, enabled = !exporting) {
+                    Text(if (exporting) "导出中…" else "导出")
                 }
             }
         }
@@ -282,21 +276,21 @@ private fun ExportDialog(env: AppEnv, jobId: Long, onResult: (String) -> Unit, o
 /** sheet 页签(Excel 风格) */
 @Composable
 private fun SheetTab(name: String, active: Boolean, onClick: () -> Unit) {
-    val primary = MaterialTheme.colorScheme.primary
+    val primary = LocalStatusColors.current.primary
     Text(
         name,
         fontSize = 13.sp,
-        color = if (active) Color.White else MaterialTheme.colorScheme.onSurface,
+        color = if (active) Color.White else JewelTheme.globalColors.text.normal,
         modifier = Modifier
             .padding(end = 2.dp)
             .background(
-                if (active) primary else MaterialTheme.colorScheme.surfaceVariant,
-                RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp),
+                if (active) primary else JewelTheme.globalColors.panelBackground,
+                RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
             )
             .border(
                 1.dp,
-                if (active) primary else Color(0xFFDCDFE6),
-                RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp),
+                if (active) primary else previewBorder,
+                RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp),
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 4.dp),
@@ -310,7 +304,7 @@ private fun SectionTitle(text: String) {
 
 @Composable
 private fun SheetNote(text: String) {
-    Text(text, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
+    Text(text, fontSize = 12.sp, color = JewelTheme.globalColors.text.disabled, modifier = Modifier.padding(bottom = 8.dp))
 }
 
 /** 列勾选组(对应 el-checkbox-group) */
@@ -321,13 +315,11 @@ private fun ColChecks(cols: List<Pair<String, String>>, checked: Set<String>, on
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         cols.forEach { (key, label) ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = key in checked,
-                    onCheckedChange = { on -> onChange(if (on) checked + key else checked - key) },
-                )
-                Text(label, fontSize = 13.sp)
-            }
+            CheckboxRow(
+                text = label,
+                checked = key in checked,
+                onCheckedChange = { on -> onChange(if (on) checked + key else checked - key) },
+            )
         }
     }
 }

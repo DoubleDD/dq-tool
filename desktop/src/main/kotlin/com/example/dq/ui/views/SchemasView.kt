@@ -8,19 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuAnchorType
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,37 +24,50 @@ import com.example.dq.model.DbType
 import com.example.dq.model.ScanRequest
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.SchemaStat
-import com.example.dq.ui.AppEnv
+import com.example.dq.env.ServiceEnv
 import com.example.dq.ui.Screen
 import com.example.dq.ui.Tab
 import com.example.dq.ui.TabsModel
+import com.example.dq.ui.components.BannerLevel
 import com.example.dq.ui.components.DataTable
 import com.example.dq.ui.components.EmptyHint
+import com.example.dq.ui.components.InlineBanner
+import com.example.dq.ui.components.LinearProgress
 import com.example.dq.ui.components.StatusTag
 import com.example.dq.ui.components.TableColumn
 import com.example.dq.ui.components.formatBytes
 import com.example.dq.ui.components.formatDateTime
 import com.example.dq.ui.components.formatNumber
+import com.example.dq.ui.theme.LocalStatusColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.Checkbox
+import org.jetbrains.jewel.ui.component.DefaultButton
+import org.jetbrains.jewel.ui.component.Link
+import org.jetbrains.jewel.ui.component.ListComboBox
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.Text
+import org.jetbrains.jewel.ui.component.TextField
 
 /** 库列表页(对应 Vue 版 Schemas.vue):库/schema 表格 + 多库切换 + 勾选批量扫描 */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) {
+fun SchemasView(env: ServiceEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) {
     val dsId = screen.dsId
     var schemas by remember { mutableStateOf<List<SchemaStat>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var statsLoaded by remember { mutableStateOf(false) }
-    var keyword by remember { mutableStateOf("") }
+    /** 搜索关键字(Jewel TextField 用 TextFieldState 持有) */
+    val keyword = remember { TextFieldState("") }
     var databases by remember { mutableStateOf<List<String>>(emptyList()) }
     var currentDb by remember { mutableStateOf(screen.db ?: "") }
     var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
     var submitting by remember { mutableStateOf(false) }
-    var message by remember { mutableStateOf<String?>(null) }
+    /** 页面级消息条:文案 + 提示级别(常驻条件渲染,可手动关闭) */
+    var message by remember { mutableStateOf<Pair<String, BannerLevel>?>(null) }
     val scope = rememberCoroutineScope()
 
     fun isScanning(s: SchemaStat): Boolean =
@@ -110,7 +111,7 @@ fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) 
             }
             loadSchemas()
         } catch (e: Exception) {
-            message = "加载库列表失败: ${e.message}"
+            message = "加载库列表失败: ${e.message}" to BannerLevel.Error
         } finally {
             loading = false
         }
@@ -142,7 +143,11 @@ fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) 
                     fail++
                 }
             }
-            message = if (fail == 0) "已提交 $ok 个扫描任务" else "已提交 $ok/${ok + fail} 个扫描任务,其余提交失败"
+            message = if (fail == 0) {
+                "已提交 $ok 个扫描任务" to BannerLevel.Info
+            } else {
+                "已提交 $ok/${ok + fail} 个扫描任务,其余提交失败" to BannerLevel.Warn
+            }
             submitting = false
             loadStats()
         }
@@ -162,66 +167,70 @@ fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) 
         )
     }
 
-    val kw = keyword.trim().lowercase()
+    val kw = keyword.text.toString().trim().lowercase()
     val filtered = if (kw.isEmpty()) schemas else schemas.filter { it.name?.lowercase()?.contains(kw) == true }
     val rows = filtered.mapIndexed { i, s -> SchemaRow(i + 1, s) }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
         // 工具栏
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("库列表 - ${screen.dsName}", fontSize = 16.sp, modifier = Modifier.weight(1f))
-            Button(
+            DefaultButton(
                 onClick = {
                     // 跳过正在扫描的库,避免重复提交
                     val targets = schemas.filter { it.name in selected && !isScanning(it) }
-                    if (targets.isEmpty()) message = "选中的库都正在扫描中" else submitScans(targets)
+                    if (targets.isEmpty()) {
+                        message = "选中的库都正在扫描中" to BannerLevel.Warn
+                    } else {
+                        submitScans(targets)
+                    }
                 },
                 enabled = selected.isNotEmpty() && !submitting,
             ) { Text(if (selected.isEmpty()) "批量扫描" else "批量扫描(${selected.size})") }
             Spacer(Modifier.width(8.dp))
             OutlinedButton(onClick = { if (!tabs.back(tab)) tabs.activeKey.value = "home" }) { Text("返回数据源") }
         }
-        message?.let {
-            Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+        message?.let { (text, level) ->
+            InlineBanner(
+                level = level,
+                message = text,
+                onClose = { message = null },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
         }
 
         // 多库方言(SQL Server)的数据库切换
         if (databases.isNotEmpty()) {
             Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("数据库", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text("数据库", color = JewelTheme.globalColors.text.disabled, fontSize = 13.sp)
                 Spacer(Modifier.width(8.dp))
-                var dbExpanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(expanded = dbExpanded, onExpandedChange = { dbExpanded = it }) {
-                    OutlinedTextField(
-                        value = currentDb, onValueChange = {}, readOnly = true, singleLine = true,
-                        modifier = Modifier.menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable).width(240.dp),
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(dbExpanded) },
-                    )
-                    ExposedDropdownMenu(expanded = dbExpanded, onDismissRequest = { dbExpanded = false }) {
-                        databases.forEach { d ->
-                            DropdownMenuItem(text = { Text(d) }, onClick = {
-                                dbExpanded = false
-                                if (d != currentDb) {
-                                    currentDb = d
-                                    scope.launch { loadSchemas() }
-                                }
-                            })
+                ListComboBox(
+                    items = databases,
+                    // currentDb 未在列表中(尚未初始化完成)时退回第 0 项占位
+                    selectedIndex = databases.indexOf(currentDb).takeIf { it >= 0 } ?: 0,
+                    onSelectedItemChange = { idx ->
+                        val d = databases[idx]
+                        if (d != currentDb) {
+                            currentDb = d
+                            scope.launch { loadSchemas() }
                         }
-                    }
-                }
+                    },
+                    modifier = Modifier.width(240.dp),
+                )
             }
         }
 
-        OutlinedTextField(
-            value = keyword, onValueChange = { keyword = it },
-            placeholder = { Text("按库名搜索") }, singleLine = true,
+        TextField(
+            state = keyword,
+            placeholder = { Text("按库名搜索") },
             modifier = Modifier.width(280.dp).padding(top = 12.dp),
         )
 
-        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+        if (loading) LinearProgress(null, Modifier.fillMaxWidth().padding(top = 8.dp))
         if (!loading && rows.isEmpty()) EmptyHint("暂无数据")
 
-        val grey = MaterialTheme.colorScheme.onSurfaceVariant
+        val statusColors = LocalStatusColors.current
+        val grey = JewelTheme.globalColors.text.disabled
         val columns = listOf<TableColumn<SchemaRow>>(
             TableColumn("", width = 45.dp, content = { row ->
                 Checkbox(
@@ -239,7 +248,7 @@ fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) 
             TableColumn("库名(Schema)", weight = 1.6f, content = { row ->
                 Text(
                     row.stat.name ?: "",
-                    color = MaterialTheme.colorScheme.primary, fontSize = 13.sp,
+                    color = statusColors.primary, fontSize = 13.sp,
                     modifier = Modifier.clickable { row.stat.name?.let { goTables(it) } },
                 )
             }),
@@ -247,7 +256,7 @@ fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) 
                 val count = row.stat.tableCount ?: 0
                 Text(
                     formatNumber(count.toLong()), fontSize = 13.sp,
-                    color = if (count == 0) grey else MaterialTheme.colorScheme.onSurface,
+                    color = if (count == 0) grey else JewelTheme.globalColors.text.normal,
                 )
             }),
             TableColumn("占用空间", width = 110.dp, content = { row ->
@@ -255,17 +264,18 @@ fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) 
             }),
             TableColumn("最近扫描", weight = 2f, content = { row ->
                 val s = row.stat
-                if (s.lastScanStatus == null) {
+                val lastStatus = s.lastScanStatus
+                if (lastStatus == null) {
                     Text("未扫描", color = grey, fontSize = 13.sp)
                 } else {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        StatusTag(runCatching { ScanStatus.valueOf(s.lastScanStatus) }.getOrNull())
+                        StatusTag(runCatching { ScanStatus.valueOf(lastStatus) }.getOrNull())
                         Spacer(Modifier.width(8.dp))
                         if (isScanning(s)) {
                             // 最近任务的表级进度(完成表数/总表数)
                             val total = s.lastScanTotalTables ?: 0
                             val percent = if (total <= 0) 0 else minOf(100, (s.lastScanDoneTables ?: 0) * 100 / total)
-                            LinearProgressIndicator(progress = { percent / 100f }, modifier = Modifier.width(130.dp))
+                            LinearProgress(percent / 100f, Modifier.width(130.dp))
                         } else {
                             Text(formatDateTime(s.lastScanAt), color = grey, fontSize = 13.sp)
                         }
@@ -274,17 +284,18 @@ fun SchemasView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Schemas) 
             }),
             TableColumn("操作", width = 200.dp, content = { row ->
                 Row {
-                    TextButton(enabled = !isScanning(row.stat), onClick = { submitScans(listOf(row.stat)) }) {
-                        Text("扫描")
-                    }
-                    TextButton(
+                    // Jewel 没有 TextButton,行内文字操作用 Link
+                    Link("扫描", enabled = !isScanning(row.stat), onClick = { submitScans(listOf(row.stat)) })
+                    Spacer(Modifier.width(12.dp))
+                    Link(
+                        "扫描记录",
                         enabled = !statsLoaded || row.stat.lastScanStatus != null,
                         onClick = { row.stat.name?.let { goScans(it) } },
-                    ) { Text("扫描记录") }
+                    )
                 }
             }),
         )
-        DataTable(columns, rows, rowKey = { it.stat.name ?: "idx-${it.index}" }, modifier = Modifier.padding(top = 12.dp))
+        DataTable(columns, rows, rowKey = { it.stat.name ?: "idx-${it.index}" }, modifier = Modifier.padding(top = 16.dp))
     }
 }
 

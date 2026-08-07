@@ -1,0 +1,30 @@
+<configuration>
+    <!--
+      运行日志输出到数据目录,按天滚动(dq-tool.yyyy-MM-dd.log),保留 30 天。
+      dq.data-dir 由 main 在任何日志输出前设为系统属性(安装版由打包脚本注入);
+      :- 后为开发模式默认值 ./data。logback 无 relaxed binding,变量名必须是 dq.data-dir。
+    -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <charset>UTF-8</charset>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %5p [%thread] %logger{36} : %m%n</pattern>
+        </encoder>
+    </appender>
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${dq.data-dir:-./data}/logs/dq-tool.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${dq.data-dir:-./data}/logs/dq-tool.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>  <!-- 单文件上限,正常一天一个,%i 仅作超限兜底 -->
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>2GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <charset>UTF-8</charset>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %5p [%thread] %logger{36} : %m%n</pattern>
+        </encoder>
+    </appender>
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>

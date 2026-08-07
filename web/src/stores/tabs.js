@@ -11,7 +11,8 @@ import { reactive } from 'vue'
 export const tabState = reactive({
   tabs: [
     { key: 'home', title: '首页', path: '/datasources', closable: false },
-    { key: 'dashboard', title: '任务看板', path: '/dashboard', closable: false }
+    { key: 'dashboard', title: '任务看板', path: '/dashboard', closable: false },
+    { key: 'tags', title: '标记统计', path: '/tags', closable: false }
   ],
   activeKey: 'home'
 })
@@ -41,6 +42,9 @@ function resolveTab(route) {
   const p = route.path
   if (p === '/dashboard') {
     return { key: 'dashboard', title: '任务看板', closable: false }
+  }
+  if (p === '/tags') {
+    return { key: 'tags', title: '标记统计', closable: false }
   }
   if (p.startsWith('/datasources/')) {
     const id = route.params.id

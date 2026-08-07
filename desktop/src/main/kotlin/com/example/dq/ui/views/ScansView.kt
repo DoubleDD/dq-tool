@@ -7,11 +7,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -25,19 +20,22 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.dq.model.ScanJobView
 import com.example.dq.model.ScanStatus
-import com.example.dq.ui.AppEnv
+import com.example.dq.env.ServiceEnv
 import com.example.dq.ui.Screen
 import com.example.dq.ui.Tab
 import com.example.dq.ui.TabsModel
+import com.example.dq.ui.components.BannerLevel
 import com.example.dq.ui.components.ConfirmDialog
 import com.example.dq.ui.components.DataTable
 import com.example.dq.ui.components.EmptyHint
+import com.example.dq.ui.components.InlineBanner
 import com.example.dq.ui.components.JobTimeline
+import com.example.dq.ui.components.LinearProgress
 import com.example.dq.ui.components.StatusTag
 import com.example.dq.ui.components.TableColumn
 import com.example.dq.ui.components.formatDateTime
 import com.example.dq.ui.components.formatDuration
-import com.example.dq.ui.theme.StatusDanger
+import com.example.dq.ui.theme.LocalStatusColors
 import java.awt.FileDialog
 import java.awt.Frame
 import java.io.File
@@ -47,15 +45,20 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.Link
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.Text
 
 /** 扫描记录页(对应 Vue 版 Scans.vue):任务历史表格 + 进度 + 状态时间线 + 查看/续扫/导出/删除 */
 @Composable
-fun ScansView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
+fun ScansView(env: ServiceEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
     val schema = screen.schema
     val db = screen.db ?: ""
     var jobs by remember { mutableStateOf<List<ScanJobView>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
-    var message by remember { mutableStateOf<String?>(null) }
+    /** 页面级消息条:文案 + 提示级别(对应 Vue 版 ElMessage 的成功/错误反馈) */
+    var message by remember { mutableStateOf<Pair<String, BannerLevel>?>(null) }
     var deleteTarget by remember { mutableStateOf<ScanJobView?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -66,7 +69,7 @@ fun ScansView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
                 env.scanService.listJobs(screen.dsId, db.ifBlank { null }, schema.ifBlank { null })
             }
         } catch (e: Exception) {
-            message = "加载扫描记录失败: ${e.message}"
+            message = "加载扫描记录失败: ${e.message}" to BannerLevel.Error
         } finally {
             loading = false
         }
@@ -85,9 +88,9 @@ fun ScansView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
         scope.launch {
             try {
                 withContext(Dispatchers.IO) { env.scanService.resume(job.id) }
-                message = "已继续扫描"
+                message = "已继续扫描" to BannerLevel.Info
             } catch (e: Exception) {
-                message = "续扫失败: ${e.message}"
+                message = "续扫失败: ${e.message}" to BannerLevel.Error
             }
             load()
         }
@@ -107,17 +110,17 @@ fun ScansView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
                     withContext(Dispatchers.IO) {
                         target.outputStream().use { env.exportService.export(job.id, it) }
                     }
-                    message = "已导出到 ${target.absolutePath}"
+                    message = "已导出到 ${target.absolutePath}" to BannerLevel.Info
                 }
             } catch (e: Exception) {
-                message = "导出失败: ${e.message}"
+                message = "导出失败: ${e.message}" to BannerLevel.Error
             }
         }
     }
 
     val rows = jobs.mapIndexed { i, j -> ScanJobRow(i + 1, j) }
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
         // 工具栏
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -128,11 +131,12 @@ fun ScansView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
             Spacer(Modifier.width(8.dp))
             OutlinedButton(onClick = { scope.launch { load() } }) { Text("刷新") }
         }
-        message?.let {
-            Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp))
+        // 页面级消息条(替代原临时文字提示):常驻条件渲染,可手动关闭
+        message?.let { (msg, level) ->
+            InlineBanner(level, msg, modifier = Modifier.padding(top = 8.dp), onClose = { message = null })
         }
 
-        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+        if (loading) LinearProgress(null, Modifier.fillMaxWidth().padding(top = 8.dp))
         if (!loading && rows.isEmpty()) EmptyHint("暂无数据")
 
         val columns = buildList {
@@ -154,10 +158,10 @@ fun ScansView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
             }
             add(TableColumn<ScanJobRow>("进度", width = 180.dp, content = { row ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    LinearProgressIndicator(
-                        progress = { (row.job.progressPercent / 100).toFloat().coerceIn(0f, 1f) },
+                    // 共用进度条不支持自定义颜色,失败任务不再标红(与原 Material 版的行为差异)
+                    LinearProgress(
+                        (row.job.progressPercent / 100).toFloat().coerceIn(0f, 1f),
                         modifier = Modifier.weight(1f),
-                        color = if (row.job.status == ScanStatus.FAILED) StatusDanger else MaterialTheme.colorScheme.primary,
                     )
                     Spacer(Modifier.width(6.dp))
                     Text("${row.job.progressPercent.roundToInt()}%", fontSize = 12.sp)
@@ -184,37 +188,42 @@ fun ScansView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.Scans) {
             add(TableColumn<ScanJobRow>("操作", width = 330.dp, content = { row ->
                 val job = row.job
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = {
+                    Link("查看", onClick = {
                         val label = if (job.dbName != null) "${job.dbName}.${job.schemaName}" else job.schemaName ?: ""
                         tabs.openScanDetail(job.id, label)
-                    }) { Text("查看") }
+                    })
                     if (job.status == ScanStatus.CANCELED || job.status == ScanStatus.INTERRUPTED
                         || job.status == ScanStatus.FAILED
                     ) {
-                        TextButton(onClick = { resume(job) }) { Text("继续扫描") }
+                        Link("继续扫描", onClick = { resume(job) }, modifier = Modifier.padding(start = 8.dp))
                     }
-                    TextButton(onClick = { export(job) }) { Text("导出") }
+                    Link("导出", onClick = { export(job) }, modifier = Modifier.padding(start = 8.dp))
                     if (job.status != ScanStatus.PENDING && job.status != ScanStatus.RUNNING) {
-                        TextButton(onClick = { deleteTarget = job }) { Text("删除", color = StatusDanger) }
+                        Link(
+                            "删除",
+                            onClick = { deleteTarget = job },
+                            modifier = Modifier.padding(start = 8.dp),
+                            textStyle = JewelTheme.defaultTextStyle.copy(color = LocalStatusColors.current.danger),
+                        )
                     }
                 }
             }))
         }
-        DataTable(columns, rows, rowKey = { it.job.id }, modifier = Modifier.padding(top = 12.dp))
+        DataTable(columns, rows, rowKey = { it.job.id }, modifier = Modifier.padding(top = 16.dp))
     }
 
     deleteTarget?.let { job ->
         ConfirmDialog(
             title = "删除确认",
-            text = "确定删除任务 #${job.id} 的扫描记录吗?",
+            message = "确定删除任务 #${job.id} 的扫描记录吗?",
             onConfirm = {
                 deleteTarget = null
                 scope.launch {
                     try {
                         withContext(Dispatchers.IO) { env.scanService.delete(job.id) }
-                        message = "删除成功"
+                        message = "删除成功" to BannerLevel.Info
                     } catch (e: Exception) {
-                        message = "删除失败: ${e.message}"
+                        message = "删除失败: ${e.message}" to BannerLevel.Error
                     }
                     load()
                 }

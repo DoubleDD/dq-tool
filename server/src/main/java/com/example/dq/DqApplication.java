@@ -1,43 +1,50 @@
 package com.example.dq;
 
+import com.example.dq.config.ConfigLoader;
 import com.example.dq.config.DesktopSplash;
 import com.example.dq.config.TrayManager;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
-import org.springframework.scheduling.annotation.EnableScheduling;
+import com.example.dq.web.WebServer;
 
 import java.io.IOException;
 import java.net.ServerSocket;
 
-@SpringBootApplication
-@ConfigurationPropertiesScan
-@EnableScheduling
 public class DqApplication {
 
-    private static final int DEFAULT_PORT = 10000;
     private static final int MAX_PORT_OFFSET = 100;
 
-    public static void main(String[] args) {
-        int configuredPort = resolveConfiguredPort(args);
+    public static void main(String[] args) throws Exception {
+        // 与原 Spring Boot 行为一致:默认 headless,只有显式 -Djava.awt.headless=false(打包脚本/make 注入)
+        // 才启用窗口/托盘;必须在任何 AWT 类加载前设置
+        if (System.getProperty("java.awt.headless") == null) {
+            System.setProperty("java.awt.headless", "true");
+        }
+        ConfigLoader.AppConfig config = ConfigLoader.load();
+        // logback 首次打日志即初始化:dq.data-dir 必须先于任何日志输出设置(logback.xml 引用该变量)
+        System.setProperty("dq.data-dir", config.dataDir());
+
+        int configuredPort = resolveConfiguredPort(args, config.serverPort());
+        int port = configuredPort;
         // server.port=0 表示交给容器随机分配,无需避让
         if (configuredPort != 0) {
-            int port = findAvailablePort(configuredPort);
+            port = findAvailablePort(configuredPort);
             if (port != configuredPort) {
                 System.out.printf("[dq-tool] 端口 %d 被占用,避让到 %d%n", configuredPort, port);
             }
-            // 通过系统属性覆盖 application.yml 中的 server.port(命令行参数优先级更高,不受影响)
-            System.setProperty("server.port", String.valueOf(port));
             earlyDesktopFeedback(port);
         }
-        SpringApplication.run(DqApplication.class, args);
+
+        // WebServer 构造时完成共享内核装配(H2 连接池 + Flyway 迁移 + 业务服务)
+        WebServer server = new WebServer(config);
+        server.start(port);
+        // 服务完全就绪:关启动画面 + 打开应用窗口、回填托盘引用(port=0 时以实际分配端口为准)
+        server.onReady(server.port());
     }
 
     /**
-     * 桌面安装版(打包脚本注入 -Djava.awt.headless=false)在 Spring 启动前先给出视觉反馈:
+     * 桌面安装版(打包脚本注入 -Djava.awt.headless=false)在服务启动前先给出视觉反馈:
      * 第一时间安装系统托盘图标并弹出启动画面,服务就绪后由 BrowserOpener 关启动画面并打开窗口。
-     * 显式判断 headless=false 而不是 !isHeadless():普通 java -jar 在桌面机器上运行时该属性未设置
-     * (由 Spring 置为 headless),不能误装托盘/弹窗,保持服务器部署的原行为。
+     * 显式判断 headless=false 而不是 !isHeadless():普通 java -jar 在桌面机器上运行时该属性未设置,
+     * 不能误装托盘/弹窗,保持服务器部署的原行为。
      */
     private static void earlyDesktopFeedback(int port) {
         if (!"false".equalsIgnoreCase(System.getProperty("java.awt.headless"))) {
@@ -48,19 +55,19 @@ public class DqApplication {
     }
 
     /**
-     * 解析用户显式配置的端口,优先级: --server.port 启动参数 > SERVER_PORT 环境变量 > 默认 10000。
+     * 解析用户显式配置的端口,优先级: --server.port 启动参数 > SERVER_PORT 环境变量 > application.yml。
      */
-    private static int resolveConfiguredPort(String[] args) {
+    private static int resolveConfiguredPort(String[] args, int defaultPort) {
         for (String arg : args) {
             if (arg.startsWith("--server.port=")) {
-                return parsePort(arg.substring("--server.port=".length()), DEFAULT_PORT);
+                return parsePort(arg.substring("--server.port=".length()), defaultPort);
             }
         }
         String env = System.getenv("SERVER_PORT");
         if (env != null && !env.isBlank()) {
-            return parsePort(env.trim(), DEFAULT_PORT);
+            return parsePort(env.trim(), defaultPort);
         }
-        return DEFAULT_PORT;
+        return defaultPort;
     }
 
     private static int parsePort(String value, int fallback) {

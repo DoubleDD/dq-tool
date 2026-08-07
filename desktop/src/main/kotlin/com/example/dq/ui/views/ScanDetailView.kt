@@ -13,12 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -36,15 +30,18 @@ import androidx.compose.ui.unit.sp
 import com.example.dq.model.ScanJobView
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.ScanTableView
-import com.example.dq.ui.AppEnv
+import com.example.dq.env.ServiceEnv
 import com.example.dq.ui.Screen
 import com.example.dq.ui.Tab
 import com.example.dq.ui.TabsModel
+import com.example.dq.ui.components.BannerLevel
 import com.example.dq.ui.components.ConfirmDialog
 import com.example.dq.ui.components.DataTable
 import com.example.dq.ui.components.DescriptionRow
 import com.example.dq.ui.components.EmptyHint
 import com.example.dq.ui.components.ExportButton
+import com.example.dq.ui.components.InlineBanner
+import com.example.dq.ui.components.LinearProgress
 import com.example.dq.ui.components.StatusTag
 import com.example.dq.ui.components.TableColumn
 import com.example.dq.ui.components.formatDateTime
@@ -52,14 +49,18 @@ import com.example.dq.ui.components.formatDuration
 import com.example.dq.ui.components.formatNumber
 import com.example.dq.ui.components.statusText
 import com.example.dq.ui.components.textColumn
-import com.example.dq.ui.theme.StatusDanger
-import com.example.dq.ui.theme.StatusWarning
+import com.example.dq.ui.theme.BadgeCorner
+import com.example.dq.ui.theme.LocalStatusColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.DefaultButton
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.Text
 
 /** 终态:停止主动拉取,仅等续扫等操作改变状态后恢复 */
 private val TERMINAL = setOf(ScanStatus.DONE, ScanStatus.FAILED, ScanStatus.CANCELED, ScanStatus.INTERRUPTED)
@@ -73,12 +74,13 @@ private data class TableRow(val idx: Int, val table: ScanTableView)
 
 /** 扫描详情页(平移自 web/src/views/ScanDetail.vue):任务描述 + 表级进度表 + 取消/续扫/导出 */
 @Composable
-fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDetail) {
+fun ScanDetailView(env: ServiceEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDetail) {
     var job by remember { mutableStateOf<ScanJobView?>(null) }
     var acting by remember { mutableStateOf(false) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var confirmCancel by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val statusColors = LocalStatusColors.current
 
     suspend fun fetchJob() {
         try {
@@ -130,7 +132,16 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
     }
 
     val j = job
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        // 错误提示条(替代原 AlertDialog 弹窗):常驻条件渲染,可手动关闭
+        errorMsg?.let { msg ->
+            InlineBanner(
+                level = BannerLevel.Error,
+                message = msg,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                onClose = { errorMsg = null },
+            )
+        }
         if (j == null) {
             EmptyHint(if (errorMsg != null) "加载失败" else "加载中…")
         } else {
@@ -138,14 +149,22 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("扫描任务 #${j.id}", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = { goBack() }) { Text("返回") }
+                OutlinedButton(onClick = { goBack() }) { Text("返回") }
                 if (j.status == ScanStatus.RUNNING) {
-                    TextButton(onClick = { confirmCancel = true }, enabled = !acting) {
-                        Text("取消", color = StatusDanger)
+                    OutlinedButton(
+                        onClick = { confirmCancel = true },
+                        enabled = !acting,
+                        modifier = Modifier.padding(start = 8.dp),
+                    ) {
+                        Text("取消", color = statusColors.danger)
                     }
                 }
                 if (j.status == ScanStatus.CANCELED || j.status == ScanStatus.INTERRUPTED || j.status == ScanStatus.FAILED) {
-                    Button(onClick = { doResume() }, enabled = !acting) { Text("继续扫描") }
+                    DefaultButton(
+                        onClick = { doResume() },
+                        enabled = !acting,
+                        modifier = Modifier.padding(start = 8.dp),
+                    ) { Text("继续扫描") }
                 }
                 ExportButton(env, screen.jobId)
             }
@@ -167,7 +186,7 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
             )
             // 空值规则
             Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("空值规则:", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text("空值规则:", color = JewelTheme.globalColors.text.disabled, fontSize = 13.sp)
                 Spacer(Modifier.width(4.dp))
                 val rules = j.nullRules.orEmpty()
                 if (rules.isEmpty()) {
@@ -179,7 +198,7 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
                                 "${r.column ?: "*"}: ${r.values.joinToString(", ")}",
                                 fontSize = 12.sp,
                                 modifier = Modifier
-                                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(4.dp))
+                                    .background(JewelTheme.globalColors.panelBackground, RoundedCornerShape(8.dp))
                                     .padding(horizontal = 6.dp, vertical = 2.dp),
                             )
                         }
@@ -188,8 +207,8 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
             }
             j.error?.let { err ->
                 Row(Modifier.padding(vertical = 4.dp)) {
-                    Text("错误信息:", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-                    Text(err, color = StatusDanger, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
+                    Text("错误信息:", color = JewelTheme.globalColors.text.disabled, fontSize = 13.sp)
+                    Text(err, color = statusColors.danger, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
                 }
             }
 
@@ -198,19 +217,19 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
             Text(
                 "总进度(${j.doneTables}/${j.totalTables} 表)",
                 fontSize = 13.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = JewelTheme.globalColors.text.disabled,
             )
-            LinearProgressIndicator(
-                progress = { (j.progressPercent / 100.0).coerceIn(0.0, 1.0).toFloat() },
+            // Jewel 进度条不支持自定义颜色,失败态的红色省略,仅保留进度值
+            LinearProgress(
+                progress = (j.progressPercent / 100.0).coerceIn(0.0, 1.0).toFloat(),
                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                color = if (j.status == ScanStatus.FAILED) StatusDanger else MaterialTheme.colorScheme.primary,
             )
             // 采样/估算行数说明(对应 Vue 版列头 tooltip)
             Text(
                 "采样:超过阈值(默认 100 万行或 10GB)的表只统计样本,结果为估算值;" +
                     "估算行数来自数据库元数据,不是 COUNT(*) 精确值,可能不准确",
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = JewelTheme.globalColors.text.disabled,
             )
             Spacer(Modifier.height(8.dp))
 
@@ -223,7 +242,7 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
                         Text(
                             row.table.tableName,
                             fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = statusColors.primary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.clickable {
@@ -241,9 +260,9 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
                 TableColumn<TableRow>("进度", width = 190.dp) { row ->
                     when {
                         row.table.totalChunks > 0 -> Row(verticalAlignment = Alignment.CenterVertically) {
-                            LinearProgressIndicator(
-                                progress = { chunkPercent(row.table) / 100f },
-                                modifier = Modifier.weight(1f).height(8.dp),
+                            LinearProgress(
+                                progress = chunkPercent(row.table) / 100f,
+                                modifier = Modifier.weight(1f),
                             )
                             Text(
                                 "${chunkPercent(row.table)}%",
@@ -252,8 +271,8 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
                             )
                         }
                         row.table.status == ScanStatus.RUNNING ->
-                            Text("运行中", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        else -> Text("-", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("运行中", fontSize = 12.sp, color = JewelTheme.globalColors.text.disabled)
+                        else -> Text("-", fontSize = 12.sp, color = JewelTheme.globalColors.text.disabled)
                     }
                 },
                 TableColumn<TableRow>("状态", width = 80.dp) { StatusTag(it.table.status) },
@@ -262,13 +281,13 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
                         Text(
                             "采样",
                             fontSize = 12.sp,
-                            color = StatusWarning,
+                            color = statusColors.warning,
                             modifier = Modifier
-                                .background(StatusWarning.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+                                .background(statusColors.warning.copy(alpha = 0.12f), RoundedCornerShape(BadgeCorner))
                                 .padding(horizontal = 6.dp, vertical = 2.dp),
                         )
                     } else {
-                        Text("全量", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("全量", fontSize = 12.sp, color = JewelTheme.globalColors.text.disabled)
                     }
                 },
                 textColumn("已扫行数 / 估算行数", width = 180.dp) {
@@ -279,7 +298,7 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
                     Text(
                         row.table.error ?: "-",
                         fontSize = 12.sp,
-                        color = if (row.table.error != null) StatusDanger else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (row.table.error != null) statusColors.danger else JewelTheme.globalColors.text.disabled,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -298,20 +317,13 @@ fun ScanDetailView(env: AppEnv, tabs: TabsModel, tab: Tab, screen: Screen.ScanDe
     if (confirmCancel) {
         ConfirmDialog(
             title = "取消确认",
-            text = "确定取消该扫描任务吗?",
+            message = "确定取消该扫描任务吗?",
             onConfirm = {
                 confirmCancel = false
                 doCancel()
             },
             onDismiss = { confirmCancel = false },
-        )
-    }
-    errorMsg?.let { msg ->
-        AlertDialog(
-            onDismissRequest = { errorMsg = null },
-            title = { Text("提示") },
-            text = { Text(msg) },
-            confirmButton = { TextButton(onClick = { errorMsg = null }) { Text("确定") } },
+            danger = true,
         )
     }
 }

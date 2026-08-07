@@ -1,12 +1,11 @@
 package com.example.dq.ui.views
 
-import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,14 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,31 +27,41 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.dq.model.ScanJobView
 import com.example.dq.model.ScanStatus
-import com.example.dq.ui.AppEnv
+import com.example.dq.env.ServiceEnv
 import com.example.dq.ui.TabsModel
+import com.example.dq.ui.components.BannerLevel
 import com.example.dq.ui.components.ConfirmDialog
 import com.example.dq.ui.components.DataTable
 import com.example.dq.ui.components.EmptyHint
 import com.example.dq.ui.components.ExportButton
+import com.example.dq.ui.components.InlineBanner
 import com.example.dq.ui.components.JobTimeline
 import com.example.dq.ui.components.StatusTag
 import com.example.dq.ui.components.TableColumn
 import com.example.dq.ui.components.formatDateTime
 import com.example.dq.ui.components.formatDuration
 import com.example.dq.ui.components.textColumn
-import com.example.dq.ui.theme.StatusDanger
-import com.example.dq.ui.theme.StatusInfo
+import com.example.dq.ui.theme.LocalStatusColors
+import com.example.dq.ui.theme.floatingSurface
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.OutlinedButton
+import org.jetbrains.jewel.ui.component.Text
 import kotlin.math.roundToInt
 
 /** 库/Schema 展示标签:多库方言带库名前缀 */
@@ -75,7 +77,7 @@ private fun resumable(status: ScanStatus?): Boolean =
 
 /** 任务看板页(平移自 web/src/views/Dashboard.vue):进行中任务卡片 + 近期历史表格 */
 @Composable
-fun DashboardView(env: AppEnv, tabs: TabsModel) {
+fun DashboardView(env: ServiceEnv, tabs: TabsModel) {
     var jobs by remember { mutableStateOf<List<ScanJobView>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
@@ -143,6 +145,8 @@ fun DashboardView(env: AppEnv, tabs: TabsModel) {
         .take(20)
         .mapIndexed { i, j -> HistoryRow(i + 1, j) }
 
+    val statusColors = LocalStatusColors.current
+
     val historyColumns: List<TableColumn<HistoryRow>> = listOf(
         textColumn("序号", width = 50.dp) { it.idx.toString() },
         textColumn("任务ID", width = 70.dp) { it.job.id.toString() },
@@ -162,20 +166,30 @@ fun DashboardView(env: AppEnv, tabs: TabsModel) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SmallTextButton("查看") { tabs.openScanDetail(row.job.id, schemaLabel(row.job)) }
                 if (resumable(row.job.status)) {
-                    SmallTextButton("继续扫描", color = MaterialTheme.colorScheme.primary) { doResume(row.job.id) }
+                    SmallTextButton("继续扫描", color = statusColors.primary) { doResume(row.job.id) }
                 }
                 ExportButton(env, row.job.id)
-                SmallTextButton("删除", color = StatusDanger) { confirmDelete = row.job }
+                SmallTextButton("删除", color = statusColors.danger) { confirmDelete = row.job }
             }
         },
     )
 
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        // 错误提示条(替代原 AlertDialog 弹窗):常驻条件渲染,可手动关闭
+        errorMsg?.let { msg ->
+            InlineBanner(
+                level = BannerLevel.Error,
+                message = msg,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                onClose = { errorMsg = null },
+            )
+        }
+
         // 进行中的任务
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("进行中的任务", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = { scope.launch { load() } }) { Text("刷新") }
+            OutlinedButton(onClick = { scope.launch { load() } }) { Text("刷新") }
         }
         when {
             loading && activeJobs.isEmpty() -> EmptyHint("加载中…")
@@ -186,8 +200,8 @@ fun DashboardView(env: AppEnv, tabs: TabsModel) {
                     .heightIn(max = 260.dp)
                     .verticalScroll(rememberScrollState())
                     .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 activeJobs.forEach { job ->
                     JobCard(
@@ -201,7 +215,7 @@ fun DashboardView(env: AppEnv, tabs: TabsModel) {
         }
 
         // 近期历史
-        Text("近期历史", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 8.dp))
+        Text("近期历史", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(vertical = 12.dp))
         DataTable(
             columns = historyColumns,
             rows = historyJobs,
@@ -214,7 +228,7 @@ fun DashboardView(env: AppEnv, tabs: TabsModel) {
     confirmCancel?.let { job ->
         ConfirmDialog(
             title = "取消确认",
-            text = "确定取消该扫描任务吗?",
+            message = "确定取消该扫描任务吗?",
             onConfirm = {
                 confirmCancel = null
                 doCancel(job.id)
@@ -225,7 +239,8 @@ fun DashboardView(env: AppEnv, tabs: TabsModel) {
     confirmDelete?.let { job ->
         ConfirmDialog(
             title = "删除确认",
-            text = "确定删除任务 #${job.id} 的扫描记录吗?",
+            message = "确定删除任务 #${job.id} 的扫描记录吗?",
+            danger = true,
             onConfirm = {
                 confirmDelete = null
                 doDelete(job.id)
@@ -233,26 +248,17 @@ fun DashboardView(env: AppEnv, tabs: TabsModel) {
             onDismiss = { confirmDelete = null },
         )
     }
-    errorMsg?.let { msg ->
-        AlertDialog(
-            onDismissRequest = { errorMsg = null },
-            title = { Text("提示") },
-            text = { Text(msg) },
-            confirmButton = { TextButton(onClick = { errorMsg = null }) { Text("确定") } },
-        )
-    }
 }
 
-/** 小号文字按钮(表格操作列用,压缩默认内边距) */
+/** 小号文字按钮(表格操作列用):Jewel 无 TextButton,用可点击文字实现 */
 @Composable
-private fun SmallTextButton(text: String, color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        contentPadding = PaddingValues(horizontal = 6.dp),
-        colors = ButtonDefaults.textButtonColors(contentColor = color),
-    ) {
-        Text(text, fontSize = 12.sp)
-    }
+private fun SmallTextButton(text: String, color: Color = LocalStatusColors.current.primary, onClick: () -> Unit) {
+    Text(
+        text,
+        fontSize = 12.sp,
+        color = color,
+        modifier = Modifier.clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 2.dp),
+    )
 }
 
 /** 进行中任务卡片:环形进度 + 状态/取消 + 元信息(对应 Dashboard.vue 的 job-card) */
@@ -261,21 +267,22 @@ private fun JobCard(job: ScanJobView, tick: Long, onClick: () -> Unit, onCancel:
     // 读取 tick 以订阅秒针,让"已耗时"每秒刷新
     @Suppress("UNUSED_EXPRESSION")
     tick
+    val statusColors = LocalStatusColors.current
     Row(
         Modifier
             .width(330.dp)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+            .floatingSurface()
             .clickable(onClick = onClick)
-            .padding(14.dp),
+            .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         // 环形进度(PENDING 用 info 灰),中心显示百分比
         Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(
-                progress = { (job.progressPercent / 100.0).coerceIn(0.0, 1.0).toFloat() },
+            ProgressRing(
+                progress = (job.progressPercent / 100.0).coerceIn(0.0, 1.0).toFloat(),
+                color = if (job.status == ScanStatus.PENDING) statusColors.info else statusColors.primary,
                 modifier = Modifier.fillMaxSize(),
-                color = if (job.status == ScanStatus.PENDING) StatusInfo else MaterialTheme.colorScheme.primary,
             )
             Text("${job.progressPercent.roundToInt()}%", fontSize = 11.sp)
         }
@@ -292,20 +299,52 @@ private fun JobCard(job: ScanJobView, tick: Long, onClick: () -> Unit, onCancel:
                 Spacer(Modifier.weight(1f))
                 StatusTag(job.status)
                 // Vue 版是悬停才把状态标签换成取消按钮;桌面端直接并列展示
-                SmallTextButton("取消", color = StatusDanger, onClick = onCancel)
+                SmallTextButton("取消", color = statusColors.danger, onClick = onCancel)
             }
             Text(
                 "${job.datasourceName ?: "-"} · 任务 #${job.id}",
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = JewelTheme.globalColors.text.disabled,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
                 "表 ${job.doneTables}/${job.totalTables} · 已耗时 ${formatDuration(job.startedAt, null)}",
                 fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = JewelTheme.globalColors.text.disabled,
             )
         }
+    }
+}
+
+/** 确定性环形进度:Jewel 的 CircularProgressIndicator 只有不确定模式,这里用 Canvas 自绘保持原行为 */
+@Composable
+private fun ProgressRing(progress: Float, color: Color, modifier: Modifier = Modifier) {
+    val trackColor = JewelTheme.globalColors.borders.normal
+    Canvas(modifier) {
+        val strokeWidth = 4.dp.toPx()
+        val inset = strokeWidth / 2
+        val arcSize = Size(size.width - strokeWidth, size.height - strokeWidth)
+        val topLeft = Offset(inset, inset)
+        // 底圈
+        drawArc(
+            color = trackColor,
+            startAngle = 0f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(strokeWidth),
+        )
+        // 进度弧(从 12 点方向起)
+        drawArc(
+            color = color,
+            startAngle = -90f,
+            sweepAngle = 360f * progress,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(strokeWidth, cap = StrokeCap.Round),
+        )
     }
 }

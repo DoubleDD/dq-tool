@@ -42,7 +42,7 @@
       <el-table-column prop="columnComment" label="注释" min-width="140" sortable show-overflow-tooltip>
         <template #default="{ row }">
           <span v-if="row.columnComment">{{ row.columnComment }}</span>
-          <span v-else style="color: #c0c4cc">-</span>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
       <el-table-column prop="columnType" label="类型" width="150" sortable show-overflow-tooltip />
@@ -60,12 +60,12 @@
       <el-table-column prop="defaultValue" label="默认值" width="110" show-overflow-tooltip>
         <template #default="{ row }">
           <span v-if="row.defaultValue !== null && row.defaultValue !== undefined && row.defaultValue !== ''">{{ row.defaultValue }}</span>
-          <span v-else style="color: #c0c4cc">-</span>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
       <el-table-column label="空值数(合计)" width="130" sortable :sort-method="sortByNullTotal">
         <template #default="{ row }">
-          <span :style="{ color: nullTotal(row) > 0 ? '#e6a23c' : 'inherit' }">{{ formatNumber(nullTotal(row)) }}</span>
+          <span :style="{ color: nullTotal(row) > 0 ? 'var(--el-color-warning)' : 'inherit' }">{{ formatNumber(nullTotal(row)) }}</span>
         </template>
       </el-table-column>
       <el-table-column prop="totalRows" label="总行数" width="110" sortable>
@@ -85,7 +85,7 @@
           <el-progress
             :percentage="row.fillRate || 0"
             :stroke-width="10"
-            :color="row.fillRate >= 95 ? '#67c23a' : row.fillRate >= 80 ? '#e6a23c' : '#f56c6c'"
+            :color="row.fillRate >= 95 ? 'var(--el-color-success)' : row.fillRate >= 80 ? 'var(--el-color-warning)' : 'var(--el-color-danger)'"
           />
         </template>
       </el-table-column>

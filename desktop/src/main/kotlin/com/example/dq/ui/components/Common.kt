@@ -6,23 +6,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.dq.model.ScanStatus
+import com.example.dq.ui.theme.BadgeCorner
 import com.example.dq.ui.theme.StatusDanger
 import com.example.dq.ui.theme.StatusInfo
 import com.example.dq.ui.theme.StatusPrimary
 import com.example.dq.ui.theme.StatusSuccess
 import com.example.dq.ui.theme.StatusWarning
+import org.jetbrains.jewel.foundation.theme.JewelTheme
+import org.jetbrains.jewel.ui.component.Text
 
-/** 状态色(对齐原 Element Plus tag 类型) */
+/** 状态色(对齐原 Element Plus tag 类型);非组合函数,沿用顶层常量,组合内新代码优先 LocalStatusColors */
 fun statusColor(status: ScanStatus?): Color = when (status) {
     ScanStatus.DONE -> StatusSuccess
     ScanStatus.RUNNING -> StatusPrimary
@@ -40,26 +39,8 @@ fun StatusTag(status: ScanStatus?, modifier: Modifier = Modifier) {
         color = color,
         fontSize = 12.sp,
         modifier = modifier
-            .background(color.copy(alpha = 0.12f), RoundedCornerShape(4.dp))
+            .background(color.copy(alpha = 0.12f), RoundedCornerShape(BadgeCorner))
             .padding(horizontal = 6.dp, vertical = 2.dp),
-    )
-}
-
-/** 通用确认对话框(对应 ElMessageBox.confirm) */
-@Composable
-fun ConfirmDialog(
-    title: String,
-    text: String,
-    onConfirm: () -> Unit,
-    onDismiss: () -> Unit,
-    confirmText: String = "确定",
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Text(text) },
-        confirmButton = { TextButton(onClick = onConfirm) { Text(confirmText) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
@@ -67,7 +48,7 @@ fun ConfirmDialog(
 @Composable
 fun EmptyHint(text: String, modifier: Modifier = Modifier) {
     Box(modifier.padding(32.dp)) {
-        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Text(text, color = JewelTheme.globalColors.text.disabled, fontSize = 13.sp)
     }
 }
 
@@ -77,7 +58,7 @@ fun DescriptionRow(items: List<Pair<String, String>>, modifier: Modifier = Modif
     Row(modifier.padding(vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
         items.forEach { (label, value) ->
             Row {
-                Text("$label:", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                Text("$label:", color = JewelTheme.globalColors.text.disabled, fontSize = 13.sp)
                 Text(value, fontSize = 13.sp, modifier = Modifier.padding(start = 4.dp))
             }
         }

@@ -2,11 +2,6 @@ package com.example.dq.config;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.ApplicationContext;
-import org.springframework.context.event.EventListener;
-import org.springframework.stereotype.Component;
 
 import java.awt.AWTException;
 import java.awt.Color;
@@ -39,32 +34,31 @@ import javax.swing.event.PopupMenuListener;
  * 右键菜单全平台统一用 Swing JPopupMenu(托盘图标本身是 AWT SystemTray API,没有 Swing 替代品):
  * Windows 的 AWT 原生菜单 peer 渲染中文必现方块(显式设字体也无效),Swing 由 Java2D 绘制,
  * 字体回退正常,并设置系统外观让菜单字体/样式跟随操作系统默认。
- * 安装版在 main 阶段(Spring 就绪前)即调用 installEarly 安装,让双击启动的用户第一时间看到托盘图标;
- * Spring 就绪后 onReady 回填菜单动作依赖的引用并标记看门狗停用。
+ * 安装版在 main 阶段(服务就绪前)即调用 installEarly 安装,让双击启动的用户第一时间看到托盘图标;
+ * 服务就绪后 onReady 回填菜单动作依赖的引用并标记看门狗停用。
  */
-@Component
 public class TrayManager {
 
     private static final Logger log = LoggerFactory.getLogger(TrayManager.class);
 
     /** 已安装的托盘图标;null 表示未安装(early 阶段与 ready 兜底共用,保证幂等) */
     private static volatile TrayIcon installedIcon;
-    /** Spring 就绪后回填,托盘菜单动作使用;就绪前点击菜单做降级处理 */
+    /** 服务就绪后回填,托盘菜单动作使用;就绪前点击菜单做降级处理 */
     private static volatile BrowserOpener browserOpenerRef;
-    private static volatile ApplicationContext ctxRef;
+    private static volatile AppShutdown shutdownRef;
 
     private final BrowserOpener browserOpener;
     private final DesktopSession session;
-    private final ApplicationContext ctx;
+    private final AppShutdown shutdown;
 
-    public TrayManager(BrowserOpener browserOpener, DesktopSession session, ApplicationContext ctx) {
+    public TrayManager(BrowserOpener browserOpener, DesktopSession session, AppShutdown shutdown) {
         this.browserOpener = browserOpener;
         this.session = session;
-        this.ctx = ctx;
+        this.shutdown = shutdown;
     }
 
     /**
-     * 安装托盘图标(幂等),main 阶段与 Spring 就绪兜底都走这里。
+     * 安装托盘图标(幂等),main 阶段与服务就绪兜底都走这里。
      * 返回是否已生效(含此前已安装的情况);headless / 不支持托盘 / 添加失败返回 false。
      */
     public static synchronized boolean installEarly(String url) {
@@ -105,11 +99,10 @@ public class TrayManager {
         }
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    public void onReady(ApplicationReadyEvent event) {
+    /** 服务就绪(原 ApplicationReadyEvent 挂载点):回填菜单动作引用,兜底安装托盘图标 */
+    public void onReady(int port) {
         browserOpenerRef = browserOpener;
-        ctxRef = ctx;
-        String port = event.getApplicationContext().getEnvironment().getProperty("server.port", "10000");
+        shutdownRef = shutdown;
         // 幂等:安装版在 main 阶段已装过;未走 early 路径的场景(如 IDE 直接运行)在这里兜底
         if (installEarly("http://localhost:" + port)) {
             session.markTrayActive();
@@ -117,7 +110,7 @@ public class TrayManager {
         }
     }
 
-    /** 托盘「打开窗口」;Spring 尚未就绪时服务还没起来,忽略本次点击(splash 正在提示启动中) */
+    /** 托盘「打开窗口」;服务尚未就绪时忽略本次点击(splash 正在提示启动中) */
     private static void openWindow(String url) {
         BrowserOpener opener = browserOpenerRef;
         if (opener == null) {
@@ -134,9 +127,13 @@ public class TrayManager {
             if (opener != null) {
                 opener.closeWindow();
             }
-            ApplicationContext context = ctxRef;
-            // Spring 尚未就绪时没有上下文可优雅关闭,直接退出
-            System.exit(context != null ? SpringApplication.exit(context, () -> 0) : 0);
+            AppShutdown appShutdown = shutdownRef;
+            // 服务尚未就绪时没有装配退出封装,直接退出
+            if (appShutdown != null) {
+                appShutdown.exit();
+            } else {
+                System.exit(0);
+            }
         }, "tray-shutdown").start();
     }
 

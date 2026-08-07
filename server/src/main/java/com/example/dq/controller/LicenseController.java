@@ -1,17 +1,10 @@
 package com.example.dq.controller;
 
 import com.example.dq.model.LicenseActivateRequest;
-import com.example.dq.model.LicenseStatusView;
 import com.example.dq.service.LicenseService;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import io.javalin.http.Context;
 
-/** 授权码:查询状态 + 激活(不被授权拦截器拦截) */
-@RestController
-@RequestMapping("/api/license")
+/** 授权码:查询状态 + 激活(不被授权拦截拦截) */
 public class LicenseController {
 
     private final LicenseService service;
@@ -20,13 +13,11 @@ public class LicenseController {
         this.service = service;
     }
 
-    @GetMapping("/status")
-    public LicenseStatusView status() {
-        return service.status();
+    public void status(Context ctx) {
+        ctx.json(service.status());
     }
 
-    @PostMapping("/activate")
-    public LicenseStatusView activate(@RequestBody LicenseActivateRequest req) {
-        return service.activate(req.code());
+    public void activate(Context ctx) {
+        ctx.json(service.activate(ctx.bodyAsClass(LicenseActivateRequest.class).getCode()));
     }
 }

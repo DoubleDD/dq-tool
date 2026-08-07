@@ -6,6 +6,11 @@
   <el-container v-else class="layout" direction="vertical">
     <el-header class="header" height="50px">
       <span class="title">数据质量检测工具</span>
+      <el-tooltip :content="`主题:${themeModeText}(点击切换)`" placement="bottom">
+        <el-button class="theme-toggle" text circle @click="cycleTheme">
+          <el-icon><Monitor v-if="themeState.mode === 'auto'" /><Sunny v-else-if="themeState.mode === 'light'" /><Moon v-else /></el-icon>
+        </el-button>
+      </el-tooltip>
     </el-header>
     <div class="tab-bar">
       <el-tabs v-model="tabState.activeKey" type="card" @tab-click="onTabClick" @tab-remove="onTabRemove">
@@ -25,10 +30,18 @@
 </template>
 
 <script setup>
-import { watch, onMounted, onUnmounted } from 'vue'
+import { computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
+import { Sunny, Moon, Monitor } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
+import { themeState, initTheme, cycleTheme } from './stores/theme'
+
+// 恢复上次主题(需在挂载早期执行,避免首帧闪烁)
+initTheme()
+
+const THEME_MODE_TEXT = { auto: '跟随系统', light: '浅色', dark: '深色' }
+const themeModeText = computed(() => THEME_MODE_TEXT[themeState.mode])
 
 const route = useRoute()
 const router = useRouter()

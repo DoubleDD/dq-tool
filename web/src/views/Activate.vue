@@ -91,7 +91,7 @@ function goHome() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--el-bg-color-page);
+  background: var(--dq-page-bg);
 }
 .activate-card {
   width: 480px;

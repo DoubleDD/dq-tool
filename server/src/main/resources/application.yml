@@ -1,29 +1,6 @@
+# dq-tool 配置(由 ConfigLoader 读取;同名系统属性优先于本文件,如安装版注入 -Ddq.data-dir=...)
 server:
   port: 10000
-
-spring:
-  application:
-    name: dq-tool
-  datasource:
-    url: jdbc:h2:file:${dq.data-dir}/dqconfig;AUTO_SERVER=TRUE
-    driver-class-name: org.h2.Driver
-    username: sa
-    password: ""
-  sql:
-    init:
-      mode: always
-      schema-locations: classpath:schema.sql
-
-# 运行日志输出到数据目录,按天滚动(dq-tool.yyyy-MM-dd.log),保留 30 天
-logging:
-  file:
-    name: ${dq.data-dir}/logs/dq-tool.log
-  logback:
-    rollingpolicy:
-      file-name-pattern: ${dq.data-dir}/logs/dq-tool.%d{yyyy-MM-dd}.%i.log
-      max-file-size: 100MB      # 单文件上限,正常一天一个,%i 仅作超限兜底
-      max-history: 30
-      total-size-cap: 2GB
 
 dq:
   data-dir: ./data           # 数据目录(H2 数据文件与运行日志);安装版由打包脚本注入为 ${user.home}/.dq-tool/data

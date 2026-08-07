@@ -1,8 +1,5 @@
 package com.example.dq.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-
-@ConfigurationProperties(prefix = "dq")
 public class DqProperties {
 
     private final Scan scan = new Scan();

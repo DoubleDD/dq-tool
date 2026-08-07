@@ -2,9 +2,6 @@ package com.example.dq.config;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
-import org.springframework.stereotype.Component;
 
 import java.awt.Desktop;
 import java.awt.GraphicsEnvironment;
@@ -26,7 +23,6 @@ import java.util.concurrent.TimeUnit;
  * 浏览器已在运行时新进程会把窗口交接给已有实例后立即退出,进程句柄失效,托盘「退出」就杀不到窗口;
  * 独立配置保证窗口属于本进程拉起的浏览器实例,句柄一直有效,closeWindow() 能可靠关闭。
  */
-@Component
 public class BrowserOpener {
 
     private static final Logger log = LoggerFactory.getLogger(BrowserOpener.class);
@@ -39,14 +35,12 @@ public class BrowserOpener {
         this.session = session;
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    public void openBrowser(ApplicationReadyEvent event) {
-        // 服务已完全就绪:关闭启动画面(未显示时为空操作),紧接着打开应用窗口
+    /** 服务已完全就绪(原 ApplicationReadyEvent 挂载点):关闭启动画面(未显示时为空操作),紧接着打开应用窗口 */
+    public void openBrowser(int port) {
         DesktopSplash.close();
         if (GraphicsEnvironment.isHeadless()) {
             return;
         }
-        String port = event.getApplicationContext().getEnvironment().getProperty("server.port", "10000");
         open("http://localhost:" + port);
     }
 

@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>数据质量检测工具</title>
+    <script>
+      // 应用挂载前恢复主题,避免深色用户首帧白闪(与 stores/theme.js 的存储键一致)
+      if (localStorage.getItem('dq-theme') === 'dark') document.documentElement.classList.add('dark')
+    </script>
   </head>
   <body>
     <div id="app"></div>

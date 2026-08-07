@@ -73,6 +73,29 @@
         </table>
       </template>
 
+      <!-- 字段汇总:所有 DONE 表的字段合并为一个 sheet,列勾选与「字段明细」共用 -->
+      <template v-else-if="activeSheet === 'allFields'">
+        <div class="sheet-note">所有扫描完成的表的字段合并到同一个 sheet,列设置与「字段明细」共用:</div>
+        <table class="preview-table">
+          <thead>
+            <tr>
+              <th class="fixed-col">表名</th>
+              <th class="fixed-col">表注释</th>
+              <th class="fixed-col">字段</th>
+              <th v-for="c in visibleFieldCols" :key="c.key">{{ c.label }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in ALL_FIELDS_SAMPLE" :key="row.table + '/' + row.name">
+              <td>{{ row.table }}</td>
+              <td>{{ row.tableComment }}</td>
+              <td>{{ row.name }}</td>
+              <td v-for="c in visibleFieldCols" :key="c.key">{{ row[c.key] }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </template>
+
       <!-- 异常表:固定,仅有失败表时出现 -->
       <template v-else>
         <div class="sheet-note">仅当存在扫描失败的表时才会生成该 sheet。</div>
@@ -126,6 +149,7 @@ const FIELD_COLS = [
 const SHEETS = [
   { key: 'overview', name: '概览' },
   { key: 'tables', name: '表列表' },
+  { key: 'allFields', name: '字段汇总' },
   { key: 'fields', name: '字段明细' },
   { key: 'failed', name: '异常表' }
 ]
@@ -159,6 +183,12 @@ const TABLE_SAMPLE = [
 const FIELD_SAMPLE = [
   { table: 'user_order', tableComment: '订单表', name: 'id', comment: '主键', type: 'bigint(20)', key: 'PK', nullable: '否', default: '', totalRows: '12,500,000', nullCount: '0', emptyCount: '0', ruleHitCount: '0', valueCount: '12,500,000', fillRate: '100' },
   { table: 'user_order', tableComment: '订单表', name: 'mobile', comment: '手机号', type: 'varchar(20)', key: '', nullable: '是', default: '', totalRows: '12,500,000', nullCount: '3,200', emptyCount: '150', ruleHitCount: '0', valueCount: '12,496,650', fillRate: '99.97' }
+]
+
+// 「字段汇总」示例:两行来自不同的表,体现多表合并
+const ALL_FIELDS_SAMPLE = [
+  FIELD_SAMPLE[1],
+  { table: 'user_info', tableComment: '用户表', name: 'email', comment: '邮箱', type: 'varchar(64)', key: '', nullable: '是', default: '', totalRows: '53,210', nullCount: '800', emptyCount: '0', ruleHitCount: '0', valueCount: '52,410', fillRate: '98.50' }
 ]
 
 const props = defineProps({
@@ -201,31 +231,31 @@ function doExport() {
 <style scoped>
 .tip {
   margin-bottom: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
 .sheet-tabs {
   display: flex;
-  border-bottom: 2px solid #409eff;
+  border-bottom: 2px solid var(--el-color-primary);
 }
 
 .sheet-tab {
   padding: 4px 16px;
   font-size: 13px;
-  color: #606266;
+  color: var(--el-text-color-regular);
   cursor: pointer;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   border-bottom: none;
   border-radius: 4px 4px 0 0;
   margin-right: 2px;
-  background: #f5f7fa;
+  background: var(--el-fill-color-light);
 }
 
 .sheet-tab.active {
-  color: #fff;
-  background: #409eff;
-  border-color: #409eff;
+  color: var(--el-color-white);
+  background: var(--el-color-primary);
+  border-color: var(--el-color-primary);
 }
 
 .sheet-body {
@@ -235,13 +265,13 @@ function doExport() {
 
 .sheet-note {
   margin-bottom: 8px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 
 .section-title {
   margin-bottom: 8px;
-  color: #303133;
+  color: var(--el-text-color-primary);
   font-size: 13px;
   font-weight: 600;
 }
@@ -260,20 +290,20 @@ function doExport() {
 
 .preview-table th,
 .preview-table td {
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   padding: 4px 10px;
   text-align: left;
 }
 
 .preview-table th {
-  background: #f0f2f5;
-  color: #303133;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
   font-weight: 600;
 }
 
 .preview-table th.fixed-col,
 .preview-table td.kv-key {
-  background: #f0f2f5;
-  color: #909399;
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
 }
 </style>

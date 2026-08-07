@@ -15,10 +15,22 @@ build/
 node_modules/
 web/dist/
 
+# Tauri(Rust 构建产物 / 打包脚本组装的内嵌资源 / 移动端生成物)
+tauri/src-tauri/target/
+tauri/src-tauri/resources/**
+!tauri/src-tauri/resources/PLACEHOLDER.txt
+tauri/src-tauri/gen/
+
 # 运行时数据
 data/
 logs/
 *.log
+
+# desktop 打包下载的 JBR 运行时(大体积二进制,由构建脚本拉取)
+desktop/runtime/
+
+# 前端视觉走查的临时截图与脚本
+web/.visual-check/
 
 # 授权码签发私钥(分发方自行保管,勿提交)
 license-private.key

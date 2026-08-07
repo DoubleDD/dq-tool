@@ -1,9 +1,6 @@
 package com.example.dq.config;
 
-import org.springframework.boot.context.properties.ConfigurationProperties;
-
 /** AI 大模型接口默认配置(application.yml 的 ai.*);用户未在页面配置时作为兜底 */
-@ConfigurationProperties(prefix = "ai")
 public class AiProperties {
 
     /** 接口地址(OpenAI 兼容,如 http://host:port/v1) */

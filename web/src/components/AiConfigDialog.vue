@@ -1,7 +1,7 @@
 <template>
   <el-button @click="open">AI 配置</el-button>
   <el-dialog v-model="visible" title="AI 配置" width="520px" append-to-body>
-    <div style="margin-bottom: 12px; color: #909399; font-size: 13px">
+    <div style="margin-bottom: 12px; color: var(--el-text-color-secondary); font-size: 13px">
       用于生成「表说明」的大模型接口,任意 OpenAI 兼容服务均可(DeepSeek / 通义 / 本地 vLLM 等)。
       生成时只发送表结构元数据(表名、字段、注释),不发送业务数据。
     </div>

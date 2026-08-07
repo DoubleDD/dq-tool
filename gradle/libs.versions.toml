@@ -2,6 +2,23 @@
 # testcontainers 显式钉 1.21.4:1.20.x 默认 API 1.32 被 Docker 29+ 拒绝(最低 1.40),1.21.4 起修复;
 # 不随 Spring Boot 4.1 BOM 管理的 2.x 走(模块坐标有变化),server/desktop 保持一致
 testcontainers = "1.21.4"
+# 以下版本与原 Spring Boot 4.1 BOM 托管版本对齐(去 BOM 后显式钉,避免行为漂移)
+javalin = "7.2.2"
+jackson3 = "3.1.4"
+slf4j = "2.0.18"
+logback = "1.5.34"
+hikari = "7.0.2"
+snakeyaml = "2.6"
+spring = "7.0.8"
+hibernate-validator = "9.1.0.Final"
+tomcat-el = "11.0.22"
+junit = "5.12.2"
+assertj = "3.27.3"
+# 内核(common 模块)内部 JSON 固定 Jackson 2,与 server web 层的 Jackson 3 隔离
+jackson2 = "2.20.0"
+# Flyway 数据库迁移;H2 支持内置于 flyway-core(无 flyway-database-h2 模块)
+flyway = "11.20.3"
+jakarta-validation = "3.1.0"
 h2 = "2.3.232"
 poi = "5.3.0"
 mysql = "9.3.0"
@@ -11,8 +28,34 @@ oracle = "23.26.3.0.0"
 dameng = "8.1.3.140"
 kingbase = "9.0.1"
 oceanbase = "2.4.18"
+# SSH 隧道(数据源经跳板机连接目标库);mwiede 维护的 JSch 分支,包名仍为 com.jcraft.jsch
+jsch = "2.28.6"
+# JCEF(shell 模块桌面壳):jcefmaven 为官方接入封装(natives 解压/java.library.path/macOS 初始化),
+# transitively 带入 jcef-api;natives 版本为同一发布的全量 tag,两者必须同源(146.0.10 发布,2026-05,CEF 146)
+jcefmaven = "146.0.10"
+jcef-natives = "jcef-d3de827+cef-146.0.10+g8219561+chromium-146.0.7680.179"
 
 [libraries]
+# 去 Spring 化后显式声明(原由 starter 传递引入)
+javalin = { group = "io.javalin", name = "javalin", version.ref = "javalin" }
+jackson3-databind = { group = "tools.jackson.core", name = "jackson-databind", version.ref = "jackson3" }
+# Jackson 3 的 Kotlin 模块:server web 层(Javalin)序列化/反序列化 common 的 Kotlin data class 需要
+jackson3-module-kotlin = { group = "tools.jackson.module", name = "jackson-module-kotlin", version.ref = "jackson3" }
+slf4j-api = { group = "org.slf4j", name = "slf4j-api", version.ref = "slf4j" }
+logback-classic = { group = "ch.qos.logback", name = "logback-classic", version.ref = "logback" }
+hikari = { group = "com.zaxxer", name = "HikariCP", version.ref = "hikari" }
+snakeyaml = { group = "org.yaml", name = "snakeyaml", version.ref = "snakeyaml" }
+# spring-jdbc 传递引入 spring-beans/core/tx(JdbcTemplate + TransactionTemplate 脱容器使用)
+spring-jdbc = { group = "org.springframework", name = "spring-jdbc", version.ref = "spring" }
+hibernate-validator = { group = "org.hibernate.validator", name = "hibernate-validator", version.ref = "hibernate-validator" }
+# 校验消息插值的 EL 实现(与原 starter-validation 运行期一致)
+tomcat-embed-el = { group = "org.apache.tomcat.embed", name = "tomcat-embed-el", version.ref = "tomcat-el" }
+junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit" }
+assertj-core = { group = "org.assertj", name = "assertj-core", version.ref = "assertj" }
+jackson2-module-kotlin = { group = "com.fasterxml.jackson.module", name = "jackson-module-kotlin", version.ref = "jackson2" }
+flyway-core = { group = "org.flywaydb", name = "flyway-core", version.ref = "flyway" }
+# 仅注解:common 模型类携带校验注解,实现由 server 的 hibernate-validator 提供
+jakarta-validation-api = { group = "jakarta.validation", name = "jakarta.validation-api", version.ref = "jakarta-validation" }
 h2 = { group = "com.h2database", name = "h2", version.ref = "h2" }
 poi-ooxml = { group = "org.apache.poi", name = "poi-ooxml", version.ref = "poi" }
 jdbc-mysql = { group = "com.mysql", name = "mysql-connector-j", version.ref = "mysql" }
@@ -24,6 +67,9 @@ jdbc-oracle-nls = { group = "com.oracle.database.nls", name = "orai18n", version
 jdbc-dameng = { group = "com.dameng", name = "DmJdbcDriver18", version.ref = "dameng" }
 jdbc-kingbase = { group = "cn.com.kingbase", name = "kingbase8", version.ref = "kingbase" }
 jdbc-oceanbase = { group = "com.oceanbase", name = "oceanbase-client", version.ref = "oceanbase" }
+# SSH 隧道本地端口转发(SshTunnelService)
+jsch = { group = "com.github.mwiede", name = "jsch", version.ref = "jsch" }
+jcefmaven = { group = "me.friwi", name = "jcefmaven", version.ref = "jcefmaven" }
 testcontainers-junit = { group = "org.testcontainers", name = "junit-jupiter", version.ref = "testcontainers" }
 testcontainers-mysql = { group = "org.testcontainers", name = "mysql", version.ref = "testcontainers" }
 testcontainers-postgresql = { group = "org.testcontainers", name = "postgresql", version.ref = "testcontainers" }

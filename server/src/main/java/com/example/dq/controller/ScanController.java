@@ -1,20 +1,11 @@
 package com.example.dq.controller;
 
-import com.example.dq.model.ScanColumnView;
-import com.example.dq.model.ScanJobView;
 import com.example.dq.model.ScanRequest;
 import com.example.dq.service.ExportService;
 import com.example.dq.service.ScanService;
+import com.example.dq.web.Validators;
+import io.javalin.http.Context;
 import jakarta.servlet.http.HttpServletResponse;
-import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 import java.net.URLEncoder;
@@ -23,8 +14,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-@RestController
-@RequestMapping("/api/scans")
+/** 扫描作业(Javalin handler,路由在 WebServer 注册) */
 public class ScanController {
 
     private final ScanService scanService;
@@ -35,53 +25,49 @@ public class ScanController {
         this.exportService = exportService;
     }
 
-    @PostMapping
-    public Map<String, Long> create(@Valid @RequestBody ScanRequest req) throws Exception {
-        return Map.of("jobId", scanService.createScan(req));
+    public void create(Context ctx) throws Exception {
+        ScanRequest req = Validators.validate(ctx.bodyAsClass(ScanRequest.class));
+        ctx.json(Map.of("jobId", scanService.createScan(req)));
     }
 
-    @GetMapping
-    public List<ScanJobView> list(@RequestParam(required = false) Long datasourceId,
-                                  @RequestParam(required = false) String dbName,
-                                  @RequestParam(required = false) String schemaName) {
-        return scanService.listJobs(datasourceId, dbName, schemaName);
+    public void list(Context ctx) {
+        Long datasourceId = ctx.queryParamAsClass("datasourceId", Long.class).getOrNull();
+        ctx.json(scanService.listJobs(datasourceId, ctx.queryParam("dbName"), ctx.queryParam("schemaName")));
     }
 
-    @GetMapping("/{jobId}")
-    public ScanJobView get(@PathVariable long jobId) {
-        return scanService.getJob(jobId);
+    public void get(Context ctx) {
+        ctx.json(scanService.getJob(jobId(ctx)));
     }
 
-    @PostMapping("/{jobId}/cancel")
-    public void cancel(@PathVariable long jobId) {
-        scanService.cancel(jobId);
+    public void cancel(Context ctx) {
+        scanService.cancel(jobId(ctx));
     }
 
-    @PostMapping("/{jobId}/resume")
-    public void resume(@PathVariable long jobId) {
-        scanService.resume(jobId);
+    public void resume(Context ctx) {
+        scanService.resume(jobId(ctx));
     }
 
-    @DeleteMapping("/{jobId}")
-    public void delete(@PathVariable long jobId) {
-        scanService.delete(jobId);
+    public void delete(Context ctx) {
+        scanService.delete(jobId(ctx));
     }
 
-    @GetMapping("/{jobId}/tables/{tableName}/columns")
-    public List<ScanColumnView> columns(@PathVariable long jobId, @PathVariable String tableName) {
-        return scanService.getColumns(jobId, tableName);
+    public void columns(Context ctx) {
+        ctx.json(scanService.getColumns(jobId(ctx), ctx.pathParam("tableName")));
     }
 
-    @GetMapping("/{jobId}/export")
-    public void export(@PathVariable long jobId,
-                       @RequestParam(required = false) String tableCols,
-                       @RequestParam(required = false) String cols,
-                       HttpServletResponse response) throws IOException {
+    public void export(Context ctx) throws IOException {
+        long jobId = jobId(ctx);
         String filename = URLEncoder.encode("dq-scan-" + jobId + ".xlsx", StandardCharsets.UTF_8);
+        HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
         // tableCols/cols:逗号分隔的列 key(表列表/字段明细 sheet),缺省导出全部列;空值表示只留固定首列
-        exportService.export(jobId, splitKeys(tableCols), splitKeys(cols), response.getOutputStream());
+        exportService.export(jobId, splitKeys(ctx.queryParam("tableCols")), splitKeys(ctx.queryParam("cols")),
+                response.getOutputStream());
+    }
+
+    private static long jobId(Context ctx) {
+        return ctx.pathParamAsClass("jobId", Long.class).get();
     }
 
     private static List<String> splitKeys(String param) {

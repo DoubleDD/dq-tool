@@ -28,12 +28,12 @@
           <span v-else>无</span>
         </el-descriptions-item>
         <el-descriptions-item v-if="job.error" label="错误信息" :span="3">
-          <span style="color: #f56c6c">{{ job.error }}</span>
+          <span style="color: var(--el-color-danger)">{{ job.error }}</span>
         </el-descriptions-item>
       </el-descriptions>
 
       <div style="margin-bottom: 16px">
-        <span style="font-size: 13px; color: #606266">总进度({{ job.doneTables }}/{{ job.totalTables }} 表)</span>
+        <span style="font-size: 13px; color: var(--el-text-color-regular)">总进度({{ job.doneTables }}/{{ job.totalTables }} 表)</span>
         <el-progress :percentage="Math.round(job.progressPercent || 0)" :status="job.status === 'FAILED' ? 'exception' : undefined" />
       </div>
 
@@ -48,8 +48,8 @@
         <el-table-column label="进度" width="200" sortable :sort-method="(a, b) => chunkPercent(a) - chunkPercent(b)">
           <template #default="{ row }">
             <el-progress v-if="row.totalChunks > 0" :percentage="chunkPercent(row)" :stroke-width="10" />
-            <span v-else-if="row.status === 'RUNNING'" style="color: #909399; font-size: 12px">运行中</span>
-            <span v-else style="color: #909399; font-size: 12px">-</span>
+            <span v-else-if="row.status === 'RUNNING'" style="color: var(--el-text-color-secondary); font-size: 12px">运行中</span>
+            <span v-else style="color: var(--el-text-color-secondary); font-size: 12px">-</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100" sortable :sort-method="(a, b) => statusText(a.status).localeCompare(statusText(b.status), 'zh-CN')">
@@ -70,7 +70,7 @@
           </template>
           <template #default="{ row }">
             <el-tag v-if="row.sampled" type="warning" size="small">采样</el-tag>
-            <span v-else style="color: #909399; font-size: 12px">全量</span>
+            <span v-else style="color: var(--el-text-color-secondary); font-size: 12px">全量</span>
           </template>
         </el-table-column>
         <el-table-column label="已扫行数 / 估算行数" width="200" sortable :sort-method="(a, b) => (a.scannedRows ?? -1) - (b.scannedRows ?? -1)">
@@ -218,7 +218,7 @@ onUnmounted(stopPolling)
 
 <style scoped>
 .error-text {
-  color: #f56c6c;
+  color: var(--el-color-danger);
   font-size: 12px;
   display: inline-block;
   max-width: 100%;

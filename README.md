@@ -30,7 +30,7 @@
 
 ```bash
 # 后端(10000;窗口/托盘需显式 -Djava.awt.headless=false,见 Makefile 的 dev 目标)
-./gradlew :server:bootRun
+./gradlew :server:run
 
 # 前端(5173,代理 /api 到 10000)
 cd web && npm install && npm run dev
@@ -40,8 +40,8 @@ cd web && npm install && npm run dev
 
 ```bash
 cd web && npm install && npm run build   # 产物在 web/dist
-cd .. && ./gradlew :server:bootJar       # processResources 自动把 web/dist 拷进 jar
-java -jar server/build/libs/dq-tool-0.1.3.jar
+cd .. && ./gradlew :server:shadowJar     # processResources 自动把 web/dist 拷进 jar
+java -jar server/build/libs/dq-tool-0.1.5.jar
 ```
 
 > 访问 http://localhost:10000 即可使用(开发模式前端在 5173)。10000 被占用时会自动向后探测可用端口;也可用 `--server.port=` 参数或 `SERVER_PORT` 环境变量指定。
@@ -61,8 +61,8 @@ scripts/package-linux.sh
 
 推荐走 CI 全平台构建:推 `v*` tag(如 `git tag v1.2 && git push origin v1.2`)触发 `.github/workflows/release.yml`,云端并行构建 Windows 免安装 zip(x64 + ARM64)、macOS dmg(Apple Silicon + Intel)、Linux deb,全部自动挂到 GitHub Release;也支持 workflow_dispatch 手动触发(产物以 artifact 下载,保留 30 天)。jpackage 不支持交叉编译,各平台包都在对应系统的 runner 上原生构建。
 
-- 脚本自动完成前端构建 + `./gradlew :server:bootJar` + jpackage;只重打包可加 `--skip-build`
-- dmg/deb 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.3` 映射为安装包版本 `1.3`
+- 脚本自动完成前端构建 + `./gradlew :server:shadowJar` + jpackage;只重打包可加 `--skip-build`
+- dmg/deb 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.5` 映射为安装包版本 `1.5`
 - 安装版的数据目录固定为 `~/.dq-tool/data`(Windows 为 `%USERPROFILE%\.dq-tool\data`),与 jar 方式的 `./data` 不同
 - 运行日志输出到数据目录的 `logs/` 子目录,按天滚动(`dq-tool.yyyy-MM-dd.log`,保留 30 天)
 - Windows 包为免安装 zip:解压后双击 `dq-tool.exe`,无控制台窗口,日志写入 `%USERPROFILE%\.dq-tool\data\logs\`;无需管理员权限,删除目录即卸载

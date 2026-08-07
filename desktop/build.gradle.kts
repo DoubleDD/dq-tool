@@ -14,11 +14,15 @@ kotlin {
 }
 
 dependencies {
+    // 共享内核:业务逻辑(dialect/repository/scan/service/config)全部在此
+    implementation(project(":common"))
+
     // Compose Desktop
     implementation(compose.desktop.currentOs)
-    implementation(compose.material3)
-    implementation(compose.materialIconsExtended)
-    implementation(compose.components.resources)
+    // compose.* 依赖访问器在 CMP 1.9+ 已弃用,改为直接指定坐标;
+    // components-resources 版本须与 org.jetbrains.compose 插件版本保持一致
+    // (Material3 / material-icons-extended 依赖已随 Jewel 迁移移除)
+    implementation("org.jetbrains.compose.components:components-resources:1.11.1")
 
     // Jewel(IntelliJ 风格桌面主题;兼容矩阵:CMP 1.11.0 / JDK 25)
     // 版本号后缀 262.* 是 IntelliJ Platform 构建号,非 CMP 版本
@@ -32,37 +36,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.11.0")
 
-    // 本地 H2 存储 + 连接池
-    implementation(libs.h2)
-    implementation("com.zaxxer:HikariCP:6.3.0")
-
-    // JSON(null_rules / col_stats / AI 接口)
-    implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.20.0")
-
-    // Excel 导出
-    implementation(libs.poi.ooxml)
-
-    // 日志
-    implementation("org.slf4j:slf4j-api:2.0.17")
-    implementation("ch.qos.logback:logback-classic:1.5.18")
-
-    // 7 个目标数据库 JDBC 驱动(版本与 server 模块统一在 gradle/libs.versions.toml 管理)
-    runtimeOnly(libs.jdbc.mysql)
-    runtimeOnly(libs.jdbc.postgresql)
-    runtimeOnly(libs.jdbc.mssql)
-    runtimeOnly(libs.jdbc.oracle)
-    runtimeOnly(libs.jdbc.dameng)
-    runtimeOnly(libs.jdbc.kingbase)
-    runtimeOnly(libs.jdbc.oceanbase)
-
-    // 测试
-    testImplementation("org.junit.jupiter:junit-jupiter:5.12.2")
-    testImplementation("org.assertj:assertj-core:3.27.3")
-    testImplementation(libs.testcontainers.junit)
-    testImplementation(libs.testcontainers.mysql)
-    testImplementation(libs.testcontainers.postgresql)
-    testImplementation(libs.testcontainers.mssqlserver)
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // 日志实现(logback.xml 在本模块 resources;slf4j-api 由 common 传递)
+    runtimeOnly("ch.qos.logback:logback-classic:1.5.18")
 }
 
 // Jewel 的 DecoratedWindow 及字体加载依赖 JetBrains Runtime;
@@ -71,6 +46,8 @@ dependencies {
 val jbrHome = File(System.getProperty("user.home"), ".jdks")
     .listFiles { f -> f.isDirectory && f.name.startsWith("jbrsdk-25") }
     ?.maxByOrNull { it.name }
+    // macOS 的 JDK 是 .jdk 包结构,真正的 home 在 Contents/Home 下
+    ?.let { dir -> File(dir, "Contents/Home").takeIf { it.isDirectory } ?: dir }
 
 // 只在真正要运行/打包桌面应用时才提示 JBR 缺失,server 构建或普通编译不刷屏
 val desktopRunOrPackage = gradle.startParameter.taskNames.any {
@@ -105,6 +82,11 @@ compose.desktop {
             // 安装版数据目录固定为 ~/.dq-tool/data(与原 jpackage 约定一致)
             // 通过 -Ddq.data.dir 注入;直接 gradlew run 时默认 ./data
             modules("java.sql")
+            // 打包产物统一使用 ZGC(JDK 25 默认即为分代模式,无需其他 GC 参数)
+            jvmArgs("-XX:+UseZGC")
+            // JDK 25 对第三方库(skiko 加载 native、Jewel 反射 Unsafe)的告警:
+            // 均为上游库行为且最新版仍如此,显式放行以保持控制台干净
+            jvmArgs("--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow")
         }
     }
 }
@@ -112,6 +94,16 @@ compose.desktop {
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
     compilerOptions {
         freeCompilerArgs.add("-Xjvm-default=all")
+    }
+}
+
+// compose 插件在 afterEvaluate 中才注册 run 任务(类型即 JavaExec),
+// 故这里同样放在 afterEvaluate 里配置;开发运行(:desktop:run)同样使用 ZGC
+afterEvaluate {
+    tasks.named<JavaExec>("run") {
+        jvmArgs("-XX:+UseZGC")
+        // 同 nativeDistributions:压住 skiko native 加载与 Jewel Unsafe 反射的 JDK 25 告警
+        jvmArgs("--enable-native-access=ALL-UNNAMED", "--sun-misc-unsafe-memory-access=allow")
     }
 }
 

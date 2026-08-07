@@ -6,14 +6,14 @@ cd "$(dirname "$0")/.."
 
 if [[ "${1:-}" != "--skip-build" ]]; then
   (cd web && npm run build)
-  ./gradlew :server:bootJar
+  ./gradlew :server:shadowJar
 fi
 
 APP_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/build.gradle.kts | head -1)
 # dmg/msi 要求主版本号 >= 1,去掉开头的 "0."(0.1.0 -> 1.0)
 PKG_VERSION="${APP_VERSION#0.}"
 JAR="server/build/libs/dq-tool-${APP_VERSION}.jar"
-[[ -f "$JAR" ]] || { echo "找不到 $JAR,请先执行 ./gradlew :server:bootJar" >&2; exit 1; }
+[[ -f "$JAR" ]] || { echo "找不到 $JAR,请先执行 ./gradlew :server:shadowJar" >&2; exit 1; }
 
 INPUT=server/build/jpackage/input
 DIST=server/build/jpackage/dist
@@ -21,7 +21,7 @@ rm -rf "$INPUT" && mkdir -p "$INPUT"
 cp "$JAR" "$INPUT/"
 
 # 数据目录:应用双击启动时工作目录不可写,改为存到 ~/.dq-tool/data
-# (${user.home} 由 Spring 在运行时解析)
+# (${user.home} 由应用启动时展开,见 ConfigLoader)
 jpackage \
   --type dmg \
   --name dq-tool \
@@ -29,8 +29,9 @@ jpackage \
   --mac-package-identifier com.example.dqtool \
   --input "$INPUT" \
   --main-jar "dq-tool-${APP_VERSION}.jar" \
-  --main-class org.springframework.boot.loader.launch.JarLauncher \
+  --main-class com.example.dq.DqApplication \
   --java-options '-Ddq.data-dir=${user.home}/.dq-tool/data' \
+  --java-options '-XX:+UseZGC' \
   --java-options '-Djava.awt.headless=false' \
   --java-options '-Dapple.awt.UIElement=true' \
   --dest "$DIST"

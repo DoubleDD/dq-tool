@@ -1,7 +1,6 @@
 package com.example.dq.ui.views
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldState
@@ -29,22 +27,22 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.model.DbType
-import com.example.dq.ui.AppEnv
+import com.example.dq.model.TestConnectionRequest
+import com.example.dq.env.ServiceEnv
 import com.example.dq.ui.TabsModel
 import com.example.dq.ui.components.EmptyHint
+import com.example.dq.ui.components.JewelDialog
 import com.example.dq.ui.components.formatBytes
 import com.example.dq.ui.components.formatNumber
-import com.example.dq.ui.theme.StatusDanger
-import com.example.dq.ui.theme.StatusSuccess
+import com.example.dq.ui.theme.floatingSurface
+import com.example.dq.ui.theme.LocalStatusColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -168,7 +166,7 @@ private class DsFormState {
 /** 数据源列表页(首页页签):卡片列表 + 新增/编辑/删除/测试连接 */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun DatasourcesView(env: AppEnv, tabs: TabsModel) {
+fun DatasourcesView(env: ServiceEnv, tabs: TabsModel) {
     var list by remember { mutableStateOf<List<DataSourceConfig>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     /** 页面级消息条:文案 + 是否错误 */
@@ -211,7 +209,7 @@ fun DatasourcesView(env: AppEnv, tabs: TabsModel) {
         pageMsg?.let { (msg, isError) ->
             Text(
                 msg,
-                color = if (isError) StatusDanger else StatusSuccess,
+                color = if (isError) LocalStatusColors.current.danger else LocalStatusColors.current.success,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             )
         }
@@ -232,8 +230,8 @@ fun DatasourcesView(env: AppEnv, tabs: TabsModel) {
 
             else -> FlowRow(
                 Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
             ) {
                 list.forEach { row ->
                     DatasourceCard(
@@ -283,28 +281,6 @@ fun DatasourcesView(env: AppEnv, tabs: TabsModel) {
     }
 }
 
-/** Jewel 风格的对话框面板:圆角 + 主题描边 + 面板底色 */
-@Composable
-private fun JewelDialog(
-    onDismissRequest: () -> Unit,
-    width: androidx.compose.ui.unit.Dp,
-    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
-) {
-    Dialog(onDismissRequest = onDismissRequest) {
-        Column(
-            Modifier
-                .width(width)
-                .clip(RoundedCornerShape(8.dp))
-                .background(JewelTheme.globalColors.panelBackground)
-                .border(1.dp, JewelTheme.globalColors.borders.normal, RoundedCornerShape(8.dp))
-                .padding(20.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-            content = content,
-        )
-    }
-}
-
 /** 单个数据源卡片 */
 @Composable
 private fun DatasourceCard(
@@ -316,8 +292,8 @@ private fun DatasourceCard(
     Column(
         Modifier
             .width(340.dp)
-            .border(1.dp, JewelTheme.globalColors.borders.normal, RoundedCornerShape(6.dp))
-            .padding(16.dp),
+            .floatingSurface()
+            .padding(18.dp),
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -337,7 +313,7 @@ private fun DatasourceCard(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onBrowse) { Text("浏览库") }
             OutlinedButton(onClick = onEdit) { Text("编辑") }
-            OutlinedButton(onClick = onDelete) { Text("删除", color = StatusDanger) }
+            OutlinedButton(onClick = onDelete) { Text("删除", color = LocalStatusColors.current.danger) }
         }
     }
 }
@@ -383,7 +359,7 @@ private fun LabeledField(
 /** 新增/编辑数据源对话框(Jewel 版:拆分/URL 两种填写方式 + 测试连接) */
 @Composable
 private fun DatasourceDialog(
-    env: AppEnv,
+    env: ServiceEnv,
     form: DsFormState,
     onDismiss: () -> Unit,
     onSaved: () -> Unit,
@@ -481,7 +457,7 @@ private fun DatasourceDialog(
         LabeledField("大小阈值(字节)", form.sizeThresholdBytes, digitsOnly = true)
 
         dialogMsg?.let { (msg, isError) ->
-            Text(msg, color = if (isError) StatusDanger else StatusSuccess)
+            Text(msg, color = if (isError) LocalStatusColors.current.danger else LocalStatusColors.current.success)
         }
 
         // 底部按钮:测试连接(左) + 取消/保存(右)
@@ -506,9 +482,11 @@ private fun DatasourceDialog(
                             }
                             withContext(Dispatchers.IO) {
                                 env.dataSourceService.testConnection(
-                                    form.jdbcUrl.text.toString().trim(),
-                                    form.username.text.toString().trim(),
-                                    password,
+                                    TestConnectionRequest(
+                                        jdbcUrl = form.jdbcUrl.text.toString().trim(),
+                                        username = form.username.text.toString().trim(),
+                                        password = password,
+                                    )
                                 )
                             }
                             dialogMsg = "连接成功" to false

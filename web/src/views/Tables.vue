@@ -6,12 +6,20 @@
         <el-button @click="goBack">返回</el-button>
         <el-button @click="$router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${dbQuery()}`)">扫描记录</el-button>
         <AiConfigDialog />
-        <el-button :disabled="!selectedTables.length" :loading="batchDocLoading" @click="generateDocsBatch">
-          生成描述{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
-        </el-button>
-        <el-button type="primary" @click="openScanDialog">开始扫描</el-button>
+        <template v-if="!filterTagId">
+          <el-button :disabled="!selectedTables.length" :loading="batchDocLoading" @click="generateDocsBatch">
+            生成描述{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
+          </el-button>
+          <el-button type="primary" @click="openScanDialog">开始扫描</el-button>
+        </template>
       </div>
     </div>
+
+    <!-- 按标记筛选的只读模式提示 -->
+    <el-alert v-if="filterTagId" type="warning" :closable="false" style="margin-bottom: 12px">
+      <span style="margin-right: 16px">按标记「{{ filterTagName }}」筛选中 · 只读</span>
+      <el-button link type="primary" @click="clearTagFilter">清除筛选</el-button>
+    </el-alert>
 
     <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
       <el-input v-model="keyword" placeholder="按表名或注释搜索" clearable style="width: 280px" />
@@ -30,7 +38,7 @@
     </el-alert>
 
     <el-table :data="filteredTables" v-loading="loading" border @selection-change="onSelectionChange">
-      <el-table-column type="selection" width="45" />
+      <el-table-column v-if="!filterTagId" type="selection" width="45" />
       <el-table-column type="index" label="序号" width="60" />
       <el-table-column prop="name" label="表名" min-width="180" sortable show-overflow-tooltip>
         <template #default="{ row }">
@@ -41,7 +49,24 @@
       <el-table-column prop="comment" label="注释" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">
           <span v-if="row.comment">{{ row.comment }}</span>
-          <span v-else style="color: #c0c4cc">-</span>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="标记" min-width="160">
+        <template #default="{ row }">
+          <template v-if="(tableTags[row.name] || []).length">
+            <el-tag
+              v-for="tag in tableTags[row.name]"
+              :key="tag.id"
+              size="small"
+              class="table-tag"
+              :type="tag.kind === 'EMPTY' ? 'info' : undefined"
+              :effect="tag.kind === 'EMPTY' ? 'plain' : 'dark'"
+              :color="tag.kind === 'EMPTY' ? undefined : tag.color"
+              :style="tag.kind === 'EMPTY' ? {} : { borderColor: tag.color }"
+            >{{ tag.name }}</el-tag>
+          </template>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
       <el-table-column label="描述" min-width="220">
@@ -56,15 +81,17 @@
         </template>
         <template #default="{ row }">
           <div class="doc-cell">
-            <!-- 已有描述:刷新按钮重新生成;无描述:显示生成入口 -->
-            <el-tooltip v-if="docs[row.name]" content="重新生成描述(基于最新表结构,覆盖现有描述)" placement="top" :show-after="200">
-              <el-button link type="primary" :loading="docLoading[row.name]" @click="generateDoc(row)">
-                <el-icon v-if="!docLoading[row.name]"><Refresh /></el-icon>
-              </el-button>
-            </el-tooltip>
-            <el-button v-else link type="primary" :loading="docLoading[row.name]" @click="generateDoc(row)">生成描述</el-button>
+            <!-- 已有描述:刷新按钮重新生成;无描述:显示生成入口;标记筛选只读模式下隐藏生成/编辑入口 -->
+            <template v-if="!filterTagId">
+              <el-tooltip v-if="docs[row.name]" content="重新生成描述(基于最新表结构,覆盖现有描述)" placement="top" :show-after="200">
+                <el-button link type="primary" :loading="docLoading[row.name]" @click="generateDoc(row)">
+                  <el-icon v-if="!docLoading[row.name]"><Refresh /></el-icon>
+                </el-button>
+              </el-tooltip>
+              <el-button v-else link type="primary" :loading="docLoading[row.name]" @click="generateDoc(row)">生成描述</el-button>
+            </template>
             <el-tooltip v-if="docs[row.name]" :content="docs[row.name]" placement="top" :show-after="200">
-              <span class="doc-text" @click="openDocEdit(row)">{{ docs[row.name] }}</span>
+              <span class="doc-text" :style="filterTagId ? 'cursor: default' : ''" @click="openDocEdit(row)">{{ docs[row.name] }}</span>
             </el-tooltip>
           </div>
         </template>
@@ -72,7 +99,7 @@
       <el-table-column prop="storageInfo" label="引擎/表空间" width="130">
         <template #default="{ row }">
           <span v-if="row.storageInfo">{{ row.storageInfo }}</span>
-          <span v-else style="color: #c0c4cc">-</span>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
       <el-table-column label="行数" width="140" sortable :sort-method="(a, b) => (effectiveRows(a).value ?? -1) - (effectiveRows(b).value ?? -1)">
@@ -107,10 +134,10 @@
       <el-table-column label="最近扫描时间" width="170" sortable :sort-method="(a, b) => latestScanTime(a) - latestScanTime(b)">
         <template #default="{ row }">
           <span v-if="latestScans[row.name]">{{ formatDateTime(latestScans[row.name].finishedAt) }}</span>
-          <span v-else style="color: #c0c4cc">-</span>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column label="操作" width="190" fixed="right">
         <template #default="{ row }">
           <!-- 正在扫描:显示分段进度,点击跳到任务详情;排队中的表显示 0% -->
           <el-progress
@@ -120,7 +147,11 @@
             style="cursor: pointer"
             @click="goRunningJob(row)"
           />
-          <el-button v-else link type="primary" @click="scanSingle(row)">扫描</el-button>
+          <template v-else-if="!filterTagId">
+            <el-button link type="primary" @click="openTagDialog(row)">打标</el-button>
+            <el-button link type="primary" @click="scanSingle(row)">扫描</el-button>
+          </template>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
     </el-table>
@@ -145,7 +176,7 @@
               <el-option label="GB" value="GB" />
             </el-select>
             <div class="form-tip">只扫描不超过该大小的表(按元数据估算的数据+索引大小),留空表示不限制</div>
-            <div v-if="skippedBySize" class="form-tip" style="color: #e6a23c">
+            <div v-if="skippedBySize" class="form-tip" style="color: var(--el-color-warning)">
               当前范围内有 {{ skippedBySize }} 张表超过上限,将被跳过
             </div>
           </div>
@@ -179,6 +210,18 @@
         <el-button type="primary" :loading="docEditSaving" @click="saveDocEdit">保存</el-button>
       </template>
     </el-dialog>
+
+    <!-- 打标弹窗(含标记集中管理) -->
+    <TableTagDialog
+      v-model="tagDialogVisible"
+      :ds-id="dsId"
+      :schema="schema"
+      :db="db"
+      :table-name="tagDialogTable"
+      :current-tags="tableTags[tagDialogTable] || []"
+      @saved="onTagsSaved"
+      @tags-changed="reloadTableTags"
+    />
   </div>
 </template>
 
@@ -189,6 +232,7 @@ import { ElMessage } from 'element-plus'
 import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import request from '../api'
 import AiConfigDialog from '../components/AiConfigDialog.vue'
+import TableTagDialog from '../components/TableTagDialog.vue'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { goBack as historyBack } from '../utils/back'
 
@@ -219,6 +263,37 @@ const docEditVisible = ref(false)
 const docEditTable = ref('')
 const docEditText = ref('')
 const docEditSaving = ref(false)
+
+// 整个库的表→标记 map(表名 -> [{id,name,color,kind}]),含系统驱动的空表标记
+const tableTags = ref({})
+// 打标弹窗
+const tagDialogVisible = ref(false)
+const tagDialogTable = ref('')
+
+// 按标记筛选的只读模式:路由 query 带 tagId 时只显示打了该标记的表,并禁用所有操作类交互
+const filterTagId = computed(() => (route.query.tagId ? String(route.query.tagId) : ''))
+const filterTagName = computed(() => route.query.tagName || '')
+
+// 清除标记筛选:回到无 tagId 的路由
+function clearTagFilter() {
+  router.push({ path: route.path, query: db ? { db } : {} })
+}
+
+function openTagDialog(row) {
+  tagDialogTable.value = row.name
+  tagDialogVisible.value = true
+}
+
+// 打标保存成功:回填该表最新标记数组
+function onTagsSaved(tags) {
+  tableTags.value[tagDialogTable.value] = tags
+}
+
+// 弹窗内管理操作(新建/改名/改色/删除)后,整库标记 map 需重拉(名称/颜色/打标关系可能变了)
+async function reloadTableTags() {
+  const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
+  tableTags.value = await request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({}))
+}
 
 const scanDialogVisible = ref(false)
 const submitting = ref(false)
@@ -271,6 +346,11 @@ const skippedBySize = computed(() => {
 
 const filteredTables = computed(() => {
   let list = onlyEmpty.value ? emptyTables.value : tables.value
+  // 标记筛选只读模式:该库 table-tags map 中含该 tagId 的表
+  if (filterTagId.value) {
+    list = list.filter((t) =>
+      (tableTags.value[t.name] || []).some((tag) => String(tag.id) === filterTagId.value))
+  }
   const kw = keyword.value.trim().toLowerCase()
   if (kw) {
     list = list.filter((t) =>
@@ -285,16 +365,18 @@ async function load() {
     const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
     // 最新扫描映射/表说明查的是本地 H2,失败时仅影响表名是否可点与说明展示,不阻塞表列表
     // 字段总数走业务库元数据,失败时也不阻塞表列表(显示 -)
-    const [tableList, latest, tableDocs, colCount] = await Promise.all([
+    const [tableList, latest, tableDocs, colCount, tagMap] = await Promise.all([
       request.get(`${base}/tables${dbQuery()}`),
       request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({})),
-      request.get(`${base}/column-count${dbQuery()}`).catch(() => null)
+      request.get(`${base}/column-count${dbQuery()}`).catch(() => null),
+      request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({}))
     ])
     tables.value = tableList
     latestScans.value = latest || {}
     docs.value = tableDocs || {}
     columnCount.value = colCount
+    tableTags.value = tagMap || {}
   } finally {
     loading.value = false
   }
@@ -349,8 +431,9 @@ async function generateDoc(row) {
   }
 }
 
-// 打开手动编辑描述弹窗
+// 打开手动编辑描述弹窗(标记筛选只读模式下不可编辑)
 function openDocEdit(row) {
+  if (filterTagId.value) return
   docEditTable.value = row.name
   docEditText.value = docs.value[row.name] || ''
   docEditVisible.value = true
@@ -491,6 +574,9 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
+.table-tag {
+  margin: 0 4px 2px 0;
+}
 .doc-cell {
   display: flex;
   align-items: center;
@@ -511,7 +597,7 @@ onUnmounted(stopPolling)
 }
 .form-tip {
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   line-height: 1.4;
 }
 </style>

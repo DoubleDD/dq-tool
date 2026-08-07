@@ -1,6 +1,6 @@
 rootProject.name = "dq-tool"
 
-include("server", "desktop")
+include("server", "desktop", "common", "shell")
 
 pluginManagement {
     repositories {
