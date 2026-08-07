@@ -9,8 +9,10 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# 侧车拉起/端口探测/就绪轮询全部用 std 实现;libc 仅用于 Ctrl+C/SIGTERM 兜底杀子进程
+# 侧车拉起/端口探测/就绪轮询全部用 std 实现;libc 仅 Unix 用于 Ctrl+C/SIGTERM 兜底杀子进程
 tauri = { version = "2", features = [] }
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [features]

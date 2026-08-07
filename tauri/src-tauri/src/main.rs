@@ -243,9 +243,11 @@ fn fatal(msg: &str) -> ! {
     std::process::exit(1);
 }
 
-// ---- Ctrl+C / SIGTERM 兜底:终端直接 kill 本进程时不至于留下孤儿 Java 子进程 ----
-// (窗口关闭的正常退出路径由 RunEvent::ExitRequested/Exit 处理)
+// ---- Ctrl+C / SIGTERM 兜底(仅 Unix):终端直接 kill 本进程时不至于留下孤儿 Java 子进程 ----
+// (窗口关闭的正常退出路径由 RunEvent::ExitRequested/Exit 处理;
+//  Windows 无 POSIX 信号,GUI 子系统进程也没有控制台 Ctrl+C 场景,靠 RunEvent 即可)
 
+#[cfg(unix)]
 unsafe extern "C" fn on_signal(_sig: i32) {
     let pid = CHILD_PID.load(Ordering::SeqCst);
     if pid > 0 {
@@ -255,6 +257,7 @@ unsafe extern "C" fn on_signal(_sig: i32) {
 }
 
 fn install_signal_handlers() {
+    #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
