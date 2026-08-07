@@ -43,7 +43,7 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 ## 侧车协议(src-tauri/src/main.rs)
 
 - **jar 定位**:`DQ_SERVER_JAR` 环境变量 > 安装版内嵌资源 `backend/dq-tool.jar`(macOS 在 `<exe>/../Resources/`,Windows/Linux 与 exe 同目录)> 开发默认 `server/build/libs/dq-tool-*.jar`(按修改时间取最新)
-- **java 定位**:`DQ_JAVA` 环境变量 > 安装版内嵌 `jre/bin/java`(Windows 为 `java.exe`,jlink 裁剪)> PATH 的 `java`
+- **java 定位**:`DQ_JAVA` 环境变量 > 安装版内嵌 `jre/bin/java`(Windows 为 `java.exe`,完整 JRE)> PATH 的 `java`
 - **端口**:`TcpListener::bind(127.0.0.1:0)` 取空闲端口后释放传给 `--server.port=`;
   竞态被抢注时 DqApplication 向后避让,Rust 读线程解析 stdout 的「端口 N 被占用,避让到 M」回填实际端口
   (**改 DqApplication 该输出格式时请同步 main.rs 的解析**)
@@ -57,8 +57,9 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 ## 打包
 
 - `scripts/package-tauri-mac.sh` / `scripts\package-tauri-win.bat`:web/dist + shadowJar → 组装 `tauri/src-tauri/resources/`
-  (jar → `backend/dq-tool.jar`;jlink 从本机 JDK 25 裁运行时 → `jre/`,两个脚本模块列表保持一致,
-  缺模块的典型症状是启动报 NoClassDefFoundError/Provider 缺失,按报错补 `--add-modules`)
+  (jar → `backend/dq-tool.jar`;完整 JRE → `jre/`:复制本机 JDK 后只删开发工具 bin 启动器与 jmods,
+  运行库模块不裁剪 —— JDBC 驱动大量反射/按名加载,jdeps/jlink 静态裁剪覆盖不全,
+  实测达梦驱动初始化要 jdk.charsets 的 EUC-KR,裁剪后运行时才炸)
   → `npm run tauri build`(mac 打 dmg,Windows 打 NSIS `dq-tool_<版本>_x64-setup.exe`)
 - `tauri.conf.json` 的 `version` 与项目版本保持 `0.x.y → x.y.0` 映射(安装包主版本号 ≥ 1,且必须是三段 semver),升级需手动同步
 - `resources/` 是打包产物,已 gitignore;`tauri build` 不带 resources 也能跑(开发模式)

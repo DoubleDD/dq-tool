@@ -22,11 +22,21 @@ cp "$JAR" "$INPUT/"
 
 # 数据目录:应用双击启动时工作目录不可写,改为存到 ~/.dq-tool/data
 # (${user.home} 由应用启动时展开,见 ConfigLoader)
+# 内嵌完整 JRE 而非 jdeps/jlink 裁剪:JDBC 驱动大量反射/按名加载(实测:达梦驱动初始化要
+# jdk.charsets 的 EUC-KR,jdeps 探测不到,裁剪后运行时才炸),运行库模块一个不动;
+# 只删开发工具(bin 工具启动器 + jmods),不把 JDK 分发给最终用户。
+# 复制+裁剪不依赖 jmods(部分 JDK 发行版无 jmods,jlink 直接不可用)
+JDK_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(command -v jpackage)")")}"
+JRE=server/build/jpackage/jre
+rm -rf "$JRE" && cp -R "$JDK_HOME" "$JRE"
+rm -rf "$JRE/jmods"
+rm -f "$JRE"/bin/{javac,javadoc,javap,jar,jarsigner,serialver,jconsole,jdb,jdeprscan,jdeps,jfr,jhsdb,jimage,jinfo,jlink,jmap,jmod,jpackage,jps,jrunscript,jshell,jstack,jstat,jstatd,jwebserver,jcmd,jnativescan}
 jpackage \
   --type dmg \
   --name dq-tool \
   --app-version "$PKG_VERSION" \
   --mac-package-identifier com.example.dqtool \
+  --runtime-image "$JRE" \
   --input "$INPUT" \
   --main-jar "dq-tool-${APP_VERSION}.jar" \
   --main-class com.example.dq.DqApplication \

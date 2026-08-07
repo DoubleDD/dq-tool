@@ -21,7 +21,7 @@ import kotlin.system.exitProcess
  * 不调用即彻底抑制,无需改动 server。心跳看门狗(DesktopSession)只在 BrowserOpener
  * 成功拉起 --app 窗口后才武装,shell 路径下永不武装,天然失效。
  *
- * 启动早期日志复用 server 的 StartupLog(main 第一行初始化,写 数据目录/logs/startup.log):
+ * 启动早期日志复用 server 的 StartupLog(main 第一行初始化,写 数据目录同级 logs/startup.log):
  * Windows 免安装包无控制台,双击后每一步都落文件,卡死/闪退时看最后一行即知停在何处。
  * 注意「Failed to launch JVM」弹窗发生在 JVM 创建之前,任何 Java 日志都记不到,
  * 需用 WITH_CONSOLE=1 打带控制台的包看 JVM 自身报错(见 scripts/package-shell-win.bat)。
@@ -45,8 +45,12 @@ fun main(args: Array<String>) {
 
         StartupLog.log("加载配置(application.yml)...")
         val config = ConfigLoader.load()
-        // logback 首次打日志即初始化,dq.data-dir 必须先于任何日志输出(与 DqApplication 一致)
+        // logback 首次打日志即初始化,dq.data-dir / dq.log-dir 必须先于任何日志输出(与 DqApplication 一致)
         System.setProperty("dq.data-dir", config.dataDir())
+        // 日志目录 = 数据目录同级 logs/(规则单点在 server 的 StartupLog.logDirFor),-Ddq.log-dir 可显式覆盖
+        if (System.getProperty("dq.log-dir") == null) {
+            System.setProperty("dq.log-dir", StartupLog.logDirFor(config.dataDir()).toString())
+        }
         StartupLog.adoptDataDir(config.dataDir())
         StartupLog.log("配置加载完成: dataDir=${config.dataDir()}, serverPort=${config.serverPort()}")
 

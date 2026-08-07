@@ -3,7 +3,7 @@ server:
   port: 10000
 
 dq:
-  data-dir: ./data           # 数据目录(H2 数据文件与运行日志);安装版由打包脚本注入为 ${user.home}/.dq-tool/data
+  data-dir: ./data           # 数据目录(H2 数据文件);运行日志固定在其同级 logs/(本配置即 ./logs),安装版由打包脚本注入为 ${user.home}/.dq-tool/data(日志即 ~/.dq-tool/logs)
   scan:
     workers: 8                 # 全局扫描工作线程数
     chunks-per-table: 100      # 每张表的分段数

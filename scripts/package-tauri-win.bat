@@ -1,8 +1,8 @@
 @echo off
 rem tauri 模块(Tauri 2 桌面壳)Windows 打包脚本:构建前端 + server fat jar,
-rem 用 jlink 从本机 JDK 25 裁出运行时,与 jar 一起作为 Tauri bundle resources 打进安装包,
+rem 完整 JRE 与 jar 一起作为 Tauri bundle resources 打进安装包,
 rem 产出 NSIS 安装程序(运行时由 Rust 侧车拉起 内嵌 jre\bin\java.exe -jar,见 tauri/src-tauri/src/main.rs)
-rem 前置要求: JDK 25+ (含 jlink)、Node 24+、Rust(cargo)
+rem 前置要求: JDK 25+、Node 24+、Rust(cargo)
 setlocal
 cd /d %~dp0\..
 
@@ -25,14 +25,15 @@ if exist "%RES%\jre" rmdir /s /q "%RES%\jre"
 mkdir "%RES%\backend"
 copy "%JAR%" "%RES%\backend\dq-tool.jar" >nul
 
-rem jlink 裁剪运行时,模块列表与 scripts/package-tauri-mac.sh 保持一致;
-rem 缺模块的典型症状是启动报 NoClassDefFoundError/Provider 缺失,按报错补 --add-modules
-jlink ^
-  --add-modules java.base,java.desktop,java.sql,java.naming,java.management,java.logging,java.xml,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.zipfs,jdk.unsupported ^
-  --strip-debug --no-man-pages --no-header-files --compress=zip-6 ^
-  --output "%RES%\jre" || exit /b 1
+rem 内嵌完整 JRE 而非 jlink 裁剪(原因同 scripts\package-win.bat:JDBC 驱动反射,jdeps
+rem 覆盖不全;实测达梦驱动要 jdk.charsets 的 EUC-KR),只删开发工具(bin 工具启动器 + jmods);
+rem 复制+裁剪不依赖 jmods(部分 JDK 发行版无 jmods,jlink 直接不可用)
+if "%JAVA_HOME%"=="" (echo 需要设置 JAVA_HOME 指向完整 JDK 25+ & exit /b 1)
+xcopy "%JAVA_HOME%" "%RES%\jre\" /E /I /Q >nul || exit /b 1
+if exist "%RES%\jre\jmods" rmdir /s /q "%RES%\jre\jmods"
+for %%t in (javac javadoc javap jar jarsigner serialver jconsole jdb jdeprscan jdeps jfr jhsdb jimage jinfo jlink jmap jmod jpackage jps jrunscript jshell jstack jstat jstatd jwebserver jcmd jnativescan) do if exist "%RES%\jre\bin\%%t.exe" del /q "%RES%\jre\bin\%%t.exe"
 
-rem 冒烟:内嵌 jre 能正常启动即模块裁剪无明显缺失(完整验证以安装后双击启动为准)
+rem 冒烟:内嵌 jre 能正常启动即可(完整验证以安装后双击启动为准)
 "%RES%\jre\bin\java.exe" -version || exit /b 1
 
 pushd tauri

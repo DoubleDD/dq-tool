@@ -32,11 +32,19 @@ cp "$JAR" "$INPUT/"
 # --add-opens 三个 java.desktop 包是 JDK 16+ 上 JCEF(macOS)的硬性要求,与应用内嵌 JRE 版本无关
 # 数据目录与安装版约定一致:~/.dq-tool/data(${user.home} 由应用启动时展开,见 ConfigLoader)
 # 不注入 -Djava.awt.headless:shell 需要图形环境,默认即 headful
+# 内嵌完整 JRE 而非 jdeps/jlink 裁剪(原因同 scripts/package-mac.sh:JDBC 驱动反射,jdeps 覆盖不全;
+# 实测达梦驱动要 jdk.charsets 的 EUC-KR),只删开发工具(bin 工具启动器 + jmods)
+JDK_HOME="${JAVA_HOME:-$(dirname "$(dirname "$(command -v jpackage)")")}"
+JRE=shell/build/jpackage/jre
+rm -rf "$JRE" && cp -R "$JDK_HOME" "$JRE"
+rm -rf "$JRE/jmods"
+rm -f "$JRE"/bin/{javac,javadoc,javap,jar,jarsigner,serialver,jconsole,jdb,jdeprscan,jdeps,jfr,jhsdb,jimage,jinfo,jlink,jmap,jmod,jpackage,jps,jrunscript,jshell,jstack,jstat,jstatd,jwebserver,jcmd,jnativescan}
 jpackage \
   --type dmg \
   --name dq-tool-shell \
   --app-version "$PKG_VERSION" \
   --mac-package-identifier com.example.dqtool.shell \
+  --runtime-image "$JRE" \
   --input "$INPUT" \
   --main-jar "dq-tool-shell-${APP_VERSION}.jar" \
   --main-class com.example.dq.shell.MainKt \

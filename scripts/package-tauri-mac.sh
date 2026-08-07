@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # tauri 模块(Tauri 2 桌面壳)macOS 打包脚本:构建前端 + server fat jar,
-# 用 jlink 从本机 JDK 25 裁出运行时,与 jar 一起作为 Tauri bundle resources 打进 .app,
+# 完整 JRE 与 jar 一起作为 Tauri bundle resources 打进 .app,
 # 产出 .dmg(运行时由 Rust 侧车拉起 内嵌 jre/bin/java -jar,见 tauri/src-tauri/src/main.rs)
 # 用法: scripts/package-tauri-mac.sh [--skip-build]
 #
 # TODO: Windows / Linux 打包脚本本次未实现。要点:
 #   - Tauri 不依赖 jpackage,`npm run tauri build` 在各平台原生构建(不支持交叉编译);
 #     Windows 用 --bundles nsis/msi,Linux 用 --bundles deb/appimage
-#   - resources/jre 需替换为对应平台的 jlink 产物(Windows 上 java 是 bin/java.exe)
+#   - resources/jre 需替换为对应平台的完整 JRE(Windows 上 java 是 bin/java.exe)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -26,22 +26,16 @@ rm -rf "$RES/backend" "$RES/jre"
 mkdir -p "$RES/backend"
 cp "$JAR" "$RES/backend/dq-tool.jar"
 
-# jlink 裁剪运行时:fat jar 是未命名模块,--add-modules 需显式覆盖运行所需 JDK 模块:
-#   java.desktop    AWT 类被引用(BrowserOpener/TrayManager,headless 下不激活但类要可加载)
-#   java.sql/java.naming/java.management  HikariCP + JDBC
-#   java.logging    H2 日志;java.xml    H2/Jackson 3 依赖
-#   jdk.crypto.ec   授权码 Ed25519 验签;jdk.crypto.cryptoki  SunEC 等加密提供者注册表
-#   jdk.zipfs       shadow jar 内资源访问兜底;jdk.unsupported  部分库反射 Unsafe
-# 模块不全的典型症状是启动报 NoClassDefFoundError/Provider 缺失,届时按报错补 --add-modules
-JAVA_HOME_DETECTED=$(/usr/libexec/java_home -v 25 2>/dev/null || true)
-JLINK="${JAVA_HOME_DETECTED:+$JAVA_HOME_DETECTED/bin/jlink}"
-JLINK="${JLINK:-$(command -v jlink)}"
-"$JLINK" \
-  --add-modules java.base,java.desktop,java.sql,java.naming,java.management,java.logging,java.xml,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.zipfs,jdk.unsupported \
-  --strip-debug --no-man-pages --no-header-files --compress=zip-6 \
-  --output "$RES/jre"
+# 内嵌完整 JRE 而非 jlink 裁剪(原因同 jpackage 脚本:JDBC 驱动大量反射/按名加载,
+# 实测达梦驱动初始化要 jdk.charsets 的 EUC-KR,裁剪后运行时才炸),运行库模块一个不动,
+# 只删开发工具(bin 工具启动器 + jmods);复制+裁剪不依赖 jmods(部分 JDK 发行版无 jmods)
+JDK_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 25 2>/dev/null || true)}"
+[[ -n "$JDK_HOME" ]] || { echo "找不到 JDK 25,请设置 JAVA_HOME" >&2; exit 1; }
+cp -R "$JDK_HOME" "$RES/jre"
+rm -rf "$RES/jre/jmods"
+rm -f "$RES"/jre/bin/{javac,javadoc,javap,jar,jarsigner,serialver,jconsole,jdb,jdeprscan,jdeps,jfr,jhsdb,jimage,jinfo,jlink,jmap,jmod,jpackage,jps,jrunscript,jshell,jstack,jstat,jstatd,jwebserver,jcmd,jnativescan}
 
-# 冒烟:内嵌 jre 能正常启动即模块裁剪无明显缺失(完整验证以打包后双击启动为准)
+# 冒烟:内嵌 jre 能正常启动即可(完整验证以打包后双击启动为准)
 "$RES/jre/bin/java" -version
 
 # npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数

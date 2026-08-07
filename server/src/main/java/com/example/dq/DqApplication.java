@@ -16,7 +16,7 @@ public class DqApplication {
     private static final int MAX_PORT_OFFSET = 100;
 
     public static void main(String[] args) throws Exception {
-        // 启动早期日志必须最先初始化:Windows 安装版无控制台,双击后的每一步都要落文件(数据目录/logs/startup.log)
+        // 启动早期日志必须最先初始化:Windows 安装版无控制台,双击后的每一步都要落文件(数据目录同级 logs/startup.log)
         StartupLog.init();
         // 非 main 线程的未捕获异常(AWT 事件线程、看门狗线程等)默认只打 stderr,安装版看不到,统一落 startup.log
         Thread.setDefaultUncaughtExceptionHandler((thread, e) ->
@@ -29,8 +29,12 @@ public class DqApplication {
         try {
             StartupLog.log("加载配置(application.yml)...");
             ConfigLoader.AppConfig config = ConfigLoader.load();
-            // logback 首次打日志即初始化:dq.data-dir 必须先于任何日志输出设置(logback.xml 引用该变量)
+            // logback 首次打日志即初始化:dq.data-dir / dq.log-dir 必须先于任何日志输出设置(logback.xml 引用)
             System.setProperty("dq.data-dir", config.dataDir());
+            // 日志目录固定为数据目录同级的 logs/(规则单点 StartupLog.logDirFor),-Ddq.log-dir 可显式覆盖
+            if (System.getProperty("dq.log-dir") == null) {
+                System.setProperty("dq.log-dir", StartupLog.logDirFor(config.dataDir()).toString());
+            }
             StartupLog.adoptDataDir(config.dataDir());
             StartupLog.log("配置加载完成: dataDir=" + config.dataDir() + ", serverPort=" + config.serverPort()
                     + ", headless=" + System.getProperty("java.awt.headless"));
