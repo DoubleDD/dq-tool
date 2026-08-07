@@ -24,6 +24,10 @@ scripts\package-shell-win.bat # Windows 免安装 zip(CI 的 windows-shell job �
 - Kotlin + application + shadow 插件,mainClass `com.example.dq.shell.MainKt`
 - `implementation(project(":server"))`:transitively 带上 common 内核与前端静态资源
   (server 的 processResources 会把 web/dist 拷进 jar,故打包前需先 `cd web && npm run build`)
+- 启动早期日志复用 server 的 `StartupLog`(main 第一行初始化,写 数据目录/logs/startup.log,
+  覆盖读配置/端口/内核装配/CEF 初始化/窗口显示每一步与未捕获异常);「Failed to launch JVM」
+  弹窗发生在 JVM 创建之前,Java 日志记不到,用 `set WITH_CONSOLE=1` 再打一次包
+  (jpackage `--win-console`),JVM 自身报错会直接显示在控制台
 
 ## JCEF 接入要点
 

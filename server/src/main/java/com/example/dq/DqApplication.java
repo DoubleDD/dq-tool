@@ -2,6 +2,7 @@ package com.example.dq;
 
 import com.example.dq.config.ConfigLoader;
 import com.example.dq.config.DesktopSplash;
+import com.example.dq.config.StartupLog;
 import com.example.dq.config.TrayManager;
 import com.example.dq.web.WebServer;
 
@@ -13,31 +14,52 @@ public class DqApplication {
     private static final int MAX_PORT_OFFSET = 100;
 
     public static void main(String[] args) throws Exception {
+        // 启动早期日志必须最先初始化:Windows 安装版无控制台,双击后的每一步都要落文件(数据目录/logs/startup.log)
+        StartupLog.init();
+        // 非 main 线程的未捕获异常(AWT 事件线程、看门狗线程等)默认只打 stderr,安装版看不到,统一落 startup.log
+        Thread.setDefaultUncaughtExceptionHandler((thread, e) ->
+                StartupLog.log("线程 " + thread.getName() + " 未捕获异常", e));
         // 与原 Spring Boot 行为一致:默认 headless,只有显式 -Djava.awt.headless=false(打包脚本/make 注入)
         // 才启用窗口/托盘;必须在任何 AWT 类加载前设置
         if (System.getProperty("java.awt.headless") == null) {
             System.setProperty("java.awt.headless", "true");
         }
-        ConfigLoader.AppConfig config = ConfigLoader.load();
-        // logback 首次打日志即初始化:dq.data-dir 必须先于任何日志输出设置(logback.xml 引用该变量)
-        System.setProperty("dq.data-dir", config.dataDir());
+        try {
+            StartupLog.log("加载配置(application.yml)...");
+            ConfigLoader.AppConfig config = ConfigLoader.load();
+            // logback 首次打日志即初始化:dq.data-dir 必须先于任何日志输出设置(logback.xml 引用该变量)
+            System.setProperty("dq.data-dir", config.dataDir());
+            StartupLog.adoptDataDir(config.dataDir());
+            StartupLog.log("配置加载完成: dataDir=" + config.dataDir() + ", serverPort=" + config.serverPort()
+                    + ", headless=" + System.getProperty("java.awt.headless"));
 
-        int configuredPort = resolveConfiguredPort(args, config.serverPort());
-        int port = configuredPort;
-        // server.port=0 表示交给容器随机分配,无需避让
-        if (configuredPort != 0) {
-            port = findAvailablePort(configuredPort);
-            if (port != configuredPort) {
-                System.out.printf("[dq-tool] 端口 %d 被占用,避让到 %d%n", configuredPort, port);
+            int configuredPort = resolveConfiguredPort(args, config.serverPort());
+            int port = configuredPort;
+            // server.port=0 表示交给容器随机分配,无需避让
+            if (configuredPort != 0) {
+                port = findAvailablePort(configuredPort);
+                if (port != configuredPort) {
+                    StartupLog.log("端口 " + configuredPort + " 被占用,避让到 " + port);
+                }
+                earlyDesktopFeedback(port);
             }
-            earlyDesktopFeedback(port);
-        }
 
-        // WebServer 构造时完成共享内核装配(H2 连接池 + Flyway 迁移 + 业务服务)
-        WebServer server = new WebServer(config);
-        server.start(port);
-        // 服务完全就绪:关启动画面 + 打开应用窗口、回填托盘引用(port=0 时以实际分配端口为准)
-        server.onReady(server.port());
+            // WebServer 构造时完成共享内核装配(H2 连接池 + Flyway 迁移 + 业务服务)
+            StartupLog.log("装配 WebServer(H2 连接池 + Flyway 迁移 + 业务服务)...");
+            WebServer server = new WebServer(config);
+            StartupLog.log("WebServer 装配完成,启动 HTTP 监听 port=" + port + " ...");
+            server.start(port);
+            StartupLog.log("HTTP 服务已就绪,执行就绪动作(关启动画面 + 打开窗口)...");
+            // 服务完全就绪:关启动画面 + 打开应用窗口、回填托盘引用(port=0 时以实际分配端口为准)
+            server.onReady(server.port());
+            StartupLog.log("启动流程全部完成,实际端口=" + server.port());
+        } catch (Throwable t) {
+            // 安装版无控制台,未捕获异常必须落文件;同时保留 stderr 输出(开发/服务器部署排障)
+            StartupLog.log("启动失败,进程即将退出(startup.log=" + StartupLog.file() + ")", t);
+            t.printStackTrace();
+            DesktopSplash.close();
+            System.exit(1);
+        }
     }
 
     /**
@@ -48,10 +70,14 @@ public class DqApplication {
      */
     private static void earlyDesktopFeedback(int port) {
         if (!"false".equalsIgnoreCase(System.getProperty("java.awt.headless"))) {
+            StartupLog.log("headless 模式,跳过托盘与启动画面");
             return;
         }
-        TrayManager.installEarly("http://localhost:" + port);
+        StartupLog.log("安装系统托盘图标...");
+        boolean trayInstalled = TrayManager.installEarly("http://localhost:" + port);
+        StartupLog.log("托盘图标安装" + (trayInstalled ? "成功" : "失败/不可用") + ",显示启动画面...");
         DesktopSplash.showEarly();
+        StartupLog.log("启动画面已显示");
     }
 
     /**

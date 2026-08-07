@@ -39,6 +39,7 @@ public class BrowserOpener {
     public void openBrowser(int port) {
         DesktopSplash.close();
         if (GraphicsEnvironment.isHeadless()) {
+            StartupLog.log("headless 环境,不自动打开浏览器,访问 http://localhost:" + port);
             return;
         }
         open("http://localhost:" + port);
@@ -77,6 +78,7 @@ public class BrowserOpener {
     private boolean openInAppMode(String url) {
         String browser = findChromiumBrowser();
         if (browser == null) {
+            StartupLog.log("未探测到 Chrome/Edge,回落到系统默认浏览器打开 " + url);
             return false;
         }
         closeWindow();
@@ -91,9 +93,11 @@ public class BrowserOpener {
         try {
             lastAppProcess = new ProcessBuilder(command).start();
             session.markAppModeOpened();
+            StartupLog.log("已用应用模式打开 " + url + " (" + browser + ")");
             log.info("已用应用模式打开 {} ({})", url, browser);
             return true;
         } catch (Exception e) {
+            StartupLog.log("应用模式启动浏览器失败,回退到默认浏览器(" + browser + ")", e);
             log.warn("应用模式启动浏览器失败,回退到默认浏览器: {}", e.getMessage());
             return false;
         }
@@ -108,11 +112,14 @@ public class BrowserOpener {
         try {
             Desktop desktop = Desktop.isDesktopSupported() ? Desktop.getDesktop() : null;
             if (desktop == null || !desktop.isSupported(Desktop.Action.BROWSE)) {
+                StartupLog.log("当前环境不支持自动打开浏览器,请手动访问 " + url);
                 return;
             }
             desktop.browse(new URI(url));
+            StartupLog.log("已在默认浏览器打开 " + url);
             log.info("已在默认浏览器打开 {}", url);
         } catch (Exception e) {
+            StartupLog.log("自动打开浏览器失败,请手动访问 " + url, e);
             log.warn("自动打开浏览器失败,请手动访问 {}: {}", url, e.getMessage());
         }
     }

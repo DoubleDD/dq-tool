@@ -28,6 +28,12 @@ rem 数据目录固定为 %%USERPROFILE%%\.dq-tool\data(${user.home} 由应用�
 rem JCEF natives 已在 fat jar 内(运行时 jcefmaven 解压到 %%USERPROFILE%%\.dq-tool\jcef-bundle);
 rem 三个 --add-opens 是 JDK 16+ 上 JCEF 的硬性要求(非 macOS 加了也无害);
 rem 不注入 -Djava.awt.headless:shell 需要图形环境,默认即 headful
+rem
+rem 诊断「Failed to launch JVM」:该弹窗发生在 JVM 创建之前,Java 侧日志(startup.log)记不到。
+rem 先 set WITH_CONSOLE=1 再运行本脚本,打出的 exe 带控制台窗口,JVM 初始化失败的真实原因
+rem (不支持的 VM 选项、运行环境损坏、类版本不匹配等)会直接打印在控制台
+set CONSOLE_OPT=
+if defined WITH_CONSOLE set CONSOLE_OPT=--win-console
 jpackage ^
   --type app-image ^
   --name dq-tool-shell ^
@@ -40,6 +46,7 @@ jpackage ^
   --java-options "--add-opens java.desktop/sun.awt=ALL-UNNAMED" ^
   --java-options "--add-opens java.desktop/sun.lwawt=ALL-UNNAMED" ^
   --java-options "--add-opens java.desktop/sun.lwawt.macosx=ALL-UNNAMED" ^
+  %CONSOLE_OPT% ^
   --dest "%DIST%" || exit /b 1
 
 rem 打成 zip 便于分发

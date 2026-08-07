@@ -6,6 +6,7 @@ import com.example.dq.config.ConfigLoader;
 import com.example.dq.config.DesktopSession;
 import com.example.dq.config.DqProperties;
 import com.example.dq.config.KernelConfigAdapter;
+import com.example.dq.config.StartupLog;
 import com.example.dq.config.TrayManager;
 import com.example.dq.controller.AiConfigController;
 import com.example.dq.controller.DataSourceController;
@@ -55,7 +56,9 @@ public class WebServer {
         DqProperties props = config.dq();
 
         // ---- 共享内核:H2 连接池 + Flyway 迁移 + 全部业务服务,构造即完成建表/老库升级与中断任务恢复 ----
+        StartupLog.log("  创建共享内核 ServiceEnv(H2 连接池 + Flyway 迁移)...");
         this.env = new ServiceEnv(KernelConfigAdapter.toKernelConfig(config));
+        StartupLog.log("  ServiceEnv 就绪,创建 Javalin 与路由...");
 
         // 全应用共享的 Jackson 3 mapper:序列化默认值与原 Spring Boot 托管配置对齐
         // (ISO 日期/不报空 bean/忽略未知字段;Jackson 3 默认 FAIL_ON_NULL_FOR_PRIMITIVES=true 与 Boot 相反,须显式关掉);
@@ -95,6 +98,7 @@ public class WebServer {
         this.trayManager = new TrayManager(browserOpener, session, shutdown);
         sessionRef.set(session);
         this.session.start();
+        StartupLog.log("  WebServer 构造完成(路由 + 桌面生命周期组件)");
     }
 
     private void registerRoutes(RoutesConfig routes, LicenseService licenseService, DataSourceController ds,

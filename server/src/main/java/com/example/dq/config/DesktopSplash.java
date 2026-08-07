@@ -32,8 +32,9 @@ public final class DesktopSplash {
     public static void showEarly() {
         try {
             SwingUtilities.invokeAndWait(DesktopSplash::createAndShow);
-        } catch (Exception ignored) {
-            // 启动画面只是反馈,失败不影响启动
+        } catch (Exception e) {
+            // 启动画面只是反馈,失败不影响启动,但安装版无控制台,必须落启动日志
+            StartupLog.log("启动画面显示失败(不影响启动)", e);
         }
     }
 
@@ -44,6 +45,7 @@ public final class DesktopSplash {
             return;
         }
         window = null;
+        StartupLog.log("关闭启动画面");
         SwingUtilities.invokeLater(() -> {
             w.setVisible(false);
             w.dispose();

@@ -1,5 +1,6 @@
 package com.example.dq.shell
 
+import com.example.dq.config.StartupLog
 import com.example.dq.web.WebServer
 import me.friwi.jcefmaven.CefAppBuilder
 import me.friwi.jcefmaven.MavenCefAppHandlerAdapter
@@ -69,10 +70,14 @@ object ShellWindow {
                 }
             }
         })
-        val app = builder.build()
+        val app = run {
+            StartupLog.log("初始化 CEF(natives 解压到 ${installDir.absolutePath},首次约 100MB 较慢)...")
+            builder.build().also { StartupLog.log("CEF 初始化完成") }
+        }
         cefApp = app
 
         // 以下 UI 组装在 main 线程执行(与官方示例一致,见类注释)
+        StartupLog.log("创建内嵌浏览器并加载 $url ...")
         val browser = app.createClient().createBrowser(url, false, false)
         val f = JFrame("dq-tool 数据质量检测工具")
         // 关闭动作统一走 shutdown():dispose CEF + 停后端 + 退进程
@@ -87,6 +92,7 @@ object ShellWindow {
         })
         f.isVisible = true
         frame = f
+        StartupLog.log("主窗口已可见,安装托盘图标...")
         ShellTray.install(onOpen = ::focusWindow, onExit = ::shutdown)
     }
 
