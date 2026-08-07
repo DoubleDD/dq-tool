@@ -58,6 +58,7 @@ export function formatDuration(startedAt, finishedAt) {
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now()
   if (Number.isNaN(start) || Number.isNaN(end)) return '-'
   let ms = Math.max(0, end - start)
+  if (ms < 1000) return `${ms}毫秒`
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}秒`
   const m = Math.floor(s / 60)
