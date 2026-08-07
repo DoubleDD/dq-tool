@@ -11,8 +11,8 @@ if /i not "%~1"=="--skip-build" (
 
 rem 版本号需与 server/build.gradle.kts 保持一致
 set APP_VERSION=0.1.6
-rem 与其他平台安装包版本保持一致,去掉开头的 "0."(0.1.6 -> 1.6)
-set PKG_VERSION=1.5
+rem 安装包版本与其他平台口径一致:从 APP_VERSION 派生,去掉开头的 "0."(0.1.6 -> 1.6),避免两处手工同步遗漏
+set PKG_VERSION=%APP_VERSION:0.=%
 set JAR=server\build\libs\dq-tool-%APP_VERSION%.jar
 if not exist "%JAR%" (echo 找不到 %JAR%,请先执行 gradlew.bat :server:shadowJar & exit /b 1)
 
