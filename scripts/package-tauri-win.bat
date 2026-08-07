@@ -37,7 +37,8 @@ rem 冒烟:内嵌 jre 能正常启动即模块裁剪无明显缺失(完整验证
 
 pushd tauri
 if not exist node_modules (call npm ci || (popd & exit /b 1))
-call npm run tauri build -- --bundles nsis || (popd & exit /b 1)
+rem npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
+call npm run tauri -- build --bundles nsis || (popd & exit /b 1)
 popd
 
 echo 产物: tauri\src-tauri\target\release\bundle\nsis\

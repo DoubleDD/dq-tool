@@ -44,6 +44,7 @@ JLINK="${JLINK:-$(command -v jlink)}"
 # 冒烟:内嵌 jre 能正常启动即模块裁剪无明显缺失(完整验证以打包后双击启动为准)
 "$RES/jre/bin/java" -version
 
-(cd tauri && npm install && npm run tauri build -- --bundles dmg)
+# npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
+(cd tauri && npm install && npm run tauri -- build --bundles dmg)
 
 echo "产物: tauri/src-tauri/target/release/bundle/dmg/"

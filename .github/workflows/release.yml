@@ -82,7 +82,9 @@ jobs:
         run: npm ci
         working-directory: web
 
+      # 用 cmd 跑 .bat:pwsh 步骤默认不检查 $LASTEXITCODE,批处理失败会被静默吞掉
       - name: Build portable zip
+        shell: cmd
         run: scripts\package-shell-win.bat
 
       # 统一命名: dq-tool-shell-<版本>-<系统>-<架构>.zip
@@ -130,11 +132,18 @@ jobs:
         with:
           workspaces: tauri/src-tauri
 
-      - name: Install dependencies
+      # 前端依赖(打包脚本要跑 web 的 npm run build)
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Install tauri dependencies
         run: npm ci
         working-directory: tauri
 
+      # 用 cmd 跑 .bat:pwsh 步骤默认不检查 $LASTEXITCODE,批处理失败会被静默吞掉
       - name: Build NSIS installer
+        shell: cmd
         run: scripts\package-tauri-win.bat
 
       # 统一命名: dq-tool-tauri-<版本>-<系统>-<架构>-setup.exe(tauri 产物原名 dq-tool_<版本>_x64-setup.exe)
