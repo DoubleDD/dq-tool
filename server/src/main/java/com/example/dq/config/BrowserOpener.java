@@ -53,6 +53,39 @@ public class BrowserOpener {
         openInDefaultBrowser(url);
     }
 
+    /**
+     * 第二个实例专用(InstanceLock 检测到同数据目录已有实例在运行时):
+     * 把已有实例的页面用 --app 窗口/默认浏览器带出来,随后本进程退出。
+     * 静态入口,不触碰会话(DesktopSession)与窗口句柄(lastAppProcess)管理 ——
+     * 同一 user-data-dir 下新拉起的浏览器进程会交接给已有实例拉起的浏览器主进程,
+     * 窗口仍归已有实例的托盘「退出」统一关闭,管理关系不破坏。
+     */
+    public static void reopenExisting(String url) {
+        String browser = findChromiumBrowser();
+        if (browser != null) {
+            try {
+                new ProcessBuilder(browser, "--user-data-dir=" + browserProfileDir(),
+                        "--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble",
+                        "--app=" + url).start();
+                StartupLog.log("已用应用模式打开已有实例页面 " + url + " (" + browser + ")");
+                return;
+            } catch (Exception e) {
+                StartupLog.log("应用模式打开已有实例页面失败,回落默认浏览器", e);
+            }
+        }
+        try {
+            Desktop desktop = Desktop.isDesktopSupported() ? Desktop.getDesktop() : null;
+            if (desktop != null && desktop.isSupported(Desktop.Action.BROWSE)) {
+                desktop.browse(new URI(url));
+                StartupLog.log("已在默认浏览器打开已有实例页面 " + url);
+            } else {
+                StartupLog.log("当前环境不支持自动打开浏览器,请手动访问已有实例页面 " + url);
+            }
+        } catch (Exception e) {
+            StartupLog.log("打开已有实例页面失败,请手动访问 " + url, e);
+        }
+    }
+
     /** 关闭由本进程拉起的 --app 窗口(整个独立浏览器实例);先优雅终止,超时后强杀 */
     public void closeWindow() {
         Process p = lastAppProcess;
@@ -104,7 +137,7 @@ public class BrowserOpener {
     }
 
     /** 应用模式专用的浏览器配置目录,与用户日常浏览器配置隔离 */
-    private Path browserProfileDir() {
+    private static Path browserProfileDir() {
         return Path.of(System.getProperty("user.home"), ".dq-tool", "browser-profile");
     }
 
@@ -128,7 +161,7 @@ public class BrowserOpener {
      * 按平台常见安装位置探测 Chromium 系浏览器可执行文件,找不到返回 null。
      * Windows 优先 Edge(系统自带),macOS/Linux 优先 Chrome。
      */
-    private String findChromiumBrowser() {
+    private static String findChromiumBrowser() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
         List<String> candidates = new ArrayList<>();
         if (os.contains("win")) {
@@ -151,13 +184,13 @@ public class BrowserOpener {
         return candidates.stream().filter(p -> Files.isExecutable(Path.of(p))).findFirst().orElse(null);
     }
 
-    private void addCandidate(List<String> candidates, String base, String relative) {
+    private static void addCandidate(List<String> candidates, String base, String relative) {
         if (base != null && !base.isBlank()) {
             candidates.add(base + "\\" + relative);
         }
     }
 
-    private String findOnPath(String... names) {
+    private static String findOnPath(String... names) {
         String pathEnv = System.getenv("PATH");
         if (pathEnv == null) {
             return null;

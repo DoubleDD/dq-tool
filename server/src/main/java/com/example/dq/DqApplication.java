@@ -1,7 +1,9 @@
 package com.example.dq;
 
+import com.example.dq.config.BrowserOpener;
 import com.example.dq.config.ConfigLoader;
 import com.example.dq.config.DesktopSplash;
+import com.example.dq.config.InstanceLock;
 import com.example.dq.config.StartupLog;
 import com.example.dq.config.TrayManager;
 import com.example.dq.web.WebServer;
@@ -35,6 +37,23 @@ public class DqApplication {
 
             int configuredPort = resolveConfiguredPort(args, config.serverPort());
             int port = configuredPort;
+            // 单实例保护:同数据目录已有实例在跑时,经 H2 AUTO_SERVER 连上旧实例内嵌的 H2 server,
+            // 跨版本类不兼容直接启动失败(2026-08 实测);第二个实例改为带出已有实例窗口并退出
+            if (InstanceLock.acquire(java.nio.file.Path.of(config.dataDir()))
+                    == InstanceLock.Status.ALREADY_RUNNING) {
+                StartupLog.log("检测到同数据目录已有 dq-tool 实例在运行(数据目录 " + config.dataDir() + ")");
+                if ("false".equalsIgnoreCase(System.getProperty("java.awt.headless"))) {
+                    int runningPort = configuredPort == 0 ? -1 : InstanceLock.findRunningInstancePort(configuredPort);
+                    String url = "http://localhost:" + (runningPort > 0 ? runningPort : configuredPort);
+                    StartupLog.log("打开已有实例窗口 " + url + " ,本进程退出");
+                    BrowserOpener.reopenExisting(url);
+                    System.exit(0);
+                } else {
+                    StartupLog.log("headless 模式不打开窗口,本进程退出(如需多实例请使用不同数据目录与端口)");
+                    System.err.println("[dq-tool] 同数据目录已有实例在运行,本进程退出: " + config.dataDir());
+                    System.exit(1);
+                }
+            }
             // server.port=0 表示交给容器随机分配,无需避让
             if (configuredPort != 0) {
                 port = findAvailablePort(configuredPort);

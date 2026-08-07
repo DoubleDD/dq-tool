@@ -18,6 +18,7 @@ shell 用 JCEF(Java Chromium Embedded Framework)把 server 模块的 Web UI 套�
 ./gradlew :shell:run          # 开发运行(工作目录为仓库根,数据目录 ./data)
 ./gradlew :shell:shadowJar    # fat jar:shell/build/libs/dq-tool-shell-<version>.jar(约 200MB,内嵌 natives)
 scripts/package-shell-mac.sh  # macOS dmg(参考 scripts/package-mac.sh;Linux 未实现,见脚本内 TODO)
+                                # 快捷命令:make package-shell / make package-shell-skip(--skip-build)
 scripts\package-shell-win.bat # Windows 免安装 zip(CI 的 windows-shell job 用)
 ```
 
@@ -90,7 +91,9 @@ server **没有**提供抑制开关;shell 的做法是不走 `DqApplication.main
 心跳看门狗(DesktopSession)只在 BrowserOpener 成功拉起 --app 窗口后武装,shell 路径永不武装。
 
 附带代价:`DqApplication` 的端口解析(--server.port= > SERVER_PORT > yml)与避让逻辑
-(向后探测 100 个)是 private,shell 在 `Main.kt` 复刻了一份,**修改 server 侧逻辑时请同步**。
+(向后探测 100 个)是 private,shell 在 `Main.kt` 复刻了一份,**修改 server 侧逻辑时请同步**;
+单实例保护无此问题 —— 检测逻辑在 server 的 `InstanceLock`(公开 API),两个入口直接共用
+(已有实例时 shell 弹提示框退出,server 桌面版打开已有实例窗口退出)。
 
 ## 窗口生命周期
 

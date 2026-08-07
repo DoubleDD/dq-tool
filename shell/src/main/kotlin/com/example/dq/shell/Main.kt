@@ -1,10 +1,13 @@
 package com.example.dq.shell
 
 import com.example.dq.config.ConfigLoader
+import com.example.dq.config.InstanceLock
 import com.example.dq.config.StartupLog
 import com.example.dq.web.WebServer
 import java.awt.GraphicsEnvironment
 import java.net.ServerSocket
+import java.nio.file.Path
+import javax.swing.JOptionPane
 import kotlin.system.exitProcess
 
 /**
@@ -50,6 +53,17 @@ fun main(args: Array<String>) {
         // 端口解析与避让逻辑复刻 DqApplication(其方法为 private 无法复用,改动请两边同步):
         // --server.port= 启动参数 > SERVER_PORT 环境变量 > application.yml;0 表示随机分配
         val configuredPort = resolveConfiguredPort(args, config.serverPort())
+
+        // 单实例保护(与 DqApplication 同一检测,逻辑在 server 的 InstanceLock,两边共用):
+        // 同数据目录已有实例时,AUTO_SERVER 会把本进程挂到旧实例的 H2 上,跨版本直接启动失败
+        if (InstanceLock.acquire(Path.of(config.dataDir())) == InstanceLock.Status.ALREADY_RUNNING) {
+            StartupLog.log("检测到同数据目录已有 dq-tool 实例在运行,本进程退出")
+            JOptionPane.showMessageDialog(
+                null, "dq-tool 已在运行,请使用已有的窗口或托盘图标。", "dq-tool", JOptionPane.INFORMATION_MESSAGE
+            )
+            exitProcess(0)
+        }
+
         val port = if (configuredPort == 0) 0 else findAvailablePort(configuredPort)
         if (configuredPort != 0 && port != configuredPort) {
             StartupLog.log("端口 $configuredPort 被占用,避让到 $port")

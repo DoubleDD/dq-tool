@@ -1,5 +1,5 @@
 # dq-tool 快捷命令(macOS/Linux;Windows 打包用 scripts\package-win.bat)
-# 直接敲 make 查看全部命令
+# 直接敲 make 查看全部命令(按用途分组)
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -24,10 +24,44 @@ web/dist/index.html: $(WEB_SRC)
 	@[ -d web/node_modules ] || (cd web && npm install)
 	cd web && npm run build
 
-.PHONY: help dev dev-headless dev-web desktop shell tauri build test run run-headless package package-skip package-linux package-tauri package-tauri-skip license-keypair license clean
+.PHONY: help \
+	dev dev-headless dev-web desktop shell tauri \
+	build test run run-headless \
+	package package-skip package-linux \
+	package-shell package-shell-skip \
+	package-tauri package-tauri-skip \
+	license-keypair license clean
 
-help: ## 显示全部可用命令
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  make %-14s %s\n", $$1, $$2}'
+help: ## 显示全部可用命令(按用途分组)
+	@printf '\n\033[1m本地运行调试\033[0m\n'
+	@printf '  make %-18s %s\n' dev            '后端 + 浏览器 app 窗口/托盘(前端有改动时先重建 web/dist)'
+	@printf '  make %-18s %s\n' dev-headless   '后端,无窗口/托盘(服务器方式调试)'
+	@printf '  make %-18s %s\n' dev-web        '前端 5173 热更新(代理 /api 到 10000)'
+	@printf '  make %-18s %s\n' desktop        'Compose Desktop 原生桌面版(内嵌 JBR)'
+	@printf '  make %-18s %s\n' shell          'JCEF 套壳版(Web UI + 内嵌 Chromium 窗口)'
+	@printf '  make %-18s %s\n' tauri          'Tauri 2 套壳版(系统 WebView + Rust 侧车拉起 java 子进程)'
+	@printf '\n\033[1m构建 / 测试 / 直接跑 jar\033[0m\n'
+	@printf '  make %-18s %s\n' build          '构建前端 + 后端 fat jar(跳过测试)'
+	@printf '  make %-18s %s\n' test           '全部测试(含 Testcontainers,需要 Docker)'
+	@printf '  make %-18s %s\n' run            '构建并运行 fat jar,带窗口/托盘'
+	@printf '  make %-18s %s\n' run-headless   '构建并运行 fat jar,无窗口/托盘(服务器方式)'
+	@printf '\n\033[1m打包:浏览器 app 模式(server 安装版)\033[0m\n'
+	@printf '  make %-18s %s\n' package        'macOS dmg(构建 + 打包)'
+	@printf '  make %-18s %s\n' package-skip   'macOS dmg(跳过构建,用现有 jar 重打)'
+	@printf '  make %-18s %s\n' package-linux  'Linux deb(--type rpm 打 rpm 需直接调 scripts/package-linux.sh)'
+	@printf '\n\033[1m打包:JCEF 套壳\033[0m\n'
+	@printf '  make %-18s %s\n' package-shell      'macOS dmg(内嵌 Chromium natives)'
+	@printf '  make %-18s %s\n' package-shell-skip 'macOS dmg(跳过构建)'
+	@printf '\n\033[1m打包:Tauri 2 套壳\033[0m\n'
+	@printf '  make %-18s %s\n' package-tauri      'macOS dmg(内嵌 fat jar + jlink JRE)'
+	@printf '  make %-18s %s\n' package-tauri-skip 'macOS dmg(跳过构建)'
+	@printf '\n\033[1m授权码 / 清理\033[0m\n'
+	@printf '  make %-18s %s\n' license-keypair '生成授权密钥对(只需一次,公钥填入 application.yml 的 dq.license.public-key)'
+	@printf '  make %-18s %s\n' license         '签发授权码(交互式;也可 customer=... expires=... 传参)[KEY=私钥文件]'
+	@printf '  make %-18s %s\n' clean           '清理构建产物(server/build/ 与 web/dist/)'
+	@printf '\nWindows 产物无法在本机构建(不支持交叉编译):在 Windows 上跑 scripts\\package-{win,shell-win,tauri-win}.bat,或推 v* tag 走 CI\n\n'
+
+# ── 本地运行调试 ─────────────────────────────────────────────────────────────
 
 dev: web/dist/index.html ## 后端开发模式,带窗口/托盘(显式关闭 headless;前端有改动时先重新构建)
 	JAVA_TOOL_OPTIONS="-Djava.awt.headless=false" ./gradlew :server:run
@@ -48,6 +82,8 @@ tauri: build ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车拉起
 	@[ -d tauri/node_modules ] || (cd tauri && npm install)
 	cd tauri && npm run dev
 
+# ── 构建 / 测试 / 直接跑 jar ─────────────────────────────────────────────────
+
 build: ## 构建前端 + 后端 fat jar(跳过测试)
 	cd web && npm run build
 	./gradlew :server:shadowJar
@@ -61,6 +97,8 @@ run: build ## 构建并运行 fat jar,带窗口/托盘
 run-headless: build ## 构建并运行 fat jar,无窗口/托盘(服务器方式)
 	java -XX:+UseZGC -jar $(JAR)
 
+# ── 打包:浏览器 app 模式(server 安装版,jpackage 内嵌 JRE)─────────────────────
+
 package: ## macOS:构建并打 dmg 安装包
 	scripts/package-mac.sh
 
@@ -70,11 +108,23 @@ package-skip: ## macOS:跳过构建,用现有 jar 重打 dmg
 package-linux: ## Linux:构建并打 deb 安装包
 	scripts/package-linux.sh
 
+# ── 打包:JCEF 套壳(shell 模块,内嵌 Chromium)─────────────────────────────────
+
+package-shell: ## macOS:构建并打 JCEF 套壳版 dmg
+	scripts/package-shell-mac.sh
+
+package-shell-skip: ## macOS:跳过构建,用现有 jar 重打 JCEF 套壳版 dmg
+	scripts/package-shell-mac.sh --skip-build
+
+# ── 打包:Tauri 2 套壳(tauri 模块,系统 WebView + java 侧车子进程)──────────────
+
 package-tauri: ## macOS:构建并打 Tauri 2 套壳版 dmg(内嵌 fat jar + jlink JRE)
 	scripts/package-tauri-mac.sh
 
 package-tauri-skip: ## macOS:跳过构建,用现有 jar 重打 Tauri 2 套壳版 dmg
 	scripts/package-tauri-mac.sh --skip-build
+
+# ── 授权码 / 清理 ────────────────────────────────────────────────────────────
 
 license-keypair: ## 生成授权密钥对(只需一次,公钥填入 application.yml 的 dq.license.public-key)
 	java scripts/LicenseKeygen.java --gen-keypair
