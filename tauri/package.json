@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "dq-tool 的 Tauri 2 桌面壳(系统 WebView + Java 后端侧车子进程)",
   "scripts": {
+    "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
     "icon": "tauri icon"
