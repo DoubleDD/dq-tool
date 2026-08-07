@@ -14,7 +14,12 @@ import com.example.dq.repository.Jdbc
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
+import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
+import com.example.dq.repository.AiConfigRepository
+import com.example.dq.service.AiConfigService
+import com.example.dq.service.AiService
+import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.ExportService
 import com.example.dq.service.MetadataService
@@ -87,8 +92,13 @@ class ScanFlowTest {
         val dialectFactory = DialectFactory
         dataSourceService = DataSourceService(dsRepo, crypto, dialectFactory, config, schemaStatRepo)
         val executor = ScanExecutor(config)
+        val tagRepo = TagRepository(jdbc)
+        val autoTagService = AutoTagService(
+            AiConfigService(AiConfigRepository(jdbc), crypto, config), AiService(),
+            TagService(tagRepo, dsRepo), tagRepo, scanRepo, TableDocRepository(jdbc),
+            dataSourceService, dialectFactory)
         val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, config, executor,
-            TagService(TagRepository(jdbc), dsRepo))
+            TagService(tagRepo, dsRepo), autoTagService)
         scanService = ScanService(scanRepo, dsRepo, schemaStatRepo, dataSourceService,
             dialectFactory, config, executor, chunkRunner)
         exportService = ExportService(scanService)

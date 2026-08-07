@@ -181,6 +181,16 @@
             </div>
           </div>
         </el-form-item>
+        <el-form-item label="AI 自动打标">
+          <el-checkbox v-model="scanForm.autoTag">扫描完成后由大模型自动打标</el-checkbox>
+          <el-tooltip placement="top" :show-after="200">
+            <template #content>
+              <div>每张表扫描完成后,由大模型根据表注释/字段注释/表描述,从标记列表中选择最合适的标记自动打上(只增不删,已有标记的表不覆盖)</div>
+              <div>表无任何注释时会抽样 100 行业务数据一并发送给大模型;未配置大模型时自动跳过</div>
+            </template>
+            <el-icon style="vertical-align: -2px; margin-left: 4px"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </el-form-item>
         <el-form-item label="空值规则">
           <div style="width: 100%">
             <div v-for="(rule, idx) in scanForm.nullRules" :key="idx" class="rule-row">
@@ -298,9 +308,24 @@ async function reloadTableTags() {
 const scanDialogVisible = ref(false)
 const submitting = ref(false)
 // maxSizeValue 为空(null)表示不限制表大小
-const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB' })
+const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: false })
 // 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走
 const singleTable = ref('')
+
+// 大模型配置是否可用(合并默认值后完整),决定「AI 自动打标」复选框默认勾选;首次打开扫描对话框时拉取并缓存
+const aiAvailable = ref(false)
+let aiConfigFetched = false
+async function fetchAiAvailable() {
+  if (aiConfigFetched) return
+  aiConfigFetched = true
+  try {
+    const cfg = await request.get('/ai-config')
+    aiAvailable.value = !!cfg.available
+    scanForm.autoTag = aiAvailable.value
+  } catch {
+    // 拉取失败按不可用处理,复选框默认不勾
+  }
+}
 
 // 行数取值:非采样的最新完成扫描给的是 COUNT(*) 精确值,优先于元数据估算;
 // 采样表的 totalRows 只是采样行数,不能当作全表行数,仍用估算值
@@ -517,6 +542,8 @@ function openScanDialog() {
   scanForm.nullRules = []
   scanForm.maxSizeValue = null
   scanForm.maxSizeUnit = 'GB'
+  scanForm.autoTag = aiAvailable.value
+  fetchAiAvailable()
   scanDialogVisible.value = true
 }
 
@@ -538,7 +565,8 @@ async function submitScan() {
       tables: singleTable.value ? [singleTable.value] : (selectedTables.value.length ? selectedTables.value.map((t) => t.name) : null),
       forceFull: scanForm.forceFull,
       nullRules,
-      maxTableSizeBytes: maxSizeBytes()
+      maxTableSizeBytes: maxSizeBytes(),
+      autoTag: scanForm.autoTag
     })
     ElMessage.success('扫描任务已提交')
     scanDialogVisible.value = false

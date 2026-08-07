@@ -33,6 +33,10 @@ data class AppConfig(
     val ai: AiDefaults = AiDefaults(),
     /** 授权码验签公钥(base64,Ed25519);空表示未配置,激活会被拒绝 */
     val licensePublicKey: String = "",
+    /** 签发私钥(base64,Ed25519 PKCS8);非空即管理员实例,开放授权码管理。绝不外泄到接口/日志 */
+    val licensePrivateKey: String = "",
+    /** 软件版本号(构建期注入,与安装包版本一致);空表示未知 */
+    val appVersion: String = "",
 ) {
     /** H2 文件库连接串,与原工程一致 */
     val h2JdbcUrl: String
@@ -70,7 +74,18 @@ data class AppConfig(
                     statementTimeoutSeconds = int("dq.scan.statement-timeout-seconds") ?: 1800,
                 ),
                 securitySecret = str("dq.security.secret") ?: "change-me-32bytes-secret-key-0000",
-                licensePublicKey = str("dq.license.public-key") ?: "",
+                // 公钥改为文件存放:dq.license.public-key-file 指向公钥文件(支持 ${user.home});未配时兼容内联 dq.license.public-key
+                licensePublicKey = str("dq.license.public-key-file")
+                    ?.let {
+                        Files.readString(Path.of(it.replace("\${user.home}", System.getProperty("user.home")))).trim()
+                    }
+                    ?: str("dq.license.public-key") ?: "",
+                // 签发私钥文件:配置即管理员实例(授权码管理);desktop 无管理 UI,仅为配置口径一致
+                licensePrivateKey = str("dq.license.private-key-file")
+                    ?.let {
+                        Files.readString(Path.of(it.replace("\${user.home}", System.getProperty("user.home")))).trim()
+                    }
+                    ?: "",
                 ai = AiDefaults(
                     apiKey = str("ai.api-key") ?: "",
                     baseUrl = str("ai.base-url") ?: "",

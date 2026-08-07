@@ -345,6 +345,30 @@ class DataSourceTransferServiceTest {
     }
 
     @Test
+    fun `JSON 导入密码为空的条目成功但提示补充密码`() {
+        val json = """
+            {"app":"dq-tool","version":1,"exportedAt":"t","items":[
+              {"name":"无密码","jdbcUrl":"jdbc:mysql://h:3306/d1","username":"u",
+               "passwordEnc":"","rowThreshold":null,"sizeThresholdBytes":null},
+              {"name":"有密码","jdbcUrl":"jdbc:mysql://h:3306/d2","username":"u",
+               "passwordEnc":"${com.example.dq.util.TransferCrypto.encrypt("p")}","rowThreshold":null,"sizeThresholdBytes":null}
+            ]}
+        """.trimIndent()
+        val result = service.importJson(ByteArrayInputStream(json.toByteArray()))
+        assertEquals(2, result.imported.size)
+        assertTrue(result.failed.isEmpty(), result.failed.toString())
+        // 只针对空密码条目提示一次,提示中带数据源名
+        assertEquals(1, result.warnings.size)
+        assertTrue(result.warnings[0].contains("无密码"), result.warnings.toString())
+        assertTrue(result.warnings[0].contains("密码"), result.warnings.toString())
+        // 空密码落库为 NULL,列表接口应标出 hasPassword=false
+        val byName = dataSourceService.list().associateBy { it.name }
+        assertEquals(false, byName["无密码"]!!.hasPassword)
+        assertEquals(true, byName["有密码"]!!.hasPassword)
+        assertEquals(null, byName["无密码"]!!.password)
+    }
+
+    @Test
     fun `导出不存在的数据源抛参数错误`() {
         val e = assertThrows(IllegalArgumentException::class.java) {
             service.export(listOf(9999L), ByteArrayOutputStream())

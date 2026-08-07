@@ -23,11 +23,11 @@ class AiConfigService(
      */
     data class Config(val baseUrl: String?, val apiKey: String?, val model: String?, val usingDefault: Boolean)
 
-    /** 只回显用户自己的配置(H2),默认配置不回显、不暴露 */
+    /** 只回显用户自己的配置(H2),默认配置不回显、不暴露;available 表示合并默认值后的有效配置是否完整 */
     fun get(): AiConfigView =
         repository.get()
-            ?.let { r -> AiConfigView(r.baseUrl, r.model, !r.apiKeyEnc.isNullOrEmpty()) }
-            ?: AiConfigView(null, null, false)
+            ?.let { r -> AiConfigView(r.baseUrl, r.model, !r.apiKeyEnc.isNullOrEmpty(), findConfig() != null) }
+            ?: AiConfigView(null, null, false, findConfig() != null)
 
     /** apiKey 为空串/null 时保留已存 key */
     fun save(req: AiConfigRequest) {
@@ -47,6 +47,18 @@ class AiConfigService(
         val apiKey = effective.apiKey
         if (baseUrl.isNullOrBlank() || model.isNullOrBlank() || apiKey.isNullOrBlank()) {
             throw IllegalStateException("请先在「AI 配置」中填写完整的大模型接口信息(接口地址 / API Key / 模型)")
+        }
+        return Config(baseUrl.replace(Regex("/+$"), ""), apiKey, model, effective.usingDefault)
+    }
+
+    /** 非抛出式取配置(自动打标等后台场景用):合并默认配置后任一字段为空返回 null,口径与 requireConfig 一致 */
+    fun findConfig(): Config? {
+        val effective = effectiveConfig()
+        val baseUrl = effective.baseUrl
+        val model = effective.model
+        val apiKey = effective.apiKey
+        if (baseUrl.isNullOrBlank() || model.isNullOrBlank() || apiKey.isNullOrBlank()) {
+            return null
         }
         return Config(baseUrl.replace(Regex("/+$"), ""), apiKey, model, effective.usingDefault)
     }

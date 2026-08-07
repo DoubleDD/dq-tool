@@ -25,7 +25,7 @@ dependencies {
     implementation(libs.poi.ooxml)
 
     // SSH 隧道(数据源经跳板机连接目标库,本地端口转发)
-    implementation(libs.jsch)
+    implementation(libs.sshj)
 
     // 入参校验注解:模型类携带 @field:NotNull 等注解,由 server web 层的 hibernate-validator 触发
     compileOnly(libs.jakarta.validation.api)

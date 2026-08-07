@@ -37,7 +37,7 @@ function schemaLabel(route) {
   return route.query.db ? `${route.query.db}.${schema}` : schema
 }
 
-/** 根据路由解析所属页签及标题 */
+/** 根据路由解析所属页签及标题;不属于任何页签的路由(/ 重定向中间态、/license-admin 等)返回 null */
 function resolveTab(route) {
   const p = route.path
   if (p === '/dashboard') {
@@ -45,6 +45,9 @@ function resolveTab(route) {
   }
   if (p === '/tags') {
     return { key: 'tags', title: '标记统计', closable: false }
+  }
+  if (p === '/datasources') {
+    return { key: 'home', title: '首页', closable: false }
   }
   if (p.startsWith('/datasources/')) {
     const id = route.params.id
@@ -63,12 +66,15 @@ function resolveTab(route) {
     if (p.includes('/tables/')) title = `${route.params.tableName} - 字段统计`
     return { key: `scan-${jobId}`, title, closable: true }
   }
-  return { key: 'home', title: '首页', closable: false }
+  // 不匹配任何页签的路由(如启动时 START_LOCATION 的 '/':若会话落在非首页路由,
+  // 兜底归到首页会把 home.path 污染成 '/',导致点击「首页」跳到 '/';/license-admin 同理)
+  return null
 }
 
-/** 路由变化后同步页签:不存在则新建,存在则更新停留位置和标题 */
+/** 路由变化后同步页签:不存在则新建,存在则更新停留位置和标题;路由不属于任何页签时不动 */
 export function syncTab(route) {
   const meta = resolveTab(route)
+  if (!meta) return
   let tab = tabState.tabs.find((t) => t.key === meta.key)
   if (!tab) {
     tab = { key: meta.key, title: meta.title, path: route.fullPath, closable: meta.closable }

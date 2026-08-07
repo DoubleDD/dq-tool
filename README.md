@@ -41,7 +41,7 @@ cd web && npm install && npm run dev
 ```bash
 cd web && npm install && npm run build   # 产物在 web/dist
 cd .. && ./gradlew :server:shadowJar     # processResources 自动把 web/dist 拷进 jar
-java -jar server/build/libs/dq-tool-0.1.5.jar
+java -jar server/build/libs/dq-tool-0.1.6.jar
 ```
 
 > 访问 http://localhost:10000 即可使用(开发模式前端在 5173)。10000 被占用时会自动向后探测可用端口;也可用 `--server.port=` 参数或 `SERVER_PORT` 环境变量指定。
@@ -62,7 +62,7 @@ scripts/package-linux.sh
 推荐走 CI 全平台构建:推 `v*` tag(如 `git tag v1.2 && git push origin v1.2`)触发 `.github/workflows/release.yml`,云端并行构建 Windows 免安装 zip(x64 + ARM64)、macOS dmg(Apple Silicon + Intel)、Linux deb,全部自动挂到 GitHub Release;也支持 workflow_dispatch 手动触发(产物以 artifact 下载,保留 30 天)。jpackage 不支持交叉编译,各平台包都在对应系统的 runner 上原生构建。
 
 - 脚本自动完成前端构建 + `./gradlew :server:shadowJar` + jpackage;只重打包可加 `--skip-build`
-- dmg/deb 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.5` 映射为安装包版本 `1.5`
+- dmg/deb 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.6` 映射为安装包版本 `1.6`
 - 安装版的数据目录固定为 `~/.dq-tool/data`(Windows 为 `%USERPROFILE%\.dq-tool\data`),与 jar 方式的 `./data` 不同
 - 运行日志输出到数据目录的 `logs/` 子目录,按天滚动(`dq-tool.yyyy-MM-dd.log`,保留 30 天)
 - Windows 包为免安装 zip:解压后双击 `dq-tool.exe`,无控制台窗口,日志写入 `%USERPROFILE%\.dq-tool\data\logs\`;无需管理员权限,删除目录即卸载
@@ -89,7 +89,7 @@ scripts/package-linux.sh
 分发方签发授权码(私钥自行保管,勿提交仓库/外发):
 
 ```bash
-# 1) 生成密钥对(只需一次),把输出的公钥填入 application.yml 的 dq.license.public-key
+# 1) 生成密钥对(只需一次),把生成的 license-public.key 内容写入 server/src/main/resources/license-public.key
 make license-keypair
 
 # 2) 签发授权码(交互式;默认值:客户=内部测试,有效期=30 天后,有效期也可输入 permanent 永久授权)
@@ -101,7 +101,27 @@ make license customer="某某公司" expires=2026-12-31
 
 (等价于直接运行 `java scripts/LicenseKeygen.java ...`,私钥文件默认 `license-private.key`,可用 `KEY=` 覆盖。)
 
-授权码为离线验证,无需授权服务器;格式 `DQ1.<payload>.<签名>`,含客户标识和有效期。注意:纯离线方案无法防逆向破解,仅作为分发门槛。
+授权码为离线验证,无需授权服务器;格式 `DQ1.<payload>.<签名>`,payload 含客户标识、有效期和扩展字段(server_url/username/sid/签发时间戳);其中 username、sid、签发时间会展示在前端授权信息处,server_url 不回传前端。注意:纯离线方案无法防逆向破解,仅作为分发门槛。
+
+签发时扩展字段可选传入(版本段默认取安装包版本,可用 `LICENSE_VERSION=` 覆盖):
+
+```bash
+make license customer="某某公司" expires=2026-12-31 SERVER_URL="jdbc:oracle:thin:@//db:1521/ORCL" USERNAME=scott SID=ORCL
+```
+
+### 授权码管理(仅分发方/管理员)
+
+在 `application.yml` 配置签发私钥文件路径后,该实例即管理员实例,首页底部出现「授权码管理」入口:
+
+```yaml
+dq:
+  license:
+    private-key-file: "/path/to/license-private.key"
+```
+
+管理页(/license-admin)支持:生成新授权码(自动绑定当前软件版本号)、留档查看全部签发记录(含完整授权码与 server_url)、删除记录;不提供编辑。删除仅删除留档记录,离线验签方案无法吊销已分发的授权码。用户实例(未配置私钥)访问管理接口一律 403。
+
+首页底部同时显示当前软件版本号。
 
 ## 配置(application.yml)
 
@@ -114,7 +134,8 @@ make license customer="某某公司" expires=2026-12-31
 | `dq.scan.sample-rows` | 100000 | 采样行数 |
 | `dq.scan.statement-timeout-seconds` | 1800 | 单条统计 SQL 超时 |
 | `dq.security.secret` | change-me... | 密码加密密钥,生产必改 |
-| `dq.license.public-key` | — | 授权码验签公钥(Ed25519 base64),由 `scripts/LicenseKeygen.java --gen-keypair` 生成 |
+| `dq.license.public-key-file` | classpath:license-public.key | 授权码验签公钥(Ed25519)文件路径:`classpath:` 前缀读 jar 内资源,否则按文件系统路径(支持 `${user.home}`);公钥文件由 `scripts/LicenseKeygen.java --gen-keypair` 生成 |
+| `dq.license.private-key-file` | — | 签发私钥文件路径(写法同上);配置即管理员实例,开放授权码管理(生成/查看/删除)。仅分发方配置 |
 | `ai.base-url` / `ai.api-key` / `ai.model` | — | AI 表说明的默认接口配置,页面配置优先,未设置的字段逐字段回落到此默认值(默认 key 为明文,仅适合内网) |
 
 阈值也可在每个数据源上单独覆盖。

@@ -35,6 +35,8 @@ class DataSourceService(
     fun list(): List<DataSourceConfig> {
         val all = repo.findAll()
         all.forEach {
+            // 置空前先按密文判空:无密码只可能来自导入(新建密码必填、编辑留空沿用旧值)
+            it.hasPassword = !it.password.isNullOrEmpty()
             it.password = null // 不出库秘密字段
             it.sshPassword = null
             it.sshPrivateKey = null

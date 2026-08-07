@@ -326,6 +326,12 @@ abstract class AbstractDialect : DbDialect {
         return limitClause(sampleRows)
     }
 
+    override fun sampleRowsSql(schema: String, table: String, columns: List<String>, limit: Int): String {
+        val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
+        val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
+        return "SELECT $cols FROM $from" + limitClause(limit.toLong())
+    }
+
     /** LIMIT 子句方言 */
     protected open fun limitClause(n: Long): String {
         return " LIMIT $n"

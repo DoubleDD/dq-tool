@@ -9,7 +9,11 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-/** OpenAI 兼容大模型接口调用(/chat/completions),只发送表结构元数据,不涉及业务数据 */
+/**
+ * OpenAI 兼容大模型接口调用(/chat/completions)。
+ * 表说明场景只发送表结构元数据,不涉及业务数据;
+ * 扫描后自动打标场景在表无任何注释/描述时会发送抽样业务数据(前 20 列、100 行、单元格截断 100 字符)。
+ */
 class AiService {
 
     private val objectMapper = jacksonObjectMapper()
@@ -22,7 +26,8 @@ class AiService {
     fun describeTable(config: AiConfigService.Config, table: TableStat, columns: List<ColumnMeta>): String =
         chat(config, SYSTEM_PROMPT, buildTablePrompt(table, columns))
 
-    private fun chat(config: AiConfigService.Config, systemPrompt: String, userPrompt: String): String {
+    /** 通用对话调用(表说明与自动打标共用);失败统一包装为 IllegalStateException */
+    fun chat(config: AiConfigService.Config, systemPrompt: String, userPrompt: String): String {
         val body = mapOf(
             "model" to config.model,
             "temperature" to 0.3,

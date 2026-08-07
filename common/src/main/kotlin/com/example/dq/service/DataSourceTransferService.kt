@@ -79,12 +79,17 @@ class DataSourceTransferService(
                 val sshPassword = TransferCrypto.decrypt(item.sshPasswordEnc)
                 val sshPrivateKey = TransferCrypto.decrypt(item.sshPrivateKeyEnc)
                 val sshPassphrase = TransferCrypto.decrypt(item.sshPassphraseEnc)
+                val importedBefore = result.imported.size
                 importOne(item.name, item.jdbcUrl, item.username, plain,
                     item.rowThreshold, item.sizeThresholdBytes, result,
                     schemaFilter = item.schemaFilter,
                     sshEnabled = item.sshEnabled, sshHost = item.sshHost, sshPort = item.sshPort,
                     sshUsername = item.sshUsername, sshAuthMethod = item.sshAuthMethod,
                     sshPassword = sshPassword, sshPrivateKey = sshPrivateKey, sshPassphrase = sshPassphrase)
+                // 导出文件里密码为空时静默导入会留下无密码数据源,提示用户补充(列表页也会以「未设密码」标出)
+                if (plain.isNullOrEmpty() && result.imported.size > importedBefore) {
+                    result.warnings.add("「${result.imported.last()}」导入成功但未包含密码,请编辑数据源补充密码")
+                }
             } catch (e: IllegalArgumentException) {
                 result.failed.add(ImportFailure(item.name, e.message ?: "密文无法解密"))
                 return@forEach

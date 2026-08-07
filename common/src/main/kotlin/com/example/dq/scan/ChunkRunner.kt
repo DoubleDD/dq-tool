@@ -9,6 +9,7 @@ import com.example.dq.model.ScanColumnView
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.ScanTableView
 import com.example.dq.repository.ScanRepository
+import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.TagService
 import com.fasterxml.jackson.core.type.TypeReference
@@ -26,6 +27,7 @@ class ChunkRunner(
     private val config: AppConfig,
     private val executor: ScanExecutor,
     private val tagService: TagService,
+    private val autoTagService: AutoTagService,
 ) {
 
     private val objectMapper = jacksonObjectMapper()
@@ -183,6 +185,7 @@ class ChunkRunner(
             }
             repo.finishTable(table.id, ScanStatus.DONE, totalRows, null)
             syncEmptyTag(job, table.tableName, totalRows)
+            autoTag(job, table)
             checkJobCompletion(table.jobId)
         } catch (e: Exception) {
             log.error("表结果聚合失败 scanTableId={}", table.id, e)
@@ -197,6 +200,15 @@ class ChunkRunner(
             tagService.syncEmptyTag(job.datasourceId, job.dbName, job.schemaName, tableName, totalRows)
         } catch (e: Exception) {
             log.warn("空表标记联动失败 jobId={} table={}: {}", job.id, tableName, e.message)
+        }
+    }
+
+    /** AI 自动打标:表 DONE 后异步入队(LLM 调用慢,不占扫描 worker);失败只记日志,不影响扫描结果 */
+    private fun autoTag(job: ScanRepository.JobRow, table: ScanTableView) {
+        try {
+            autoTagService.submit(job.id, table.id)
+        } catch (e: Exception) {
+            log.warn("AI 自动打标提交失败 jobId={} table={}: {}", job.id, table.tableName, e.message)
         }
     }
 

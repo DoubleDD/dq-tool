@@ -85,4 +85,7 @@ interface DbDialect {
 
     /** 统计 SQL 的选择项布局:每列依次包含哪些度量(null/empty/rule) */
     fun selectorLayout(cols: List<ColumnMeta>, rules: List<NullRule>?): List<BooleanArray>
+
+    /** 抽样数据 SQL:取前 limit 行的指定列(空则全部列);不加 ORDER BY,任意 N 行即可(AI 自动打标的上下文用) */
+    fun sampleRowsSql(schema: String, table: String, columns: List<String>, limit: Int): String
 }

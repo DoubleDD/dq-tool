@@ -25,7 +25,9 @@
             <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %5p [%thread] %logger{36} : %m%n</pattern>
         </encoder>
     </appender>
-    <root level="INFO">
+    <!-- 第三方框架(Hikari/Flyway/Jetty 等)只留 WARN 及以上;本项目日志全部打印 -->
+    <logger name="com.example.dq" level="INFO"/>
+    <root level="WARN">
         <appender-ref ref="CONSOLE"/>
         <appender-ref ref="FILE"/>
     </root>

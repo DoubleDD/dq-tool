@@ -2,6 +2,7 @@ package com.example.dq.shell
 
 import com.example.dq.config.ConfigLoader
 import com.example.dq.config.InstanceLock
+import com.example.dq.config.LegacyTlsSupport
 import com.example.dq.config.StartupLog
 import com.example.dq.web.WebServer
 import java.awt.GraphicsEnvironment
@@ -35,6 +36,8 @@ fun main(args: Array<String>) {
     Thread.setDefaultUncaughtExceptionHandler { thread, e ->
         StartupLog.log("线程 ${thread.name} 未捕获异常", e)
     }
+    // 兼容仅支持 TLS 1.0/1.1 的老版本 SQL Server;必须在任何 TLS 使用之前调用(与 DqApplication 一致)
+    LegacyTlsSupport.enable()
     try {
         // JCEF 需要图形显示;headless 环境(如 SSH)直接给出明确报错,而不是在 native 初始化里崩溃
         if (GraphicsEnvironment.isHeadless()) {

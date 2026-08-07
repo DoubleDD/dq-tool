@@ -62,9 +62,21 @@ public class DqProperties {
     public static class License {
         /** 授权码验签公钥(Ed25519,base64 的 X.509 编码);为空时激活接口报"未配置授权公钥" */
         private String publicKey = "";
+        /** 公钥文件路径(classpath: 前缀读 jar 内资源,否则按文件系统路径);非空时优先于内联 publicKey */
+        private String publicKeyFile = "";
+        /** 签发私钥(base64 的 PKCS8 编码);非空即管理员实例,开放授权码管理。绝不外泄到接口/日志 */
+        private String privateKey = "";
+        /** 私钥文件路径(写法同 publicKeyFile) */
+        private String privateKeyFile = "";
 
         public String getPublicKey() { return publicKey; }
         public void setPublicKey(String publicKey) { this.publicKey = publicKey; }
+        public String getPublicKeyFile() { return publicKeyFile; }
+        public void setPublicKeyFile(String publicKeyFile) { this.publicKeyFile = publicKeyFile; }
+        public String getPrivateKey() { return privateKey; }
+        public void setPrivateKey(String privateKey) { this.privateKey = privateKey; }
+        public String getPrivateKeyFile() { return privateKeyFile; }
+        public void setPrivateKeyFile(String privateKeyFile) { this.privateKeyFile = privateKeyFile; }
     }
 
     public static class Desktop {

@@ -16,8 +16,13 @@ dq:
   desktop:
     shutdown-timeout-seconds: 45   # 桌面安装版 --app 窗口关闭后,超过该时长未收到页面心跳则退出进程;<=0 禁用看门狗(注意:机器休眠超过该时长也会触发退出)
   license:
-    # public-key: "MCowBQYDK2VwAyEA7mCvdJjk397irsYJgQ6LRe5sfvTht6XEdpbWruUd+lo="   # 授权码验签公钥(Ed25519),私钥在 license-private.key(不入库)
-    public-key: "MCowBQYDK2VwAyEA5ffTpP6O+Zj7uZGVaKvRTFvQuNnNZ0FIVUHfM8BVeHI="
+    # 授权码验签公钥(Ed25519)文件路径,私钥在 license-private.key(不入库);
+    # classpath: 前缀读 jar 内资源,否则按文件系统路径读(支持 ${user.home},相对路径相对工作目录),配了路径但读不到时启动直接报错
+    public-key-file: "classpath:license-public.key"
+    # public-key: "MCowBQYDK2VwAyEA..."   # 兼容旧配置:未配 public-key-file 时可直接内联公钥 base64
+    # 签发私钥文件路径(写法同上);配置即管理员实例,开放授权码管理(生成/查看/删除)。仅分发方配置,用户实例切勿配置
+    # 注意:仅供本机调试,勿提交——提交后打包产物启动时会因找不到私钥文件直接报错
+    # private-key-file: "license-private.key"
 # AI 大模型接口默认配置:页面「AI 配置」未设置的字段回落到这里的值
 ai:
   api-key: user1

@@ -118,9 +118,9 @@
 </template>
 
 <script setup>
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, h, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElCheckbox, ElMessage, ElMessageBox } from 'element-plus'
 import request from '../api'
 import { setDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber, statusTagType, statusText } from '../utils/format'
@@ -340,8 +340,43 @@ function stopPolling() {
   }
 }
 
+// 大模型配置是否可用(合并默认值后完整),决定「AI 自动打标」复选框默认勾选;首次确认时拉取并缓存
+const aiAvailable = ref(false)
+let aiConfigFetched = false
+async function ensureAiConfig() {
+  if (aiConfigFetched) return
+  aiConfigFetched = true
+  const cfg = await request.get('/ai-config').catch(() => null)
+  aiAvailable.value = !!cfg?.available
+}
+
+/** 整库扫描确认:内嵌「AI 自动打标」复选(默认勾选 = 模型配置可用),取消则放弃提交 */
+async function confirmScans(rows) {
+  await ensureAiConfig()
+  const autoTag = ref(aiAvailable.value)
+  const text = rows.length === 1 ? `将对库「${rows[0].name}」发起全库扫描` : `将对 ${rows.length} 个库发起全库扫描`
+  try {
+    await ElMessageBox.confirm(
+      h('div', null, [
+        h('div', null, text),
+        h('div', { style: 'margin-top: 8px' }, [
+          h(ElCheckbox, {
+            modelValue: autoTag.value,
+            'onUpdate:modelValue': (v) => { autoTag.value = v }
+          }, () => 'AI 自动打标(无注释的表会抽样 100 行数据发给大模型)')
+        ])
+      ]),
+      '开始扫描',
+      { confirmButtonText: '开始扫描', cancelButtonText: '取消' }
+    )
+  } catch {
+    return // 取消
+  }
+  submitScans(rows, autoTag.value)
+}
+
 /** 对给定库逐个提交全库扫描任务(tables=null 即整库),失败的单独计数 */
-async function submitScans(rows) {
+async function submitScans(rows, autoTag) {
   submitting.value = true
   try {
     const results = await Promise.allSettled(rows.map((row) =>
@@ -351,7 +386,8 @@ async function submitScans(rows) {
         database: currentDb.value || null,
         tables: null,
         forceFull: false,
-        nullRules: []
+        nullRules: [],
+        autoTag
       })
     ))
     const ok = results.filter((r) => r.status === 'fulfilled').length
@@ -373,11 +409,11 @@ function scanSelected() {
     ElMessage.info('选中的库都正在扫描中')
     return
   }
-  submitScans(targets)
+  confirmScans(targets)
 }
 
 function scanOne(row) {
-  submitScans([row])
+  confirmScans([row])
 }
 
 onMounted(load)

@@ -10,13 +10,15 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - 字段级:NULL / 空串 / 自定义空值规则统计与有值率
 - 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫、Excel 导出(sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 表字段 / 每表字段明细多 sheet / 异常表,列可选,表名/表注释固定前列)
 - AI 表说明:大模型(OpenAI 兼容接口)根据表结构生成表用途描述,页面配置接口信息,手动触发生成,也支持手动编辑,结果存 H2
+- AI 自动打标:扫描时可选(auto_tag 随 scan_job 持久化,断点续扫仍生效);每张表 DONE 后由 `AutoTagService` 独立守护线程池(2 worker)异步执行(与扫描并行,不占扫描 worker)——以表注释/字段注释/AI 表描述为上下文(三者全空且表非空时抽样前 20 列 100 行业务数据,单元格截断 100 字符),连同全局 USER 标记列表发给大模型选一个标记自动打上(幂等 ensureTableTag,只增不删;表已有 USER 标记跳过不覆盖);未配置大模型/无候选标记静默跳过,同 job 首次 LLM 失败后熔断剩余表;前端扫描对话框与库列表整库扫描确认框均有复选(默认勾选 = `GET /api/ai-config` 的 available,即合并默认配置后有效配置完整)
 - 表标记:全局表级标记(数据源+库+表名,一表多标记,名称+颜色);「空表」系统标记随扫描结果自动打/摘,用户标记在表列表打标弹窗集中管理;库列表标签块点击筛选 + 独立「标记统计」页(需求 `docs/requirements/表标记与统计需求.md`,实施见 `docs/plans/表标记与统计-实施计划.md`)
-- 授权码:离线 Ed25519 签名授权码(含客户标识+有效期,`expires=permanent` 可签发永久授权),未激活/过期时除 `/api/license/**` 外所有接口 401,前端强制跳激活页;签发用 `scripts/LicenseKeygen.java`(或 `make license`),公钥在 `application.yml` 的 `dq.license.public-key`,私钥 `license-private.key` 不入库
+- 授权码:离线 Ed25519 签名授权码(payload 为 客户名|有效期|软件版本|server_url|username|sid|签发时间戳,`expires=permanent` 可签发永久授权,兼容两段/六段旧格式),未激活/过期时除 `/api/license/**` 外所有接口 401,前端强制跳激活页;签发用 `scripts/LicenseKeygen.java`(或 `make license`,扩展字段经 SERVER_URL/USERNAME/SID 传入,版本段默认取安装包版本,timestamp 自动取签发时间),公钥单独存文件 `server/src/main/resources/license-public.key`,`application.yml` 的 `dq.license.public-key-file` 只存文件路径(`classpath:` 前缀读 jar 内资源,否则按文件系统路径,兼容旧的内联 `dq.license.public-key`),私钥 `license-private.key` 不入库;**授权码管理(仅管理员)**:yml 配 `dq.license.private-key-file` 指向签发私钥即为管理员实例,开放 `/license-admin` 页与 `/api/license/admin/codes` 接口(生成/留档 `license_record` 表/查看含完整码/删除,不可编辑;SID 未填时服务端自动生成 UUID 去横杠,页面不再提供输入框;删除仅删留档,离线方案无法吊销已分发码;非管理员访问 403 `LicenseAdminRequiredException`),管理端点在 /api/license 前缀下不被激活拦截(管理员实例可不激活使用);软件版本号构建期由 gradle 去 `0.` 前缀注入 `app-version.txt`(与安装包版本一致),状态接口透出 `appVersion`/`admin`,首页底部页脚显示
 - 数据源连接信息存本地 H2 文件库,密码 AES-GCM 加密
-- 数据源 SSH 隧道:可配置经跳板机连接目标库(password/publickey 认证,私钥内容入库非文件路径;三个 SSH 秘密字段同样 AES-GCM 加密、编辑留空不改),内核 `SshTunnelService`(mwiede JSch 本地端口转发)+ `JdbcUrlRewriter`(JDBC URL host:port 解析/改写为 127.0.0.1:转发端口);连接池用长驻隧道(evictPool 一并关闭),测试连接/保存前模式探测用一次性隧道
+- 数据源 SSH 隧道:可配置经跳板机连接目标库(password/publickey 认证,私钥内容入库非文件路径;三个 SSH 秘密字段同样 AES-GCM 加密、编辑留空不改),内核 `SshTunnelService`(SSHJ 本地端口转发)+ `JdbcUrlRewriter`(JDBC URL host:port 解析/改写为 127.0.0.1:转发端口);连接池用长驻隧道(evictPool 一并关闭),测试连接/保存前模式探测用一次性隧道
 - 数据源库过滤:数据源级库白名单(`data_source.schema_filter` 逗号分隔,空=不过滤),编辑对话框「库过滤」页签(DataGrip Schemas 页风格)拉取目标库库名勾选 —— 编辑态且连接信息未改(前端快照对比,改过连接字段即失效已拉列表)直接调已存数据源的 `databases`/`schemas` 接口(带 `all=true` 旁路白名单拿全量,切到该页签自动加载);新增态或编辑态改过连接信息时用 `POST /api/datasources/preview-databases` 按表单连接参数实时连接(请求带 id 时密码/SSH 秘密留空回落已存值;方言 `listDatabases` 为空时回落 `listSchemas`,因为只有 SQL Server 实现了多库列表);白名单作用层级按方言能力区分 —— 多库方言(`DbDialect.supportsMultiDatabase()`,仅 SQL Server)只过滤 `GET /api/datasources/{dsId}/databases`,单库方言(MySQL 等的 schema 即用户眼中的库)过滤 `listSchemas` 与 schema-stats 概览(写入与读取路径都过滤,旧缓存无需重建;MetadataService.applySchemaFilter);库列表页也有「库过滤」弹窗直接改白名单(`PUT /api/datasources/{id}/schema-filter` 单独更新该列,DataSourceService.updateSchemaFilter);系统库(information_schema/mysql/sys 等)可不勾;白名单随导出/导入 JSON 一并迁移
-- 数据源导入/导出:数据源页可勾选导出为 JSON(密码与 SSH 秘密字段用内置固定口令 TransferCrypto 重加密,跨实例可导入,仅防随手打开),导入支持本工具 JSON 与 Navicat .ncx(NavicatCrypto 解 Ver 1.x AES-128-CBC 密码;SSH 隧道配置随数据源一并导入,SSH_PrivateKey 只是用户机器上的文件路径读不到内容,非空时提示导入后手动粘贴私钥),重名自动加「 (2)」后缀不覆盖;导入对话框分「文件导入/粘贴导入」两模式,粘贴模式支持 DataGrip「复制数据源到剪贴板」的 XML(带 `#DataSourceSettings#`/`#BEGIN#` 注释行包裹,密码在 IDE 主密码保险箱拿不到,导入后提示逐个编辑补密码)与本工具 JSON 文本,服务端按内容自动识别;逻辑在内核 `DataSourceTransferService`,接口 `GET /api/datasources/export?ids=`、`POST /api/datasources/import`(multipart,文件字段 `file` 或文本字段 `text`)
+- 数据源导入/导出:数据源页可勾选导出为 JSON(密码与 SSH 秘密字段用内置固定口令 TransferCrypto 重加密,跨实例可导入,仅防随手打开),导入支持本工具 JSON 与 Navicat .ncx(NavicatCrypto 解 Ver 1.x AES-128-CBC 密码;SSH 隧道配置随数据源一并导入,SSH_PrivateKey 只是用户机器上的文件路径读不到内容,非空时提示导入后手动粘贴私钥),重名自动加「 (2)」后缀不覆盖;导入对话框分「文件导入/粘贴导入」两模式,粘贴模式支持 DataGrip「复制数据源到剪贴板」的 XML(带 `#DataSourceSettings#`/`#BEGIN#` 注释行包裹,密码在 IDE 主密码保险箱拿不到,导入后提示逐个编辑补密码)与本工具 JSON 文本,服务端按内容自动识别;逻辑在内核 `DataSourceTransferService`,接口 `GET /api/datasources/export?ids=`、`POST /api/datasources/import`(multipart,文件字段 `file` 或文本字段 `text`);导入的无密码数据源(DataGrip 导入必然无密码、JSON `passwordEnc` 为空时导入成功并带 warning)在数据源卡片上以「未设密码」标出 —— 列表接口从 `password_enc` 判空返回 `hasPassword`(新建密码必填、编辑留空沿用旧值,故无歧义状态,无需持久化列)
 - 桌面安装版生命周期:双击启动立即出现托盘图标(TrayManager.installEarly,main 阶段安装)+ 启动画面(DesktopSplash),服务完全就绪后关启动画面并打开 --app 窗口(BrowserOpener);早期反馈只在显式 `-Djava.awt.headless=false`(打包脚本注入)时启用,普通 java -jar 不触发;托盘右键菜单「打开窗口/退出」,退出=关窗口+结束后端进程;托盘生效时后端以守护进程方式常驻、心跳看门狗停用;托盘不可用(headless/部分 Linux 桌面)时退回心跳看门狗(DesktopSession):前端每 5 秒上报 `/api/heartbeat`,超过 `dq.desktop.shutdown-timeout-seconds`(默认 45s,<=0 禁用)未收到心跳自动退出;只在本进程成功拉起 --app 窗口后才武装,java -jar 服务器部署不受影响;机器休眠超时也会误判退出,进行中的扫描中断后可断点续扫
+- 架构决策(2026-08):**彻底放弃 Kotlin Compose Desktop 桌面方案**。原因:生态不足、组件缺口太大(表格/对话框/进度等基础组件基本都要自绘)、要处理的细节太多、工作量大、时间不允许。桌面分发完全采用 B/S + 套壳架构(server 安装版浏览器 --app 窗口 / JCEF shell / Tauri),`desktop/` 目录代码保留但**不再维护**(相关文档 desktop/AGENTS.md、`make desktop` 仅作历史参考,勿在其上新增功能)
 - 注意:应用默认 headless(`DqApplication.main` 首行设置,与原 Spring Boot 行为一致),本地 `java -jar`/`./gradlew :server:run` 调试窗口与托盘需显式加 `-Djava.awt.headless=false`(打包脚本已注入);进程退出统一走 `AppShutdown`(停 Javalin → 关 Hikari → System.exit(0))
 - 数据目录与日志:开发/`java -jar` 方式数据目录为 `./data`;安装版为 `~/.dq-tool/data`(带点隐藏目录,打包脚本注入 `-Ddq.data-dir`)。运行日志在 **数据目录同级的 `logs/` 目录**(如安装版 `~/.dq-tool/logs/`,规则单点 `StartupLog.logDirFor`,`-Ddq.log-dir` 可显式覆盖):`dq-tool.log` 追加写、按天滚动为 `dq-tool.yyyy-MM-dd.log`,单个文件最大 100MB、一天内超限按 `%i` 序号拆分,保留 30 天、总量上限 2GB(`SizeAndTimeBasedRollingPolicy`,配置见 `server/src/main/resources/logback.xml`,路径变量 `${dq.log-dir:-./logs}` 由 main 在任何日志输出前设置);启动早期日志(logback 初始化前 + 未捕获异常)在同目录 `startup.log`(`config/StartupLog`,仅追加)
 
@@ -26,7 +28,7 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 
 ## 技术栈
 
-- 构建:Gradle 多模块(根 wrapper 9.2.1),子模块 `common`(共享业务内核,Kotlin,见 common/AGENTS.md)、`server`(Java Javalin Web 壳)、`desktop`(Kotlin Compose 桌面壳,见 desktop/AGENTS.md),共享依赖版本统一在 `gradle/libs.versions.toml`;`web/` 与 `tauri/`(Tauri 2 桌面壳,另需 cargo)为独立 npm 工程,不纳入 Gradle
+- 构建:Gradle 多模块(根 wrapper 9.2.1),子模块 `common`(共享业务内核,Kotlin,见 common/AGENTS.md)、`server`(Java Javalin Web 壳)、`desktop`(**已放弃**,Kotlin Compose 桌面壳,见 desktop/AGENTS.md),共享依赖版本统一在 `gradle/libs.versions.toml`;`web/` 与 `tauri/`(Tauri 2 桌面壳,另需 cargo)为独立 npm 工程,不纳入 Gradle
 - 后端(server/):Java 25、Javalin 7(内嵌 Jetty 12 ee10)+ hibernate-validator + snakeyaml + Logback 的薄壳,只含入口/配置加载/Web 路由/桌面生命周期;**业务逻辑全部在 common 模块**(Kotlin),由 `config/KernelConfigAdapter` 把 yml 配置映射为内核 `AppConfig`,`web/WebServer` 装配内核 `ServiceEnv`;Jackson 3(`tools.jackson` + KotlinModule)只在 Web 层序列化内核 Kotlin data class。2026-08 已从 Spring Boot 4.1 迁移(方案见 `docs/plans/de-spring-javalin-改造方案.md`),同月业务代码下沉 common 后移除 spring-jdbc
 - 前端:Vue 3 + Vue Router + Element Plus + axios,Vite 5 构建(无 TypeScript、无状态库,`stores/tabs.js`/`stores/theme.js` 为自写简易 store);明暗双主题:`html.dark` 类 + EP 官方暗色变量包,设计令牌与页面骨架类集中在 `src/style.css`,头栏右侧三档循环切换(自动跟随系统 prefers-color-scheme 并监听变化 / 浅色 / 深色,默认自动),选择存 localStorage(`dq-theme`),UI 颜色一律走 `--el-*`/`--dq-*` 变量不写死色值(用户可配的标记色、数据库图标品牌色除外)
 - 测试:JUnit 5 + AssertJ + Testcontainers(MySQL 8 / PG 15 / SQL Server 2019);不使用 Spring 测试框架,集成测试手动装配
@@ -49,11 +51,13 @@ server/                      Java Web 版薄壳(Javalin):
     web/                     WebServer(装配内核 ServiceEnv + Javalin 路由注册 + 授权 beforeMatched 前置校验 + 统一异常映射为 {message}(401/400/409/502/500,前端 axios 拦截器直接弹 message)+ 静态资源与 SPA 回退)、Validators(@Valid 替代的校验工具)、ValidationException(继承 IllegalArgumentException,走 400 映射)
     controller/              REST handler(方法签名为 Javalin Context,路由集中在 WebServer 注册;消费内核 Kotlin service/model):/api/datasources、/api/scans、/api/ai-config、/api/license(授权状态/激活,不被拦截)、/api/heartbeat(页面心跳,不被拦截)、/api/tags(TagController:标记 CRUD + {id}/stats),以及 /api/datasources/{dsId}/ 下的 databases、schemas、schema-stats、schema-tag-stats、schemas/{schema}/{tables,column-count,latest-scan-jobs,running-scans,table-docs,table-tags}、schemas/{schema}/tables/{table}/doc(POST 生成 / PUT 手动编辑)与 schemas/{schema}/tables/{table}/tags(PUT 整体替换打标)
   src/main/resources/
-    application.yml          全部可调配置(server.port / dq.data-dir 数据目录 / dq.scan.* / dq.security.secret / dq.license.public-key / ai.* 默认配置)
+    application.yml          全部可调配置(server.port / dq.data-dir 数据目录 / dq.scan.* / dq.security.secret / dq.license.public-key-file 授权公钥文件路径 / dq.license.private-key-file 签发私钥文件路径(配了即管理员实例) / ai.* 默认配置)
+    license-public.key       授权码验签公钥(Ed25519 base64,单行文件;由 scripts/LicenseKeygen.java --gen-keypair 生成)
+    app-version.txt          软件版本号占位文件,构建期由 gradle 注入(去 0. 前缀,与安装包版本一致)
     logback.xml              日志配置:控制台 + 数据目录 logs/ 按天滚动(dq-tool.yyyy-MM-dd.log,30 天,100MB/2GB);路径变量 ${dq.data-dir:-./data},变量名必须与打包脚本注入的系统属性一致
   src/test/java/com/example/dq/
     web/WebServerSmokeTest.java  WebServer 起停 + 关键端点冒烟(临时数据目录,验证内核装配/Flyway/Jackson 3 序列化 Kotlin 模型/授权拦截/表标记端点全链路;授权用测试临时 Ed25519 密钥对签发永久授权码激活)
-desktop/                     Kotlin + Compose Desktop 桌面壳(只留 Main.kt 与 ui/,业务逻辑全部来自 common;详见 desktop/AGENTS.md)
+desktop/                     Kotlin + Compose Desktop 桌面壳(**已放弃,不再维护**,仅留档参考;详见 desktop/AGENTS.md)
 shell/                       JCEF 桌面壳(同进程起 server 的 WebServer + 内嵌 Chromium 窗口加载 Web UI;不改 server,经不调 onReady 抑制外部浏览器/托盘;natives 用 me.friwi 坐标内嵌当前平台;详见 shell/AGENTS.md)
 tauri/                       Tauri 2 桌面壳(Rust 侧车拉起 java -jar server fat jar 子进程 + 系统 WebView 加载 Web UI;headless 默认值天然抑制浏览器/托盘;npm + cargo 工程不纳入 Gradle;详见 tauri/AGENTS.md)
 web/                         前端 Vue 工程:
@@ -79,7 +83,7 @@ cd web && npm install && npm run dev
 # 交付:单 jar 内嵌前端 —— 必须先构建前端,再 shadowJar
 cd web && npm install && npm run build     # 产物 web/dist
 cd .. && ./gradlew :server:shadowJar        # processResources 自动把 web/dist 拷进 jar 的 static/
-java -jar server/build/libs/dq-tool-0.1.5.jar   # 访问 http://localhost:10000
+java -jar server/build/libs/dq-tool-0.1.6.jar   # 访问 http://localhost:10000
 ```
 
 注意:`./gradlew :server:shadowJar` 不会自动构建前端;`web/dist` 缺失或过期时 jar 内静态资源即为旧版/缺失。
@@ -116,14 +120,16 @@ java -jar server/build/libs/dq-tool-0.1.5.jar   # 访问 http://localhost:10000
 - 前端无 lint/格式化配置,跟随现有代码风格(2 空格缩进、单文件组件)
 - 大表默认采样估算(行数 > 100 万或体积 > 10GB,阈值可在数据源级别覆盖);MySQL/达梦/OB 的采样是 LIMIT 顺序采样,结果有偏,UI 需标注"估算值"
 - Oracle 把空字符串存为 NULL,空串统计恒为 0,这是数据库本身行为,不是 bug
-- 所有错误(程序异常、业务错误)都必须落日志:WebServer 异常映射各分支 warn(带堆栈)/error,业务 catch 不允许静默吞掉;预期内的降级(驱动能力缺失、DM ALL_SEGMENTS 受限)用 debug/warn 说明降级后果;唯一例外是未激活期间的授权拦截(每请求触发,只记 debug 防刷屏)
+- Oracle 表体积统计依赖段视图:23ai 起 ALL_SEGMENTS 被移除(DBA_SEGMENTS 仍在);受限账号看不到段视图时(无权限对象 Oracle 也报 ORA-00942)按 ALL_SEGMENTS → DBA_SEGMENTS → USER_SEGMENTS(仅当前用户)→ 不统计 逐级降级(23ai 链从 DBA_SEGMENTS 起),记 warn 日志;探测结果按「用户名@JDBC URL」内存缓存(OracleDialect.segViewCache,换账号/换服务器自动重探,进程重启重置),非首选落点超过 1 小时(SEG_VIEW_REPROBE_MS)从链头重探一次以捕获权限变更
+- 所有错误(程序异常、业务错误)都必须落日志:WebServer 异常映射各分支 warn(带堆栈)/error,业务 catch 不允许静默吞掉;预期内的降级(驱动能力缺失、DM/Oracle ALL_SEGMENTS 受限)用 debug/warn 说明降级后果;唯一例外是未激活期间的授权拦截(每请求触发,只记 debug 防刷屏)
 
 ## 安全考虑
 
 - 数据源密码用 AES-GCM 加密存 H2(`password_enc` 列),密钥在 `application.yml` 的 `dq.security.secret`,默认值 `change-me-...`,改动密钥逻辑时注意向后兼容已存数据
-- AI 配置的 API Key 同样 AES-GCM 加密存 H2(`ai_config.api_key_enc`),GET 接口只回传 hasKey 不回传明文;`application.yml` 的 `ai.*` 是默认配置(AiProperties 绑定),页面未设置的字段逐字段回落到默认值(默认 key 为明文,仅适合内网);默认配置不对外暴露 —— 不回显、报错不带细节,默认不可用时只提示用户自行配置;「生成表说明」会把表结构元数据(表名/字段/注释)发给配置的第三方 LLM 接口,不发送业务数据,属用户显式触发
-- 授权码为离线 Ed25519 验签:私钥 `license-private.key` 只存分发方本地(.gitignore 已排除),公钥在 `application.yml` 的 `dq.license.public-key`;激活后授权码 AES-GCM 加密存 H2(`license_info.code_enc`),状态接口只回传客户标识/有效期不回传授权码;到期日当天仍有效;纯离线方案防不了逆向破解,仅作分发门槛
+- AI 配置的 API Key 同样 AES-GCM 加密存 H2(`ai_config.api_key_enc`),GET 接口只回传 hasKey 不回传明文;`application.yml` 的 `ai.*` 是默认配置(AiProperties 绑定),页面未设置的字段逐字段回落到默认值(默认 key 为明文,仅适合内网);默认配置不对外暴露 —— 不回显、报错不带细节,默认不可用时只提示用户自行配置;「生成表说明」会把表结构元数据(表名/字段/注释)发给配置的第三方 LLM 接口,不发送业务数据,属用户显式触发;「AI 自动打标」在表无任何注释/描述时会把抽样业务数据(前 20 列、100 行、单元格截断 100 字符)一并发给 LLM,由用户在扫描对话框/整库扫描确认框显式勾选授权(UI 复选框 tooltip 已明示)
+- 授权码为离线 Ed25519 验签:私钥 `license-private.key` 只存分发方本地(.gitignore 已排除),公钥在 `license-public.key` 文件(yml 只配路径 `dq.license.public-key-file`);配置 `dq.license.private-key-file` 的实例即管理员(开放授权码管理),**私钥内容只进配置对象,不进日志、不回传任何接口**;激活后授权码 AES-GCM 加密存 H2(`license_info.code_enc`),状态接口只回传客户标识/有效期/username/sid/签发时间/admin/appVersion,不回传授权码,**server_url 属敏感信息禁止回传前端**(`LicenseStatusView` 刻意不含该字段;仅管理员实例的 `/api/license/admin/codes` 留档可见);到期日当天仍有效;纯离线方案防不了逆向破解,仅作分发门槛
 - 应用无认证,任何能访问端口的人都能操作所有数据源,不要暴露到公网
+- 启动时重新允许 TLS 1.0/1.1(`config/LegacyTlsSupport`,从 `jdk.tls.disabledAlgorithms` 摘掉 TLSv1/TLSv1.1,两个 JVM 入口 DqApplication/shell Main 都调用):兼容未打 TLS 1.2 补丁的老 SQL Server(mssql-jdbc 登录阶段强制 TLS 握手,encrypt=false 绕不过);全局生效,支持 TLS 1.2+ 的对端仍优先协商高版本
 - 自定义空值规则(如 `status IN (0,-1)`)会原样拼进统计 SQL,属设计如此的"信任内网用户"行为;不要在方言层之外引入新的 SQL 拼接,标识符必须经 `DbDialect.quote()` 处理
 - H2 数据文件含连接信息与扫描结果,`data/` 目录不应提交或外发
 
@@ -134,6 +140,6 @@ java -jar server/build/libs/dq-tool-0.1.5.jar   # 访问 http://localhost:10000
 - jpackage 不支持交叉编译,各平台包在对应系统的 runner 上原生构建
 - 本地打包用 `scripts/package-{mac,linux}.sh` / `scripts\package-win.bat`(内部走 `./gradlew :server:shadowJar` + jpackage `--main-class com.example.dq.DqApplication`),可加 `--skip-build` 只重打包;Linux 脚本默认打 deb,加 `--type rpm` 打 rpm(需 rpmbuild)
 - 安装包内嵌**完整 JRE**(全部 69 个运行库模块,非 jdeps/jlink 裁剪):复制本机 JDK 后只删开发工具(bin 工具启动器 + jmods),经 jpackage `--runtime-image` / tauri resources 打进包。不做模块裁剪的原因:JDBC 驱动大量反射/按名加载,静态分析覆盖不全 —— 实测达梦驱动初始化要 `jdk.charsets` 的 EUC-KR,裁剪后运行时才炸(2026-08);复制+裁剪不依赖 jmods(部分 JDK 发行版无 jmods,jlink 不可用)
-- 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.5` 映射为安装包版本 `1.5`
+- 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.6` 映射为安装包版本 `1.6`
 - 安装版数据目录固定为 `~/.dq-tool/data`(jar 方式为 `./data`),由打包脚本注入 `--java-options "-Ddq.data-dir=..."`(H2 URL 与日志路径都引用该配置,`${user.home}` 由 ConfigLoader 启动时展开),修改打包脚本时保持这一区分
 - 运行日志输出到数据目录 `logs/` 子目录,按天滚动(`dq-tool.yyyy-MM-dd.log`,保留 30 天,配置见 `logback.xml`);Windows 包无控制台窗口,日志文件是唯一排障入口;启动早期日志(logback 初始化前 + 未捕获异常)在同目录 `startup.log`(`config/StartupLog`,main 第一行初始化,追加不滚动,量极小)

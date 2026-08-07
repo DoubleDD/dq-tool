@@ -19,9 +19,9 @@ src/main/kotlin/com/example/dq/
                            desktop 由 config.properties 加载(AppConfig.load()),server 由 KernelConfigAdapter 从 yml 映射
   dialect/                 DbDialect + AbstractDialect + 7 方言 + DialectFactory(object 单例)
   model/                   data class/枚举;3 个请求类带 @field:NotNull/@field:NotBlank(server 用 hibernate-validator 触发)
-  repository/              Jdbc.kt 薄封装 + 7 仓储 + SchemaInit(Flyway 迁移封装)
-  scan/                    ScanExecutor(线程池)/ ChunkRunner(表 DONE 后联动 TagService 自动打/摘「空表」标记)/ InterruptRecovery
-  service/                 11 个服务(含 LicenseService、DataSourceTransferService 数据源导入导出、SshTunnelService SSH 隧道本地端口转发,构造器注入)
+  repository/              Jdbc.kt 薄封装 + 8 仓储 + SchemaInit(Flyway 迁移封装)
+  scan/                    ScanExecutor(线程池)/ ChunkRunner(表 DONE 后联动 TagService 自动打/摘「空表」标记 + 提交 AutoTagService 异步入队)/ InterruptRecovery
+  service/                 12 个服务(含 LicenseService、DataSourceTransferService 数据源导入导出、SshTunnelService SSH 隧道本地端口转发、AutoTagService 扫描后 AI 自动打标——2 worker 守护线程池,表注释/字段注释/表描述全空时抽样 100 行业务数据发给 LLM 选 USER 标记,幂等只增不删,LLM 调用点可注入 fake 便于单测,构造器注入)
   license/LicenseCodec.kt  授权码编解码与 Ed25519 验签(object 纯函数)
   env/ServiceEnv.kt        服务组装器:H2 连接池 + Flyway 迁移 + 全部 service,两端启动时各构建一次;
                            对 Java 友好(属性即 getter,dataSource 暴露给 server 的 AppShutdown)
@@ -33,6 +33,8 @@ src/main/resources/db/migration/
   V3__tag.sql              表标记:tag_def(含系统「空表」标记幂等插入)+ table_tag(外键级联删除)
   V4__data_source_ssh.sql  数据源 SSH 隧道配置列(ALTER IF NOT EXISTS;三个秘密字段加密存储)
   V5__data_source_schema_filter.sql  数据源库过滤白名单列(ALTER IF NOT EXISTS;逗号分隔,空=不过滤)
+  V6__license_record.sql   授权码签发留档表(授权码管理,仅配置签发私钥的管理员实例;含绑定的软件版本号)
+  V7__scan_job_auto_tag.sql  scan_job.auto_tag 列(AI 自动打标开关,ALTER IF NOT EXISTS;持久化保证断点续扫/重启后续扫仍读到开关)
 src/test/kotlin/           方言/分段/级联删除/标记(TagRepository/TagService)/AI prompt/授权码/Flyway 迁移单测 + Testcontainers 端到端(MySQL/PG/SQLServer;SSH 隧道 SshTunnelIntegrationTest:linuxserver/openssh-server 跳板机 + MySQL 网络别名,注意该镜像 sshd 监听 2222 且默认 AllowTcpForwarding no 需 custom-cont-init.d 打开)
 ```
 

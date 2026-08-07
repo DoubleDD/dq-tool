@@ -40,7 +40,9 @@ public final class KernelConfigAdapter {
                 scan,
                 dq.getSecurity().getSecret(),
                 aiDefaults,
-                nullToEmpty(dq.getLicense().getPublicKey()));
+                nullToEmpty(dq.getLicense().getPublicKey()),
+                nullToEmpty(dq.getLicense().getPrivateKey()),
+                nullToEmpty(config.appVersion()));
     }
 
     private static String nullToEmpty(String value) {

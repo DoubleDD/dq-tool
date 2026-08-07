@@ -202,6 +202,54 @@ class DialectSqlGenTest {
     }
 
     @Test
+    fun `Oracle表清单 降级模式不引用段视图`() {
+        assertFalse(OracleDialect.listTablesSql(19, false).contains("segments"))
+        assertFalse(OracleDialect.listTablesSql(23, false).contains("segments"))
+        assertTrue(OracleDialect.listTablesSql(23, false).contains("FROM all_tables t"))
+    }
+
+    @Test
+    fun `Oracle表清单 DBA_SEGMENTS降级变体`() {
+        val sql = OracleDialect.listTablesSql("dba_segments")
+        assertTrue(sql.contains("FROM dba_segments s"))
+        assertFalse(sql.contains("all_segments"))
+        assertFalse(sql.contains("user_segments"))
+    }
+
+    @Test
+    fun `Oracle段视图降级链 按版本定起点`() {
+        assertEquals(listOf("all_segments", "dba_segments", "user_segments", null),
+                OracleDialect.segmentViewChain(19))
+        assertEquals(listOf("dba_segments", "user_segments", null),
+                OracleDialect.segmentViewChain(23))
+    }
+
+    @Test
+    fun `Oracle段视图探测 无缓存从头探测`() {
+        val chain = OracleDialect.segmentViewChain(19)
+        assertEquals(chain, OracleDialect.segmentViewPlan(chain, null, 0L))
+    }
+
+    @Test
+    fun `Oracle段视图探测 命中缓存直接从落点开始`() {
+        val chain = OracleDialect.segmentViewChain(19)
+        val cached = OracleDialect.SegViewChoice("dba_segments", 1000L)
+        assertEquals(listOf("dba_segments", "user_segments", null),
+                OracleDialect.segmentViewPlan(chain, cached, 2000L))
+        // 缓存落点为「不统计」时同样直接避开所有段视图
+        assertEquals(listOf<String?>(null),
+                OracleDialect.segmentViewPlan(chain, OracleDialect.SegViewChoice(null, 1000L), 2000L))
+    }
+
+    @Test
+    fun `Oracle段视图探测 超过重探间隔回到链头`() {
+        val chain = OracleDialect.segmentViewChain(19)
+        val cached = OracleDialect.SegViewChoice("user_segments", 1000L)
+        assertEquals(chain, OracleDialect.segmentViewPlan(chain, cached,
+                1000L + OracleDialect.SEG_VIEW_REPROBE_MS + 1))
+    }
+
+    @Test
     fun `DM表清单 默认用ALL_SEGMENTS统计大小`() {
         val sql = DmDialect.listTablesSql(true)
         assertTrue(sql.contains("FROM all_segments s"))
@@ -235,5 +283,29 @@ class DialectSqlGenTest {
         val oracle = OracleDialect()
         assertTrue(oracle.nullChunkProbeSql("\"S\".\"t\"", "\"id\"", 11).contains("ROWNUM <= 1"))
         assertTrue(oracle.nullChunkProbeSql("\"S\".\"t\"", "\"id\"", 19).contains("FETCH FIRST 1 ROWS ONLY"))
+    }
+
+    @Test
+    fun `SqlServer边界值 2012起OFFSET_FETCH`() {
+        val mssql = SqlServerDialect()
+        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", 100L, 11)
+        assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
+    }
+
+    @Test
+    fun `SqlServer边界值 2008用ROW_NUMBER包装`() {
+        val mssql = SqlServerDialect()
+        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", 100L, 10)
+        assertTrue(sql.contains("ROW_NUMBER() OVER (ORDER BY [id])"))
+        assertTrue(sql.contains("dq_rn = 101"))
+        assertFalse(sql.contains("OFFSET"))
+    }
+
+    @Test
+    fun `SqlServerNULL探测 按版本分页`() {
+        val mssql = SqlServerDialect()
+        assertTrue(mssql.nullChunkProbeSql("[dbo].[t]", "[id]", 10).contains("TOP 1"))
+        assertFalse(mssql.nullChunkProbeSql("[dbo].[t]", "[id]", 10).contains("OFFSET"))
+        assertTrue(mssql.nullChunkProbeSql("[dbo].[t]", "[id]", 15).contains("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"))
     }
 }

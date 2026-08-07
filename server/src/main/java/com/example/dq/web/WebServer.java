@@ -15,6 +15,7 @@ import com.example.dq.controller.MetadataController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
+import com.example.dq.model.LicenseAdminRequiredException;
 import com.example.dq.model.LicenseRequiredException;
 import com.example.dq.service.LicenseService;
 import io.javalin.Javalin;
@@ -124,6 +125,10 @@ public class WebServer {
             log.debug("授权校验拦截: {}", e.getMessage());
             ctx.status(401).json(Map.of("message", String.valueOf(e.getMessage())));
         });
+        routes.exception(LicenseAdminRequiredException.class, (e, ctx) -> {
+            log.warn("非管理员访问授权码管理: {}", e.getMessage());
+            ctx.status(403).json(Map.of("message", String.valueOf(e.getMessage())));
+        });
         routes.exception(IllegalStateException.class, (e, ctx) -> {
             log.warn("业务状态冲突: {}", e.getMessage(), e);
             ctx.status(409).json(Map.of("message", String.valueOf(e.getMessage())));
@@ -190,6 +195,10 @@ public class WebServer {
         routes.put("/api/ai-config", aiConfig::save);
         routes.get("/api/license/status", license::status);
         routes.post("/api/license/activate", license::activate);
+        // 授权码管理(仅配置了签发私钥的管理员实例;在 /api/license 前缀下,不被激活拦截)
+        routes.get("/api/license/admin/codes", license::adminList);
+        routes.post("/api/license/admin/codes", license::adminGenerate);
+        routes.delete("/api/license/admin/codes/{id}", license::adminDelete);
         routes.get("/api/heartbeat", ctx -> {
             DesktopSession desktopSession = sessionRef.get();
             if (desktopSession != null) {

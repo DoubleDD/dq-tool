@@ -5,6 +5,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.LicenseRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaInit
@@ -16,6 +17,7 @@ import com.example.dq.scan.InterruptRecovery
 import com.example.dq.scan.ScanExecutor
 import com.example.dq.service.AiConfigService
 import com.example.dq.service.AiService
+import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
 import com.example.dq.service.ExportService
@@ -52,6 +54,7 @@ class ServiceEnv(val config: AppConfig) {
     val tagRepo = TagRepository(jdbc)
     val aiConfigRepo = AiConfigRepository(jdbc)
     val licenseRepo = LicenseRepository(jdbc)
+    val licenseRecordRepo = LicenseRecordRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -63,15 +66,19 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceService = DataSourceService(dataSourceRepo, crypto, dialectFactory, config, schemaStatRepo, sshTunnelService)
     val dataSourceTransferService = DataSourceTransferService(dataSourceRepo, crypto, dataSourceService)
     val tagService = TagService(tagRepo, dataSourceRepo)
-    private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, config, executor, tagService)
+    val aiService = AiService()
+    val aiConfigService = AiConfigService(aiConfigRepo, crypto, config)
+    val autoTagService = AutoTagService(aiConfigService, aiService, tagService, tagRepo, scanRepo,
+        tableDocRepo, dataSourceService, dialectFactory)
+    private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, config, executor,
+        tagService, autoTagService)
     val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, dataSourceService,
         dialectFactory, config, executor, chunkRunner)
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo)
     val exportService = ExportService(scanService)
-    val aiService = AiService()
-    val aiConfigService = AiConfigService(aiConfigRepo, crypto, config)
     val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, dataSourceService, dialectFactory)
-    val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey)
+    val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey,
+        licenseRecordRepo, config.licensePrivateKey, config.appVersion)
 
     init {
         // 建表/老库升级 + 把上次异常退出的 RUNNING 任务标记为已中断

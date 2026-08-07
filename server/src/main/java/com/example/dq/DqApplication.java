@@ -4,6 +4,7 @@ import com.example.dq.config.BrowserOpener;
 import com.example.dq.config.ConfigLoader;
 import com.example.dq.config.DesktopSplash;
 import com.example.dq.config.InstanceLock;
+import com.example.dq.config.LegacyTlsSupport;
 import com.example.dq.config.StartupLog;
 import com.example.dq.config.TrayManager;
 import com.example.dq.web.WebServer;
@@ -26,6 +27,8 @@ public class DqApplication {
         if (System.getProperty("java.awt.headless") == null) {
             System.setProperty("java.awt.headless", "true");
         }
+        // 兼容仅支持 TLS 1.0/1.1 的老版本 SQL Server;必须在任何 TLS 使用之前调用(详见 LegacyTlsSupport)
+        LegacyTlsSupport.enable();
         try {
             StartupLog.log("加载配置(application.yml)...");
             ConfigLoader.AppConfig config = ConfigLoader.load();

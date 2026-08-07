@@ -10,11 +10,21 @@
     </div>
 
     <div class="ds-grid" v-loading="loading">
-      <el-card v-for="row in list" :key="row.id" shadow="hover" class="ds-card">
+      <el-card v-for="row in list" :key="row.id" shadow="hover" class="ds-card"
+        :class="{ 'ds-no-password': row.hasPassword === false }"
+        :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : ''"
+        @click="goSchemas(row)">
         <DbTypeIcon :type="row.dbType" :size="110" class="ds-bg-icon" />
         <div class="ds-card-header">
-          <span class="ds-name" :title="row.name">{{ row.name }}</span>
-          <el-tag size="small">{{ row.dbType }}</el-tag>
+          <span class="ds-name" :title="row.name">
+            <el-tooltip v-if="row.hasPassword === false" content="未设置密码,请先编辑补充密码" placement="top">
+              <el-icon class="ds-error-icon"><WarningFilled /></el-icon>
+            </el-tooltip>
+            {{ row.name }}
+          </span>
+          <span>
+            <el-tag size="small">{{ row.dbType }}</el-tag>
+          </span>
         </div>
         <div class="ds-field" :title="row.jdbcUrl">
           <span class="ds-label">JDBC</span>
@@ -29,9 +39,9 @@
           <span class="ds-value">{{ formatNumber(row.rowThreshold) }} 行 / {{ formatBytes(row.sizeThresholdBytes) }}</span>
         </div>
         <div class="ds-actions">
-          <el-button link type="primary" @click="goSchemas(row)">浏览库</el-button>
-          <el-button link type="primary" @click="openDialog(row)">编辑</el-button>
-          <el-button link type="danger" @click="onDelete(row)">删除</el-button>
+          <el-button link type="primary" :disabled="row.hasPassword === false" @click.stop="goSchemas(row)">浏览库</el-button>
+          <el-button link type="primary" @click.stop="openDialog(row)">编辑</el-button>
+          <el-button link type="danger" @click.stop="onDelete(row)">删除</el-button>
         </div>
       </el-card>
       <el-empty v-if="!loading && !list.length" description="暂无数据源" style="grid-column: 1 / -1">
@@ -275,7 +285,7 @@
 import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { UploadFilled } from '@element-plus/icons-vue'
+import { UploadFilled, WarningFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import { formatBytes, formatNumber } from '../utils/format'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
@@ -663,6 +673,8 @@ async function onDelete(row) {
 }
 
 function goSchemas(row) {
+  // 未设密码的数据源不可浏览(卡片点击与浏览库按钮同一路径)
+  if (row.hasPassword === false) return
   router.push(`/datasources/${row.id}/schemas?name=${encodeURIComponent(row.name)}`)
 }
 
@@ -779,6 +791,33 @@ onActivated(loadList)
 }
 .ds-card :deep(.el-card__body) {
   position: relative;
+}
+/* 卡片整体可点击(等同浏览库);未设密码时禁用并显示禁用光标 */
+.ds-card {
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+}
+/* hover 高亮 + 上浮悬浮效果 */
+.ds-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--el-color-primary-light-5);
+  background-color: var(--el-fill-color-extra-light);
+}
+/* 未设密码:整卡浅红警示(底色+边框),搭配标题前红色叹号图标 */
+.ds-no-password {
+  cursor: not-allowed;
+  border-color: var(--el-color-danger-light-5);
+  background-color: var(--el-color-danger-light-9);
+}
+/* hover 时警示色加深一档,保持可感知但不误导为可点击 */
+.ds-no-password:hover {
+  border-color: var(--el-color-danger-light-3);
+  background-color: var(--el-color-danger-light-8);
+}
+/* 未设密码数据源标题前的红色叹号图标 */
+.ds-error-icon {
+  color: var(--el-color-danger);
+  font-size: 16px;
 }
 .ds-bg-icon {
   position: absolute;

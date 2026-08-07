@@ -107,6 +107,12 @@ class TagRepository(private val jdbc: Jdbc) {
             tagId, datasourceId, dbName, schema, table)
     }
 
+    /** 该表是否已有任一 USER 标记;AI 自动打标的跳过判定(不覆盖用户手动选择) */
+    fun hasUserTag(datasourceId: Long, dbName: String, schema: String, table: String): Boolean =
+        jdbc.queryOne("SELECT COUNT(*) FROM table_tag tt JOIN tag_def d ON d.id = tt.tag_id " +
+                "WHERE tt.datasource_id=? AND tt.db_name=? AND tt.schema_name=? AND tt.table_name=? AND d.kind='USER'",
+            datasourceId, dbName, schema, table) { rs -> rs.getLong(1) }!! > 0
+
     /** 全局打标表数(跨所有标记按 数据源+库+表 去重) */
     fun countCoveredTables(): Int =
         jdbc.queryOne("SELECT COUNT(*) FROM (SELECT DISTINCT datasource_id, db_name, schema_name, table_name " +

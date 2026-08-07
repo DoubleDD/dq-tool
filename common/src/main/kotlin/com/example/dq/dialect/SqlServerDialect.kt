@@ -12,8 +12,18 @@ import java.sql.SQLException
  * "库"按 schema 处理(dbo 等);数据库(DATABASE)在界面上选择,
  * 通过 [useDatabase] 切换连接 catalog,jdbcUrl 中的 databaseName 仅作默认库。
  * 注释走扩展属性 MS_Description。
+ * 按主版本号选择语法特性:
+ * - 分页:2012(11)起 OFFSET/FETCH;2008/2008R2(10)用 ROW_NUMBER/TOP
  */
 class SqlServerDialect : AbstractDialect() {
+
+    companion object {
+        /** SQL Server 主版本号(10=2008/2008R2、11=2012、15=2019、16=2022),决定可用语法特性 */
+        @Throws(SQLException::class)
+        internal fun sqlServerMajor(conn: Connection): Int {
+            return conn.metaData.databaseMajorVersion
+        }
+    }
 
     override fun type(): DbType {
         return DbType.SQLSERVER
@@ -155,6 +165,37 @@ class SqlServerDialect : AbstractDialect() {
         return " OFFSET $offset ROWS FETCH NEXT 1 ROWS ONLY"
     }
 
+    @Throws(SQLException::class)
+    override fun boundaryQuery(conn: Connection, qTable: String, qKey: String, offset: Long): String {
+        return boundaryQuerySql(qTable, qKey, offset, sqlServerMajor(conn))
+    }
+
+    /** 2012(11)起 OFFSET/FETCH;2008/2008R2 用 ROW_NUMBER 包装取第 offset 行 */
+    internal fun boundaryQuerySql(qTable: String, qKey: String, offset: Long, major: Int): String {
+        if (major >= 11) {
+            return "SELECT " + qKey + " FROM " + qTable +
+                    " WHERE " + qKey + " IS NOT NULL ORDER BY " + qKey +
+                    boundarySuffix(offset)
+        }
+        return "SELECT " + qKey + " FROM (SELECT " + qKey + ", " +
+                "ROW_NUMBER() OVER (ORDER BY " + qKey + ") dq_rn FROM " + qTable +
+                " WHERE " + qKey + " IS NOT NULL) dq_inner WHERE dq_rn = " + (offset + 1)
+    }
+
+    @Throws(SQLException::class)
+    override fun nullChunkProbeQuery(conn: Connection, qTable: String, qKey: String): String {
+        return nullChunkProbeSql(qTable, qKey, sqlServerMajor(conn))
+    }
+
+    /** 2012(11)起 OFFSET/FETCH;2008/2008R2 用 TOP */
+    internal fun nullChunkProbeSql(qTable: String, qKey: String, major: Int): String {
+        if (major >= 11) {
+            return "SELECT 1 FROM " + qTable + " WHERE " + qKey + " IS NULL" +
+                    " ORDER BY " + qKey + limitClause(1)
+        }
+        return "SELECT TOP 1 1 FROM " + qTable + " WHERE " + qKey + " IS NULL"
+    }
+
     /** SQL Server 原生 TABLESAMPLE(按行数,近似) */
     override fun sampledFrom(qualifiedTable: String, sampleRows: Long, estRows: Long?): String {
         return qualifiedTable + " TABLESAMPLE (" + maxOf(1L, sampleRows) + " ROWS)"
@@ -162,5 +203,11 @@ class SqlServerDialect : AbstractDialect() {
 
     override fun sampledLimit(sampleRows: Long): String {
         return ""
+    }
+
+    /** TOP 语法全版本可用;limitClause 的 OFFSET/FETCH 必须配 ORDER BY,不适合无排序抽样 */
+    override fun sampleRowsSql(schema: String, table: String, columns: List<String>, limit: Int): String {
+        val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
+        return "SELECT TOP $limit $cols FROM " + qualifiedTable(schema, table)
     }
 }

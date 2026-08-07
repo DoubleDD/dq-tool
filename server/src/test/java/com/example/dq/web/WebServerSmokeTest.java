@@ -45,7 +45,7 @@ class WebServerSmokeTest {
         DqProperties dq = new DqProperties();
         dq.getLicense().setPublicKey(Base64.getEncoder().encodeToString(licenseKeyPair.getPublic().getEncoded()));
         server = new WebServer(new ConfigLoader.AppConfig(dq, new AiProperties(), 0,
-                dataDir.toString()));
+                dataDir.toString(), "1.5-test"));
         server.start(0);
         client = HttpClient.newHttpClient();
     }
@@ -73,11 +73,98 @@ class WebServerSmokeTest {
 
     /** 激活永久授权,绕过业务接口的授权前置校验 */
     private void activateLicense() throws Exception {
-        String code = LicenseCodec.encode("测试客户", null, licenseKeyPair.getPrivate());
+        String code = LicenseCodec.encode("测试客户", null, licenseKeyPair.getPrivate(),
+                "1.5-test", "jdbc:oracle:thin:@//secret-host:1521/ORCL", "scott", "ORCL", 1755000000000L);
         HttpResponse<String> resp = send("POST", "/api/license/activate",
                 "{\"code\":\"" + code + "\"}");
         assertEquals(200, resp.statusCode(), resp.body());
         assertTrue(resp.body().contains("\"activated\":true"), resp.body());
+    }
+
+    @Test
+    void 授权状态回传扩展字段且不泄露serverUrl() throws Exception {
+        activateLicense();
+        HttpResponse<String> resp = get("/api/license/status");
+        assertEquals(200, resp.statusCode());
+        // username/sid/timestamp 回传前端展示
+        assertTrue(resp.body().contains("\"username\":\"scott\""), resp.body());
+        assertTrue(resp.body().contains("\"sid\":\"ORCL\""), resp.body());
+        assertTrue(resp.body().contains("\"timestamp\":1755000000000"), resp.body());
+        // server_url 属敏感信息,禁止出现在状态接口
+        assertFalse(resp.body().contains("secret-host"), resp.body());
+        assertFalse(resp.body().contains("serverUrl"), resp.body());
+        // 软件版本号透出(页脚展示);默认实例非管理员
+        assertTrue(resp.body().contains("\"appVersion\":\"1.5-test\""), resp.body());
+        assertTrue(resp.body().contains("\"admin\":false"), resp.body());
+    }
+
+    @Test
+    void 非管理员访问授权码管理返回403() throws Exception {
+        // 管理端点在 /api/license 前缀下不被激活拦截,但未配置签发私钥一律 403
+        assertEquals(403, get("/api/license/admin/codes").statusCode());
+        assertEquals(403, send("POST", "/api/license/admin/codes",
+                "{\"customer\":\"x\",\"expires\":\"permanent\"}").statusCode());
+        assertEquals(403, send("DELETE", "/api/license/admin/codes/1", null).statusCode());
+    }
+
+    @Test
+    void 管理员实例授权码管理全链路() throws Exception {
+        // 另起一个配置了签发私钥的管理员实例(同一密钥对,生成的码可被本实例公钥验过)
+        DqProperties adminDq = new DqProperties();
+        adminDq.getLicense().setPublicKey(Base64.getEncoder().encodeToString(licenseKeyPair.getPublic().getEncoded()));
+        adminDq.getLicense().setPrivateKey(Base64.getEncoder().encodeToString(licenseKeyPair.getPrivate().getEncoded()));
+        WebServer admin = new WebServer(new ConfigLoader.AppConfig(adminDq, new AiProperties(), 0,
+                java.nio.file.Files.createTempDirectory("dq-admin-test").toString(), "1.5-test"));
+        admin.start(0);
+        try {
+            java.util.function.BiFunction<String, String, HttpResponse<String>> call = (method, path) -> {
+                try {
+                    HttpRequest.Builder builder = HttpRequest.newBuilder(
+                            URI.create("http://localhost:" + admin.port() + path));
+                    builder.method(method, HttpRequest.BodyPublishers.noBody());
+                    return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            // status:管理员标识
+            HttpResponse<String> status = call.apply("GET", "/api/license/status");
+            assertTrue(status.body().contains("\"admin\":true"), status.body());
+
+            // 生成
+            HttpRequest genReq = HttpRequest.newBuilder(
+                            URI.create("http://localhost:" + admin.port() + "/api/license/admin/codes"))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(
+                            "{\"customer\":\"甲公司\",\"expires\":\"permanent\","
+                                    + "\"serverUrl\":\"jdbc:oracle:thin:@//secret-host:1521/ORCL\","
+                                    + "\"username\":\"scott\",\"sid\":\"ORCL\"}"))
+                    .build();
+            HttpResponse<String> gen = client.send(genReq, HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, gen.statusCode(), gen.body());
+            assertTrue(gen.body().contains("\"appVersion\":\"1.5-test\""), gen.body());
+            assertTrue(gen.body().contains("\"code\":\"DQ1."), gen.body());
+            // 管理接口可见 server_url(留档目的;用户实例状态接口仍不可见)
+            assertTrue(gen.body().contains("secret-host"), gen.body());
+            long id = Long.parseLong(gen.body().replaceAll(".*\"id\":(\\d+).*", "$1"));
+
+            // 列表
+            HttpResponse<String> list = call.apply("GET", "/api/license/admin/codes");
+            assertEquals(200, list.statusCode(), list.body());
+            assertTrue(list.body().contains("甲公司"), list.body());
+
+            // 生成的码可在用户实例上激活(密钥对一致)
+            String code = gen.body().replaceAll(".*\"code\":\"([^\"]+)\".*", "$1");
+            HttpResponse<String> act = send("POST", "/api/license/activate", "{\"code\":\"" + code + "\"}");
+            assertEquals(200, act.statusCode(), act.body());
+
+            // 删除
+            assertEquals(204, call.apply("DELETE", "/api/license/admin/codes/" + id).statusCode());
+            HttpResponse<String> after = call.apply("GET", "/api/license/admin/codes");
+            assertEquals("[]", after.body(), after.body());
+        } finally {
+            admin.stop();
+        }
     }
 
     @Test

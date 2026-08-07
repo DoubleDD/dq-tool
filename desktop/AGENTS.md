@@ -1,5 +1,10 @@
 # AGENTS.md — desktop(Compose Desktop 桌面壳)
 
+> **⚠️ 已放弃,不再维护(2026-08)**:Compose Desktop 生态不足、组件缺口太大(基础组件基本都要自绘)、
+> 细节处理工作量大、时间不允许。桌面分发已完全转向 B/S + 套壳架构
+> (server 安装版浏览器 --app 窗口 / JCEF shell / Tauri 2)。
+> 本目录代码仅留档参考,**勿在其上新增功能或投入修复**;以下内容均为历史记录。
+
 > 本文件面向 AI 编码代理。这是 dq-tool 的 Kotlin + Compose Desktop 桌面版,项目文档与代码注释统一使用中文。业务逻辑(dialect/repository/scan/service/license/config)全部在共享内核 `common` 模块,见 common/AGENTS.md;本目录只剩 UI。
 
 ## 项目概述

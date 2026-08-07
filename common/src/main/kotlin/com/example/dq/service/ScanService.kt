@@ -73,7 +73,7 @@ class ScanService(
         }
 
         val rulesJson = objectMapper.writeValueAsString(req.nullRules ?: emptyList<NullRule>())
-        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size)
+        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size, req.autoTag)
         val scanTableIds = ArrayList<Long>()
         for (t in targets) {
             scanTableIds.add(

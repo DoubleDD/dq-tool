@@ -2,7 +2,11 @@ package com.example.dq.config;
 
 import org.yaml.snakeyaml.Yaml;
 
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 /**
@@ -13,7 +17,7 @@ import java.util.Map;
  */
 public final class ConfigLoader {
 
-    public record AppConfig(DqProperties dq, AiProperties ai, int serverPort, String dataDir) {
+    public record AppConfig(DqProperties dq, AiProperties ai, int serverPort, String dataDir, String appVersion) {
     }
 
     private ConfigLoader() {
@@ -31,7 +35,20 @@ public final class ConfigLoader {
         scan.setSampleRows(getLong(yaml, "dq.scan.sample-rows", scan.getSampleRows()));
         scan.setStatementTimeoutSeconds(getInt(yaml, "dq.scan.statement-timeout-seconds", scan.getStatementTimeoutSeconds()));
         dq.getSecurity().setSecret(getString(yaml, "dq.security.secret", dq.getSecurity().getSecret()));
-        dq.getLicense().setPublicKey(getString(yaml, "dq.license.public-key", dq.getLicense().getPublicKey()));
+        String publicKeyFile = getString(yaml, "dq.license.public-key-file", null);
+        if (publicKeyFile != null && !publicKeyFile.isBlank()) {
+            dq.getLicense().setPublicKeyFile(publicKeyFile);
+            dq.getLicense().setPublicKey(readKeyFile(publicKeyFile));
+        } else {
+            // 兼容旧配置:未配公钥文件路径时允许内联公钥
+            dq.getLicense().setPublicKey(getString(yaml, "dq.license.public-key", dq.getLicense().getPublicKey()));
+        }
+        // 签发私钥:配置即管理员实例(开放授权码管理);私钥内容只进配置对象,绝不进日志/接口
+        String privateKeyFile = getString(yaml, "dq.license.private-key-file", null);
+        if (privateKeyFile != null && !privateKeyFile.isBlank()) {
+            dq.getLicense().setPrivateKeyFile(privateKeyFile);
+            dq.getLicense().setPrivateKey(readKeyFile(privateKeyFile));
+        }
         dq.getDesktop().setShutdownTimeoutSeconds(getInt(yaml, "dq.desktop.shutdown-timeout-seconds",
                 dq.getDesktop().getShutdownTimeoutSeconds()));
 
@@ -47,7 +64,7 @@ public final class ConfigLoader {
                 getString(yaml, "dq.data-dir", "./data"));
         // 打包脚本注入的 -Ddq.data-dir=${user.home}/... 是字面量(原由 Spring 占位符解析),这里手动展开
         dataDir = dataDir.replace("${user.home}", System.getProperty("user.home"));
-        return new AppConfig(dq, ai, serverPort, dataDir);
+        return new AppConfig(dq, ai, serverPort, dataDir, readAppVersion());
     }
 
     @SuppressWarnings("unchecked")
@@ -60,6 +77,41 @@ public final class ConfigLoader {
             return loaded instanceof Map ? (Map<String, Object>) loaded : Map.of();
         } catch (Exception e) {
             throw new IllegalStateException("读取 application.yml 失败: " + e.getMessage(), e);
+        }
+    }
+
+    /** 读密钥文件(授权公钥/签发私钥):classpath: 前缀读 jar 内资源,否则按文件系统路径读(展开 ${user.home});读不到直接报错 */
+    static String readKeyFile(String location) {
+        String expanded = location.replace("${user.home}", System.getProperty("user.home"));
+        try {
+            if (expanded.startsWith("classpath:")) {
+                String resource = expanded.substring("classpath:".length());
+                if (!resource.startsWith("/")) {
+                    resource = "/" + resource;
+                }
+                try (InputStream in = ConfigLoader.class.getResourceAsStream(resource)) {
+                    if (in == null) {
+                        throw new IllegalStateException("读取密钥文件失败,classpath 资源不存在: " + location);
+                    }
+                    return new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+                }
+            }
+            return Files.readString(Path.of(expanded)).trim();
+        } catch (IOException e) {
+            throw new IllegalStateException("读取密钥文件失败: " + location + " (" + e.getMessage() + ")", e);
+        }
+    }
+
+    /** 软件版本号:构建期由 gradle 注入 classpath:/app-version.txt(已去 0. 前缀,与安装包版本一致);读不到回落 dev */
+    private static String readAppVersion() {
+        try (InputStream in = ConfigLoader.class.getResourceAsStream("/app-version.txt")) {
+            if (in == null) {
+                return "dev";
+            }
+            String version = new String(in.readAllBytes(), StandardCharsets.UTF_8).trim();
+            return version.isEmpty() ? "dev" : version;
+        } catch (IOException e) {
+            return "dev";
         }
     }
 

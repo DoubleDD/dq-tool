@@ -9,8 +9,6 @@ import com.example.dq.repository.Jdbc
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.util.CryptoUtil
-import com.jcraft.jsch.JSch
-import com.jcraft.jsch.KeyPair
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -24,8 +22,13 @@ import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 
 import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPublicKey
 import java.time.Duration
+import java.util.Base64
 
 import org.junit.jupiter.api.Assertions.assertTrue
 
@@ -48,14 +51,25 @@ class SshTunnelIntegrationTest {
         private val SSH_PUBLIC_KEY: String
 
         init {
-            val kp = KeyPair.genKeyPair(JSch(), KeyPair.RSA, 2048)
-            val priv = ByteArrayOutputStream()
-            kp.writePrivateKey(priv)
-            val pub = ByteArrayOutputStream()
-            kp.writePublicKey(pub, "dq-ssh-test")
-            kp.dispose()
-            SSH_PRIVATE_KEY = priv.toString(Charsets.UTF_8)
-            SSH_PUBLIC_KEY = pub.toString(Charsets.UTF_8)
+            // java.security 生成 RSA 密钥对:私钥转 PKCS#8 PEM(即 SSHJ 可读的 "BEGIN PRIVATE KEY" 格式);
+            // 公钥按 SSH wire 格式(string "ssh-rsa" + mpint e + mpint n)拼 authorized_keys 行
+            val kp = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+            val privB64 = Base64.getMimeEncoder(64, "\n".toByteArray(StandardCharsets.UTF_8))
+                .encodeToString(kp.private.encoded)
+            SSH_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\n$privB64\n-----END PRIVATE KEY-----\n"
+            val rsaPub = kp.public as RSAPublicKey
+            val buf = ByteArrayOutputStream()
+            DataOutputStream(buf).use { out ->
+                fun writeField(b: ByteArray) {
+                    out.writeInt(b.size)
+                    out.write(b)
+                }
+                writeField("ssh-rsa".toByteArray(StandardCharsets.UTF_8))
+                // BigInteger.toByteArray 为补码表示,正数最高位为 1 时自动补 0 字节,正好符合 SSH mpint 编码
+                writeField(rsaPub.publicExponent.toByteArray())
+                writeField(rsaPub.modulus.toByteArray())
+            }
+            SSH_PUBLIC_KEY = "ssh-rsa " + Base64.getEncoder().encodeToString(buf.toByteArray()) + " dq-ssh-test"
         }
 
         private val NETWORK: Network = Network.newNetwork()

@@ -7,6 +7,9 @@
         <el-result icon="success" title="已激活">
           <template #sub-title>
             授权给 {{ status.customer }},{{ status.expiresAt ? `有效期至 ${status.expiresAt}(剩余 ${status.daysLeft} 天)` : '永久有效' }}
+            <template v-if="status.username">,用户 {{ status.username }}</template>
+            <template v-if="status.sid">,SID {{ status.sid }}</template>
+            <template v-if="status.timestamp">,签发于 {{ formatTimestamp(status.timestamp) }}</template>
           </template>
         </el-result>
         <div class="activate-actions">
@@ -72,7 +75,7 @@ async function onActivate() {
     status.value = await request.post('/license/activate', { code: code.value })
     code.value = ''
     showRenew.value = false
-    markActivated()
+    markActivated(status.value)
     ElMessage.success('激活成功')
     router.push('/')
   } finally {
@@ -82,6 +85,11 @@ async function onActivate() {
 
 function goHome() {
   router.push('/')
+}
+
+/** 授权码签发时间(epoch 毫秒)转本地时间串 */
+function formatTimestamp(ts) {
+  return new Date(Number(ts)).toLocaleString('zh-CN', { hour12: false })
 }
 </script>
 
