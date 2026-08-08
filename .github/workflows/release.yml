@@ -147,15 +147,15 @@ jobs:
         shell: cmd
         run: scripts\package-tauri-win.bat
 
-      # 统一命名: dq-tool-tauri-<版本>-<系统>-<架构>-setup.exe(tauri 产物原名 dq-tool_<版本>_x64-setup.exe)
+      # 统一命名: dq-tool-<版本>-<系统>-<架构>-setup.exe(tauri 产物原名 dq-tool_<版本>_x64-setup.exe)
       - name: Rename installer with platform suffix
         id: pkg
         shell: pwsh
         run: |
           $v = (Get-Content tauri/src-tauri/tauri.conf.json | ConvertFrom-Json).version
           cd tauri/src-tauri/target/release/bundle/nsis
-          Rename-Item "dq-tool_${v}_x64-setup.exe" "dq-tool-tauri-$v-windows-x64-setup.exe"
-          "name=dq-tool-tauri-$v-windows-x64-setup" >> $env:GITHUB_OUTPUT
+          Rename-Item "dq-tool_${v}_x64-setup.exe" "dq-tool-$v-windows-x64-setup.exe"
+          "name=dq-tool-$v-windows-x64-setup" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v7
         with:
