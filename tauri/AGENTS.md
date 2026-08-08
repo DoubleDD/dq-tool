@@ -42,7 +42,7 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 
 ## 侧车协议(src-tauri/src/main.rs)
 
-- **jar 定位**:`DQ_SERVER_JAR` 环境变量 > 安装版内嵌资源 `backend/dq-tool.jar`(macOS 在 `<exe>/../Resources/`,Windows/Linux 与 exe 同目录)> 开发默认 `server/build/libs/dq-tool-*.jar`(按修改时间取最新)
+- **jar 定位**:`DQ_SERVER_JAR` 环境变量 > 安装版内嵌资源 `backend/dq-tool.jar`(macOS 在 `<exe>/../Resources/`;Windows/Linux 在 `<exe>/resources/` —— Tauri 2 的 bundle.resources glob 会保留 `resources/` 前缀落盘,NSIS 装到 `$INSTDIR\resources\`,`bundled_resources_dir` 另兼容"与 exe 同目录"的旧布局)> 开发默认 `server/build/libs/dq-tool-*.jar`(按修改时间取最新)
 - **java 定位**:`DQ_JAVA` 环境变量 > 安装版内嵌 `jre/bin/java`(Windows 为 `java.exe`,完整 JRE)> PATH 的 `java`
 - **端口**:`TcpListener::bind(127.0.0.1:0)` 取空闲端口后释放传给 `--server.port=`;
   竞态被抢注时 DqApplication 向后避让,Rust 读线程解析 stdout 的「端口 N 被占用,避让到 M」回填实际端口
@@ -53,6 +53,9 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   `ui/index.html` 只是 frontendDist 的占位,正常不显示
 - **退出联动**:关窗/退出 → `RunEvent::ExitRequested|Exit` 杀子进程;Ctrl+C/SIGTERM 由
   libc 信号处理器兜底(杀子进程后 `_exit`),不留孤儿 java 进程
+- **Windows 不弹终端**:crate 根 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
+  使 release exe 为 GUI 子系统(双击不出控制台;debug 保留控制台看日志),拉起 java.exe 子进程时
+  再加 `CREATE_NO_WINDOW`(0x08000000)—— 控制台子系统的子进程被 GUI 父进程拉起时会新分配控制台窗口
 
 ## 打包
 

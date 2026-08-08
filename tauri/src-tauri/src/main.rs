@@ -9,6 +9,9 @@
 //! BrowserOpener 直接 return、TrayManager.installEarly 返回 false、心跳看门狗永不武装,
 //! 两个桌面动作天然抑制,无需改动 server。
 
+// Windows:release 构建为 GUI 子系统,双击启动不弹控制台黑窗;debug 保留控制台便于看日志
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -61,6 +64,13 @@ fn main() {
         .arg(format!("--server.port={probed_port}"))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    // Windows:java.exe 是控制台程序,GUI 父进程不加 CREATE_NO_WINDOW 拉起时会新弹一个控制台窗口
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     let mut child = cmd
         .spawn()
         .unwrap_or_else(|e| fatal(&format!("拉起 Java 后端失败:{e}")));
@@ -117,13 +127,18 @@ fn repo_root() -> PathBuf {
 }
 
 /// 安装版内嵌资源目录:macOS 为 <exe>/../Resources(.app 布局),
-/// Windows/Linux 资源与 exe 同目录(Tauri bundle 的资源落盘规则)
+/// Windows/Linux 为 <exe>/resources/(Tauri 2 的 bundle.resources glob 保留 resources/ 前缀落盘,
+/// NSIS 装到 $INSTDIR\resources\;旧布局资源与 exe 同目录,保留兼容)
 fn bundled_resources_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
-    [exe_dir.join("../Resources"), exe_dir.to_path_buf()]
-        .into_iter()
-        .find(|d| d.join("backend/dq-tool.jar").is_file())
+    [
+        exe_dir.join("../Resources"),
+        exe_dir.to_path_buf(),
+        exe_dir.join("resources"),
+    ]
+    .into_iter()
+    .find(|d| d.join("backend/dq-tool.jar").is_file())
 }
 
 fn is_packaged() -> bool {
