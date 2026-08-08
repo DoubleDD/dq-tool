@@ -151,14 +151,15 @@ jobs:
 
   macos-tauri:
     # Tauri 2 套壳版 macOS dmg + 自动更新包(.app.tar.gz,dmg 不支持 updater 产物);
-    # 不能交叉编译,Apple Silicon 与 Intel 分别在对应架构 runner 上原生构建
+    # 不能交叉编译,Apple Silicon 与 Intel 需分别在对应架构 runner 上原生构建(Intel 当前停用,见下)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: macos-14, arch: arm64, tauri-arch: aarch64 }        # Apple Silicon
-          - { os: macos-15-intel, arch: x86_64, tauri-arch: x86_64 }  # Intel(macos-13 已于 2025-12 退役,此为替代标签,支持到 2027-08)
+          # Intel 构建停用(省 runner 时长;恢复时连同 updater-manifest 的 darwin-x86_64 条目一起取消注释)
+          # - { os: macos-15-intel, arch: x86_64, tauri-arch: x86_64 }  # Intel(macos-13 已于 2025-12 退役,此为替代标签,支持到 2027-08)
     steps:
       - uses: actions/checkout@v7
 
@@ -262,7 +263,8 @@ jobs:
           const map = {
             'updater-sig-windows-x64': ['windows-x86_64', `dq-tool-${v}-windows-x64-setup.nsis.zip`],
             'updater-sig-macos-arm64': ['darwin-aarch64', `dq-tool-${v}-macos-arm64.app.tar.gz`],
-            'updater-sig-macos-x86_64': ['darwin-x86_64', `dq-tool-${v}-macos-x86_64.app.tar.gz`],
+            // Intel 构建已停用(macos-tauri 矩阵同步注释);恢复时两边一起取消注释
+            // 'updater-sig-macos-x86_64': ['darwin-x86_64', `dq-tool-${v}-macos-x86_64.app.tar.gz`],
           };
           const platforms = {};
           for (const [dir, [key, file]] of Object.entries(map)) {
