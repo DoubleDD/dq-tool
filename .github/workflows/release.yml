@@ -95,11 +95,8 @@ jobs:
         run: npm ci
         working-directory: tauri
 
-      # 自动更新签名私钥直接入库(scripts/updater-private.key,单行 base64,无密码;
-      # 分发方多机打包需要,见 tauri/AGENTS.md),注入环境变量供 tauri CLI 给 updater 产物签名
-      - name: Load updater signing key
-        shell: pwsh
-        run: "TAURI_SIGNING_PRIVATE_KEY=$(Get-Content -Raw scripts/updater-private.key) >> $env:GITHUB_ENV"
+      # 签名私钥/空密码由 scripts\package-tauri-win.bat 自行注入(私钥入库 scripts/updater-private.key,
+      # 见 tauri/AGENTS.md);GitHub Actions 默认 CI=true,tauri CLI 按空密码签名不交互询问
 
       # 用 cmd 跑 .bat:pwsh 步骤默认不检查 $LASTEXITCODE,批处理失败会被静默吞掉
       - name: Build NSIS installer

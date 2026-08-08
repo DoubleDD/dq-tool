@@ -42,11 +42,13 @@ rm -f "$RES"/jre/bin/{javac,javadoc,javap,jar,jarsigner,serialver,jconsole,jdb,j
 # 冒烟:内嵌 jre 能正常启动即可(完整验证以打包后双击启动为准)
 "$RES/jre/bin/java" -version
 
-# 构建 updater 产物(.app.tar.gz)必须签名:未显式配置环境变量时读入库的私钥文件
-# (单行 base64 空口令,与 CI 注入 TAURI_SIGNING_PRIVATE_KEY 的是同一把,见 tauri/AGENTS.md)
+# 自动更新签名私钥:未显式配置时从入库文件读取(与 CI release.yml 注入方式一致;文件单行无密码)
+# 密码变量必须存在(可为空),否则 tauri CLI 会交互式询问密码,无终端环境下签名失败
 export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY:-$(cat scripts/updater-private.key)}"
-# 私钥是空口令的 minisign scrypt 格式:CLI 拿不到密码变量会走交互式询问,无 TTY 时直接失败
-export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD-}"
+
+# npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
+(cd tauri && npm install && npm run tauri -- build --bundles dmg)
 
 # npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
 # app target 产出自动更新包 bundle/macos/*.app.tar.gz + .sig(dmg 不支持 updater 产物)

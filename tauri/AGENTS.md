@@ -75,9 +75,9 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 
 - 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式不检查);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime
 - 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,webview 是远程 URL 不适合做更新 UI)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
-- 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、**空口令**的 scrypt 格式 —— CLI 拿不到 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 会走交互式询问,无 TTY 环境直接失败,故打包脚本/CI 都要显式给空密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 由 "Load updater signing key" 步骤把文件内容注入 `TAURI_SIGNING_PRIVATE_KEY`(tauri CLI 只认内容、不认 `_PATH` 变体),本地打包由 package-tauri-mac.sh 未配置环境变量时自动读该文件(package-tauri-win.bat 无此逻辑,Windows 本地打包需自行设环境变量);**丢私钥 = 更新链断裂,需换密钥对并发全量包**
-- `createUpdaterArtifacts: true` 产出更新包 + `.sig`:Windows 为 `dq-tool_<v>_x64-setup.nsis.zip`(updater 实际下载 .nsis.zip 而非 setup.exe),macOS 为 `dq-tool.app.tar.gz`(固定名,不带版本/架构;**dmg 不是 updater 支持的目标**,所以 mac 打包用 `--bundles app,dmg`,只打 dmg 会报 "no updater-enabled targets were built" 警告且永远收不到更新)
-- `latest.json` 由 CI 收尾任务 `updater-manifest`(`needs: windows-tauri + macos-tauri`)**合并全平台**生成:各构建任务只把改名后的 `.sig` 传 artifact,清单 platforms 含 `windows-x86_64` / `darwin-aarch64` / `darwin-x86_64`,URL 指向 Release 上改名后的更新包
+
+- 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 与本地统一由 package-tauri-win.bat / package-tauri-mac.sh 未配置环境变量时自动读该文件(tauri CLI 只认内容、不认 `_PATH` 变体——但会把变量值当路径探测,指向文件路径亦可);**密码变量 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 存在(私钥无密码即为空值)时 CLI 直接使用;缺失时走 `--ci`/`CI` 环境变量兜底按空密码处理,都没有则交互式询问密码、无终端环境签名失败**——mac 脚本直接 export 空值;win bat 因 cmd 无法定义空值环境变量(且空值经 npm 多层子进程传递不可靠),未配置密码变量时改置 `CI=true` 让 CLI 按空密码签名(行为见 tauri-cli `bundle.rs` sign_updaters);**丢私钥 = 更新链断裂,需换密钥对并发全量包**
+- `createUpdaterArtifacts: true` 产出 `dq-tool_<v>_x64-setup.nsis.zip` + `.sig`(updater 实际下载 .nsis.zip 而非 setup.exe);CI 生成 `latest.json`(version/signature/url)挂 Release
 - `nsis.installMode: "currentUser"`(装 `%LOCALAPPDATA%\Programs`,**更新免 UAC**,高频迭代必需;旧 perMachine 安装需手工卸载重装一次)
 - **版本纪律:updater 按 semver 比较,每次发版必须递增 tauri.conf.json 的 version**,否则同版本不会被识别为更新
 
