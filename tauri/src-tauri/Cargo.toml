@@ -10,12 +10,13 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # 侧车拉起/端口探测/就绪轮询全部用 std 实现;libc 仅 Unix 用于 Ctrl+C/SIGTERM 兜底杀子进程
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 # 自动更新(GitHub Releases 静态清单 + minisign 验签)与原生询问对话框(更新确认弹窗)
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"
 # generate_context! 宏在 tauri.conf.json 带 plugins 段时需要本 crate 直接依赖 serde_json
 serde_json = "1"
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

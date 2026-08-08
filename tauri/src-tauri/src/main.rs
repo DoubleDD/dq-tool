@@ -1,13 +1,16 @@
 //! tauri 模块入口:Tauri 2(系统 WebView)套壳 server 模块的 Web UI。
 //!
-//! 侧车(sidecar)模型:本进程拉起 `java -jar` server fat jar 作为子进程,轮询就绪后
-//! 创建 webview 窗口加载 `http://127.0.0.1:<port>`;窗口关闭/进程退出时杀掉 Java 子进程。
+//! 侧车(sidecar)模型:本进程拉起 `java -jar` server fat jar 作为子进程;webview 窗口立即
+//! 创建并显示本地加载页(ui/index.html),后台线程轮询后端就绪后 navigate 到
+//! `http://127.0.0.1:<port>`;窗口关闭/进程退出时杀掉 Java 子进程。
 //!
-//! 与 shell(JCEF)模块的关键差异 —— 浏览器/托盘抑制:
-//! shell 在同一 JVM 内装配 WebServer,必须绕过 onReady 才能抑制外部浏览器/托盘;
-//! 本模块直接 `java -jar` 走 DqApplication.main,其首行默认 headless=true,headless 下
-//! BrowserOpener 直接 return、TrayManager.installEarly 返回 false、心跳看门狗永不武装,
-//! 两个桌面动作天然抑制,无需改动 server。
+//! 常驻 + 托盘(2026-08,极速启动方案):关闭窗口只隐藏不退出,Java 后端常驻,
+//! 再次打开 = 纯 WebView 显示(毫秒级,不付 JVM 启动成本);托盘菜单「打开窗口/退出」,
+//! 只有点退出(或 Cmd+Q/自动更新重启)才杀后端;单实例插件保证双击图标只唤起已有实例。
+//!
+//! 浏览器/托盘抑制:本模块直接 `java -jar` 走 DqApplication.main,其首行默认 headless=true,
+//! headless 下 BrowserOpener 直接 return、TrayManager.installEarly 返回 false、心跳看门狗永不武装,
+//! 两个桌面动作天然抑制,无需改动 server(Java 侧托盘与本 Rust 托盘是两回事,互不影响)。
 
 // Windows:release 构建为 GUI 子系统,双击启动不弹控制台黑窗;debug 保留控制台便于看日志
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -19,6 +22,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tauri::Manager;
 
 /// 后端就绪等待总超时(H2 迁移 + Flyway 首次初始化可能较慢)
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -46,6 +50,12 @@ fn main() {
 
     let mut cmd = Command::new(&java);
     cmd.arg("-XX:+UseZGC");
+    // JDK 25 AOT 类缓存:jar 同目录存在 dq-tool.aot 才启用,开发模式/未训练环境静默跳过。
+    // 打包脚本不生成(2026-08 实测 macOS 收益≈0,启动大头是 H2+Flyway 真实初始化而非类加载,
+    // 详见 tauri/AGENTS.md);需要时手动 record→create 训练后放到 jar 同目录即可生效
+    if let Some(cache) = find_aot_cache(&jar) {
+        cmd.arg(format!("-XX:AOTCache={}", cache.display()));
+    }
     if packaged {
         // 安装版数据目录固定 ~/.dq-tool/data(与 jpackage 安装版口径一致);
         // 开发模式不传,走后端默认 ./data(cwd 已切到仓库根)
@@ -92,22 +102,68 @@ fn main() {
         }
     });
 
-    let port = wait_ready(&mut child, &actual_port)
-        .unwrap_or_else(|e| fatal(&format!("后端未在 {} 秒内就绪:{e}", READY_TIMEOUT.as_secs())));
-    eprintln!("[dq-tool-tauri] 后端已就绪: http://127.0.0.1:{port}");
-
+    // 窗口先出:立即创建 webview 显示本地加载页(ui/index.html),后台线程等后端
+    // 就绪后 navigate 到 http://127.0.0.1:<port> —— 消除「双击后数秒无窗口」的等待
     let child = Arc::new(Mutex::new(child));
     let child_on_exit = Arc::clone(&child);
     let child_on_update = Arc::clone(&child);
+    let child_on_tray = Arc::clone(&child);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // 单实例:第二实例启动时唤起已有实例的主窗口后自己退出(安装版 macOS 由 LaunchServices 天然去重,
+        // 此插件主要兜 Windows/Linux 与 dev 直跑;不支持的平台 init 为空操作)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .setup(move |app| {
-            let url = format!("http://127.0.0.1:{port}").parse().expect("合法 URL");
-            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
-                .title("dq-tool 数据质量检测")
-                .inner_size(1440.0, 900.0)
+            let window = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("dq-tool 数据质量检测")
+            .inner_size(1440.0, 900.0)
+            .build()?;
+            // 常驻模型:关窗只隐藏不退出,后端继续跑;再次打开 = 显示窗口(毫秒级)
+            let win_on_close = window.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = win_on_close.hide();
+                }
+            });
+            // 托盘:打开窗口 / 退出(退出才杀 Java 后端,与窗口关闭解耦)
+            let menu = tauri::menu::MenuBuilder::new(app)
+                .items(&[
+                    &tauri::menu::MenuItemBuilder::with_id("open", "打开窗口").build(app)?,
+                    &tauri::menu::MenuItemBuilder::with_id("quit", "退出").build(app)?,
+                ])
                 .build()?;
+            tauri::tray::TrayIconBuilder::new()
+                .tooltip("dq-tool 数据质量检测")
+                .icon(app.default_window_icon().expect("tauri.conf.json 已配置图标").clone())
+                .menu(&menu)
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "open" => show_main_window(app),
+                    "quit" => {
+                        kill_child(&child_on_tray);
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .build(app)?;
+            let child = Arc::clone(&child);
+            std::thread::spawn(move || match wait_ready(&child, &actual_port) {
+                Ok(port) => {
+                    eprintln!("[dq-tool-tauri] 后端已就绪: http://127.0.0.1:{port}");
+                    let url = format!("http://127.0.0.1:{port}").parse().expect("合法 URL");
+                    if let Err(e) = window.navigate(url) {
+                        fatal(&format!("导航到后端页面失败:{e}"));
+                    }
+                }
+                Err(e) => fatal(&format!("后端未在 {} 秒内就绪:{e}", READY_TIMEOUT.as_secs())),
+            });
             // 自动更新:仅安装模式;后台线程预下载,完事后弹窗确认(开发模式不检查)
             if packaged {
                 let handle = app.handle().clone();
@@ -118,12 +174,25 @@ fn main() {
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| fatal(&format!("Tauri 初始化失败:{e}")));
 
-    app.run(move |_handle, event| {
+    app.run(move |handle, event| {
         use tauri::RunEvent;
-        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
-            kill_child(&child_on_exit);
+        match event {
+            RunEvent::ExitRequested { .. } | RunEvent::Exit => kill_child(&child_on_exit),
+            // macOS:窗口隐藏后点 Dock 图标重新显示
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => show_main_window(handle),
+            _ => {}
         }
     });
+}
+
+/// 显示并聚焦主窗口(托盘「打开窗口」/单实例唤起/macOS Dock  reopened 共用)
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
 }
 
 /// 开发模式下的仓库根(tauri/src-tauri 的上两级)
@@ -309,6 +378,18 @@ fn find_java() -> Result<PathBuf, String> {
     Ok(PathBuf::from("java"))
 }
 
+/// 定位 JDK 25 AOT 类缓存:DQ_AOT_CACHE 环境变量 > jar 同目录 dq-tool.aot;不存在返回 None(不用缓存)
+fn find_aot_cache(jar: &std::path::Path) -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("DQ_AOT_CACHE") {
+        let p = PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let p = jar.parent()?.join("dq-tool.aot");
+    p.is_file().then_some(p)
+}
+
 fn pick_free_port() -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     listener
@@ -318,10 +399,10 @@ fn pick_free_port() -> Result<u16, String> {
 }
 
 /// 轮询就绪探针直到 200;子进程提前退出或超时则报错。返回实际端口(含避让回填)
-fn wait_ready(child: &mut Child, port_slot: &Arc<Mutex<u16>>) -> Result<u16, String> {
+fn wait_ready(child: &Arc<Mutex<Child>>, port_slot: &Arc<Mutex<u16>>) -> Result<u16, String> {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+        if let Some(status) = child.lock().unwrap().try_wait().map_err(|e| e.to_string())? {
             return Err(format!("Java 后端进程提前退出:{status}"));
         }
         let port = *port_slot.lock().unwrap();

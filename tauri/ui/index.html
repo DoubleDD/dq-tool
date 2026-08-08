@@ -8,17 +8,33 @@
       margin: 0;
       height: 100vh;
       display: flex;
+      flex-direction: column;
+      gap: 16px;
       align-items: center;
       justify-content: center;
-      font-family: -apple-system, "PingFang SC", sans-serif;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       color: #606266;
       background: #f5f7fa;
     }
+    @media (prefers-color-scheme: dark) {
+      body { color: #a3a6ad; background: #1d1e1f; }
+    }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid currentColor;
+      border-top-color: transparent;
+      border-radius: 50%;
+      opacity: 0.6;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    p { margin: 0; font-size: 14px; }
   </style>
 </head>
 <body>
-  <!-- 占位页:tauri.conf.json 的 frontendDist 要求一个静态目录;
-       实际窗口由 Rust 侧在后端就绪后直接以 http://127.0.0.1:<port> 创建,本页正常不会显示 -->
+  <!-- 启动加载页:窗口创建后立即显示;后端就绪后由 Rust 侧 navigate 到 http://127.0.0.1:<port> -->
+  <div class="spinner"></div>
   <p>dq-tool 后端启动中…</p>
 </body>
 </html>

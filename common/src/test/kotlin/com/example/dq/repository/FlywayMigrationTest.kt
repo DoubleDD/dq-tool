@@ -44,6 +44,18 @@ class FlywayMigrationTest {
     }
 
     @Test
+    fun `已是最新的库第二次执行走快速路径跳过 Flyway`() {
+        val ds = memDs("uptodate_${UUID.randomUUID()}")
+        // 首次:全量迁移
+        assertTrue(SchemaInit.run(ds), "新库应执行 Flyway 迁移")
+        // 二次:库已是最新,应跳过(桌面应用后续启动的常态路径)
+        assertTrue(!SchemaInit.run(ds), "已是最新的库应跳过 Flyway")
+        // 跳过不影响库表完整性
+        assertTrue(tableExists(ds, "scan_job"))
+        assertTrue(tableExists(ds, "tag_def"))
+    }
+
+    @Test
     fun `老库 baseline 后增量迁移`() {
         val ds = memDs("legacy_${UUID.randomUUID()}")
         // 模拟老库:执行 V1 内容建表(相当于老版本 schema.sql 已跑过),无 flyway_schema_history
