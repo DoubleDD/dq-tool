@@ -49,8 +49,8 @@ fn main() {
     if packaged {
         // 安装版数据目录固定 ~/.dq-tool/data(与 jpackage 安装版口径一致);
         // 开发模式不传,走后端默认 ./data(cwd 已切到仓库根)
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        cmd.arg(format!("-Ddq.data-dir={home}/.dq-tool/data"));
+        let home = home_dir();
+        cmd.arg(format!("-Ddq.data-dir={}/.dq-tool/data", home.display()));
     } else {
         // 开发模式:工作目录固定仓库根,数据目录 ./data 与其他模块口径一致;
         // DQ_DATA_DIR 环境变量可覆盖(如用临时数据目录冒烟,避免动本地开发库)
@@ -98,13 +98,21 @@ fn main() {
 
     let child = Arc::new(Mutex::new(child));
     let child_on_exit = Arc::clone(&child);
+    let child_on_update = Arc::clone(&child);
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             let url = format!("http://127.0.0.1:{port}").parse().expect("合法 URL");
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url))
                 .title("dq-tool 数据质量检测")
                 .inner_size(1440.0, 900.0)
                 .build()?;
+            // 自动更新:仅安装模式;后台线程预下载,完事后弹窗确认(开发模式不检查)
+            if packaged {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || auto_update(handle, child_on_update));
+            }
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -124,6 +132,108 @@ fn repo_root() -> PathBuf {
         .join("../..")
         .canonicalize()
         .expect("仓库根目录存在")
+}
+
+/// 用户主目录:Windows 原生环境通常只有 USERPROFILE,MSYS 环境才有 HOME,两者都试
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+// ---- 自动更新(tauri-plugin-updater,更新源为 GitHub Releases 的 latest.json)----
+//
+// 流程:后台 check → 有新版则静默预下载 → 下载完成弹原生对话框询问:
+//   「立即更新」→ install + 重启(重启前显式杀 java 子进程,防止孤儿占着 H2 文件锁);
+//   「暂不更新」→ 版本号写入 ~/.dq-tool/update-skipped.txt,同一版本不再重复下载/打扰,
+//   出现更新版本时重新走流程。检查/下载失败只记日志,不影响主流程。
+
+/// 用户选择「暂不更新」的版本记录(纯文本,一个版本号)
+fn skipped_version_path() -> PathBuf {
+    home_dir().join(".dq-tool").join("update-skipped.txt")
+}
+
+fn read_skipped_version() -> Option<String> {
+    std::fs::read_to_string(skipped_version_path())
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn write_skipped_version(version: &str) {
+    let path = skipped_version_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, version);
+}
+
+fn auto_update(app: tauri::AppHandle, child: Arc<Mutex<Child>>) {
+    if let Err(e) = try_auto_update(&app, &child) {
+        eprintln!("[dq-tool-tauri] 自动更新失败(忽略,不影响使用):{e}");
+    }
+}
+
+fn try_auto_update(app: &tauri::AppHandle, child: &Arc<Mutex<Child>>) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    use tauri_plugin_updater::UpdaterExt;
+
+    // 插件 API 是 async,用 tauri 自带的 async_runtime 阻塞等待,不引 tokio 依赖
+    let update = tauri::async_runtime::block_on(async {
+        app.updater()
+            .map_err(|e| e.to_string())?
+            .check()
+            .await
+            .map_err(|e| e.to_string())
+    })?;
+    let Some(update) = update else {
+        return Ok(()); // 已是最新
+    };
+    let new_version = update.version.to_string();
+    if read_skipped_version().as_deref() == Some(new_version.as_str()) {
+        eprintln!("[dq-tool-tauri] 新版本 {new_version} 此前已被用户跳过,不再提示");
+        return Ok(());
+    }
+
+    eprintln!("[dq-tool-tauri] 发现新版本 {new_version},后台预下载更新包...");
+    let downloaded = std::cell::Cell::new(0usize);
+    let next_mark = std::cell::Cell::new(32 * 1024 * 1024usize);
+    let bytes = tauri::async_runtime::block_on(update.download(
+        |chunk_len, _total| {
+            let n = downloaded.get() + chunk_len;
+            downloaded.set(n);
+            if n >= next_mark.get() {
+                eprintln!("[dq-tool-tauri] 更新包已预下载 {}MB", n / 1024 / 1024);
+                next_mark.set(n + 32 * 1024 * 1024);
+            }
+        },
+        || eprintln!("[dq-tool-tauri] 更新包预下载完成"),
+    ))
+    .map_err(|e| e.to_string())?;
+
+    let yes = app
+        .dialog()
+        .message(format!(
+            "新版本 {new_version} 已预下载完成。\n\n「立即更新」将关闭窗口并重启程序(进行中的扫描会中断,之后可断点续扫);「暂不更新」则该版本不再提示。"
+        ))
+        .title("dq-tool 更新")
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "立即更新".into(),
+            "暂不更新".into(),
+        ))
+        .blocking_show();
+    if yes {
+        eprintln!("[dq-tool-tauri] 用户确认更新,安装并重启...");
+        kill_child(child); // 显式杀 java 后端,不等退出事件,防孤儿占 H2 锁
+        update.install(bytes).map_err(|e| e.to_string())?;
+        app.restart();
+    } else {
+        eprintln!("[dq-tool-tauri] 用户暂不更新,跳过版本 {new_version}");
+        write_skipped_version(&new_version);
+    }
+    Ok(())
 }
 
 /// 安装版内嵌资源目录:macOS 为 <exe>/../Resources(.app 布局),

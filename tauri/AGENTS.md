@@ -57,6 +57,15 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   使 release exe 为 GUI 子系统(双击不出控制台;debug 保留控制台看日志),拉起 java.exe 子进程时
   再加 `CREATE_NO_WINDOW`(0x08000000)—— 控制台子系统的子进程被 GUI 父进程拉起时会新分配控制台窗口
 
+## 自动更新(tauri-plugin-updater)
+
+- 仅安装模式启用(开发模式不检查);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime
+- 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,webview 是远程 URL 不适合做更新 UI)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
+- 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 由 "Load updater signing key" 步骤把文件内容注入 `TAURI_SIGNING_PRIVATE_KEY`(tauri CLI 只认内容、不认 `_PATH` 变体),本地打包由 package-tauri-win.bat 未配置环境变量时自动读该文件;**丢私钥 = 更新链断裂,需换密钥对并发全量包**
+- `createUpdaterArtifacts: true` 产出 `dq-tool_<v>_x64-setup.nsis.zip` + `.sig`(updater 实际下载 .nsis.zip 而非 setup.exe);CI 生成 `latest.json`(version/signature/url)挂 Release
+- `nsis.installMode: "currentUser"`(装 `%LOCALAPPDATA%\Programs`,**更新免 UAC**,高频迭代必需;旧 perMachine 安装需手工卸载重装一次)
+- **版本纪律:updater 按 semver 比较,每次发版必须递增 tauri.conf.json 的 version**,否则同版本不会被识别为更新
+
 ## 打包
 
 - `scripts/package-tauri-mac.sh` / `scripts\package-tauri-win.bat`:web/dist + shadowJar → 组装 `tauri/src-tauri/resources/`
