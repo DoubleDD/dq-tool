@@ -61,10 +61,9 @@ rem Smoke test: the embedded jre starts (full verification is double-clicking th
 
 rem Updater signing private key: load from the in-repo file when not set (single line, no password)
 if "%TAURI_SIGNING_PRIVATE_KEY%"=="" set /p TAURI_SIGNING_PRIVATE_KEY=<scripts\updater-private.key
-rem Fail fast when the key is missing: the tauri CLI only WARNS and silently skips the
-rem updater artifacts (nsis.zip/sig), which then surfaces as a confusing rename error
-rem in a later CI step (v1.6 tag build hit exactly this: the tag pointed at a commit
-rem whose bat did not inject the key yet)
+rem Fail fast when the key is missing: without it the tauri CLI cannot sign the
+rem updater artifact, which would otherwise surface as a confusing rename error
+rem in a later CI step (v1.6 tag build hit exactly this)
 if not defined TAURI_SIGNING_PRIVATE_KEY (
   echo ERROR: TAURI_SIGNING_PRIVATE_KEY not set and scripts\updater-private.key could not be read
   exit /b 1
@@ -84,12 +83,13 @@ if defined TAURI_SIGNING_PRIVATE_KEY_PASSWORD (
 )
 popd
 
-rem Verify the updater artifacts were actually produced (the CI rename/release steps
-rem depend on them; a missing zip means signing was skipped by the CLI)
-set NSISZIP=
-for /f "delims=" %%f in ('dir /b tauri\src-tauri\target\release\bundle\nsis\*-setup.nsis.zip 2^>nul') do set NSISZIP=%%f
-if not defined NSISZIP (
-  echo ERROR: updater artifact ^(*-setup.nsis.zip^) missing after build; updater signing was skipped
+rem Verify the updater signature was actually produced: tauri CLI 2.11+ no longer
+rem creates a .nsis.zip for the v2 updater (self-contained installer; signs setup.exe
+rem directly), so the signature file *-setup.exe.sig is the proof signing happened
+set EXESIG=
+for /f "delims=" %%f in ('dir /b tauri\src-tauri\target\release\bundle\nsis\*-setup.exe.sig 2^>nul') do set EXESIG=%%f
+if not defined EXESIG (
+  echo ERROR: updater signature ^(*-setup.exe.sig^) missing after build; updater signing was skipped
   exit /b 1
 )
 
