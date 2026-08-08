@@ -30,7 +30,7 @@ dependencies {
     // 入参校验注解:模型类携带 @field:NotNull 等注解,由 server web 层的 hibernate-validator 触发
     compileOnly(libs.jakarta.validation.api)
 
-    // 日志门面(api 暴露:desktop UI 与 server web 层共享)
+    // 日志门面(api 暴露:供 server 壳层统一使用)
     api(libs.slf4j.api)
 
     // 7 个目标数据库 JDBC 驱动(版本与 server 统一在 gradle/libs.versions.toml 管理)

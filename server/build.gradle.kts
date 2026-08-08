@@ -34,7 +34,7 @@ dependencies {
     implementation(libs.hibernate.validator)
     runtimeOnly(libs.tomcat.embed.el)
 
-    // 测试(与 desktop 模块一致:junit-jupiter + assertj)
+    // 测试(junit-jupiter + assertj)
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.assertj.core)
     // 测试直接编译期引用 org.h2.jdbcx.JdbcDataSource(runtimeOnly 不进测试编译类路径)

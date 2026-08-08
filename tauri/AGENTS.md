@@ -5,20 +5,23 @@
 ## 模块定位
 
 tauri 用 Tauri 2(系统 WebView:macOS WKWebView / Windows WebView2 / Linux WebKitGTK)把
-server 模块的 Web UI 套壳成桌面应用。与 shell 模块(JCEF,同 JVM 进程内嵌 Chromium,
-fat jar 约 200MB)不同,tauri 进程本身不含 Java:**Rust 侧拉起 `java -jar` server fat jar
-作为子进程**,轮询就绪后 webview 加载 `http://127.0.0.1:<port>`,窗口关闭时杀掉子进程。
-体积比 shell 小一个数量级,代价是后端成为独立子进程(生命周期由 Rust 侧管理)。
+server 模块的 Web UI 套壳成桌面应用。tauri 进程本身不含 Java:**Rust 侧拉起 `java -jar` server fat jar
+作为子进程**,轮询就绪后 webview 加载 `http://127.0.0.1:<port>`。
 
-**硬边界:tauri 不得修改 common/server/desktop/shell/web 的任何文件**,只消费 server fat jar
-的既有行为(与 shell 的边界口径一致)。
+**常驻 + 托盘模型(2026-08,极速启动方案)**:窗口关闭只隐藏不退出,Java 后端常驻,
+再次打开 = 显示已有窗口(毫秒级,不重复付 JVM 启动成本);托盘菜单「打开窗口/退出」,
+仅退出(或 Cmd+Q、自动更新重启)才杀后端子进程;tauri-plugin-single-instance 保证
+重复启动只唤起已有实例(安装版 macOS 另由 LaunchServices 天然去重)。
+
+**硬边界:tauri 不得修改 common/server/web 的任何文件**,只消费 server fat jar
+的既有行为。
 
 ## 浏览器/托盘抑制:靠 headless 默认值天然免疫
 
 直接 `java -jar` 走 `DqApplication.main`,其首行默认 `headless=true`;headless 下
 `BrowserOpener.openBrowser` 直接 return、`TrayManager.installEarly` 返回 false、
 心跳看门狗(DesktopSession)只在 BrowserOpener 成功拉起 --app 窗口后才武装 ——
-两个桌面动作从源头不触发,**无需像 shell 那样绕过 onReady,也无需传任何属性**。
+两个桌面动作从源头不触发,**无需任何绕过或传属性**。
 
 ## 构建与运行
 
@@ -31,7 +34,7 @@ cd web && npm install && npm run build
 cd tauri && npm install && npm run dev
 # 或根目录快捷命令(自动先构建 web/dist + fat jar):make tauri
 
-scripts/package-tauri-mac.sh          # macOS dmg(参考 scripts/package-shell-mac.sh;Linux 未实现,见脚本内 TODO)
+scripts/package-tauri-mac.sh          # macOS dmg(Linux 未实现,见脚本内 TODO)
 scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-tauri job 用)
                                         # 快捷命令:make package-tauri / make package-tauri-skip(--skip-build)
 ```
@@ -49,8 +52,19 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   (**改 DqApplication 该输出格式时请同步 main.rs 的解析**)
 - **就绪探针**:轮询 `GET /api/license/status` 直到 200(该端点不受授权拦截),超时 60 秒;
   子进程提前退出立即报错。探针用裸 TcpStream 手写 HTTP/1.0,不引 HTTP client 依赖
-- **窗口**:就绪后 `WebviewWindowBuilder` 以 `WebviewUrl::External` 创建(tauri.conf.json 不预定义窗口);
-  `ui/index.html` 只是 frontendDist 的占位,正常不显示
+- **窗口**:后端子进程拉起后立即创建 webview 加载本地启动页 `ui/index.html`(frontendDist 内容,
+  不再是占位),后台线程就绪轮询通过后 `window.navigate` 到 `http://127.0.0.1:<port>` ——
+  消除「双击后数秒无窗口」的等待;就绪失败仍 fatal 退出
+- **常驻与退出**:关窗 `CloseRequested` → `prevent_close` + 隐藏(后端继续跑);托盘
+  (TrayIconBuilder,菜单「打开窗口/退出」)承载真正的退出 —— 「退出」显式杀子进程后
+  `app.exit(0)`;Cmd+Q 等系统退出走 `RunEvent::ExitRequested|Exit` 杀子进程;macOS 窗口隐藏后
+  点 Dock 图标由 `RunEvent::Reopen` 重新显示;单实例插件第二实例唤起已有窗口后自退
+  (不支持的平台 init 为空操作,安装版 macOS 由 LaunchServices 去重)
+- **AOT 类缓存**(JDK 25):jar 同目录存在 `dq-tool.aot` 时以 `-XX:AOTCache=` 启用(`DQ_AOT_CACHE`
+  环境变量可显式指定),开发模式无该文件静默跳过。**打包脚本不生成**:2026-08 实测(record→create
+  训练流程验证过,缓存对 jar 路径不敏感、安装版可用)macOS(Apple Silicon + SSD)上启动 1.30s →
+  1.29s,收益≈0 —— 启动大头是 ServiceEnv 里 H2 打开 + Flyway 的真实初始化工作,不是类加载;
+  缓存仅 16MB,若日后验证 Windows(Defender 实时扫描大 jar)有收益再接入打包脚本
 - **退出联动**:关窗/退出 → `RunEvent::ExitRequested|Exit` 杀子进程;Ctrl+C/SIGTERM 由
   libc 信号处理器兜底(杀子进程后 `_exit`),不留孤儿 java 进程
 - **Windows 不弹终端**:crate 根 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
@@ -76,4 +90,4 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 - `tauri.conf.json` 的 `version` 与项目版本保持 `0.x.y → x.y.0` 映射(安装包主版本号 ≥ 1,且必须是三段 semver),升级需手动同步
 - `resources/` 是打包产物,已 gitignore;`tauri build` 不带 resources 也能跑(开发模式)
 - 图标源图 `src-tauri/icons-source.png`(占位图,**TODO: 换正式 logo**),改后用 `npm run icon -- src-tauri/icons-source.png -o src-tauri/icons` 重新生成
-- 未签名公证的 dmg 分发到其他 Mac 可能被 Gatekeeper 拦截(与 shell 相同的已知限制)
+- 未签名公证的 dmg 分发到其他 Mac 可能被 Gatekeeper 拦截

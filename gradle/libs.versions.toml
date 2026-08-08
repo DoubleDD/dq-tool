@@ -1,6 +1,6 @@
 [versions]
 # testcontainers 显式钉 1.21.4:1.20.x 默认 API 1.32 被 Docker 29+ 拒绝(最低 1.40),1.21.4 起修复;
-# 不随 Spring Boot 4.1 BOM 管理的 2.x 走(模块坐标有变化),server/desktop 保持一致
+# 不随 Spring Boot 4.1 BOM 管理的 2.x 走(模块坐标有变化)
 testcontainers = "1.21.4"
 # 以下版本与原 Spring Boot 4.1 BOM 托管版本对齐(去 BOM 后显式钉,避免行为漂移)
 javalin = "7.2.2"
@@ -30,10 +30,6 @@ kingbase = "9.0.1"
 oceanbase = "2.4.18"
 # SSH 隧道(数据源经跳板机连接目标库);SSHJ,传递依赖 BouncyCastle(bcprov/bcpkix/bceddsa)为正常预期
 sshj = "0.40.0"
-# JCEF(shell 模块桌面壳):jcefmaven 为官方接入封装(natives 解压/java.library.path/macOS 初始化),
-# transitively 带入 jcef-api;natives 版本为同一发布的全量 tag,两者必须同源(146.0.10 发布,2026-05,CEF 146)
-jcefmaven = "146.0.10"
-jcef-natives = "jcef-d3de827+cef-146.0.10+g8219561+chromium-146.0.7680.179"
 
 [libraries]
 # 去 Spring 化后显式声明(原由 starter 传递引入)
@@ -69,7 +65,6 @@ jdbc-kingbase = { group = "cn.com.kingbase", name = "kingbase8", version.ref = "
 jdbc-oceanbase = { group = "com.oceanbase", name = "oceanbase-client", version.ref = "oceanbase" }
 # SSH 隧道本地端口转发(SshTunnelService)
 sshj = { group = "com.hierynomus", name = "sshj", version.ref = "sshj" }
-jcefmaven = { group = "me.friwi", name = "jcefmaven", version.ref = "jcefmaven" }
 testcontainers-junit = { group = "org.testcontainers", name = "junit-jupiter", version.ref = "testcontainers" }
 testcontainers-mysql = { group = "org.testcontainers", name = "mysql", version.ref = "testcontainers" }
 testcontainers-postgresql = { group = "org.testcontainers", name = "postgresql", version.ref = "testcontainers" }

@@ -28,13 +28,11 @@ web/dist/index.html: $(WEB_SRC)
 	cd web && npm run build
 
 .PHONY: help \
-	dev dev-headless dev-web desktop shell tauri \
+	dev dev-headless dev-web tauri \
 	build test run run-headless \
 	package package-skip package-linux \
-	package-shell package-shell-skip \
 	package-tauri package-tauri-skip \
 	package-win package-win-skip \
-	package-shell-win package-shell-win-skip \
 	package-tauri-win package-tauri-win-skip \
 	license-keypair license clean
 
@@ -43,8 +41,6 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '  make %-18s %s\n' dev            '后端 + 浏览器 app 窗口/托盘(前端有改动时先重建 web/dist)'
 	@printf '  make %-18s %s\n' dev-headless   '后端,无窗口/托盘(服务器方式调试)'
 	@printf '  make %-18s %s\n' dev-web        '前端 5173 热更新(代理 /api 到 10000)'
-	@printf '  make %-18s %s\n' desktop        'Compose Desktop 原生桌面版(已放弃不再维护,仅留档)'
-	@printf '  make %-18s %s\n' shell          'JCEF 套壳版(Web UI + 内嵌 Chromium 窗口)'
 	@printf '  make %-18s %s\n' tauri          'Tauri 2 套壳版(系统 WebView + Rust 侧车拉起 java 子进程)'
 	@printf '\n\033[1m构建 / 测试 / 直接跑 jar\033[0m\n'
 	@printf '  make %-18s %s\n' build          '构建前端 + 后端 fat jar(跳过测试)'
@@ -57,11 +53,6 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '  make %-18s %s\n' package-linux  'Linux deb(--type rpm 打 rpm 需直接调 scripts/package-linux.sh)'
 	@printf '  make %-18s %s\n' package-win      'Windows 免安装 zip(仅 Windows 可用)'
 	@printf '  make %-18s %s\n' package-win-skip 'Windows zip(跳过构建,用现有 jar 重打)'
-	@printf '\n\033[1m打包:JCEF 套壳\033[0m\n'
-	@printf '  make %-18s %s\n' package-shell      'macOS dmg(内嵌 Chromium natives)'
-	@printf '  make %-18s %s\n' package-shell-skip 'macOS dmg(跳过构建)'
-	@printf '  make %-22s %s\n' package-shell-win      'Windows 版(仅 Windows 可用)'
-	@printf '  make %-22s %s\n' package-shell-win-skip 'Windows 版(跳过构建)'
 	@printf '\n\033[1m打包:Tauri 2 套壳\033[0m\n'
 	@printf '  make %-18s %s\n' package-tauri      'macOS dmg(内嵌 fat jar + jlink JRE)'
 	@printf '  make %-18s %s\n' package-tauri-skip 'macOS dmg(跳过构建)'
@@ -83,12 +74,6 @@ dev-headless: web/dist/index.html ## 后端开发模式,无窗口/托盘(服务�
 
 dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
 	cd web && npm run dev
-
-desktop: ## 桌面版开发运行(Compose Desktop + Jewel,内嵌 JBR;已放弃不再维护,仅留档)
-	./gradlew :desktop:run
-
-shell: ## JCEF 套壳版开发运行(Web UI + 内嵌 Chromium 窗口)
-	./gradlew :shell:run
 
 tauri: build ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车拉起 java 子进程;tauri 非 Gradle 模块,需先构建 fat jar)
 	@[ -d tauri/node_modules ] || (cd tauri && npm install)
@@ -127,20 +112,6 @@ package-win: ## Windows:构建并打免安装 zip(仅 Windows 可用)
 
 package-win-skip: ## Windows:跳过构建,用现有 jar 重打 zip(仅 Windows 可用)
 	cmd //c "scripts\\package-win.bat --skip-build"
-
-# ── 打包:JCEF 套壳(shell 模块,内嵌 Chromium)─────────────────────────────────
-
-package-shell: ## macOS:构建并打 JCEF 套壳版 dmg
-	scripts/package-shell-mac.sh
-
-package-shell-skip: ## macOS:跳过构建,用现有 jar 重打 JCEF 套壳版 dmg
-	scripts/package-shell-mac.sh --skip-build
-
-package-shell-win: ## Windows:构建并打 JCEF 套壳版(仅 Windows 可用)
-	cmd //c scripts\\package-shell-win.bat
-
-package-shell-win-skip: ## Windows:跳过构建,重打 JCEF 套壳版(仅 Windows 可用)
-	cmd //c "scripts\\package-shell-win.bat --skip-build"
 
 # ── 打包:Tauri 2 套壳(tauri 模块,系统 WebView + java 侧车子进程)──────────────
 
