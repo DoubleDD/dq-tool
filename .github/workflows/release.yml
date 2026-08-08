@@ -1,6 +1,8 @@
 # 打 tag(如 v1.0)触发:构建安装包并附加到 GitHub Release
-#   当前启用:Windows x64 jpackage 免安装 zip(server,浏览器 --app 模式)+ windows-tauri NSIS 安装包;
-#   Windows ARM64 / macOS dmg / Linux deb+rpm 注释停用,需要时取消注释即可
+#   当前启用:Windows x64 jpackage 免安装 zip(server,浏览器 --app 模式)
+#   + windows-tauri NSIS 安装包 + macos-tauri dmg(Apple Silicon / Intel);
+#   tauri 两平台均带自动更新产物,latest.json 由 updater-manifest 收尾任务合并全平台生成;
+#   Windows ARM64 / macOS jpackage dmg / Linux deb+rpm 注释停用,需要时取消注释即可
 # 也可在 Actions 页面手动触发(workflow_dispatch),产物以 artifact 形式下载
 name: release
 
@@ -114,29 +116,25 @@ jobs:
           Rename-Item "dq-tool_${v}_x64-setup.exe" "dq-tool-$v-windows-x64-setup.exe"
           "name=dq-tool-$v-windows-x64-setup" >> $env:GITHUB_OUTPUT
 
-      # 自动更新产物:重命名 .nsis.zip(updater 实际下载的是它,不是 setup.exe)并生成 latest.json 静态清单;
-      # latest.json 固定文件名,应用内 updater 经 /releases/latest/download/latest.json 永远拿到最新版信息
+      # 自动更新产物:重命名 .nsis.zip(updater 实际下载的是它,不是 setup.exe)与 .sig;
+      # latest.json 不由本任务生成 —— 全平台合并清单由收尾的 updater-manifest 任务统一产出
       - name: Prepare updater artifacts
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $v = (Get-Content tauri/src-tauri/tauri.conf.json | ConvertFrom-Json).version
-          $tag = '${{ github.ref_name }}'
           cd tauri/src-tauri/target/release/bundle/nsis
           Rename-Item "dq-tool_${v}_x64-setup.nsis.zip" "dq-tool-$v-windows-x64-setup.nsis.zip"
-          $sig = (Get-Content "dq-tool_${v}_x64-setup.nsis.zip.sig" -Raw).Trim()
-          $latest = @{
-            version = $v
-            notes = ""
-            pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-            platforms = @{
-              'windows-x86_64' = @{
-                signature = $sig
-                url = "https://github.com/DoubleDD/dq-tool/releases/download/$tag/dq-tool-$v-windows-x64-setup.nsis.zip"
-              }
-            }
-          }
-          ($latest | ConvertTo-Json -Depth 5) | Set-Content -Encoding utf8 latest.json
+          Rename-Item "dq-tool_${v}_x64-setup.nsis.zip.sig" "dq-tool-$v-windows-x64-setup.nsis.zip.sig"
+
+      # 签名文件单独传 artifact,供 updater-manifest 任务拼 latest.json(生命周期 1 天即可)
+      - name: Upload updater signature
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: updater-sig-windows-x64
+          path: tauri/src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+          retention-days: 1
 
       - uses: actions/upload-artifact@v7
         with:
@@ -153,7 +151,141 @@ jobs:
           files: |
             tauri/src-tauri/target/release/bundle/nsis/*.exe
             tauri/src-tauri/target/release/bundle/nsis/*.nsis.zip
-            tauri/src-tauri/target/release/bundle/nsis/latest.json
+
+  macos-tauri:
+    # Tauri 2 套壳版 macOS dmg + 自动更新包(.app.tar.gz,dmg 不支持 updater 产物);
+    # 不能交叉编译,Apple Silicon 与 Intel 分别在对应架构 runner 上原生构建
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, arch: arm64, tauri-arch: aarch64 }        # Apple Silicon
+          - { os: macos-15-intel, arch: x86_64, tauri-arch: x86_64 }  # Intel(macos-13 已于 2025-12 退役,此为替代标签,支持到 2027-08)
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tauri/package-lock.json
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri
+
+      - name: Install web dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Install tauri dependencies
+        run: npm ci
+        working-directory: tauri
+
+      # 同 windows-tauri:注入 updater 签名私钥(构建 .app.tar.gz 更新包时签名是强制的);
+      # 私钥为空口令,显式给空密码避免 CLI 走交互式询问(CI 无 TTY 会失败)
+      - name: Load updater signing key
+        run: |
+          echo "TAURI_SIGNING_PRIVATE_KEY=$(cat scripts/updater-private.key)" >> "$GITHUB_ENV"
+          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=" >> "$GITHUB_ENV"
+
+      - name: Build dmg + updater bundle
+        run: scripts/package-tauri-mac.sh
+
+      # 统一命名: dq-tool-<版本>-macos-<架构>.dmg / .app.tar.gz(.sig 同步改名;
+      # 注意 dmg 产物带版本号与架构,updater 产物固定叫 dq-tool.app.tar.gz)
+      - name: Rename artifacts with platform suffix
+        id: pkg
+        run: |
+          v=$(node -p "require('./tauri/src-tauri/tauri.conf.json').version")
+          cd tauri/src-tauri/target/release/bundle
+          mv "dmg/dq-tool_${v}_${{ matrix.tauri-arch }}.dmg" "dmg/dq-tool-$v-macos-${{ matrix.arch }}.dmg"
+          mv "macos/dq-tool.app.tar.gz" "macos/dq-tool-$v-macos-${{ matrix.arch }}.app.tar.gz"
+          mv "macos/dq-tool.app.tar.gz.sig" "macos/dq-tool-$v-macos-${{ matrix.arch }}.app.tar.gz.sig"
+          echo "name=dq-tool-$v-macos-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pkg.outputs.name }}
+          path: |
+            tauri/src-tauri/target/release/bundle/dmg/*.dmg
+            tauri/src-tauri/target/release/bundle/macos/*.app.tar.gz
+          retention-days: 30
+
+      # 签名文件单独传 artifact,供 updater-manifest 任务拼 latest.json(生命周期 1 天即可)
+      - name: Upload updater signature
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v7
+        with:
+          name: updater-sig-macos-${{ matrix.arch }}
+          path: tauri/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          retention-days: 1
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            tauri/src-tauri/target/release/bundle/dmg/*.dmg
+            tauri/src-tauri/target/release/bundle/macos/*.app.tar.gz
+
+  updater-manifest:
+    # 收尾:合并各平台 updater 签名生成统一的 latest.json 挂 Release;
+    # 应用内 updater 经 /releases/latest/download/latest.json 永远拿到最新版信息
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows-tauri, macos-tauri]
+    steps:
+      - uses: actions/checkout@v7 # 读 tauri.conf.json 的版本号
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: updater-sig-*
+          path: sigs
+
+      # 平台 key 是 updater 客户端按 target triple 查表的固定标识,不能随意改
+      - name: Generate merged latest.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./tauri/src-tauri/tauri.conf.json').version")
+          V="$v" node <<'EOF'
+          const fs = require('fs'), path = require('path');
+          const v = process.env.V, tag = process.env.TAG;
+          const base = `https://github.com/DoubleDD/dq-tool/releases/download/${tag}`;
+          // artifact 目录名 -> [updater 平台 key, Release 上的更新包文件名]
+          const map = {
+            'updater-sig-windows-x64': ['windows-x86_64', `dq-tool-${v}-windows-x64-setup.nsis.zip`],
+            'updater-sig-macos-arm64': ['darwin-aarch64', `dq-tool-${v}-macos-arm64.app.tar.gz`],
+            'updater-sig-macos-x86_64': ['darwin-x86_64', `dq-tool-${v}-macos-x86_64.app.tar.gz`],
+          };
+          const platforms = {};
+          for (const [dir, [key, file]] of Object.entries(map)) {
+            const signature = fs.readFileSync(path.join('sigs', dir, `${file}.sig`), 'utf8').trim();
+            platforms[key] = { signature, url: `${base}/${file}` };
+          }
+          const latest = {
+            version: v,
+            notes: '',
+            pub_date: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+            platforms,
+          };
+          fs.writeFileSync('latest.json', JSON.stringify(latest, null, 2));
+          console.log(JSON.stringify(latest, null, 2));
+          EOF
+
+      - name: Attach latest.json to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: latest.json
 
   # ── 以下平台暂时停用(2026-08),需要时取消注释恢复 ──────────────────────────
   #

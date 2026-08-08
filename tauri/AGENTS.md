@@ -34,7 +34,7 @@ cd web && npm install && npm run build
 cd tauri && npm install && npm run dev
 # 或根目录快捷命令(自动先构建 web/dist + fat jar):make tauri
 
-scripts/package-tauri-mac.sh          # macOS dmg(Linux 未实现,见脚本内 TODO)
+scripts/package-tauri-mac.sh          # macOS dmg + 自动更新包 .app.tar.gz(Linux 未实现,见脚本内 TODO)
 scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-tauri job 用)
                                         # 快捷命令:make package-tauri / make package-tauri-skip(--skip-build)
 ```
@@ -73,10 +73,11 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 
 ## 自动更新(tauri-plugin-updater)
 
-- 仅安装模式启用(开发模式不检查);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime
+- 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式不检查);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime
 - 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,webview 是远程 URL 不适合做更新 UI)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
-- 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 由 "Load updater signing key" 步骤把文件内容注入 `TAURI_SIGNING_PRIVATE_KEY`(tauri CLI 只认内容、不认 `_PATH` 变体),本地打包由 package-tauri-win.bat 未配置环境变量时自动读该文件;**丢私钥 = 更新链断裂,需换密钥对并发全量包**
-- `createUpdaterArtifacts: true` 产出 `dq-tool_<v>_x64-setup.nsis.zip` + `.sig`(updater 实际下载 .nsis.zip 而非 setup.exe);CI 生成 `latest.json`(version/signature/url)挂 Release
+- 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、**空口令**的 scrypt 格式 —— CLI 拿不到 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 会走交互式询问,无 TTY 环境直接失败,故打包脚本/CI 都要显式给空密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 由 "Load updater signing key" 步骤把文件内容注入 `TAURI_SIGNING_PRIVATE_KEY`(tauri CLI 只认内容、不认 `_PATH` 变体),本地打包由 package-tauri-mac.sh 未配置环境变量时自动读该文件(package-tauri-win.bat 无此逻辑,Windows 本地打包需自行设环境变量);**丢私钥 = 更新链断裂,需换密钥对并发全量包**
+- `createUpdaterArtifacts: true` 产出更新包 + `.sig`:Windows 为 `dq-tool_<v>_x64-setup.nsis.zip`(updater 实际下载 .nsis.zip 而非 setup.exe),macOS 为 `dq-tool.app.tar.gz`(固定名,不带版本/架构;**dmg 不是 updater 支持的目标**,所以 mac 打包用 `--bundles app,dmg`,只打 dmg 会报 "no updater-enabled targets were built" 警告且永远收不到更新)
+- `latest.json` 由 CI 收尾任务 `updater-manifest`(`needs: windows-tauri + macos-tauri`)**合并全平台**生成:各构建任务只把改名后的 `.sig` 传 artifact,清单 platforms 含 `windows-x86_64` / `darwin-aarch64` / `darwin-x86_64`,URL 指向 Release 上改名后的更新包
 - `nsis.installMode: "currentUser"`(装 `%LOCALAPPDATA%\Programs`,**更新免 UAC**,高频迭代必需;旧 perMachine 安装需手工卸载重装一次)
 - **版本纪律:updater 按 semver 比较,每次发版必须递增 tauri.conf.json 的 version**,否则同版本不会被识别为更新
 
@@ -86,8 +87,12 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   (jar → `backend/dq-tool.jar`;完整 JRE → `jre/`:复制本机 JDK 后只删开发工具 bin 启动器与 jmods,
   运行库模块不裁剪 —— JDBC 驱动大量反射/按名加载,jdeps/jlink 静态裁剪覆盖不全,
   实测达梦驱动初始化要 jdk.charsets 的 EUC-KR,裁剪后运行时才炸)
-  → `npm run tauri build`(mac 打 dmg,Windows 打 NSIS `dq-tool_<版本>_x64-setup.exe`)
+  → `npm run tauri build`(mac 打 dmg + app 更新包,Windows 打 NSIS `dq-tool_<版本>_x64-setup.exe`)
+- mac 脚本复制 JRE 后必须 `chmod -R u+w`:JDK 源文件大量只读(legal/ 等 r--r--r--),
+  tauri-build 会把 resources 复制到 `target/release/resources` 且保留权限,
+  再次构建覆盖只读旧文件即报 EACCES(Permission denied),2026-08 踩过
 - `tauri.conf.json` 的 `version` 与项目版本保持 `0.x.y → x.y.0` 映射(安装包主版本号 ≥ 1,且必须是三段 semver),升级需手动同步
 - `resources/` 是打包产物,已 gitignore;`tauri build` 不带 resources 也能跑(开发模式)
 - 图标源图 `src-tauri/icons-source.png`(占位图,**TODO: 换正式 logo**),改后用 `npm run icon -- src-tauri/icons-source.png -o src-tauri/icons` 重新生成
-- 未签名公证的 dmg 分发到其他 Mac 可能被 Gatekeeper 拦截
+- 未签名公证的 dmg 分发到其他 Mac 可能被 Gatekeeper 拦截;自动更新为原地替换 `.app`,
+  首次跨版本更新的 Gatekeeper 行为需真机手动验证一次

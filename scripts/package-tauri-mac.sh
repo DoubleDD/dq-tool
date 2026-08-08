@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tauri 模块(Tauri 2 桌面壳)macOS 打包脚本:构建前端 + server fat jar,
 # 完整 JRE 与 jar 一起作为 Tauri bundle resources 打进 .app,
-# 产出 .dmg(运行时由 Rust 侧车拉起 内嵌 jre/bin/java -jar,见 tauri/src-tauri/src/main.rs)
+# 产出 .dmg 与自动更新包 .app.tar.gz + .sig(--bundles app,dmg;
+# 运行时由 Rust 侧车拉起 内嵌 jre/bin/java -jar,见 tauri/src-tauri/src/main.rs)
 # 用法: scripts/package-tauri-mac.sh [--skip-build]
 #
 # TODO: Windows / Linux 打包脚本本次未实现。要点:
@@ -32,13 +33,24 @@ cp "$JAR" "$RES/backend/dq-tool.jar"
 JDK_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 25 2>/dev/null || true)}"
 [[ -n "$JDK_HOME" ]] || { echo "找不到 JDK 25,请设置 JAVA_HOME" >&2; exit 1; }
 cp -R "$JDK_HOME" "$RES/jre"
+# JDK 源文件大量只读(legal/ 等 r--r--r--):tauri-build 会把 resources 复制到
+# target/release/resources 且保留权限,再次构建覆盖只读旧文件即 EACCES,这里统一加 u+w
+chmod -R u+w "$RES/jre"
 rm -rf "$RES/jre/jmods"
 rm -f "$RES"/jre/bin/{javac,javadoc,javap,jar,jarsigner,serialver,jconsole,jdb,jdeprscan,jdeps,jfr,jhsdb,jimage,jinfo,jlink,jmap,jmod,jpackage,jps,jrunscript,jshell,jstack,jstat,jstatd,jwebserver,jcmd,jnativescan}
 
 # 冒烟:内嵌 jre 能正常启动即可(完整验证以打包后双击启动为准)
 "$RES/jre/bin/java" -version
 
-# npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
-(cd tauri && npm install && npm run tauri -- build --bundles dmg)
+# 构建 updater 产物(.app.tar.gz)必须签名:未显式配置环境变量时读入库的私钥文件
+# (单行 base64 空口令,与 CI 注入 TAURI_SIGNING_PRIVATE_KEY 的是同一把,见 tauri/AGENTS.md)
+export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY:-$(cat scripts/updater-private.key)}"
+# 私钥是空口令的 minisign scrypt 格式:CLI 拿不到密码变量会走交互式询问,无 TTY 时直接失败
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
 
-echo "产物: tauri/src-tauri/target/release/bundle/dmg/"
+# npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
+# app target 产出自动更新包 bundle/macos/*.app.tar.gz + .sig(dmg 不支持 updater 产物)
+(cd tauri && npm install && npm run tauri -- build --bundles app,dmg)
+
+echo "产物: tauri/src-tauri/target/release/bundle/dmg/(安装包)"
+echo "      tauri/src-tauri/target/release/bundle/macos/(自动更新包 .app.tar.gz + .sig)"
