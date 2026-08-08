@@ -1,4 +1,4 @@
-# dq-tool 快捷命令(macOS/Linux;Windows 打包用 scripts\package-win.bat)
+# dq-tool 快捷命令(macOS/Linux 为主;package-*-win 目标仅在 Windows 上可用,调 scripts\package-*-win.bat)
 # 直接敲 make 查看全部命令(按用途分组)
 
 SHELL := /bin/bash
@@ -33,6 +33,9 @@ web/dist/index.html: $(WEB_SRC)
 	package package-skip package-linux \
 	package-shell package-shell-skip \
 	package-tauri package-tauri-skip \
+	package-win package-win-skip \
+	package-shell-win package-shell-win-skip \
+	package-tauri-win package-tauri-win-skip \
 	license-keypair license clean
 
 help: ## 显示全部可用命令(按用途分组)
@@ -52,17 +55,23 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '  make %-18s %s\n' package        'macOS dmg(构建 + 打包)'
 	@printf '  make %-18s %s\n' package-skip   'macOS dmg(跳过构建,用现有 jar 重打)'
 	@printf '  make %-18s %s\n' package-linux  'Linux deb(--type rpm 打 rpm 需直接调 scripts/package-linux.sh)'
+	@printf '  make %-18s %s\n' package-win      'Windows 免安装 zip(仅 Windows 可用)'
+	@printf '  make %-18s %s\n' package-win-skip 'Windows zip(跳过构建,用现有 jar 重打)'
 	@printf '\n\033[1m打包:JCEF 套壳\033[0m\n'
 	@printf '  make %-18s %s\n' package-shell      'macOS dmg(内嵌 Chromium natives)'
 	@printf '  make %-18s %s\n' package-shell-skip 'macOS dmg(跳过构建)'
+	@printf '  make %-22s %s\n' package-shell-win      'Windows 版(仅 Windows 可用)'
+	@printf '  make %-22s %s\n' package-shell-win-skip 'Windows 版(跳过构建)'
 	@printf '\n\033[1m打包:Tauri 2 套壳\033[0m\n'
 	@printf '  make %-18s %s\n' package-tauri      'macOS dmg(内嵌 fat jar + jlink JRE)'
 	@printf '  make %-18s %s\n' package-tauri-skip 'macOS dmg(跳过构建)'
+	@printf '  make %-22s %s\n' package-tauri-win      'Windows 版(仅 Windows 可用)'
+	@printf '  make %-22s %s\n' package-tauri-win-skip 'Windows 版(跳过构建)'
 	@printf '\n\033[1m授权码 / 清理\033[0m\n'
 	@printf '  make %-18s %s\n' license-keypair '生成授权密钥对(只需一次,公钥写入 license-public.key 并拷入 server/src/main/resources/)'
 	@printf '  make %-18s %s\n' license         '签发授权码(交互式;也可 customer=... expires=... 传参)[KEY=私钥文件]'
 	@printf '  make %-18s %s\n' clean           '清理构建产物(server/build/ 与 web/dist/)'
-	@printf '\nWindows 产物无法在本机构建(不支持交叉编译):在 Windows 上跑 scripts\\package-{win,shell-win,tauri-win}.bat,或推 v* tag 走 CI\n\n'
+	@printf '\n跨平台产物无法在本机构建(不支持交叉编译):macOS/Linux 包在对应系统上打,或推 v* tag 走 CI\n\n'
 
 # ── 本地运行调试 ─────────────────────────────────────────────────────────────
 
@@ -111,6 +120,14 @@ package-skip: ## macOS:跳过构建,用现有 jar 重打 dmg
 package-linux: ## Linux:构建并打 deb 安装包
 	scripts/package-linux.sh
 
+# Windows 目标仅在本机为 Windows 时可用:经 cmd 调对应 .bat 脚本(产物无法跨平台构建)
+
+package-win: ## Windows:构建并打免安装 zip(仅 Windows 可用)
+	cmd //c scripts\\package-win.bat
+
+package-win-skip: ## Windows:跳过构建,用现有 jar 重打 zip(仅 Windows 可用)
+	cmd //c "scripts\\package-win.bat --skip-build"
+
 # ── 打包:JCEF 套壳(shell 模块,内嵌 Chromium)─────────────────────────────────
 
 package-shell: ## macOS:构建并打 JCEF 套壳版 dmg
@@ -119,6 +136,12 @@ package-shell: ## macOS:构建并打 JCEF 套壳版 dmg
 package-shell-skip: ## macOS:跳过构建,用现有 jar 重打 JCEF 套壳版 dmg
 	scripts/package-shell-mac.sh --skip-build
 
+package-shell-win: ## Windows:构建并打 JCEF 套壳版(仅 Windows 可用)
+	cmd //c scripts\\package-shell-win.bat
+
+package-shell-win-skip: ## Windows:跳过构建,重打 JCEF 套壳版(仅 Windows 可用)
+	cmd //c "scripts\\package-shell-win.bat --skip-build"
+
 # ── 打包:Tauri 2 套壳(tauri 模块,系统 WebView + java 侧车子进程)──────────────
 
 package-tauri: ## macOS:构建并打 Tauri 2 套壳版 dmg(内嵌 fat jar + jlink JRE)
@@ -126,6 +149,12 @@ package-tauri: ## macOS:构建并打 Tauri 2 套壳版 dmg(内嵌 fat jar + jlin
 
 package-tauri-skip: ## macOS:跳过构建,用现有 jar 重打 Tauri 2 套壳版 dmg
 	scripts/package-tauri-mac.sh --skip-build
+
+package-tauri-win: ## Windows:构建并打 Tauri 2 套壳版(仅 Windows 可用)
+	cmd //c scripts\\package-tauri-win.bat
+
+package-tauri-win-skip: ## Windows:跳过构建,重打 Tauri 2 套壳版(仅 Windows 可用)
+	cmd //c "scripts\\package-tauri-win.bat --skip-build"
 
 # ── 授权码 / 清理 ────────────────────────────────────────────────────────────
 
