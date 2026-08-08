@@ -90,7 +90,7 @@ java -jar server/build/libs/dq-tool-0.1.6.jar   # 访问 http://localhost:10000
 
 所有 JVM 启动入口(gradle run、Makefile、jpackage 安装包)已统一使用 ZGC(`-XX:+UseZGC`,JDK 25 默认即为分代模式,无需其他参数)。
 
-日常操作也可以用根目录的 `Makefile`(`make` 查看全部):`make dev` / `make dev-web`(开发;`dev`/`dev-headless` 会在 `web/src` 有改动时先自动重建 `web/dist`,纯前端调试热更新用 `dev-web`)、`make build` / `make run`(jar)、`make test`、`make package`(mac dmg)/ `make package-linux`(deb)、`make tauri` / `make package-tauri` / `make package-shell`(Tauri 2 套壳版开发运行 / Tauri 套壳 mac dmg / JCEF 套壳 mac dmg)、`make clean`;macOS 上会自动探测 JDK 25 覆盖 JAVA_HOME,`dev`/`run` 显式带 `-Djava.awt.headless=false`(否则应用默认 headless,窗口和托盘都不会启动),服务器方式调试用 `make dev-headless` / `make run-headless`。
+日常操作也可以用根目录的 `Makefile`(`make` 查看全部):`make dev` / `make dev-web`(开发;`dev`/`dev-headless` 会在 `web/src` 有改动时先自动重建 `web/dist`,纯前端调试热更新用 `dev-web`)、`make build` / `make run`(jar)、`make test`、`make package`(mac dmg)/ `make package-linux`(deb)/ `make package-win`(Windows 免安装 zip,仅 Windows 可用)、`make tauri` / `make package-tauri` / `make package-shell`(Tauri 2 套壳版开发运行 / Tauri 套壳 mac dmg / JCEF 套壳 mac dmg,Windows 对应 `make package-tauri-win` / `make package-shell-win`,均带 `-skip` 跳过构建变体)、`make clean`;macOS 上会自动探测 JDK 25 覆盖 JAVA_HOME,`dev`/`run` 显式带 `-Djava.awt.headless=false`(否则应用默认 headless,窗口和托盘都不会启动),服务器方式调试用 `make dev-headless` / `make run-headless`。
 
 ## 测试
 
@@ -136,9 +136,9 @@ java -jar server/build/libs/dq-tool-0.1.6.jar   # 访问 http://localhost:10000
 ## 发布流程
 
 - 推 `v*` tag(如 `git tag v1.2 && git push origin v1.2`)触发 `.github/workflows/release.yml`;也支持 workflow_dispatch 手动触发(产物以 artifact 下载,保留 30 天,名称带版本号)
-- 并行构建:Windows 免安装 zip(x64 + ARM64,jpackage `--type app-image`,**已不用 exe/WiX**)、macOS dmg(Apple Silicon + Intel,Intel 用 macos-15-intel runner)、Linux deb + rpm,tag 触发时全部挂到 GitHub Release。**当前 CI 只启用 Windows x64 jpackage zip;windows-shell(JCEF)/ windows-tauri(Tauri 2)任务 2026-08 起注释停用(tauri Windows 安装包启动闪退待排查,恢复时一并验证 shell),ARM64/macOS/Linux 任务同样在 release.yml 中注释停用,需要时取消注释恢复**
+- 并行构建:Windows 免安装 zip(x64 + ARM64,jpackage `--type app-image`,**已不用 exe/WiX**)、macOS dmg(Apple Silicon + Intel,Intel 用 macos-15-intel runner)、Linux deb + rpm,tag 触发时全部挂到 GitHub Release。**当前 CI 启用:Windows x64 jpackage zip + windows-tauri(Tauri 2)NSIS 安装包(tauri 启动闪退 2026-08 已定位修复:`bundled_resources_dir` 漏查 Tauri 2 实际落盘的 `<exe>/resources/` 目录,安装版找不到内嵌 jar 直接退出);windows-shell(JCEF)/ ARM64 / macOS / Linux 任务在 release.yml 中注释停用,需要时取消注释恢复**
 - jpackage 不支持交叉编译,各平台包在对应系统的 runner 上原生构建
-- 本地打包用 `scripts/package-{mac,linux}.sh` / `scripts\package-win.bat`(内部走 `./gradlew :server:shadowJar` + jpackage `--main-class com.example.dq.DqApplication`),可加 `--skip-build` 只重打包;Linux 脚本默认打 deb,加 `--type rpm` 打 rpm(需 rpmbuild)
+- 本地打包用 `scripts/package-{mac,linux}.sh` / `scripts\package-win.bat`(内部走 `./gradlew :server:shadowJar` + jpackage `--main-class com.example.dq.DqApplication`),可加 `--skip-build` 只重打包;Linux 脚本默认打 deb,加 `--type rpm` 打 rpm(需 rpmbuild);`package-win.bat` 为 UTF-8 中文注释文件,**单行 `if (...)` 块内禁止写中文**(中文 Windows 上 cmd 按 GBK 解析,错位字节配对会破坏块结构,多行块则安全),重复打包自动清理旧 app-image 目录;`JAVA_HOME` 未设时自动探测常见位置的 JDK 25+(`~/.jdks`、Program Files 各发行版),`TMP`/`TEMP` 缺失时回落到 `build\tmp`(经 MSYS2 的 make 调 bat 环境变量会被剥光,不设 TMP 时 Java tmpdir 回落 `C:\Windows` 导致 Kotlin 编译写 .alive 失败)
 - 安装包内嵌**完整 JRE**(全部 69 个运行库模块,非 jdeps/jlink 裁剪):复制本机 JDK 后只删开发工具(bin 工具启动器 + jmods),经 jpackage `--runtime-image` / tauri resources 打进包。不做模块裁剪的原因:JDBC 驱动大量反射/按名加载,静态分析覆盖不全 —— 实测达梦驱动初始化要 `jdk.charsets` 的 EUC-KR,裁剪后运行时才炸(2026-08);复制+裁剪不依赖 jmods(部分 JDK 发行版无 jmods,jlink 不可用)
 - 安装包要求主版本号 ≥ 1,脚本把项目版本 `0.1.6` 映射为安装包版本 `1.6`
 - 安装版数据目录固定为 `~/.dq-tool/data`(jar 方式为 `./data`),由打包脚本注入 `--java-options "-Ddq.data-dir=..."`(H2 URL 与日志路径都引用该配置,`${user.home}` 由 ConfigLoader 启动时展开),修改打包脚本时保持这一区分
