@@ -44,7 +44,11 @@ public final class ConfigLoader {
             dq.getLicense().setPublicKey(getString(yaml, "dq.license.public-key", dq.getLicense().getPublicKey()));
         }
         // 签发私钥:配置即管理员实例(开放授权码管理);私钥内容只进配置对象,绝不进日志/接口
-        String privateKeyFile = getString(yaml, "dq.license.private-key-file", null);
+        // 环境变量 DQ_LICENSE_PRIVATE_KEY_FILE 优先(本地调试注入,不影响 CI 打包),其次 yml
+        String privateKeyFile = System.getenv("DQ_LICENSE_PRIVATE_KEY_FILE");
+        if (privateKeyFile == null || privateKeyFile.isBlank()) {
+            privateKeyFile = getString(yaml, "dq.license.private-key-file", null);
+        }
         if (privateKeyFile != null && !privateKeyFile.isBlank()) {
             dq.getLicense().setPrivateKeyFile(privateKeyFile);
             dq.getLicense().setPrivateKey(readKeyFile(privateKeyFile));
