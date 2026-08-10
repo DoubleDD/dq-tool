@@ -42,10 +42,11 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 - 不是 Gradle 模块(npm + cargo 工程,同 web/ 的管理方式),`settings.gradle.kts` 不包含它
 - 要求:Rust(cargo 1.77+)、Node、`@tauri-apps/cli` ^2(npm devDependency,无前端框架依赖)
 - 开发模式数据目录 `./data`(cwd 切到仓库根,可用 `DQ_DATA_DIR` 环境变量覆盖);安装版 `~/.dq-tool/data`(由 Rust 侧传 `-Ddq.data-dir`)
+- **改了前端/后端代码要重新调试时,先彻底退出旧实例再 `make tauri`**:常驻+单实例模型下,重跑只会唤起已有窗口,旧 java 后端不重启,看到的还是旧 jar 内容 —— 退出走托盘菜单「退出」或 Cmd+Q(直接关窗只是隐藏,不算退出)
 
 ## 侧车协议(src-tauri/src/main.rs)
 
-- **jar 定位**:`DQ_SERVER_JAR` 环境变量 > 安装版内嵌资源 `backend/dq-tool.jar`(macOS 在 `<exe>/../Resources/`;Windows/Linux 在 `<exe>/resources/` —— Tauri 2 的 bundle.resources glob 会保留 `resources/` 前缀落盘,NSIS 装到 `$INSTDIR\resources\`,`bundled_resources_dir` 另兼容"与 exe 同目录"的旧布局)> 开发默认 `server/build/libs/dq-tool-*.jar`(按修改时间取最新)
+- **jar 定位**:`DQ_SERVER_JAR` 环境变量 > 开发默认 `server/build/libs/dq-tool-*.jar`(按修改时间取最新,**debug 构建优先于内嵌资源**)> 安装版内嵌资源 `backend/dq-tool.jar`(macOS 在 `<exe>/../Resources/`;Windows/Linux 在 `<exe>/resources/` —— Tauri 2 的 bundle.resources glob 会保留 `resources/` 前缀落盘,NSIS 装到 `$INSTDIR\resources\`,`bundled_resources_dir` 另兼容"与 exe 同目录"的旧布局)。debug 优先的原因:打包脚本残留的 `src-tauri/resources` 会被 tauri-build 复制到 `target/debug/resources`,若先命中内嵌资源,`tauri dev` 会一直跑旧打包 jar,新构建的前端/后端不生效(2026-08 踩过);同理 `is_packaged()` 仅 release 构建才可能为真,避免 dev 被误判安装版(数据目录错走 `~/.dq-tool/data`、误启用自动更新)
 - **java 定位**:`DQ_JAVA` 环境变量 > 安装版内嵌 `jre/bin/java`(Windows 为 `java.exe`,完整 JRE)> PATH 的 `java`
 - **端口**:`TcpListener::bind(127.0.0.1:0)` 取空闲端口后释放传给 `--server.port=`;
   竞态被抢注时 DqApplication 向后避让,Rust 读线程解析 stdout 的「端口 N 被占用,避让到 M」回填实际端口
@@ -67,6 +68,18 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   缓存仅 16MB,若日后验证 Windows(Defender 实时扫描大 jar)有收益再接入打包脚本
 - **退出联动**:关窗/退出 → `RunEvent::ExitRequested|Exit` 杀子进程;Ctrl+C/SIGTERM 由
   libc 信号处理器兜底(杀子进程后 `_exit`),不留孤儿 java 进程
+- **自定义 IPC 命令**:webview 加载的是远程 URL(`http://127.0.0.1:<port>`),前端通过
+  `window.__TAURI_INTERNALS__.invoke`(原始 IPC,无需 npm 依赖)调用,远程来源经
+  `capabilities/default.json` 的 `remote.urls`(`http://127.0.0.1:*`)放行。**远程来源调用自定义
+  app 命令被 Tauri 2 强制 ACL 校验**(webview.rs on_message:非本地来源时 `invoke.acl` 必须有命中),
+  每个命令须在 `permissions/*.toml` 声明 `allow-<命令名-连字符>` 权限并列入 capability 的
+  `permissions`,否则 IPC 层直接拒绝(报 `<cmd> not allowed. Plugin not found`,不进 Rust 命令、
+  后端日志无记录,错误只 toast 在前端)。坑:`permissions/` 目录不存在时 build.rs 不会对其发
+  `cargo:rerun-if-changed`,**首次新增权限文件后要 `touch build.rs` 触发重跑构建脚本**。
+  现有命令:
+  `save_report_as(id, name)` —— 导出任务「另存为」:原生保存对话框 + 从数据目录
+  (`data_dir()`,与后端 `-Ddq.data-dir` 同口径)复制 `reports/report-{id}.docx` 到目标位置,
+  不引 HTTP client / fs 插件;前端检测 `__TAURI_INTERNALS__` 存在才显示「另存为」,浏览器环境显示「下载」
 - **Windows 不弹终端**:crate 根 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
   使 release exe 为 GUI 子系统(双击不出控制台;debug 保留控制台看日志),拉起 java.exe 子进程时
   再加 `CREATE_NO_WINDOW`(0x08000000)—— 控制台子系统的子进程被 GUI 父进程拉起时会新分配控制台窗口
