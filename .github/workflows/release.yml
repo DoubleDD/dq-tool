@@ -242,10 +242,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7 # 读 tauri.conf.json 的版本号
 
+      # merge-multiple:pattern 只匹配到 1 个 artifact 时不再建按 artifact 命名的子目录
+      # (直接平铺进 path),多平台恢复后又会建子目录 —— 目录结构随平台数量变化;
+      # 合并平铺到 sigs/ 让下游脚本的路径恒定,与启用几个平台无关
       - uses: actions/download-artifact@v7
         with:
           pattern: updater-sig-*
           path: sigs
+          merge-multiple: true
 
       # 平台 key 是 updater 客户端按 target triple 查表的固定标识,不能随意改
       - name: Generate merged latest.json
@@ -258,17 +262,18 @@ jobs:
           const fs = require('fs'), path = require('path');
           const v = process.env.V, tag = process.env.TAG;
           const base = `https://github.com/DoubleDD/dq-tool/releases/download/${tag}`;
-          // artifact 目录名 -> [updater 平台 key, Release 上的更新包文件名]
+          // updater 平台 key -> Release 上的更新包文件名;签名文件同名加 .sig,
+          // 下载时 merge-multiple 平铺在 sigs/ 下(见上一步注释)
           const map = {
-            'updater-sig-windows-x64': ['windows-x86_64', `dq-tool-${v}-windows-x64-setup.exe`],
+            'windows-x86_64': `dq-tool-${v}-windows-x64-setup.exe`,
             // macos-tauri 任务暂时停用;恢复时连同 needs 与 macos-tauri 任务块一起取消注释
-            // 'updater-sig-macos-arm64': ['darwin-aarch64', `dq-tool-${v}-macos-arm64.app.tar.gz`],
+            // 'darwin-aarch64': `dq-tool-${v}-macos-arm64.app.tar.gz`,
             // Intel 构建已停用(macos-tauri 矩阵同步注释);恢复时两边一起取消注释
-            // 'updater-sig-macos-x86_64': ['darwin-x86_64', `dq-tool-${v}-macos-x86_64.app.tar.gz`],
+            // 'darwin-x86_64': `dq-tool-${v}-macos-x86_64.app.tar.gz`,
           };
           const platforms = {};
-          for (const [dir, [key, file]] of Object.entries(map)) {
-            const signature = fs.readFileSync(path.join('sigs', dir, `${file}.sig`), 'utf8').trim();
+          for (const [key, file] of Object.entries(map)) {
+            const signature = fs.readFileSync(path.join('sigs', `${file}.sig`), 'utf8').trim();
             platforms[key] = { signature, url: `${base}/${file}` };
           }
           const latest = {
