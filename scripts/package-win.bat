@@ -18,8 +18,8 @@ if /i not "%~1"=="--skip-build" (
   call gradlew.bat :server:shadowJar || exit /b 1
 )
 
-rem 版本号从 server/build.gradle.kts 动态读取,避免两处手工同步遗漏
-for /f "tokens=2 delims==" %%a in ('findstr "^version" server\build.gradle.kts') do for %%b in (%%a) do set APP_VERSION=%%~b
+rem 版本号从根目录 VERSION 文件读取(唯一源头)
+for /f "delims=" %%a in (VERSION) do set APP_VERSION=%%a
 rem 安装包版本与其他平台口径一致:从 APP_VERSION 派生,去掉开头的 "0."(0.1.7 -> 1.7),避免两处手工同步遗漏
 set PKG_VERSION=%APP_VERSION:0.=%
 set JAR=server\build\libs\dq-tool-%APP_VERSION%.jar

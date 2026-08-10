@@ -21,7 +21,7 @@ if [[ "$SKIP_BUILD" == 0 ]]; then
   ./gradlew :server:shadowJar
 fi
 
-APP_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/build.gradle.kts | head -1)
+APP_VERSION=$(cat VERSION)
 # 与其他平台安装包版本保持一致,去掉开头的 "0."(0.1.0 -> 1.0)
 PKG_VERSION="${APP_VERSION#0.}"
 JAR="server/build/libs/dq-tool-${APP_VERSION}.jar"

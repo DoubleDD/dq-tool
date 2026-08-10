@@ -9,7 +9,7 @@ if [[ "${1:-}" != "--skip-build" ]]; then
   ./gradlew :server:shadowJar
 fi
 
-APP_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/build.gradle.kts | head -1)
+APP_VERSION=$(cat VERSION)
 # dmg/msi 要求主版本号 >= 1,去掉开头的 "0."(0.1.0 -> 1.0)
 PKG_VERSION="${APP_VERSION#0.}"
 JAR="server/build/libs/dq-tool-${APP_VERSION}.jar"

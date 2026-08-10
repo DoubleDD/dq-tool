@@ -12,12 +12,12 @@ export JAVA_HOME := $(JDK25)
 endif
 endif
 
-VERSION = $(shell sed -n 's/^version = "\(.*\)"/\1/p' server/build.gradle.kts | head -1)
+VERSION := $(shell cat VERSION)
 JAR = server/build/libs/dq-tool-$(VERSION).jar
 
 KEY ?= license-private.key
 
-# 授权码绑定的软件版本:与安装包版本口径一致(去 0. 前缀,0.1.6 -> 1.6)
+# 授权码绑定的软件版本:与安装包版本口径一致(去 0. 前缀,如 0.1.6 -> 1.6)
 LICENSE_VERSION ?= $(VERSION:0.%=%)
 
 # 前端源码变动时重新构建 web/dist(后端 run 的静态资源来自 processResources 拷贝的 dist)
