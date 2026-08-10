@@ -46,12 +46,15 @@ public final class ConfigLoader {
         // 签发私钥:配置即管理员实例(开放授权码管理);私钥内容只进配置对象,绝不进日志/接口
         // 环境变量 DQ_LICENSE_PRIVATE_KEY_FILE 优先(本地调试注入,不影响 CI 打包),其次 yml
         String privateKeyFile = System.getenv("DQ_LICENSE_PRIVATE_KEY_FILE");
+        String privateKeySource = "环境变量";
         if (privateKeyFile == null || privateKeyFile.isBlank()) {
             privateKeyFile = getString(yaml, "dq.license.private-key-file", null);
+            privateKeySource = "application.yml";
         }
         if (privateKeyFile != null && !privateKeyFile.isBlank()) {
             dq.getLicense().setPrivateKeyFile(privateKeyFile);
             dq.getLicense().setPrivateKey(readKeyFile(privateKeyFile));
+            StartupLog.log("已加载授权码签发私钥(来源:" + privateKeySource + "):" + privateKeyFile);
         }
         dq.getDesktop().setShutdownTimeoutSeconds(getInt(yaml, "dq.desktop.shutdown-timeout-seconds",
                 dq.getDesktop().getShutdownTimeoutSeconds()));

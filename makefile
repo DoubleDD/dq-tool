@@ -67,10 +67,10 @@ help: ## 显示全部可用命令(按用途分组)
 # ── 本地运行调试 ─────────────────────────────────────────────────────────────
 
 dev: web/dist/index.html ## 后端开发模式,带窗口/托盘(显式关闭 headless;前端有改动时先重新构建)
-	JAVA_TOOL_OPTIONS="-Djava.awt.headless=false" ./gradlew :server:run
+	DQ_LICENSE_PRIVATE_KEY_FILE=$(wildcard license-private.key) JAVA_TOOL_OPTIONS="-Djava.awt.headless=false" ./gradlew :server:run
 
 dev-headless: web/dist/index.html ## 后端开发模式,无窗口/托盘(服务器调试;前端有改动时先重新构建)
-	./gradlew :server:run
+	DQ_LICENSE_PRIVATE_KEY_FILE=$(wildcard license-private.key) ./gradlew :server:run
 
 dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
 	cd web && npm run dev

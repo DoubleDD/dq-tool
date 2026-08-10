@@ -46,6 +46,10 @@ class LicenseService(
     /** 签发私钥;可解析即管理员实例。解析失败按非管理员处理(私钥是可选配置,不影响启动) */
     private val privateKey: PrivateKey? = parsePrivateKey(privateKeyBase64)
 
+    init {
+        log.info("授权码管理:{}", if (privateKey != null) "已启用(管理员实例)" else "未启用(非管理员实例)")
+    }
+
     private val appVersion: String = appVersion.ifBlank { "dev" }
 
     /** 状态缓存,activate 后刷新,避免每个请求查库验签 */
