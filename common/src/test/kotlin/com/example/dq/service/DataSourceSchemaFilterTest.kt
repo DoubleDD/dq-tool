@@ -6,6 +6,7 @@ import com.example.dq.model.DataSourceRequest
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.ScanRepository
+import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.util.CryptoUtil
@@ -115,7 +116,8 @@ class DataSourceSchemaFilterTest {
             SchemaStatRepository.CachedStat("report_agent", 5, 100),
             SchemaStatRepository.CachedStat("xxl_job", 8, 200),
         ))
-        val meta = MetadataService(dataSourceService, DialectFactory, ScanRepository(jdbc), schemaStatRepo)
+        val meta = MetadataService(dataSourceService, DialectFactory, ScanRepository(jdbc), schemaStatRepo,
+            SchemaDocRepository(jdbc))
         val stats = meta.listSchemaStats(id, null)
         assertEquals(listOf("report_agent", "xxl_job"), stats.map { it.name })
     }

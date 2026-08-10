@@ -5,6 +5,7 @@ import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.SchemaStat
 import com.example.dq.model.TableStat
 import com.example.dq.repository.ScanRepository
+import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaStatRepository
 import java.sql.SQLException
 import java.time.LocalDateTime
@@ -15,6 +16,7 @@ class MetadataService(
     private val dialectFactory: DialectFactory,
     private val scanRepository: ScanRepository,
     private val schemaStatRepo: SchemaStatRepository,
+    private val schemaDocRepo: SchemaDocRepository,
 ) {
 
     /** dbType 在数据源保存时一定已写入,此处直接解空 */
@@ -99,6 +101,7 @@ class MetadataService(
             cached = cached.filter { it.schemaName in ds.schemaFilter!! }
         }
         val latest = scanRepository.latestJobsBySchema(datasourceId, database)
+        val docs = schemaDocRepo.findByDatasource(datasourceId, database ?: "")
         val stats = ArrayList<SchemaStat>(cached.size)
         for (c in cached) {
             val job = latest[c.schemaName]
@@ -115,10 +118,25 @@ class MetadataService(
                     job?.id,
                     job?.doneTables,
                     job?.totalTables,
+                    docs[c.schemaName],
                 )
             )
         }
         return stats
+    }
+
+    /** 库列表页编辑库描述(Word 报告「实例描述」列);空白表示清除 */
+    fun updateSchemaDescription(datasourceId: Long, database: String?, schema: String, description: String?) {
+        dataSourceService.get(datasourceId) // 数据源不存在时抛异常
+        val text = description?.trim().orEmpty()
+        if (text.length > 512) {
+            throw IllegalArgumentException("描述长度不能超过 512 字")
+        }
+        if (text.isEmpty()) {
+            schemaDocRepo.delete(datasourceId, database ?: "", schema)
+        } else {
+            schemaDocRepo.upsert(datasourceId, database ?: "", schema, text)
+        }
     }
 
     /** 首次访问:从业务库元数据拉取 schema 列表/表数量/占用空间并整体落缓存 */

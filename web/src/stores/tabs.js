@@ -12,7 +12,8 @@ export const tabState = reactive({
   tabs: [
     { key: 'home', title: '首页', path: '/datasources', closable: false },
     { key: 'dashboard', title: '任务看板', path: '/dashboard', closable: false },
-    { key: 'tags', title: '标记统计', path: '/tags', closable: false }
+    { key: 'tags', title: '标记统计', path: '/tags', closable: false },
+    { key: 'report-exports', title: '导出任务', path: '/report-exports', closable: false }
   ],
   activeKey: 'home'
 })
@@ -45,6 +46,9 @@ function resolveTab(route) {
   }
   if (p === '/tags') {
     return { key: 'tags', title: '标记统计', closable: false }
+  }
+  if (p === '/report-exports') {
+    return { key: 'report-exports', title: '导出任务', closable: false }
   }
   if (p === '/datasources') {
     return { key: 'home', title: '首页', closable: false }

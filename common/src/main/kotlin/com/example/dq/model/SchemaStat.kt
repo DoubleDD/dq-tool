@@ -13,7 +13,9 @@ import java.time.LocalDateTime
  * @property lastScanJobId       最近一次扫描任务 id(从未扫描为 null)
  * @property lastScanDoneTables  最近任务已完成表数,供列表页展示进度(从未扫描为 null)
  * @property lastScanTotalTables 最近任务总表数(从未扫描为 null)
+ * @property description         库级描述(库列表页可编辑,Word 报告「实例描述」列;未设置为 null)
  */
 data class SchemaStat(val name: String?, val tableCount: Int?, val sizeBytes: Long?, val lastScanStatus: String?,
                       val lastScanAt: LocalDateTime?,
-                      val lastScanJobId: Long?, val lastScanDoneTables: Int?, val lastScanTotalTables: Int?)
+                      val lastScanJobId: Long?, val lastScanDoneTables: Int?, val lastScanTotalTables: Int?,
+                      val description: String? = null)

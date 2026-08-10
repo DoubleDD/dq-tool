@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "主窗口默认能力:本地启动页之外,远程后端页面(http://127.0.0.1 动态端口)也放行 core IPC,供「另存为」等自定义命令使用",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "permissions": ["core:default", "allow-save-report-as"]
+}

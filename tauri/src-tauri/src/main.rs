@@ -116,6 +116,8 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        // 自定义命令:导出任务「另存为」(webview 经 __TAURI_INTERNALS__.invoke 调用)
+        .invoke_handler(tauri::generate_handler![save_report_as])
         .setup(move |app| {
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -320,13 +322,66 @@ fn bundled_resources_dir() -> Option<PathBuf> {
     .find(|d| d.join("backend/dq-tool.jar").is_file())
 }
 
+/// 是否安装版:仅 release 构建可能为安装版;debug 构建(tauri dev)恒为开发模式 ——
+/// 打包残留的 src-tauri/resources 会复制到 target/debug/resources,若按资源存在判断,
+/// dev 会被误判为安装版(数据目录错走 ~/.dq-tool/data、误启用自动更新)
 fn is_packaged() -> bool {
+    if cfg!(debug_assertions) {
+        return false;
+    }
     bundled_resources_dir()
         .map(|d| d.join("backend/dq-tool.jar").exists())
         .unwrap_or(false)
 }
 
-/// 定位 server fat jar:DQ_SERVER_JAR 环境变量 > 安装版内嵌资源 > 开发默认 ../server/build/libs/dq-tool-*.jar(取最新)
+/// 数据目录(与后端 -Ddq.data-dir 口径一致):安装版 ~/.dq-tool/data;
+/// 开发模式 $DQ_DATA_DIR 或仓库根 ./data
+fn data_dir() -> PathBuf {
+    if is_packaged() {
+        return home_dir().join(".dq-tool").join("data");
+    }
+    if let Ok(dir) = std::env::var("DQ_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    repo_root().join("data")
+}
+
+/// 导出任务「另存为」:原生保存对话框 + 从数据目录复制产物文件。
+/// 产物本就落在本机数据目录,直接复制——不引 HTTP client,也不需要 fs 插件权限。
+/// 返回 Ok(false) 表示用户在对话框中取消。
+#[tauri::command]
+async fn save_report_as(app: tauri::AppHandle, id: i64, name: String) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let src = data_dir().join("reports").join(format!("report-{id}.docx"));
+    if !src.is_file() {
+        return Err("报告文件不存在或已被移动,请重新导出".into());
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&name)
+        .save_file(move |target| {
+            let _ = tx.send(target);
+        });
+    // 对话框回调在 UI 线程,recv 阻塞放线程池,不占 async runtime worker
+    let target = tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let Some(target) = target else {
+        return Ok(false);
+    };
+    let target = target.into_path().map_err(|e| e.to_string())?;
+    std::fs::copy(&src, &target).map_err(|e| format!("保存失败:{e}"))?;
+    eprintln!("[dq-tool-tauri] 报告另存为:{} -> {}", src.display(), target.display());
+    Ok(true)
+}
+
+/// 定位 server fat jar:DQ_SERVER_JAR 环境变量 > 开发默认 server/build/libs/dq-tool-*.jar
+/// (debug 构建优先,取最新)> 安装版内嵌资源 backend/dq-tool.jar。
+/// 注意优先级:打包脚本残留的 src-tauri/resources 会被 tauri-build 复制到 target/debug/resources,
+/// debug 构建若先命中内嵌资源,`tauri dev` 会一直跑旧打包 jar,新构建的前端/后端不生效(2026-08 踩过)
 fn find_server_jar() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("DQ_SERVER_JAR") {
         let p = PathBuf::from(p);
@@ -335,15 +390,30 @@ fn find_server_jar() -> Result<PathBuf, String> {
         }
         return Err(format!("DQ_SERVER_JAR 指向的文件不存在:{}", p.display()));
     }
+    if cfg!(debug_assertions) {
+        if let Some(p) = latest_dev_jar() {
+            return Ok(p);
+        }
+    }
     if let Some(res) = bundled_resources_dir() {
         let p = res.join("backend/dq-tool.jar");
         if p.is_file() {
             return Ok(p);
         }
     }
+    latest_dev_jar().ok_or_else(|| {
+        format!(
+            "{} 下没有 dq-tool-*.jar(需先 ./gradlew :server:shadowJar)",
+            repo_root().join("server/build/libs").display()
+        )
+    })
+}
+
+/// 开发默认 jar:仓库 server/build/libs 下按修改时间取最新的 dq-tool-*.jar(排除 plain)
+fn latest_dev_jar() -> Option<PathBuf> {
     let libs_dir = repo_root().join("server/build/libs");
     let mut candidates: Vec<PathBuf> = std::fs::read_dir(&libs_dir)
-        .map_err(|e| format!("读取 {} 失败:{e}(需先 ./gradlew :server:shadowJar)", libs_dir.display()))?
+        .ok()?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             p.file_name()
@@ -358,9 +428,7 @@ fn find_server_jar() -> Result<PathBuf, String> {
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     });
-    candidates
-        .pop()
-        .ok_or_else(|| format!("{} 下没有 dq-tool-*.jar(需先 ./gradlew :server:shadowJar)", libs_dir.display()))
+    candidates.pop()
 }
 
 /// 定位 java:DQ_JAVA 环境变量 > 安装版内嵌 jlink 运行时 > PATH 上的 java

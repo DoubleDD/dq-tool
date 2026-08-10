@@ -1,0 +1,8 @@
+# save_report_as 命令的应用层权限。
+# webview 加载的是远程来源(http://127.0.0.1:<port>),Tauri 2 对远程来源调用自定义
+# app 命令强制 ACL 校验(webview.rs on_message:plugin 命令或 !is_local 时 acl 必须有命中),
+# 不在此声明权限则直接被拒:"save_report_as not allowed. Plugin not found"。
+[[permission]]
+identifier = "allow-save-report-as"
+description = "允许调用 save_report_as 命令(导出任务「另存为」:原生保存对话框 + 复制产物文件)"
+commands.allow = ["save_report_as"]

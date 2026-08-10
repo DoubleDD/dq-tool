@@ -12,6 +12,7 @@ import com.example.dq.controller.AiConfigController;
 import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.LicenseController;
 import com.example.dq.controller.MetadataController;
+import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
@@ -88,6 +89,7 @@ public class WebServer {
                     new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService()),
                     new ScanController(env.getScanService(), env.getExportService()),
                     new MetadataController(env.getMetadataService(), env.getTableDocService()),
+                    new ReportExportController(env.getWordReportExportService()),
                     new TagController(env.getTagService()),
                     new AiConfigController(env.getAiConfigService()), new LicenseController(env.getLicenseService()), sessionRef);
         });
@@ -103,7 +105,8 @@ public class WebServer {
     }
 
     private void registerRoutes(RoutesConfig routes, LicenseService licenseService, DataSourceController ds,
-                                ScanController scan, MetadataController meta, TagController tag, AiConfigController aiConfig,
+                                ScanController scan, MetadataController meta, ReportExportController reportExport,
+                                TagController tag, AiConfigController aiConfig,
                                 LicenseController license, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
@@ -179,6 +182,14 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/table-docs", meta::tableDocs);
         routes.post("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", meta::generateTableDoc);
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", meta::updateTableDoc);
+        routes.put("/api/datasources/{dsId}/schemas/{schema}/description", meta::updateSchemaDescription);
+
+        // ---- Word 报告异步导出任务 ----
+        routes.post("/api/datasources/{dsId}/report/exports", reportExport::submit);
+        routes.get("/api/report-exports", reportExport::list);
+        routes.get("/api/report-exports/{id}/download", reportExport::download);
+        routes.post("/api/report-exports/{id}/open", reportExport::open);
+        routes.post("/api/report-exports/{id}/reveal", reportExport::reveal);
 
         // ---- 表标记与统计 ----
         routes.get("/api/tags", tag::list);

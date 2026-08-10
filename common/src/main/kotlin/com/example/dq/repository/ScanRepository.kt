@@ -67,13 +67,24 @@ class ScanRepository(private val jdbc: Jdbc) {
      * 每个 schema 最近一次扫描任务(按 id 最大),供库列表页展示"最近扫描"。
      * dbName 为空时只匹配 db_name 为 NULL 的任务(与 ScanRequest.database 的落库口径一致)。
      */
-    fun latestJobsBySchema(datasourceId: Long, dbName: String?): Map<String, JobRow> {
+    fun latestJobsBySchema(datasourceId: Long, dbName: String?): Map<String, JobRow> =
+        latestJobsBySchema(datasourceId, dbName, false)
+
+    /**
+     * 每个 schema 最近一次 DONE 任务(按 id 最大),供 Word 报告取历史已完成快照:
+     * 重扫进行中(RUNNING)或最近一次任务失败时,仍回落到更早的 DONE 任务。
+     */
+    fun latestDoneJobsBySchema(datasourceId: Long, dbName: String?): Map<String, JobRow> =
+        latestJobsBySchema(datasourceId, dbName, true)
+
+    private fun latestJobsBySchema(datasourceId: Long, dbName: String?, onlyDone: Boolean): Map<String, JobRow> {
         val dbCond = if (!dbName.isNullOrBlank()) "db_name=?" else "db_name IS NULL"
+        val statusCond = if (onlyDone) " AND status='DONE'" else ""
         val args = ArrayList<Any?>()
         args.add(datasourceId)
         if (!dbName.isNullOrBlank()) args.add(dbName)
-        val sql = "SELECT * FROM scan_job WHERE datasource_id=? AND " + dbCond +
-                " AND id IN (SELECT MAX(id) FROM scan_job WHERE datasource_id=? AND " + dbCond +
+        val sql = "SELECT * FROM scan_job WHERE datasource_id=? AND " + dbCond + statusCond +
+                " AND id IN (SELECT MAX(id) FROM scan_job WHERE datasource_id=? AND " + dbCond + statusCond +
                 " GROUP BY schema_name)"
         args.add(datasourceId)
         if (!dbName.isNullOrBlank()) args.add(dbName)
@@ -233,6 +244,25 @@ class ScanRepository(private val jdbc: Jdbc) {
                 }
             }
         }
+    }
+
+    /**
+     * 每张表最近一次表级 DONE 的 scan_table 整行(含 id,供取字段明细),
+     * Word 报告第三章按打标表取快照用;job_id 升序遍历、后者覆盖前者,dbName 口径与 latestJobsBySchema 一致。
+     */
+    fun latestDoneScanTables(datasourceId: Long, dbName: String?, schemaName: String): Map<String, ScanTableView> {
+        val dbCond = if (!dbName.isNullOrBlank()) "j.db_name=?" else "j.db_name IS NULL"
+        val args = ArrayList<Any?>()
+        args.add(datasourceId)
+        if (!dbName.isNullOrBlank()) args.add(dbName)
+        args.add(schemaName)
+        val sql = "SELECT t.* FROM scan_table t JOIN scan_job j ON t.job_id=j.id " +
+                "WHERE j.datasource_id=? AND " + dbCond + " AND j.schema_name=? AND t.status='DONE' ORDER BY t.job_id"
+        val result = LinkedHashMap<String, ScanTableView>()
+        for (row in jdbc.query(sql, *args.toTypedArray(), mapper = tableMapper)) {
+            result[row.tableName] = row
+        }
+        return result
     }
 
     // ---------- scan_table ----------

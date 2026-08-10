@@ -3,6 +3,7 @@
     <div class="toolbar">
       <h3 style="margin: 0">库列表{{ dsName ? ` - ${dsName}` : '' }}</h3>
       <div>
+        <el-button :loading="exporting" @click="exportReport">导出报告</el-button>
         <el-button @click="openFilter">库过滤</el-button>
         <el-button type="primary" :disabled="!selected.length" :loading="submitting" @click="scanSelected">
           批量扫描{{ selected.length ? `(${selected.length})` : '' }}
@@ -23,6 +24,13 @@
       <el-table-column prop="name" label="库名(Schema)" min-width="200" sortable>
         <template #default="{ row }">
           <el-link type="primary" @click="goTables(row.name)">{{ row.name }}</el-link>
+        </template>
+      </el-table-column>
+      <el-table-column label="描述" min-width="160">
+        <template #default="{ row }">
+          <span v-if="row.description" style="margin-right: 4px">{{ row.description }}</span>
+          <span v-else style="color: var(--el-text-color-secondary); margin-right: 4px">—</span>
+          <el-button link type="primary" @click="openDesc(row)">编辑</el-button>
         </template>
       </el-table-column>
       <el-table-column label="表数量" width="100" align="right" sortable :sort-method="(a, b) => (a.tableCount ?? -1) - (b.tableCount ?? -1)">
@@ -94,8 +102,21 @@
       </el-table-column>
     </el-table>
 
+    <!-- 库描述编辑:用于 Word 报告「实例描述」列,空白保存即清除 -->
+    <el-dialog v-model="descVisible" title="编辑库描述" width="480px" destroy-on-close>
+      <div style="margin-bottom: 8px; color: var(--el-text-color-secondary); font-size: 12px">
+        库「{{ descRow?.name }}」的描述,将用于 Word 报告的「实例描述」列;留空保存即清除。
+      </div>
+      <el-input v-model="descText" type="textarea" :rows="3" maxlength="512" show-word-limit
+                placeholder="如:地下水监测库" />
+      <template #footer>
+        <el-button @click="descVisible = false">取消</el-button>
+        <el-button type="primary" :loading="descSaving" @click="saveDesc">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 库过滤:勾选需要显示的库,保存为数据源级白名单(与编辑数据源对话框的「库过滤」页签同一份配置) -->
-    <el-dialog v-model="filterVisible" title="库过滤" width="480px" destroy-on-close>
+    <el-dialog v-model="filterVisible" title="库过滤" width="560px" destroy-on-close>
       <div v-loading="filterLoading">
         <div class="filter-tip">勾选需要显示的库;全部勾选(或全不勾)表示不过滤。数据库自身的系统库可不勾。</div>
         <template v-if="filterList.length">
@@ -103,7 +124,7 @@
             <el-checkbox :model-value="filterCheckAll" :indeterminate="filterIndeterminate" @change="onFilterCheckAll">全部</el-checkbox>
             <span class="filter-count">已选 {{ filterChecked.length }} / {{ filterList.length }}</span>
           </div>
-          <el-checkbox-group v-model="filterChecked" class="filter-list">
+          <el-checkbox-group v-model="filterChecked" class="filter-list filter-grid">
             <el-checkbox v-for="db in filterList" :key="db" :value="db">{{ db }}</el-checkbox>
           </el-checkbox-group>
         </template>
@@ -121,7 +142,7 @@
 import { computed, h, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElCheckbox, ElMessage, ElMessageBox } from 'element-plus'
-import request from '../api'
+import request, { submitReportExport } from '../api'
 import { setDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber, statusTagType, statusText } from '../utils/format'
 import { goBack as historyBack } from '../utils/back'
@@ -139,7 +160,77 @@ const statsLoaded = ref(false)
 const keyword = ref('')
 const selected = ref([])
 const submitting = ref(false)
+const exporting = ref(false)
 let timer = null
+
+// ---------- 库描述编辑(Word 报告「实例描述」列) ----------
+const descVisible = ref(false)
+const descSaving = ref(false)
+const descRow = ref(null)
+const descText = ref('')
+
+function openDesc(row) {
+  descRow.value = row
+  descText.value = row.description || ''
+  descVisible.value = true
+}
+
+async function saveDesc() {
+  descSaving.value = true
+  try {
+    const q = currentDb.value ? `?db=${encodeURIComponent(currentDb.value)}` : ''
+    await request.put(`/datasources/${dsId}/schemas/${encodeURIComponent(descRow.value.name)}/description${q}`,
+      { description: descText.value })
+    descRow.value.description = descText.value.trim() || null
+    ElMessage.success('描述已保存')
+    descVisible.value = false
+  } finally {
+    descSaving.value = false
+  }
+}
+
+// ---------- Word 报告导出(复用列表复选框;数据取每库最近一次完成扫描的历史快照) ----------
+/** 是否已完成全表扫描:最近任务 DONE、无失败表、且覆盖当前全部表(与后端校验同口径) */
+function isFullyScanned(row) {
+  if (row.lastScanStatus !== 'DONE') return false
+  if (row.lastScanTotalTables == null || row.lastScanDoneTables !== row.lastScanTotalTables) return false
+  if (row.tableCount != null && row.lastScanTotalTables < row.tableCount) return false
+  return true
+}
+
+/** 导出 Word 报告:勾选了库则导出勾选的;未勾选默认导出全部已完成全表扫描的库(弹窗提示确认)。
+ *  异步任务:提交后到「导出任务」页查看进度与下载 */
+async function exportReport() {
+  let names = selected.value.map((row) => row.name)
+  if (!names.length) {
+    names = schemas.value.filter(isFullyScanned).map((s) => s.name)
+    if (!names.length) {
+      ElMessage.warning('没有已完成全表扫描的库,请先扫描')
+      return
+    }
+    try {
+      await ElMessageBox.confirm(
+        `未勾选库,将默认导出全部 ${names.length} 个已完成全表扫描的库(${names.join('、')}),是否继续?`,
+        '导出报告',
+        { confirmButtonText: '导出', cancelButtonText: '取消' }
+      )
+    } catch {
+      return // 取消
+    }
+  }
+  exporting.value = true
+  try {
+    await submitReportExport(dsId, currentDb.value, names)
+    ElMessageBox.confirm('导出任务已提交,生成可能需要几分钟。是否前往「导出任务」查看进度?', '导出报告', {
+      confirmButtonText: '前往查看',
+      cancelButtonText: '留在此页'
+    }).then(() => router.push('/report-exports')).catch(() => {})
+  } catch {
+    // 提交失败由响应拦截器弹窗
+  } finally {
+    exporting.value = false
+  }
+}
 
 // ---------- 库过滤弹窗(保存为数据源级白名单,与编辑数据源对话框同一份配置) ----------
 const filterVisible = ref(false)
@@ -427,20 +518,20 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
-/* 库过滤弹窗:全选行 + 勾选列表 */
+/* 库过滤/导出弹窗:提示行 + 全选行 + 勾选列表(宽松行距) */
 .filter-tip {
   color: var(--el-text-color-secondary);
   font-size: 12px;
   line-height: 1.6;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 .filter-all {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: 8px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--el-border-color-lighter);
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 .filter-count {
   color: var(--el-text-color-secondary);
@@ -449,7 +540,28 @@ onUnmounted(stopPolling)
 .filter-list {
   display: flex;
   flex-direction: column;
-  max-height: 320px;
+  max-height: 400px;
   overflow-y: auto;
+}
+/* 库过滤弹窗专用:双列网格(导出弹窗带标签,保持单列) */
+.filter-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 16px;
+}
+.filter-list :deep(.el-checkbox) {
+  margin-right: 0;
+  height: auto;
+  padding: 7px 8px;
+  border-radius: 4px;
+  transition: background-color 0.15s;
+}
+.filter-list :deep(.el-checkbox:hover) {
+  background-color: var(--el-fill-color-light);
+}
+.filter-list :deep(.el-checkbox__label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

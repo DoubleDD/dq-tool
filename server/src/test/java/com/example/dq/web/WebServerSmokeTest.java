@@ -271,8 +271,38 @@ class WebServerSmokeTest {
     }
 
     @Test
-    void 数据源导出下载为JSON文件() throws Exception {
+    void 库描述编辑与Word报告导出端点() throws Exception {
         activateLicense();
+        HttpResponse<String> created = send("POST", "/api/datasources",
+                "{\"name\":\"报告源\",\"jdbcUrl\":\"jdbc:mysql://127.0.0.1:59998/db\",\"username\":\"root\",\"password\":\"p\"}");
+        assertEquals(200, created.statusCode(), created.body());
+        long id = Long.parseLong(created.body().replaceAll(".*\"id\":(\\d+).*", "$1"));
+
+        // 库描述编辑:本地 H2 读写,不连业务库
+        HttpResponse<String> put = send("PUT", "/api/datasources/" + id + "/schemas/db_a/description",
+                "{\"description\":\"地下水监测库\"}");
+        assertEquals(200, put.statusCode(), put.body());
+        // 超长描述走 400 统一映射
+        assertEquals(400, send("PUT", "/api/datasources/" + id + "/schemas/db_a/description",
+                "{\"description\":\"" + "x".repeat(513) + "\"}").statusCode());
+
+        // 异步导出:提交任务 → 目标库不可达,后台执行失败 → 任务 FAILED 且带原因;未完成任务不可打开
+        HttpResponse<String> submitted = send("POST", "/api/datasources/" + id + "/report/exports",
+                "{\"schemas\":[\"db_a\"]}");
+        assertEquals(200, submitted.statusCode(), submitted.body());
+        long taskId = Long.parseLong(submitted.body().replaceAll(".*\"taskId\":(\\d+).*", "$1"));
+        String status = "";
+        for (int i = 0; i < 100 && !"FAILED".equals(status) && !"DONE".equals(status); i++) {
+            Thread.sleep(200);
+            String body = get("/api/report-exports?datasourceId=" + id).body();
+            status = body.replaceAll("(?s).*\"status\":\"([A-Z]+)\".*", "$1");
+        }
+        assertEquals("FAILED", status, "目标库不可达,任务应失败");
+        assertEquals(409, send("POST", "/api/report-exports/" + taskId + "/open", null).statusCode());
+    }
+
+    @Test
+    void 数据源导出下载为JSON文件() throws Exception {        activateLicense();
         HttpResponse<String> created = send("POST", "/api/datasources",
                 "{\"name\":\"导出源\",\"jdbcUrl\":\"jdbc:mysql://localhost:3306/db\",\"username\":\"root\",\"password\":\"p123\"}");
         assertEquals(200, created.statusCode(), created.body());

@@ -4,6 +4,7 @@
       <h3 style="margin: 0">表列表 - {{ db ? db + '.' + schema : schema }}</h3>
       <div>
         <el-button @click="goBack">返回</el-button>
+        <el-button :loading="exporting" @click="exportReport">导出报告</el-button>
         <el-button @click="$router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${dbQuery()}`)">扫描记录</el-button>
         <AiConfigDialog />
         <template v-if="!filterTagId">
@@ -240,7 +241,7 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive,
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
-import request from '../api'
+import request, { submitReportExport } from '../api'
 import AiConfigDialog from '../components/AiConfigDialog.vue'
 import TableTagDialog from '../components/TableTagDialog.vue'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
@@ -254,6 +255,21 @@ const db = route.query.db || ''
 
 const tables = ref([])
 const loading = ref(false)
+// Word 报告导出中状态(只导出当前库,未扫描时后端拦截提示)
+const exporting = ref(false)
+
+/** 导出当前库的 Word 数据调研报告(异步任务,单库范围;提交后到「导出任务」页查看) */
+async function exportReport() {
+  exporting.value = true
+  try {
+    await submitReportExport(dsId, db, [schema])
+    ElMessage.success('导出任务已提交,可在「导出任务」页签查看进度')
+  } catch {
+    // 提交失败由响应拦截器弹窗
+  } finally {
+    exporting.value = false
+  }
+}
 // schema 下所有基表的字段总数(业务库元数据查询,失败时显示 -)
 const columnCount = ref(null)
 const keyword = ref('')

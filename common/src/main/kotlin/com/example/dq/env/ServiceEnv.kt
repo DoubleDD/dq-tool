@@ -7,7 +7,9 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.LicenseRepository
+import com.example.dq.repository.ReportExportRepository
 import com.example.dq.repository.ScanRepository
+import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.TableDocRepository
@@ -27,6 +29,8 @@ import com.example.dq.service.ScanService
 import com.example.dq.service.SshTunnelService
 import com.example.dq.service.TableDocService
 import com.example.dq.service.TagService
+import com.example.dq.service.WordReportExportService
+import com.example.dq.service.WordReportService
 import com.example.dq.util.CryptoUtil
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
@@ -50,11 +54,13 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceRepo = DataSourceRepository(jdbc)
     val scanRepo = ScanRepository(jdbc)
     val schemaStatRepo = SchemaStatRepository(jdbc)
+    val schemaDocRepo = SchemaDocRepository(jdbc)
     val tableDocRepo = TableDocRepository(jdbc)
     val tagRepo = TagRepository(jdbc)
     val aiConfigRepo = AiConfigRepository(jdbc)
     val licenseRepo = LicenseRepository(jdbc)
     val licenseRecordRepo = LicenseRecordRepository(jdbc)
+    val reportExportRepo = ReportExportRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -74,8 +80,11 @@ class ServiceEnv(val config: AppConfig) {
         tagService, autoTagService)
     val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, dataSourceService,
         dialectFactory, config, executor, chunkRunner)
-    val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo)
+    val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo)
     val exportService = ExportService(scanService)
+    val wordReportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
+        dialectFactory, tagRepo, tableDocRepo, aiConfigService, aiService)
+    val wordReportExportService = WordReportExportService(wordReportService, reportExportRepo, dataSourceRepo, config)
     val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, dataSourceService, dialectFactory)
     val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey,
         licenseRecordRepo, config.licensePrivateKey, config.appVersion)
@@ -84,6 +93,7 @@ class ServiceEnv(val config: AppConfig) {
         // 建表/老库升级 + 把上次异常退出的 RUNNING 任务标记为已中断
         SchemaInit.run(dataSource)
         InterruptRecovery(scanService).recover()
+        wordReportExportService.recoverUnfinished()
     }
 
     fun shutdown() {

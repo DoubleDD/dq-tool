@@ -21,8 +21,12 @@ dependencies {
     // 数据库迁移(Flyway;H2 支持内置于 flyway-core)
     implementation(libs.flyway.core)
 
-    // Excel 导出
+    // Excel 导出 / Word 报告模板导出(poi-tl 底层同为 POI)
     implementation(libs.poi.ooxml)
+    implementation(libs.poi.tl) {
+        // batik 仅用于 SVG 图片转 PNG(SVGConvertor,只在渲染 SVG 图片标签时触达),报告无此场景,排除掉庞大的 batik 链
+        exclude(group = "org.apache.xmlgraphics")
+    }
 
     // SSH 隧道(数据源经跳板机连接目标库,本地端口转发)
     implementation(libs.sshj)

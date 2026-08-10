@@ -37,3 +37,9 @@ license-private.key
 
 # 系统文件
 .DS_Store
+
+# Office 打开文档时的临时锁文件
+~$*.docx
+
+# draw.io 编辑器临时目录
+.drawio-tmp/

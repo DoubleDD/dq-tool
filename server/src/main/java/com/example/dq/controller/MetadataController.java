@@ -1,11 +1,13 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.SchemaDocUpdateRequest;
 import com.example.dq.model.TableDocUpdateRequest;
 import com.example.dq.service.MetadataService;
 import com.example.dq.service.TableDocService;
 import io.javalin.http.Context;
 
 import java.sql.SQLException;
+import java.util.Map;
 
 /** 元数据/浏览(Javalin handler,路由在 WebServer 注册,统一挂在 /api/datasources/{dsId} 下) */
 public class MetadataController {
@@ -66,6 +68,14 @@ public class MetadataController {
         TableDocUpdateRequest req = ctx.bodyAsClass(TableDocUpdateRequest.class);
         ctx.json(tableDocService.update(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"),
                 ctx.pathParam("table"), req.getDescription()));
+    }
+
+    /** 编辑库级描述(Word 报告「实例描述」列;空白表示清除) */
+    public void updateSchemaDescription(Context ctx) {
+        SchemaDocUpdateRequest req = ctx.bodyAsClass(SchemaDocUpdateRequest.class);
+        service.updateSchemaDescription(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"),
+                req.getDescription());
+        ctx.json(Map.of("ok", true));
     }
 
     private static long dsId(Context ctx) {

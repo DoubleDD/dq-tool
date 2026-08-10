@@ -118,6 +118,16 @@ class TagRepository(private val jdbc: Jdbc) {
         jdbc.queryOne("SELECT COUNT(*) FROM (SELECT DISTINCT datasource_id, db_name, schema_name, table_name " +
                 "FROM table_tag) x") { rs -> rs.getInt(1) } ?: 0
 
+    /** 指定标记在某数据源某库下的打标表清单;Word 报告第三章按标记分节用 */
+    data class TaggedTable(val schemaName: String, val tableName: String)
+
+    fun findTaggedTables(tagId: Long, datasourceId: Long, dbName: String): List<TaggedTable> =
+        jdbc.query("SELECT schema_name, table_name FROM table_tag " +
+                "WHERE tag_id=? AND datasource_id=? AND db_name=? ORDER BY schema_name, table_name",
+            tagId, datasourceId, dbName) { rs ->
+            TaggedTable(rs.getString("schema_name"), rs.getString("table_name"))
+        }
+
     /** 库维度标记计数行(schema-tag-stats 的扁平结果,由 service 组装成嵌套结构) */
     data class SchemaTagCountRow(val schemaName: String, val tagId: Long, val tagName: String,
                                  val color: String, val kind: TagKind, val count: Int)

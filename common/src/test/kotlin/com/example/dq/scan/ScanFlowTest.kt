@@ -12,6 +12,7 @@ import com.example.dq.model.ScanStatus
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.ScanRepository
+import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.TableDocRepository
@@ -102,7 +103,8 @@ class ScanFlowTest {
         scanService = ScanService(scanRepo, dsRepo, schemaStatRepo, dataSourceService,
             dialectFactory, config, executor, chunkRunner)
         exportService = ExportService(scanService)
-        metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo)
+        metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo,
+            SchemaDocRepository(jdbc))
     }
 
     @Test
