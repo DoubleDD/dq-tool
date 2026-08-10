@@ -4,13 +4,16 @@
       <h3 style="margin: 0">导出任务</h3>
       <el-button :loading="loading" @click="load">刷新</el-button>
     </div>
-    <el-table :data="tasks" v-loading="loading" border>
-      <el-table-column label="文件名" min-width="220">
-        <template #default="{ row }">
-          <el-button v-if="row.status === 'DONE' && row.fileName" link type="primary" :title="row.fileName" @click="openDoc(row)">{{ row.fileName }}</el-button>
-          <span v-else style="color: var(--el-text-color-secondary)">—</span>
-        </template>
-      </el-table-column>
+    <div style="display: flex; gap: 12px; margin-bottom: 12px; align-items: center">
+      <el-input v-model="keyword" placeholder="按文件名、数据源搜索" clearable style="width: 280px" />
+      <el-select v-model="statusFilter" placeholder="状态" clearable style="width: 120px">
+        <el-option label="排队中" value="PENDING" />
+        <el-option label="生成中" value="RUNNING" />
+        <el-option label="完成" value="DONE" />
+        <el-option label="失败" value="FAILED" />
+      </el-select>
+    </div>
+    <el-table :data="filteredTasks" v-loading="loading" border>
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column label="数据源" min-width="120">
         <template #default="{ row }">{{ row.datasourceName || `数据源 ${row.datasourceId}` }}</template>
@@ -33,8 +36,14 @@
           <span v-else-if="row.status === 'FAILED'" style="color: var(--el-color-danger); font-size: 12px" :title="row.error">{{ row.error }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="文件名" min-width="220">
+        <template #default="{ row }">
+          <el-button v-if="row.status === 'DONE' && row.fileName" link type="primary" :title="row.fileName" @click="openDoc(row)">{{ row.fileName }}</el-button>
+          <span v-else style="color: var(--el-text-color-secondary)">-</span>
+        </template>
+      </el-table-column>
       <el-table-column label="文件大小" width="100" align="right">
-        <template #default="{ row }">{{ row.fileSize != null ? formatBytes(row.fileSize) : '—' }}</template>
+        <template #default="{ row }">{{ row.fileSize != null ? formatBytes(row.fileSize) : '-' }}</template>
       </el-table-column>
       <el-table-column label="创建时间" width="160">
         <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
@@ -60,12 +69,14 @@
 </template>
 
 <script setup>
-import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../api'
 import { formatBytes, formatDateTime } from '../utils/format'
 
 const tasks = ref([])
+const keyword = ref('')
+const statusFilter = ref('')
 const loading = ref(false)
 let timer = null
 
@@ -94,6 +105,21 @@ function duration(row) {
 function hasActive() {
   return tasks.value.some((t) => t.status === 'PENDING' || t.status === 'RUNNING')
 }
+
+const filteredTasks = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  const st = statusFilter.value
+  return tasks.value.filter((t) => {
+    if (st && t.status !== st) return false
+    if (kw) {
+      const name = (t.fileName || '').toLowerCase()
+      const ds = (t.datasourceName || '').toLowerCase()
+      if (!name.includes(kw) && !ds.includes(kw)) return false
+    }
+    return true
+  })
+})
+
 
 async function load() {
   loading.value = true

@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.example"
-version = "0.1.6"
+version = "0.1.7"
 
 java {
     toolchain {
@@ -73,7 +73,7 @@ tasks.processResources {
     from("../web/dist") {
         into("static")
     }
-    // 软件版本号构建期注入 app-version.txt:去 0. 前缀,与打包脚本 PKG_VERSION(0.1.6 -> 1.6)口径一致
+    // 软件版本号构建期注入 app-version.txt:去 0. 前缀,与打包脚本 PKG_VERSION(0.1.7 -> 1.7)口径一致
     filesMatching("app-version.txt") {
         expand(mapOf("appVersion" to project.version.toString().replaceFirst(Regex("^0\\."), "")))
     }
