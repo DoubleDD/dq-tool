@@ -5,7 +5,7 @@
         <h3 style="margin: 0">进行中的任务</h3>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
       </div>
-      <el-empty v-if="!loading && activeJobs.length === 0" description="当前没有正在进行的扫描任务" />
+      <el-empty v-if="!loading && activeJobs.length === 0" class="empty-compact" :image-size="60" description="当前没有正在进行的扫描任务" />
       <div v-else class="job-cards" v-loading="loading">
         <div v-for="row in activeJobs" :key="row.id" class="job-card" @click="goDetail(row)">
           <el-progress type="circle" :width="64" :percentage="Math.round(row.progressPercent)"
@@ -166,6 +166,13 @@ onUnmounted(clearTimer)
 </script>
 
 <style scoped>
+/* 空状态紧凑展示,默认 el-empty 上下 40px padding 太高 */
+.empty-compact {
+  padding: 12px 0;
+}
+.empty-compact :deep(.el-empty__description) {
+  margin-top: 4px;
+}
 .job-cards {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));

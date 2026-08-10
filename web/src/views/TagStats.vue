@@ -97,18 +97,14 @@
             <el-table-column label="行数" width="140" align="right" sortable
                              :sort-method="(a, b) => (a.totalRows ?? -1) - (b.totalRows ?? -1)">
               <template #default="{ row }">
-                <el-link v-if="row.totalRows !== null && row.totalRows !== undefined" type="primary" @click="goTables(row)">
-                  {{ formatNumber(row.totalRows) }}
-                </el-link>
+                <span v-if="row.totalRows !== null && row.totalRows !== undefined">{{ formatNumber(row.totalRows) }}</span>
                 <span v-else>—</span>
               </template>
             </el-table-column>
             <el-table-column label="列数" width="120" align="right" sortable
                              :sort-method="(a, b) => (a.totalColumns ?? -1) - (b.totalColumns ?? -1)">
               <template #default="{ row }">
-                <el-link v-if="row.totalColumns !== null && row.totalColumns !== undefined" type="primary" @click="goTables(row)">
-                  {{ formatNumber(row.totalColumns) }}
-                </el-link>
+                <span v-if="row.totalColumns !== null && row.totalColumns !== undefined">{{ formatNumber(row.totalColumns) }}</span>
                 <span v-else>—</span>
               </template>
             </el-table-column>
