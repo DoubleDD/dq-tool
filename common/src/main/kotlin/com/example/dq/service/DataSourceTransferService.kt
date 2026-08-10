@@ -87,9 +87,7 @@ class DataSourceTransferService(
                     sshUsername = item.sshUsername, sshAuthMethod = item.sshAuthMethod,
                     sshPassword = sshPassword, sshPrivateKey = sshPrivateKey, sshPassphrase = sshPassphrase)
                 // 导出文件里密码为空时静默导入会留下无密码数据源,提示用户补充(列表页也会以「未设密码」标出)
-                if (plain.isNullOrEmpty() && result.imported.size > importedBefore) {
-                    result.warnings.add("「${result.imported.last()}」导入成功但未包含密码,请编辑数据源补充密码")
-                }
+                warnIfPasswordMissing(plain, importedBefore, result)
             } catch (e: IllegalArgumentException) {
                 result.failed.add(ImportFailure(item.name, e.message ?: "密文无法解密"))
                 return@forEach
@@ -141,6 +139,7 @@ class DataSourceTransferService(
             }
 
             val passwordHex = el.getAttribute("Password")
+            // 未保存密码也照常导入(密码为空),与 JSON/DataGrip 导入一致:提示补充密码,列表页以「未设密码」标出
             val plain: String? = if (el.getAttribute("SavePassword") == "true" && passwordHex.isNotBlank()) {
                 try {
                     NavicatCrypto.decrypt(passwordHex)
@@ -149,8 +148,7 @@ class DataSourceTransferService(
                     continue
                 }
             } else {
-                result.failed.add(ImportFailure(name, "未保存密码"))
-                continue
+                null
             }
 
             // SSH 隧道配置随数据源一并导入;秘密字段(密码/私钥口令)为 Navicat 密文,解密失败计入 failed
@@ -194,9 +192,11 @@ class DataSourceTransferService(
                     result.warnings.add("$name 使用私钥认证,请导入后手动粘贴私钥内容")
                 }
             }
+            val importedBefore = result.imported.size
             importOne(name, jdbcUrl, el.getAttribute("UserName"), plain, null, null, result,
                 sshEnabled = sshEnabled, sshHost = sshHost, sshPort = sshPort, sshUsername = sshUsername,
                 sshAuthMethod = sshAuthMethod, sshPassword = sshPassword, sshPassphrase = sshPassphrase)
+            warnIfPasswordMissing(plain, importedBefore, result)
         }
         return result
     }
@@ -246,6 +246,13 @@ class DataSourceTransferService(
             }
         }
         return result
+    }
+
+    /** 本条导入成功但密码为空时提示用户补充(列表页以「未设密码」标出,与 DataGrip 导入一致) */
+    private fun warnIfPasswordMissing(plain: String?, importedBefore: Int, result: ImportResult) {
+        if (plain.isNullOrEmpty() && result.imported.size > importedBefore) {
+            result.warnings.add("「${result.imported.last()}」导入成功但未包含密码,请编辑数据源补充密码")
+        }
     }
 
     /** 取直接子元素文本(去空白);不存在返回空串 */

@@ -164,7 +164,7 @@ class DataSourceTransferServiceTest {
     }
 
     @Test
-    fun `ncx 未保存密码计入失败`() {
+    fun `ncx 未保存密码导入成功但提示补充密码`() {
         val ncx = """
             <?xml version="1.0" encoding="UTF-8"?>
             <Connections Ver="1.5">
@@ -176,10 +176,17 @@ class DataSourceTransferServiceTest {
         """.trimIndent()
         val result = service.importNcx(ByteArrayInputStream(ncx.toByteArray()))
         assertEquals(2, result.total)
-        assertTrue(result.imported.isEmpty())
-        assertEquals(2, result.failed.size)
-        assertEquals("未保存密码", result.failed.first { it.name == "无密码库" }.reason)
+        assertEquals(listOf("无密码库"), result.imported)
+        assertEquals(1, result.failed.size)
         assertTrue(result.failed.first { it.name == "未知类型" }.reason.contains("不支持的连接类型"))
+        // 未保存密码:成功导入并提示补充,列表接口应标出 hasPassword=false
+        assertEquals(1, result.warnings.size)
+        assertTrue(result.warnings[0].contains("无密码库"), result.warnings.toString())
+        assertTrue(result.warnings[0].contains("密码"), result.warnings.toString())
+        val c = dsRepo.findAll().single()
+        assertEquals("jdbc:mysql://h:3306/d", c.jdbcUrl)
+        assertEquals(null, crypto.decrypt(c.password))
+        assertEquals(false, dataSourceService.list().single().hasPassword)
     }
 
     @Test
