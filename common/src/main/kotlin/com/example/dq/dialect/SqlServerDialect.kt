@@ -166,20 +166,23 @@ class SqlServerDialect : AbstractDialect() {
     }
 
     @Throws(SQLException::class)
-    override fun boundaryQuery(conn: Connection, qTable: String, qKey: String, offset: Long): String {
-        return boundaryQuerySql(qTable, qKey, offset, sqlServerMajor(conn))
+    override fun boundaryQuery(conn: Connection, qTable: String, qKey: String,
+                               prev: String?, offset: Long): String {
+        return boundaryQuerySql(qTable, qKey, prev, offset, sqlServerMajor(conn))
     }
 
-    /** 2012(11)起 OFFSET/FETCH;2008/2008R2 用 ROW_NUMBER 包装取第 offset 行 */
-    internal fun boundaryQuerySql(qTable: String, qKey: String, offset: Long, major: Int): String {
+    /** 2012(11)起 OFFSET/FETCH;2008/2008R2 用 ROW_NUMBER 包装取第 offset 行。prev 非空时为 seek 定位(见 AbstractDialect.boundaryQuery) */
+    internal fun boundaryQuerySql(qTable: String, qKey: String, prev: String?, offset: Long, major: Int): String {
+        val seek = if (prev == null) "" else " AND " + qKey + " > " + quoteString(prev)
         if (major >= 11) {
             return "SELECT " + qKey + " FROM " + qTable +
-                    " WHERE " + qKey + " IS NOT NULL ORDER BY " + qKey +
+                    " WHERE " + qKey + " IS NOT NULL" + seek +
+                    " ORDER BY " + qKey +
                     boundarySuffix(offset)
         }
         return "SELECT " + qKey + " FROM (SELECT " + qKey + ", " +
                 "ROW_NUMBER() OVER (ORDER BY " + qKey + ") dq_rn FROM " + qTable +
-                " WHERE " + qKey + " IS NOT NULL) dq_inner WHERE dq_rn = " + (offset + 1)
+                " WHERE " + qKey + " IS NOT NULL" + seek + ") dq_inner WHERE dq_rn = " + (offset + 1)
     }
 
     @Throws(SQLException::class)

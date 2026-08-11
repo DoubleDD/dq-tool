@@ -1,9 +1,8 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <h3 style="margin: 0">字段统计 - {{ tableName }}</h3>
+      <Breadcrumb :items="breadcrumbItems" />
       <div>
-        <el-button @click="goBack">返回</el-button>
         <ExportButton :job-id="jobId" />
       </div>
     </div>
@@ -95,19 +94,18 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute } from 'vue-router'
 import request from '../api'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import ExportButton from '../components/ExportButton.vue'
+import Breadcrumb from '../components/Breadcrumb.vue'
 import { formatDuration, formatNumber } from '../utils/format'
-import { goBack as historyBack } from '../utils/back'
-
 const route = useRoute()
-const router = useRouter()
 const jobId = route.params.jobId
 const tableName = route.params.tableName
 
 const columns = ref([])
+const jobData = ref(null)
 const tableInfo = ref(null)
 const loading = ref(false)
 const keyword = ref('')
@@ -142,6 +140,7 @@ async function load() {
       request.get(`/scans/${jobId}`).catch(() => null)
     ])
     columns.value = cols || []
+    jobData.value = job || null
     if (job && job.tables) {
       tableInfo.value = job.tables.find((t) => t.tableName === tableName) || null
     }
@@ -150,10 +149,23 @@ async function load() {
   }
 }
 
-// 原路返回;无历史记录(直接打开)时兜底回任务详情
-function goBack() {
-  historyBack(router, `/scans/${jobId}`)
-}
-
+// ---------- 面包屑 ----------
+const breadcrumbItems = computed(() => {
+  const items = [{ label: `扫描 #${jobId}`, to: `/scans/${jobId}` }]
+  if (jobData.value) {
+    const schemaLabel = jobData.value.dbName
+      ? `${jobData.value.dbName}.${jobData.value.schemaName}`
+      : jobData.value.schemaName
+    const scansPath = `/datasources/${jobData.value.datasourceId}/schemas/${encodeURIComponent(jobData.value.schemaName)}/scans${jobData.value.dbName ? `?db=${encodeURIComponent(jobData.value.dbName)}` : ''}`
+    return [
+      { label: '数据源列表', to: '/datasources' },
+      { label: jobData.value.datasourceName, to: `/datasources/${jobData.value.datasourceId}/schemas` },
+      { label: schemaLabel, to: scansPath },
+      ...items,
+      { label: tableName }
+    ]
+  }
+  return [...items, { label: tableName }]
+})
 onMounted(load)
 </script>

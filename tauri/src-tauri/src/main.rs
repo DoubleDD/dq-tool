@@ -26,6 +26,8 @@ use tauri::Manager;
 
 /// 后端就绪等待总超时(H2 迁移 + Flyway 首次初始化可能较慢)
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// 自动更新检查间隔:安装模式启动时立即检查一次,之后按此间隔轮询
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// 就绪探针路径:授权状态接口不受授权拦截(WebServer.java 排除 /api/license/**)
 const READY_PATH: &str = "/api/license/status";
 
@@ -215,10 +217,12 @@ fn home_dir() -> PathBuf {
 
 // ---- 自动更新(tauri-plugin-updater,更新源为 GitHub Releases 的 latest.json)----
 //
-// 流程:后台 check → 有新版则静默预下载 → 下载完成弹原生对话框询问:
+// 流程:安装模式启动时立即检查一次,之后每 UPDATE_CHECK_INTERVAL(30 分钟)轮询;
+// 后台 check → 有新版则静默预下载 → 下载完成弹原生对话框询问:
 //   「立即更新」→ install + 重启(重启前显式杀 java 子进程,防止孤儿占着 H2 文件锁);
 //   「暂不更新」→ 版本号写入 ~/.dq-tool/update-skipped.txt,同一版本不再重复下载/打扰,
-//   出现更新版本时重新走流程。检查/下载失败只记日志,不影响主流程。
+//   出现更新版本时重新走流程。检查/下载失败只记日志,不影响主流程;失败后间隔照常,
+//   下一轮继续检查。
 
 /// 用户选择「暂不更新」的版本记录(纯文本,一个版本号)
 fn skipped_version_path() -> PathBuf {
@@ -241,8 +245,13 @@ fn write_skipped_version(version: &str) {
 }
 
 fn auto_update(app: tauri::AppHandle, child: Arc<Mutex<Child>>) {
-    if let Err(e) = try_auto_update(&app, &child) {
-        eprintln!("[dq-tool-tauri] 自动更新失败(忽略,不影响使用):{e}");
+    // 启动即检查一次,之后每 UPDATE_CHECK_INTERVAL 轮询;失败只记日志并继续下一轮。
+    // 注:下载完成后的确认对话框为阻塞式,用户未作答期间该线程停在此处,下一轮检查顺延
+    loop {
+        if let Err(e) = try_auto_update(&app, &child) {
+            eprintln!("[dq-tool-tauri] 自动更新失败(忽略,不影响使用):{e}");
+        }
+        std::thread::sleep(UPDATE_CHECK_INTERVAL);
     }
 }
 

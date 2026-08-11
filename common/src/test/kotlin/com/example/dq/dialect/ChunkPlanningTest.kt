@@ -101,6 +101,106 @@ class ChunkPlanningTest {
         }
     }
 
+    @Test
+    fun `varchar主键 seek分段 累加等于全表`() {
+        connect().use { conn ->
+            conn.createStatement().use { st ->
+                st.execute("CREATE TABLE msg(id VARCHAR(36) PRIMARY KEY, name VARCHAR(50), status INT)")
+                // 5000 行:id 用可字典序排序的定宽码;name 每 10 行 1 个 NULL、每 7 行 1 个空串
+                for (i in 1..5000) {
+                    val id = "id" + "%05d".format(i)
+                    val name = if (i % 10 == 0) "NULL" else if (i % 7 == 0) "''" else "'n$i'"
+                    val status = if (i % 5 == 0) 0 else i
+                    st.execute("INSERT INTO msg VALUES('$id',$name,$status)")
+                }
+
+                val cols = dialect.listColumns(conn, "PUBLIC", "MSG")
+                val key = dialect.pickChunkKey(cols)
+                assertEquals("ID", key!!.name)
+
+                // chunksPerTable=8,step=5000/8=625:验证 seek 分段能切出多段且不重不漏
+                val ranges = dialect.planChunks(conn, "PUBLIC", "MSG", key, 5000L, 8)
+                assertTrue(ranges.size >= 5, "分段数过少: " + ranges.size)
+
+                val full = runStats(conn, "MSG", cols, null, null)
+                val sum = LongArray(full.size)
+                var totalRows = 0L
+                for (r in ranges) {
+                    val part = runStats(conn, "MSG", cols, r, key)
+                    totalRows += part[0]
+                    for (i in sum.indices) {
+                        sum[i] += part[i]
+                    }
+                }
+                assertEquals(5000L, totalRows)
+                for (i in full.indices) {
+                    assertEquals(full[i], sum[i], "第 $i 个度量不一致")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `varchar键全NULL 只返回whole不重复统计`() {
+        connect().use { conn ->
+            conn.createStatement().use { st ->
+                // 键候选来自唯一索引首列,值全为 NULL
+                st.execute("CREATE TABLE uniq_null(code VARCHAR(20) UNIQUE, name VARCHAR(50))")
+                for (i in 1..10) {
+                    st.execute("INSERT INTO uniq_null VALUES(NULL,'n$i')")
+                }
+
+                val cols = dialect.listColumns(conn, "PUBLIC", "UNIQ_NULL")
+                val key = dialect.pickChunkKey(cols)
+                assertEquals("CODE", key!!.name)
+
+                val ranges = dialect.planChunks(conn, "PUBLIC", "UNIQ_NULL", key, 1000L, 10)
+                // step=100 > 非 NULL 行数 0:查不到边界,必须只返回 whole,且不得追加 nullChunk 段
+                assertEquals(1, ranges.size)
+                assertTrue(ranges[0].start == null && ranges[0].end == null && !ranges[0].nullChunk,
+                        "应为 whole 段: " + ranges)
+
+                var totalRows = 0L
+                for (r in ranges) {
+                    totalRows += runStats(conn, "UNIQ_NULL", cols, r, key)[0]
+                }
+                assertEquals(10L, totalRows, "NULL 行不得被重复统计")
+            }
+        }
+    }
+
+    @Test
+    fun `varchar键非NULL行不足step 只返回whole不重复统计`() {
+        connect().use { conn ->
+            conn.createStatement().use { st ->
+                st.execute("CREATE TABLE uniq_few(code VARCHAR(20) UNIQUE, name VARCHAR(50))")
+                // 非 NULL 键仅 5 行,另有 3 行 NULL
+                for (i in 1..5) {
+                    st.execute("INSERT INTO uniq_few VALUES('c$i','n$i')")
+                }
+                for (i in 1..3) {
+                    st.execute("INSERT INTO uniq_few VALUES(NULL,'null$i')")
+                }
+
+                val cols = dialect.listColumns(conn, "PUBLIC", "UNIQ_FEW")
+                val key = dialect.pickChunkKey(cols)
+                assertEquals("CODE", key!!.name)
+
+                // estRows=1000, chunksPerTable=10 → step=100 > 非 NULL 行数 5:查不到分段边界
+                val ranges = dialect.planChunks(conn, "PUBLIC", "UNIQ_FEW", key, 1000L, 10)
+                assertEquals(1, ranges.size)
+                assertTrue(ranges[0].start == null && ranges[0].end == null && !ranges[0].nullChunk,
+                        "应为 whole 段: " + ranges)
+
+                var totalRows = 0L
+                for (r in ranges) {
+                    totalRows += runStats(conn, "UNIQ_FEW", cols, r, key)[0]
+                }
+                assertEquals(8L, totalRows, "NULL 行不得被重复统计")
+            }
+        }
+    }
+
     /** 执行统计 SQL,返回 [total, 各列度量...] */
     private fun runStats(conn: Connection, table: String, cols: List<ColumnMeta>,
                          range: Range?, key: ColumnMeta?): LongArray {

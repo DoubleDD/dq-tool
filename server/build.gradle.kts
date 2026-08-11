@@ -68,9 +68,39 @@ tasks.named<JavaExec>("run") {
     jvmArgs("-XX:+UseZGC")
 }
 
+// ---- 前端构建:processResources 的强前置依赖 ----
+// 之前"dist 缺失时静默跳过"导致产出 jar 内静态资源旧版/缺失(MIME 报错)。
+// 现在注册 buildWeb 任务,打 jar 前自动保证 web/dist 是最新的:
+//  - 增量:仅 web/src、index.html、vite.config.ts、package.json 变化时才真正执行 npm run build;
+//  - node_modules 缺失直接报错并给出修复指引,不再静默产出坏包。
+val buildWeb by tasks.registering(Exec::class) {
+    group = "build"
+    description = "构建前端产物 web/dist(processResources/shadowJar 的强前置依赖)"
+
+    // 统一在 web/ 目录执行;npm 在 Windows 上是 npm.cmd,直接写 npm 会找不到
+    workingDir = rootProject.layout.projectDirectory.dir("web").asFile
+    val npmCmd = if (System.getProperty("os.name").lowercase().contains("windows")) "npm.cmd" else "npm"
+    commandLine(npmCmd, "run", "build")
+
+    // 增量输入:前端源码与构建配置
+    inputs.dir(rootProject.layout.projectDirectory.dir("web/src"))
+    inputs.file(rootProject.layout.projectDirectory.file("web/index.html"))
+    inputs.file(rootProject.layout.projectDirectory.file("web/vite.config.ts"))
+    inputs.file(rootProject.layout.projectDirectory.file("web/package.json"))
+    // 输出:web/dist(缺失即视为未构建,自动触发 npm run build)
+    outputs.dir(rootProject.layout.projectDirectory.dir("web/dist"))
+
+    doFirst {
+        if (!rootProject.layout.projectDirectory.dir("web/node_modules").asFile.exists()) {
+            throw GradleException("web/node_modules 不存在,请先执行: cd web && npm install(或 npm ci)")
+        }
+    }
+}
+
 tasks.processResources {
-    // 打包时把前端构建产物 web/dist 拷进 jar(需先在 web/ 执行 npm run build);dist 缺失时静默跳过
-    from("../web/dist") {
+    // 强依赖前端构建:打 jar 前 web/dist 一定存在且最新
+    dependsOn(buildWeb)
+    from(rootProject.layout.projectDirectory.dir("web/dist")) {
         into("static")
     }
     // 软件版本号构建期注入 app-version.txt:去 0. 前缀(如 0.1.7 -> 1.7),与打包脚本 PKG_VERSION 口径一致;版本号源头为根目录 VERSION 文件

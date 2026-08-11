@@ -1,5 +1,5 @@
 <template>
-  <el-button @click="open">AI 配置</el-button>
+  <el-button v-if="!buttonless" @click="open">AI 配置</el-button>
   <el-dialog v-model="visible" title="AI 配置" width="520px" append-to-body>
     <div style="margin-bottom: 12px; color: var(--el-text-color-secondary); font-size: 13px">
       用于生成「表说明」的大模型接口,任意 OpenAI 兼容服务均可(DeepSeek / 通义 / 本地 vLLM 等)。
@@ -29,6 +29,10 @@ import { reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../api'
 
+defineProps({
+  // 无按钮模式:由父级通过 ref 调用 open() 触发(用于收入「更多」下拉)
+  buttonless: { type: Boolean, default: false }
+})
 const visible = ref(false)
 const loading = ref(false)
 const saving = ref(false)
@@ -67,4 +71,6 @@ async function save() {
     saving.value = false
   }
 }
+
+defineExpose({ open })
 </script>

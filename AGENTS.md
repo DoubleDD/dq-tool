@@ -16,7 +16,7 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - 注释、提交信息、文档全部使用中文;代码标识符用英文
 - **业务代码只在 common 模块(Kotlin)写一份**,server 壳层(Javalin)只消费;所有数据库差异收敛在 `dialect/` 包
 - 库表结构变更一律新增 Flyway 迁移脚本,**已发布的迁移文件禁止修改**
-- 前端先构建(`web/dist`)再 `:server:shadowJar`,否则 jar 内静态资源为旧版/缺失
+- 前端构建由 `buildWeb` 任务(增量)作为 `processResources` 的强前置依赖:`:server:shadowJar` 前自动保证 `web/dist` 最新,不再存在"旧版/缺失"的静默坏包
 - `data/`(H2 数据文件)不应提交或外发;功能性 `.bat` 注释一律用英文且必须保持 CRLF 行尾
 
 ## 快速命令
@@ -43,6 +43,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 ### 架构与开发
 
 - [技术栈与项目结构](docs/wiki/技术栈与项目结构.md) — Gradle 模块划分、Javalin 薄壳 + common 内核、前端栈、目录树逐层注释
+- [前端页面与按钮逻辑](docs/wiki/前端页面与按钮逻辑.md) — 路由/页签体系、页面导航全景、各页面按钮触发逻辑与 API、轮询与只读模式等交互机制
 - [构建运行与测试](docs/wiki/构建运行与测试.md) — 开发/交付构建、Makefile、ZGC、JUnit+Testcontainers 测试矩阵与无覆盖区
 - [代码约定与安全](docs/wiki/代码约定与安全.md) — 分层与装配约定、配置/迁移新增流程、错误日志纪律、加密与敏感信息边界
 - [桌面版与数据目录](docs/wiki/桌面版与数据目录.md) — 托盘/心跳看门狗生命周期、headless 行为、数据目录与日志滚动

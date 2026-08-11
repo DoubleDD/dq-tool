@@ -217,19 +217,22 @@ class OracleDialect : AbstractDialect() {
     }
 
     @Throws(SQLException::class)
-    override fun boundaryQuery(conn: Connection, qTable: String, qKey: String, offset: Long): String {
-        return boundaryQuerySql(qTable, qKey, offset, oracleMajor(conn))
+    override fun boundaryQuery(conn: Connection, qTable: String, qKey: String,
+                               prev: String?, offset: Long): String {
+        return boundaryQuerySql(qTable, qKey, prev, offset, oracleMajor(conn))
     }
 
-    /** 12c 起 OFFSET/FETCH;11g 用 ROWNUM 双层包装取第 offset 行 */
-    internal fun boundaryQuerySql(qTable: String, qKey: String, offset: Long, major: Int): String {
+    /** 12c 起 OFFSET/FETCH;11g 用 ROWNUM 双层包装取第 offset 行。prev 非空时为 seek 定位(见 AbstractDialect.boundaryQuery) */
+    internal fun boundaryQuerySql(qTable: String, qKey: String, prev: String?, offset: Long, major: Int): String {
+        val seek = if (prev == null) "" else " AND " + qKey + " > " + quoteString(prev)
         if (major >= 12) {
             return "SELECT " + qKey + " FROM " + qTable +
-                    " WHERE " + qKey + " IS NOT NULL ORDER BY " + qKey +
+                    " WHERE " + qKey + " IS NOT NULL" + seek +
+                    " ORDER BY " + qKey +
                     boundarySuffix(offset)
         }
         return "SELECT " + qKey + " FROM (SELECT ROWNUM dq_rn, dq_inner.* FROM (SELECT " + qKey +
-                " FROM " + qTable + " WHERE " + qKey + " IS NOT NULL ORDER BY " + qKey + ") dq_inner" +
+                " FROM " + qTable + " WHERE " + qKey + " IS NOT NULL" + seek + " ORDER BY " + qKey + ") dq_inner" +
                 " WHERE ROWNUM <= " + (offset + 1) + ") WHERE dq_rn = " + (offset + 1)
     }
 

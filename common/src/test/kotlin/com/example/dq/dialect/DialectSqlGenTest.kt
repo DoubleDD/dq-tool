@@ -265,17 +265,29 @@ class DialectSqlGenTest {
     @Test
     fun `Oracle边界值 12c起OFFSET_FETCH`() {
         val oracle = OracleDialect()
-        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", 100L, 12)
+        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", null, 100L, 12)
+        assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
+    }
+
+    @Test
+    fun `Oracle边界值 12c带prev生成seek条件`() {
+        val oracle = OracleDialect()
+        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", "a'1", 100L, 12)
+        assertTrue(sql.contains("\"id\" > 'a''1'"))
         assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
     }
 
     @Test
     fun `Oracle边界值 11g用ROWNUM双层包装`() {
         val oracle = OracleDialect()
-        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", 100L, 11)
+        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", null, 100L, 11)
         assertTrue(sql.contains("ROWNUM <= 101"))
         assertTrue(sql.contains("dq_rn = 101"))
         assertFalse(sql.contains("OFFSET"))
+        // prev 非空时 seek 条件加在内层子查询
+        val seek = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", "abc", 100L, 11)
+        assertTrue(seek.contains("\"id\" > 'abc'"))
+        assertFalse(seek.contains("OFFSET"))
     }
 
     @Test
@@ -288,17 +300,25 @@ class DialectSqlGenTest {
     @Test
     fun `SqlServer边界值 2012起OFFSET_FETCH`() {
         val mssql = SqlServerDialect()
-        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", 100L, 11)
+        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", null, 100L, 11)
         assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
+        // prev 非空时生成 seek 条件
+        val seek = mssql.boundaryQuerySql("[dbo].[t]", "[id]", "k1", 100L, 11)
+        assertTrue(seek.contains("[id] > 'k1'"))
+        assertTrue(seek.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
     }
 
     @Test
     fun `SqlServer边界值 2008用ROW_NUMBER包装`() {
         val mssql = SqlServerDialect()
-        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", 100L, 10)
+        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", null, 100L, 10)
         assertTrue(sql.contains("ROW_NUMBER() OVER (ORDER BY [id])"))
         assertTrue(sql.contains("dq_rn = 101"))
         assertFalse(sql.contains("OFFSET"))
+        // prev 非空时 seek 条件加进内层
+        val seek = mssql.boundaryQuerySql("[dbo].[t]", "[id]", "k1", 100L, 10)
+        assertTrue(seek.contains("[id] > 'k1'"))
+        assertFalse(seek.contains("OFFSET"))
     }
 
     @Test

@@ -2,12 +2,12 @@
   <div class="page-card" v-loading="loading && !job">
     <template v-if="job">
       <div class="toolbar">
-        <h3 style="margin: 0">扫描任务 #{{ job.id }}</h3>
+        <Breadcrumb :items="breadcrumbItems" />
         <div>
-          <el-button @click="goBack">返回</el-button>
           <el-button v-if="job.status === 'RUNNING'" type="danger" :loading="acting" @click="onCancel">取消</el-button>
           <el-button v-if="['CANCELED', 'INTERRUPTED', 'FAILED'].includes(job.status)" type="primary" :loading="acting" @click="onResume">继续扫描</el-button>
-          <ExportButton :job-id="jobId" />        </div>
+          <ExportButton :job-id="jobId" />
+        </div>
       </div>
 
       <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
@@ -104,16 +104,15 @@
 </template>
 
 <script setup>
-import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import ExportButton from '../components/ExportButton.vue'
+import Breadcrumb from '../components/Breadcrumb.vue'
 import { formatDateTime, formatDuration, formatNumber, statusTagType, statusText } from '../utils/format'
-import { goBack as historyBack } from '../utils/back'
-import { setScanSchema, syncTab } from '../stores/tabs'
-
+import { setScanSchema, setScanDs, syncTab } from '../stores/tabs'
 const route = useRoute()
 const router = useRouter()
 const jobId = route.params.jobId
@@ -129,10 +128,11 @@ async function fetchJob() {
   loading.value = true
   try {
     job.value = await request.get(`/scans/${jobId}`)
-    // 回写库名标签并刷新页签标题(进入时 URL 可能没带 ?schema=)
+    // 回写库名标签和数据源 id,供页签标题和关闭页签时跳回父级使用
     const schema = job.value.dbName ? `${job.value.dbName}.${job.value.schemaName}` : job.value.schemaName
+    setScanSchema(jobId, schema)
+    setScanDs(jobId, job.value.datasourceId)
     if (schema && !route.query.schema) {
-      setScanSchema(jobId, schema)
       syncTab(route)
     }
     if (TERMINAL.includes(job.value.status)) stopPolling()
@@ -194,11 +194,20 @@ function goColumns(row) {
   router.push(`/scans/${jobId}/tables/${encodeURIComponent(row.tableName)}`)
 }
 
-// 原路返回;无历史记录(直接打开)时兜底回该任务的扫描记录列表
-function goBack() {
-  historyBack(router, `/datasources/${job.value.datasourceId}/schemas/${encodeURIComponent(job.value.schemaName)}/scans${job.value.dbName ? `?db=${encodeURIComponent(job.value.dbName)}` : ''}`)
-}
-
+// ---------- 面包屑 ----------
+const breadcrumbItems = computed(() => {
+  if (!job.value) return [{ label: `扫描 #${jobId}` }]
+  const schemaLabel = job.value.dbName
+    ? `${job.value.dbName}.${job.value.schemaName}`
+    : job.value.schemaName
+  const scansPath = `/datasources/${job.value.datasourceId}/schemas/${encodeURIComponent(job.value.schemaName)}/scans${job.value.dbName ? `?db=${encodeURIComponent(job.value.dbName)}` : ''}`
+  return [
+    { label: '数据源列表', to: '/datasources' },
+    { label: job.value.datasourceName, to: `/datasources/${job.value.datasourceId}/schemas` },
+    { label: schemaLabel, to: scansPath },
+    { label: `扫描 #${jobId}` }
+  ]
+})
 onMounted(async () => {
   await fetchJob()
   if (job.value && !TERMINAL.includes(job.value.status)) startPolling()

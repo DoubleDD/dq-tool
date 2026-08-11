@@ -1,9 +1,8 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <h3 style="margin: 0">扫描记录{{ schema ? ` - ${db ? db + '.' + schema : schema}` : '' }}</h3>
+      <Breadcrumb :items="breadcrumbItems" />
       <div>
-        <el-button @click="goBack">返回</el-button>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
       </div>
     </div>
@@ -56,22 +55,32 @@
 </template>
 
 <script setup>
-import { onActivated, onDeactivated, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import JobTimeline from '../components/JobTimeline.vue'
+import Breadcrumb from '../components/Breadcrumb.vue'
+import { getDsName } from '../stores/tabs'
 import { formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
-import { goBack as historyBack } from '../utils/back'
-
 const route = useRoute()
 const router = useRouter()
 // 从库列表下钻进来时带上数据源/库过滤条件
 const dsId = route.params.id
 const schema = route.params.schema || ''
 const db = route.query.db || ''
+
+// ---------- 面包屑 ----------
+const dsName = computed(() => getDsName(dsId) || `数据源 ${dsId}`)
+const schemaLabel = computed(() => (db ? `${db}.${schema}` : schema))
+const breadcrumbItems = computed(() => [
+  { label: '数据源列表', to: '/datasources' },
+  { label: dsName.value, to: `/datasources/${dsId}/schemas` },
+  { label: schemaLabel.value },
+  { label: '扫描记录' }
+])
 
 const jobs = ref([])
 const loading = ref(false)
@@ -108,11 +117,6 @@ async function remove(row) {
 function goDetail(row) {
   const schema = row.dbName ? `${row.dbName}.${row.schemaName}` : row.schemaName
   router.push(`/scans/${row.id}?schema=${encodeURIComponent(schema)}`)
-}
-
-// 原路返回;无历史记录(直接打开)时兜底回库列表
-function goBack() {
-  historyBack(router, `/datasources/${dsId}/schemas`)
 }
 
 onActivated(() => {

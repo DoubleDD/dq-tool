@@ -86,7 +86,7 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 
 ## 自动更新(tauri-plugin-updater)
 
-- 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式不检查);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime
+- 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式不检查);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime;**启动时立即检查一次,之后每 `UPDATE_CHECK_INTERVAL`(30 分钟)轮询一次**(loop + `std::thread::sleep`,失败后间隔照常、下一轮继续;下载完成后的确认对话框阻塞期间该线程停住,下一轮检查顺延)
 - 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,webview 是远程 URL 不适合做更新 UI)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
 
 - 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 与本地统一由 package-tauri-win.bat / package-tauri-mac.sh 未配置环境变量时自动读该文件(tauri CLI 只认内容、不认 `_PATH` 变体——但会把变量值当路径探测,指向文件路径亦可);**密码变量 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 存在(私钥无密码即为空值)时 CLI 直接使用;缺失时走 `--ci`/`CI` 环境变量兜底按空密码处理,都没有则交互式询问密码、无终端环境签名失败**——mac 脚本直接 export 空值;win bat 因 cmd 无法定义空值环境变量(且空值经 npm 多层子进程传递不可靠),未配置密码变量时改置 `CI=true` 让 CLI 按空密码签名(行为见 tauri-cli `bundle.rs` sign_updaters);**丢私钥 = 更新链断裂,需换密钥对并发全量包**。注意:tauri CLI 对「配了 pubkey 但无私钥」直接报错失败(sign_updaters 的 "A public key has been found, but no private key"),win bat 仍在密钥读不到时提前 exit 1 给出更明确的报错;另:tauri CLI 2.11+ 的 v2 updater 模式对 NSIS **不再产出 .nsis.zip**(自包含安装包,直接签 `setup.exe` 得 `setup.exe.sig`,tauri-plugin-updater 2.x 支持裸 exe 下载安装),bat 构建后以 `*-setup.exe.sig` 存在作为签名成功的快速失败判据(2026-08 v1.6 曾误按 .nsis.zip 判,CI 必挂)

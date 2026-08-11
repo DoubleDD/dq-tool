@@ -27,6 +27,9 @@
     </appender>
     <!-- 第三方框架(Hikari/Flyway/Jetty 等)只留 WARN 及以上;本项目日志全部打印 -->
     <logger name="com.example.dq" level="INFO"/>
+    <!-- 业务库 SQL 日志(DataSourceService 出口代理统一打印):排查慢 SQL/深分页等场景用;
+         需关闭时改此行为 WARN/OFF 或 INFO 保留(默认即打印) -->
+    <logger name="com.example.dq.sql" level="INFO"/>
     <root level="WARN">
         <appender-ref ref="CONSOLE"/>
         <appender-ref ref="FILE"/>
