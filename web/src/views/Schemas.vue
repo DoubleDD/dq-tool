@@ -148,7 +148,7 @@
 <script setup>
 import { computed, h, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElCheckbox, ElMessage, ElMessageBox } from 'element-plus'
+import { ElCheckbox, ElInputNumber, ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowDown, Refresh } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import { setDsName, syncTab } from '../stores/tabs'
@@ -219,7 +219,7 @@ function isFullyScanned(row) {
 }
 
 /** 导出 Word 报告:勾选了库则导出勾选的;未勾选默认导出全部已完成全表扫描的库(弹窗提示确认)。
- *  异步任务:提交后到「导出任务」页查看进度与下载 */
+ *  异步任务:提交后到「报告列表」页查看进度与下载 */
 async function exportReport() {
   let names = selected.value.map((row) => row.name)
   if (!names.length) {
@@ -241,7 +241,7 @@ async function exportReport() {
   exporting.value = true
   try {
     await submitReportExport(dsId, currentDb.value, names)
-    ElMessageBox.confirm('导出任务已提交,生成可能需要几分钟。是否前往「导出任务」查看进度?', '导出报告', {
+    ElMessageBox.confirm('导出任务已提交,生成可能需要几分钟。是否前往「报告列表」查看进度?', '导出报告', {
       confirmButtonText: '前往查看',
       cancelButtonText: '留在此页'
     }).then(() => router.push('/report-exports')).catch(() => {})
@@ -470,10 +470,21 @@ async function ensureAiConfig() {
   aiAvailable.value = !!cfg?.available
 }
 
-/** 整库扫描确认:内嵌「AI 自动打标」复选(默认勾选 = 模型配置可用),取消则放弃提交 */
+// 配置默认的并发 worker 线程数
+const defaultWorkers = ref(null)
+let scanDefaultsFetched = false
+async function ensureScanDefaults() {
+  if (scanDefaultsFetched) return
+  scanDefaultsFetched = true
+  const cfg = await request.get('/scans/defaults').catch(() => null)
+  defaultWorkers.value = cfg?.defaultWorkers ?? null
+}
+
+/** 整库扫描确认:内嵌「AI 自动打标」复选(默认勾选 = 模型配置可用)+ 并发线程数,取消则放弃提交 */
 async function confirmScans(rows) {
-  await ensureAiConfig()
+  await Promise.all([ensureAiConfig(), ensureScanDefaults()])
   const autoTag = ref(aiAvailable.value)
+  const workers = ref(null)
   const text = rows.length === 1 ? `将对库「${rows[0].name}」发起全库扫描` : `将对 ${rows.length} 个库发起全库扫描`
   try {
     await ElMessageBox.confirm(
@@ -484,6 +495,16 @@ async function confirmScans(rows) {
             modelValue: autoTag.value,
             'onUpdate:modelValue': (v) => { autoTag.value = v }
           }, () => 'AI 自动打标(无注释的表会抽样 100 行数据发给大模型)')
+        ]),
+        h('div', { style: 'margin-top: 12px; display: flex; align-items: center' }, [
+          h('span', { style: 'margin-right: 8px' }, '并发线程数'),
+          h(ElInputNumber, {
+            modelValue: workers.value,
+            'onUpdate:modelValue': (v) => { workers.value = v },
+            min: 1, max: 128, placeholder: '默认', controlsPosition: 'right', style: 'width: 160px'
+          }),
+          h('span', { style: 'margin-left: 8px; color: var(--el-text-color-secondary); font-size: 12px' },
+            `留空使用默认值(${defaultWorkers.value ?? '-'})`)
         ])
       ]),
       '开始扫描',
@@ -492,11 +513,11 @@ async function confirmScans(rows) {
   } catch {
     return // 取消
   }
-  submitScans(rows, autoTag.value)
+  submitScans(rows, autoTag.value, workers.value || null)
 }
 
 /** 对给定库逐个提交全库扫描任务(tables=null 即整库),失败的单独计数 */
-async function submitScans(rows, autoTag) {
+async function submitScans(rows, autoTag, workers) {
   submitting.value = true
   try {
     const results = await Promise.allSettled(rows.map((row) =>
@@ -507,7 +528,8 @@ async function submitScans(rows, autoTag) {
         tables: null,
         forceFull: false,
         nullRules: [],
-        autoTag
+        autoTag,
+        workers
       })
     ))
     const ok = results.filter((r) => r.status === 'fulfilled').length

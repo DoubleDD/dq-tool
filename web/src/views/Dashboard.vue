@@ -29,9 +29,8 @@
       <div class="toolbar">
         <h3 style="margin: 0">近期历史</h3>
       </div>
-      <el-table :data="historyJobs" v-loading="loading" border style="width: 100%">
-        <el-table-column type="index" label="序号" width="60" />
-        <el-table-column prop="id" label="任务ID" width="90" />
+      <el-table :data="pagedHistoryJobs" v-loading="loading" border style="width: 100%">
+        <el-table-column type="index" label="序号" width="60" :index="indexMethod" />
         <el-table-column prop="datasourceName" label="数据源" min-width="140" />
         <el-table-column label="库/Schema" min-width="140">
           <template #default="{ row }">{{ row.dbName ? row.dbName + '.' + row.schemaName : row.schemaName }}</template>
@@ -68,12 +67,22 @@
           </template>
         </el-table-column>
       </el-table>
+      <div class="pagination-wrapper">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :page-sizes="[15, 30, 50, 100]"
+          :total="historyJobs.length"
+          layout="total, sizes, prev, pager, next"
+          background
+        />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -90,9 +99,24 @@ const now = ref(Date.now())
 let timer = null
 let ticker = null
 
-// 进行中:等待中/运行中;接口按 id 倒序,历史直接截取前 20 条
+// 进行中:等待中/运行中;接口按 id 倒序,历史分页展示
 const activeJobs = computed(() => jobs.value.filter(j => ['PENDING', 'RUNNING'].includes(j.status)))
-const historyJobs = computed(() => jobs.value.filter(j => !['PENDING', 'RUNNING'].includes(j.status)).slice(0, 20))
+const historyJobs = computed(() => jobs.value.filter(j => !['PENDING', 'RUNNING'].includes(j.status)))
+const currentPage = ref(1)
+const pageSize = ref(15)
+const pagedHistoryJobs = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return historyJobs.value.slice(start, start + pageSize.value)
+})
+// 分页序号:第2页从21开始
+function indexMethod(index) {
+  return (currentPage.value - 1) * pageSize.value + index + 1
+}
+// 删除等操作导致数据减少时,修正越界的页码
+watch(() => historyJobs.value.length, (total) => {
+  const maxPage = Math.max(1, Math.ceil(total / pageSize.value))
+  if (currentPage.value > maxPage) currentPage.value = maxPage
+})
 
 // 读取 now 建立响应式依赖,卡片上的耗时随秒针刷新
 function elapsed(startedAt) {
@@ -241,5 +265,10 @@ onUnmounted(clearTimer)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.pagination-wrapper {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
 }
 </style>

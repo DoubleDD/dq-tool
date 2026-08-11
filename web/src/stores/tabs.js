@@ -3,19 +3,18 @@ import { reactive } from 'vue'
 /**
  * 顶部页签状态(轻量实现,未引入 pinia)
  * tab: { key, title, path, closable }
- *  - key   页签身份:首页为固定页签;每个数据源一个页签,库→表/扫描记录在其内下钻;
+ *  - key   页签身份:每个数据源一个页签,库→表/扫描记录在其内下钻;
  *          扫描任务详情每个任务一个页签
  *  - path  页签当前停留的路由 fullPath,切换页签时恢复
  *  - title 随路由动态计算,反映页签当前停留的页面(库列表/表列表/扫描记录/扫描详情/字段统计)
+ * 一级功能页(数据源/任务看板/标记统计/报告列表)不占页签,由侧边栏导航直接切换
  */
 export const tabState = reactive({
-  tabs: [
-    { key: 'home', title: '首页', path: '/datasources', closable: false },
-    { key: 'dashboard', title: '任务看板', path: '/dashboard', closable: false },
-    { key: 'tags', title: '标记统计', path: '/tags', closable: false },
-    { key: 'report-exports', title: '导出任务', path: '/report-exports', closable: false }
-  ],
-  activeKey: 'home'
+  tabs: [],
+  activeKey: '',
+  // 侧边栏「数据源」操作下拉命令(new/import/export):由 App.vue 写入,数据源页消费后清空。
+  // 不用路由 query 传递——App.vue 的 keep-alive 以 route.fullPath 为 key,query 变化会导致组件重挂载,弹框状态丢失。
+  pendingDsDialog: ''
 })
 
 // 路由里拿不到名称时的兜底缓存:数据源 id -> 数据源名,任务 id -> 库名标签,任务 id -> 数据源 id
@@ -75,21 +74,9 @@ function schemaLabel(route) {
   return route.query.db ? `${route.query.db}.${schema}` : schema
 }
 
-/** 根据路由解析所属页签及标题;不属于任何页签的路由(/ 重定向中间态、/license-admin 等)返回 null */
+/** 根据路由解析所属页签及标题;不属于任何页签的路由(一级功能页、/ 重定向中间态、/license-admin 等)返回 null */
 function resolveTab(route) {
   const p = route.path
-  if (p === '/dashboard') {
-    return { key: 'dashboard', title: '任务看板', closable: false }
-  }
-  if (p === '/tags') {
-    return { key: 'tags', title: '标记统计', closable: false }
-  }
-  if (p === '/report-exports') {
-    return { key: 'report-exports', title: '导出任务', closable: false }
-  }
-  if (p === '/datasources') {
-    return { key: 'home', title: '首页', closable: false }
-  }
   if (p.startsWith('/datasources/')) {
     const id = route.params.id
     if (route.query.name) dsNames[id] = route.query.name
@@ -147,6 +134,11 @@ export function closeTab(key) {
           return dsTab.path
         }
       }
+    }
+    // 关闭后无任何页签时回到数据源一级页(侧边栏可重新下钻)
+    if (tabState.tabs.length === 0) {
+      tabState.activeKey = ''
+      return '/datasources'
     }
     const next = tabState.tabs[Math.min(idx, tabState.tabs.length - 1)]
     tabState.activeKey = next.key

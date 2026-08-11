@@ -15,6 +15,7 @@ class ScanRepository(private val jdbc: Jdbc) {
     data class JobRow(val id: Long, val datasourceId: Long, val dbName: String?, val schemaName: String,
                       val status: ScanStatus, val forceFull: Boolean, val nullRulesJson: String?,
                       val totalTables: Int, val doneTables: Int, val error: String?, val autoTag: Boolean,
+                      val workers: Int?,
                       val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?)
 
     private val jobMapper: (ResultSet) -> JobRow = { rs ->
@@ -23,6 +24,7 @@ class ScanRepository(private val jdbc: Jdbc) {
             ScanStatus.valueOf(rs.getString("status")), rs.getBoolean("force_full"),
             rs.getString("null_rules"), rs.getInt("total_tables"), rs.getInt("done_tables"),
             rs.getString("error"), rs.getBoolean("auto_tag"),
+            rs.getObject("workers") as? Int,
             ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"))
     }
 
@@ -32,11 +34,11 @@ class ScanRepository(private val jdbc: Jdbc) {
     }
 
     fun insertJob(datasourceId: Long, dbName: String?, schema: String, forceFull: Boolean, nullRulesJson: String?,
-                  totalTables: Int, autoTag: Boolean = false): Long {
+                  totalTables: Int, autoTag: Boolean = false, workers: Int? = null): Long {
         val jobId = jdbc.insert(
-            "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, total_tables, auto_tag) " +
-                    "VALUES (?,?,?,'PENDING',?,?,?,?)",
-            datasourceId, dbName, schema, forceFull, nullRulesJson, totalTables, autoTag)
+            "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, total_tables, auto_tag, workers) " +
+                    "VALUES (?,?,?,'PENDING',?,?,?,?,?)",
+            datasourceId, dbName, schema, forceFull, nullRulesJson, totalTables, autoTag, workers)
         insertJobEvent(jobId, ScanStatus.PENDING)
         return jobId
     }

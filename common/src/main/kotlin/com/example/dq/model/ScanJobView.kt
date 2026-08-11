@@ -21,5 +21,6 @@ data class ScanJobView(
     val startedAt: LocalDateTime?,
     val finishedAt: LocalDateTime?,
     val events: List<ScanJobEvent>?,      // 状态变更时间线(创建/开始/继续/完成等)
-    val tables: List<ScanTableView>?      // 仅详情接口填充
+    val tables: List<ScanTableView>?,     // 仅详情接口填充
+    val workers: Int? = null,             // 并发 worker 线程数;null 表示使用配置默认
 )

@@ -13,6 +13,7 @@ import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.LicenseController;
 import com.example.dq.controller.MetadataController;
 import com.example.dq.controller.ReportExportController;
+import com.example.dq.controller.LogController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
@@ -23,6 +24,7 @@ import io.javalin.Javalin;
 import io.javalin.config.RoutesConfig;
 import io.javalin.http.staticfiles.Location;
 import io.javalin.json.JavalinJackson3;
+import ch.qos.logback.classic.LoggerContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.core.JacksonException;
@@ -39,7 +41,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Web 层装配与路由(去 Spring 后替代容器装配 + DispatcherServlet):
- * 构造对象图(repository → service → handler,全部构造注入),注册 30 个端点、
+ * 构造对象图(repository → service → handler,全部构造注入),注册 31 个端点、
  * 授权前置校验(替代 LicenseInterceptor)、统一异常映射(响应体 {"message": ...},
  * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)。
  * Javalin 7 的路由只能在 Javalin.create 的配置回调里注册(cfg.routes),创建后不可追加。
@@ -73,6 +75,16 @@ public class WebServer {
                 .disable(DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES)
                 .build();
 
+        // ---- 实时日志流 Appender:以编程方式挂载到 root logger ----
+        // 不在 logback.xml 声明(避免反射实例化导致无法获取引用);此处直接创建实例,
+        // 供 LogController 的 SSE 端点订阅。挂载到 root logger 后,所有日志事件都会被捕获。
+        LogStreamAppender logStreamAppender = new LogStreamAppender();
+        LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
+        logStreamAppender.setContext(loggerContext);
+        logStreamAppender.start();
+        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME))
+                .addAppender(logStreamAppender);
+
         // 心跳路由要在 create 回调里注册,而 DesktopSession 依赖 AppShutdown(需要 Javalin 实例),
         // 用引用后填打破循环(服务 start 之前回调不可能触发,不会读到 null)
         AtomicReference<DesktopSession> sessionRef = new AtomicReference<>();
@@ -91,7 +103,8 @@ public class WebServer {
                     new MetadataController(env.getMetadataService(), env.getTableDocService()),
                     new ReportExportController(env.getWordReportExportService()),
                     new TagController(env.getTagService()),
-                    new AiConfigController(env.getAiConfigService()), new LicenseController(env.getLicenseService()), sessionRef);
+                    new AiConfigController(env.getAiConfigService()), new LicenseController(env.getLicenseService()),
+                    new LogController(logStreamAppender), sessionRef);
         });
 
         // ---- 桌面生命周期(原 Spring 事件/调度挂载点,改显式装配;退出动作统一走 AppShutdown) ----
@@ -107,7 +120,7 @@ public class WebServer {
     private void registerRoutes(RoutesConfig routes, LicenseService licenseService, DataSourceController ds,
                                 ScanController scan, MetadataController meta, ReportExportController reportExport,
                                 TagController tag, AiConfigController aiConfig,
-                                LicenseController license, AtomicReference<DesktopSession> sessionRef) {
+                                LicenseController license, LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
         routes.beforeMatched("/api/*", ctx -> {
@@ -162,6 +175,7 @@ public class WebServer {
         routes.post("/api/datasources/import", ds::importDs);
 
         // ---- 扫描作业 ----
+        routes.get("/api/scans/defaults", scan::defaults);
         routes.post("/api/scans", scan::create);
         routes.get("/api/scans", scan::list);
         routes.get("/api/scans/{jobId}", scan::get);
@@ -219,6 +233,9 @@ public class WebServer {
             }
             ctx.status(204);
         });
+
+        // ---- 实时日志流(SSE) ----
+        routes.sse("/api/logs/stream", logCtrl::stream);
 
         // SPA 回退(替代 SpaWebConfig):静态资源未命中且非 /api/** 的 GET 一律回退 index.html 交给前端路由;
         // /api/** 未匹配保持 JSON 404

@@ -34,91 +34,95 @@
       在表列表勾选该表后「开始扫描」,扫描完成即可查看字段级统计。
     </el-alert>
 
-    <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
-      <el-input v-model="keyword" placeholder="按字段名或注释搜索" clearable style="width: 280px" />
-      <el-checkbox v-if="hasJob" v-model="onlyEmpty">只看空字段(有值数为 0)</el-checkbox>
-      <span>字段数量: {{ columns.length }}</span>
-      <span>索引数量: {{ indexes.length }}</span>
-    </div>
+    <el-tabs v-model="activeTab" @tab-change="onTabChange">
+      <el-tab-pane label="字段明细" name="columns">
+        <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
+          <el-input v-model="keyword" placeholder="按字段名或注释搜索" clearable style="width: 280px" />
+          <el-checkbox v-if="hasJob" v-model="onlyEmpty">只看空字段(有值数为 0)</el-checkbox>
+          <span>字段数量: {{ columns.length }}</span>
+        </div>
 
-    <!-- 字段列表:基础结构列 + (已扫描时)统计列 -->
-    <el-table :data="filteredColumns" v-loading="loading" border>
-      <el-table-column type="index" label="序号" width="60" />
-      <el-table-column prop="name" label="字段名" min-width="140" sortable show-overflow-tooltip />
-      <el-table-column prop="comment" label="注释" min-width="140" sortable show-overflow-tooltip>
-        <template #default="{ row }">
-          <span v-if="row.comment">{{ row.comment }}</span>
-          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="displayType" label="类型" width="150" sortable show-overflow-tooltip />
-      <el-table-column label="键" width="70" sortable :sort-method="(a, b) => keyLabel(a).localeCompare(keyLabel(b))">
-        <template #default="{ row }">
-          <el-tag v-if="keyLabel(row)" size="small" :type="keyLabel(row) === 'PK' ? 'primary' : 'success'">{{ keyLabel(row) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="可空" width="70" sortable :sort-method="(a, b) => Number(a.nullable ?? true) - Number(b.nullable ?? true)">
-        <template #default="{ row }">
-          <span v-if="row.nullable === null || row.nullable === undefined">-</span>
-          <span v-else>{{ row.nullable ? '是' : '否' }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column prop="defaultValue" label="默认值" width="110" show-overflow-tooltip>
-        <template #default="{ row }">
-          <span v-if="row.defaultValue !== null && row.defaultValue !== undefined && row.defaultValue !== ''">{{ row.defaultValue }}</span>
-          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
-        </template>
-      </el-table-column>
-      <template v-if="hasJob">
-        <el-table-column label="空值数(合计)" width="130" sortable :sort-method="sortByNullTotal">
-          <template #default="{ row }">
-            <span :style="{ color: nullTotal(row) > 0 ? 'var(--el-color-warning)' : 'inherit' }">{{ formatNumber(nullTotal(row)) }}</span>
+        <!-- 字段列表:基础结构列 + (已扫描时)统计列 -->
+        <el-table :data="filteredColumns" v-loading="loading" border>
+          <el-table-column type="index" label="序号" width="60" />
+          <el-table-column prop="name" label="字段名" min-width="140" sortable show-overflow-tooltip />
+          <el-table-column prop="comment" label="注释" min-width="140" sortable show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.comment">{{ row.comment }}</span>
+              <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="displayType" label="类型" width="150" sortable show-overflow-tooltip />
+          <el-table-column label="键" width="70" sortable :sort-method="(a, b) => keyLabel(a).localeCompare(keyLabel(b))">
+            <template #default="{ row }">
+              <el-tag v-if="keyLabel(row)" size="small" :type="keyLabel(row) === 'PK' ? 'primary' : 'success'">{{ keyLabel(row) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="可空" width="70" sortable :sort-method="(a, b) => Number(a.nullable ?? true) - Number(b.nullable ?? true)">
+            <template #default="{ row }">
+              <span v-if="row.nullable === null || row.nullable === undefined">-</span>
+              <span v-else>{{ row.nullable ? '是' : '否' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="defaultValue" label="默认值" width="110" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.defaultValue !== null && row.defaultValue !== undefined && row.defaultValue !== ''">{{ row.defaultValue }}</span>
+              <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+            </template>
+          </el-table-column>
+          <template v-if="hasJob">
+            <el-table-column label="空值数(合计)" width="130" sortable :sort-method="sortByNullTotal">
+              <template #default="{ row }">
+                <span :style="{ color: nullTotal(row) > 0 ? 'var(--el-color-warning)' : 'inherit' }">{{ formatNumber(nullTotal(row)) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="totalRows" label="总行数" width="110" sortable>
+              <template #default="{ row }">{{ formatNumber(row.totalRows) }}</template>
+            </el-table-column>
+            <el-table-column prop="nullCount" label="NULL 数" width="110" sortable>
+              <template #default="{ row }">{{ formatNumber(row.nullCount) }}</template>
+            </el-table-column>
+            <el-table-column prop="emptyCount" label="空串数" width="110" sortable>
+              <template #default="{ row }">{{ formatNumber(row.emptyCount) }}</template>
+            </el-table-column>
+            <el-table-column prop="valueCount" label="有值数" width="110" sortable>
+              <template #default="{ row }">{{ formatNumber(row.valueCount) }}</template>
+            </el-table-column>
+            <el-table-column label="有值率" width="180" sortable :sort-method="(a, b) => (a.fillRate || 0) - (b.fillRate || 0)">
+              <template #default="{ row }">
+                <el-progress
+                  :percentage="row.fillRate || 0"
+                  :stroke-width="10"
+                  :color="row.fillRate >= 95 ? 'var(--el-color-success)' : row.fillRate >= 80 ? 'var(--el-color-warning)' : 'var(--el-color-danger)'"
+                />
+              </template>
+            </el-table-column>
           </template>
-        </el-table-column>
-        <el-table-column prop="totalRows" label="总行数" width="110" sortable>
-          <template #default="{ row }">{{ formatNumber(row.totalRows) }}</template>
-        </el-table-column>
-        <el-table-column prop="nullCount" label="NULL 数" width="110" sortable>
-          <template #default="{ row }">{{ formatNumber(row.nullCount) }}</template>
-        </el-table-column>
-        <el-table-column prop="emptyCount" label="空串数" width="110" sortable>
-          <template #default="{ row }">{{ formatNumber(row.emptyCount) }}</template>
-        </el-table-column>
-        <el-table-column prop="valueCount" label="有值数" width="110" sortable>
-          <template #default="{ row }">{{ formatNumber(row.valueCount) }}</template>
-        </el-table-column>
-        <el-table-column label="有值率" width="180" sortable :sort-method="(a, b) => (a.fillRate || 0) - (b.fillRate || 0)">
-          <template #default="{ row }">
-            <el-progress
-              :percentage="row.fillRate || 0"
-              :stroke-width="10"
-              :color="row.fillRate >= 95 ? 'var(--el-color-success)' : row.fillRate >= 80 ? 'var(--el-color-warning)' : 'var(--el-color-danger)'"
-            />
-          </template>
-        </el-table-column>
-      </template>
-    </el-table>
+        </el-table>
+      </el-tab-pane>
 
-    <!-- 索引结构:索引名 / 唯一性 / 索引列 -->
-    <div style="display: flex; align-items: baseline; gap: 12px; margin: 20px 0 12px">
-      <h4 style="margin: 0">索引结构</h4>
-      <span style="color: var(--el-text-color-secondary)">共 {{ indexes.length }} 个</span>
-    </div>
-    <el-table :data="indexes" v-loading="loading" border size="small">
-      <el-table-column type="index" label="序号" width="60" />
-      <el-table-column prop="name" label="索引名" min-width="180" show-overflow-tooltip />
-      <el-table-column label="唯一" width="90">
-        <template #default="{ row }">
-          <el-tag v-if="row.unique" type="success" size="small">唯一</el-tag>
-          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="索引列" min-width="200">
-        <template #default="{ row }">
-          <el-tag v-for="c in row.columns" :key="c" size="small" style="margin: 0 4px 2px 0">{{ c }}</el-tag>
-        </template>
-      </el-table-column>
-    </el-table>
+      <el-tab-pane label="索引结构" name="indexes">
+        <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px">
+          <h4 style="margin: 0">索引结构</h4>
+          <span style="color: var(--el-text-color-secondary)">共 {{ indexes.length }} 个</span>
+        </div>
+        <el-table :data="indexes" v-loading="indexesLoading" border size="small">
+          <el-table-column type="index" label="序号" width="60" />
+          <el-table-column prop="name" label="索引名" min-width="180" show-overflow-tooltip />
+          <el-table-column label="唯一" width="90">
+            <template #default="{ row }">
+              <el-tag v-if="row.unique" type="success" size="small">唯一</el-tag>
+              <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="索引列" min-width="200">
+            <template #default="{ row }">
+              <el-tag v-for="c in row.columns" :key="c" size="small" style="margin: 0 4px 2px 0">{{ c }}</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -148,6 +152,9 @@ const indexes = ref([])       // 索引结构
 const statsColumns = ref([])  // 扫描统计字段(有扫描时)
 const jobTable = ref(null)    // 任务中该表的统计概览
 const loading = ref(false)
+const indexesLoading = ref(false)
+const indexesLoaded = ref(false)  // 索引是否已加载(懒加载)
+const activeTab = ref('columns')
 const refreshing = ref(false)
 const keyword = ref('')
 const onlyEmpty = ref(false)
@@ -212,27 +219,52 @@ async function load(refresh = false) {
     const q = params.toString() ? `?${params.toString()}` : ''
     const url = `${base}/tables/${encodeURIComponent(tableName)}`
 
-    // 结构 + 索引(索引查询失败不阻塞页面)+ 扫描统计 并行拉取
-    const [cols, idx, stats] = await Promise.all([
+    // 结构 + 扫描统计并行拉取(索引懒加载,切到索引 tab 时才请求)
+    const [cols, stats] = await Promise.all([
       request.get(`${url}/columns${q}`),
-      request.get(`${url}/indexes${q}`).catch(() => []),
       jobId.value
         ? request.get(`/scans/${jobId.value}/tables/${encodeURIComponent(tableName)}/columns`).catch(() => [])
         : Promise.resolve([])
     ])
     metaColumns.value = cols
-    indexes.value = idx || []
     statsColumns.value = stats || []
   } finally {
     loading.value = false
   }
 }
 
-/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉 */
+/** 索引懒加载:首次切到索引 tab 或刷新时调用,已加载则跳过(除非强制) */
+async function loadIndexes(force = false) {
+  if (indexesLoaded.value && !force) return
+  if (!dsId.value || !schema.value) return
+  indexesLoading.value = true
+  try {
+    const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
+    const params = new URLSearchParams()
+    if (db.value) params.set('db', db.value)
+    if (force) params.set('refresh', 'true')
+    const q = params.toString() ? `?${params.toString()}` : ''
+    const url = `${base}/tables/${encodeURIComponent(tableName)}`
+    indexes.value = await request.get(`${url}/indexes${q}`).catch(() => [])
+    indexesLoaded.value = true
+  } finally {
+    indexesLoading.value = false
+  }
+}
+
+/** 切换 tab:切到索引时懒加载 */
+function onTabChange(name) {
+  if (name === 'indexes') loadIndexes()
+}
+
+/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引按当前 tab 决定是否重载 */
 async function refreshAll() {
   refreshing.value = true
   try {
+    // 重置索引加载标记,若当前在索引 tab 则强制重新拉取
+    indexesLoaded.value = false
     await load(true)
+    if (activeTab.value === 'indexes') await loadIndexes(true)
     ElMessage.success('已刷新结构与扫描信息')
   } finally {
     refreshing.value = false

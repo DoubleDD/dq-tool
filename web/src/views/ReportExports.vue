@@ -1,7 +1,7 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <h3 style="margin: 0">导出任务</h3>
+      <h3 style="margin: 0">报告列表</h3>
       <el-button :loading="loading" @click="load">刷新</el-button>
     </div>
     <div style="display: flex; gap: 12px; margin-bottom: 12px; align-items: center">
@@ -14,8 +14,8 @@
       </el-select>
     </div>
     <el-table :data="filteredTasks" v-loading="loading" border>
-      <el-table-column prop="id" label="ID" width="70" />
-      <el-table-column label="数据源" min-width="120">
+      <el-table-column type="index" label="序号" width="70" />
+      <el-table-column label="数据源" min-width="120" sortable :sort-method="(a, b) => (a.datasourceName || '').localeCompare(b.datasourceName || '')">
         <template #default="{ row }">{{ row.datasourceName || `数据源 ${row.datasourceId}` }}</template>
       </el-table-column>
       <el-table-column label="库" min-width="180">
@@ -26,7 +26,7 @@
           <span v-else style="color: var(--el-text-color-secondary)">全部库</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态 / 进度" min-width="260">
+      <el-table-column label="状态 / 进度" min-width="260" sortable :sort-method="(a, b) => statusOrder(a.status) - statusOrder(b.status)">
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)" size="small" style="margin-right: 8px">{{ statusText(row.status) }}</el-tag>
           <template v-if="row.status === 'RUNNING' || row.status === 'PENDING'">
@@ -36,19 +36,19 @@
           <span v-else-if="row.status === 'FAILED'" style="color: var(--el-color-danger); font-size: 12px" :title="row.error">{{ row.error }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="文件名" min-width="220">
+      <el-table-column label="文件名" min-width="220" prop="fileName" sortable>
         <template #default="{ row }">
           <el-button v-if="row.status === 'DONE' && row.fileName" link type="primary" :title="row.fileName" @click="openDoc(row)">{{ row.fileName }}</el-button>
           <span v-else style="color: var(--el-text-color-secondary)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="文件大小" width="100" align="right">
+      <el-table-column label="文件大小" width="100" align="right" prop="fileSize" sortable>
         <template #default="{ row }">{{ row.fileSize != null ? formatBytes(row.fileSize) : '-' }}</template>
       </el-table-column>
-      <el-table-column label="创建时间" width="160">
+      <el-table-column label="创建时间" width="160" prop="createdAt" sortable>
         <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="耗时" width="90">
+      <el-table-column label="耗时" width="90" sortable :sort-method="(a, b) => durationSecs(a) - durationSecs(b)">
         <template #default="{ row }">{{ duration(row) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="160" fixed="right">
@@ -62,7 +62,7 @@
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="还没有导出任务,在库列表/表列表页点击「导出报告」提交" :image-size="60" />
+        <el-empty description="还没有报告,在库列表/表列表页点击「导出报告」提交" :image-size="60" />
       </template>
     </el-table>
   </div>
@@ -88,16 +88,27 @@ function statusText(s) {
   return { PENDING: '排队中', RUNNING: '生成中', DONE: '完成', FAILED: '失败' }[s] || s
 }
 
+/** 状态排序权重:排队中 < 生成中 < 完成 < 失败 */
+function statusOrder(s) {
+  return { PENDING: 0, RUNNING: 1, DONE: 2, FAILED: 3 }[s] ?? 99
+}
+
 function percent(row) {
   if (!row.progressTotal) return 0
   return Math.min(100, Math.round((row.progressDone / row.progressTotal) * 100))
 }
 
-/** 耗时:完成/失败取 finished-created,进行中取当前-created;不足 1 分钟显示秒 */
-function duration(row) {
-  if (!row.createdAt) return '—'
+/** 耗时秒数:完成/失败取 finished-created,进行中取当前-created */
+function durationSecs(row) {
+  if (!row.createdAt) return 0
   const end = row.finishedAt ? new Date(row.finishedAt) : new Date()
-  const secs = Math.max(0, Math.round((end - new Date(row.createdAt)) / 1000))
+  return Math.max(0, Math.round((end - new Date(row.createdAt)) / 1000))
+}
+
+/** 耗时:不足 1 分钟显示秒 */
+function duration(row) {
+  const secs = durationSecs(row)
+  if (!secs) return '-'
   if (secs < 60) return `${secs} 秒`
   return `${Math.floor(secs / 60)} 分 ${secs % 60} 秒`
 }

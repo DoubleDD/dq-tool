@@ -78,7 +78,11 @@ class ScanService(
         }
 
         val rulesJson = objectMapper.writeValueAsString(req.nullRules ?: emptyList<NullRule>())
-        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size, req.autoTag)
+        // 并发 worker 数:null 表示用配置默认;校验合法范围(1~128)。
+        // 无论是否自定义都调用 resize,保证每次扫描的池大小与本次任务设定一致(避免上次设置残留)
+        val workers = req.workers?.let { it.coerceIn(1, 128) }
+        executor.resize(workers ?: config.scan.workers)
+        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size, req.autoTag, workers)
         val scanTableIds = ArrayList<Long>()
         for (t in targets) {
             scanTableIds.add(
@@ -175,6 +179,9 @@ class ScanService(
 
     // ---------- 查询 ----------
 
+    /** 配置默认的并发 worker 线程数,供前端弹窗展示默认值 */
+    fun defaultWorkers(): Int = config.scan.workers
+
     fun listJobs(datasourceId: Long?, dbName: String?, schemaName: String?): List<ScanJobView> {
         val dsNames = dsRepo.findAll().associate { it.id to it.name }
         val jobs = repo.listJobs(datasourceId, dbName, schemaName)
@@ -216,7 +223,7 @@ class ScanService(
         return ScanJobView(
             j.id, j.datasourceId, dsName, dbType, j.dbName, j.schemaName, j.status,
             j.forceFull, rules, j.totalTables, j.doneTables, progress(j, tables), j.error,
-            j.createdAt, j.startedAt, j.finishedAt, events, tables
+            j.createdAt, j.startedAt, j.finishedAt, events, tables, j.workers
         )
     }
 
@@ -289,6 +296,8 @@ class ScanService(
         val ds = dataSourceService.get(job.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
 
+        // 续扫时恢复任务创建时设定的并发数(老任务无记录则用配置默认)
+        executor.resize(job.workers ?: config.scan.workers)
         repo.markJobRunning(jobId)
         for (t in repo.listScanTables(jobId)) {
             if (t.status == ScanStatus.DONE) {

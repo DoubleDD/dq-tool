@@ -30,6 +30,11 @@ public class ScanController {
         ctx.json(Map.of("jobId", scanService.createScan(req)));
     }
 
+    /** 扫描默认参数(如并发 worker 线程数),供前端弹窗展示默认值 */
+    public void defaults(Context ctx) {
+        ctx.json(Map.of("defaultWorkers", scanService.defaultWorkers()));
+    }
+
     public void list(Context ctx) {
         Long datasourceId = ctx.queryParamAsClass("datasourceId", Long.class).getOrNull();
         ctx.json(scanService.listJobs(datasourceId, ctx.queryParam("dbName"), ctx.queryParam("schemaName")));

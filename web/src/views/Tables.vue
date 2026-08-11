@@ -207,6 +207,11 @@
             <el-icon style="vertical-align: -2px; margin-left: 4px"><QuestionFilled /></el-icon>
           </el-tooltip>
         </el-form-item>
+        <el-form-item label="并发线程数">
+          <el-input-number v-model="scanForm.workers" :min="1" :max="128" placeholder="默认"
+                           controls-position="right" style="width: 160px" />
+          <div class="form-tip">扫描并发 worker 线程数,留空使用配置默认值({{ defaultWorkers ?? '—' }});增大可加速但会增加数据库负载</div>
+        </el-form-item>
         <el-form-item label="空值规则">
           <div style="width: 100%">
             <div v-for="(rule, idx) in scanForm.nullRules" :key="idx" class="rule-row">
@@ -277,12 +282,12 @@ const refreshing = ref(false)
 // Word 报告导出中状态(只导出当前库,未扫描时后端拦截提示)
 const exporting = ref(false)
 
-/** 导出当前库的 Word 数据调研报告(异步任务,单库范围;提交后到「导出任务」页查看) */
+/** 导出当前库的 Word 数据调研报告(异步任务,单库范围;提交后到「报告列表」页查看) */
 async function exportReport() {
   exporting.value = true
   try {
     await submitReportExport(dsId, db, [schema])
-    ElMessage.success('导出任务已提交,可在「导出任务」页签查看进度')
+    ElMessage.success('导出任务已提交,可在「报告列表」页签查看进度')
   } catch {
     // 提交失败由响应拦截器弹窗
   } finally {
@@ -355,9 +360,23 @@ async function reloadTableTags() {
 const scanDialogVisible = ref(false)
 const submitting = ref(false)
 // maxSizeValue 为空(null)表示不限制表大小
-const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: false })
+const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: false, workers: null })
 // 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走
 const singleTable = ref('')
+
+// 配置默认的并发 worker 线程数,扫描弹窗中展示
+const defaultWorkers = ref(null)
+let scanDefaultsFetched = false
+async function fetchScanDefaults() {
+  if (scanDefaultsFetched) return
+  scanDefaultsFetched = true
+  try {
+    const cfg = await request.get('/scans/defaults')
+    defaultWorkers.value = cfg.defaultWorkers ?? null
+  } catch {
+    // 拉取失败不影响扫描,弹窗中默认值显示 "-"
+  }
+}
 
 // 大模型配置是否可用(合并默认值后完整),决定「AI 自动打标」复选框默认勾选;首次打开扫描对话框时拉取并缓存
 const aiAvailable = ref(false)
@@ -618,7 +637,9 @@ function openScanDialog() {
   scanForm.maxSizeValue = null
   scanForm.maxSizeUnit = 'GB'
   scanForm.autoTag = aiAvailable.value
+  scanForm.workers = null
   fetchAiAvailable()
+  fetchScanDefaults()
   scanDialogVisible.value = true
 }
 
@@ -641,7 +662,8 @@ async function submitScan() {
       forceFull: scanForm.forceFull,
       nullRules,
       maxTableSizeBytes: maxSizeBytes(),
-      autoTag: scanForm.autoTag
+      autoTag: scanForm.autoTag,
+      workers: scanForm.workers || null,
     })
     ElMessage.success('扫描任务已提交')
     scanDialogVisible.value = false
