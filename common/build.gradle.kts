@@ -60,8 +60,8 @@ dependencies {
     testImplementation(libs.jackson3.module.kotlin)
     testImplementation("org.jetbrains.kotlin:kotlin-reflect")
     testImplementation(libs.hibernate.validator)
+    testImplementation(libs.logback.classic)
     testRuntimeOnly(libs.tomcat.embed.el)
-    testRuntimeOnly(libs.logback.classic)
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
