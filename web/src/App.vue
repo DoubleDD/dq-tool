@@ -5,14 +5,15 @@
   </div>
   <el-container v-else class="layout">
     <!-- 侧边栏:一级功能导航(「数据源」为可展开树,含新增/导入/导出下拉;下钻页高亮对应数据源;一级页面不占页签) -->
-    <el-aside width="200px" class="sidebar">
+    <el-aside :width="sidebarWidth" :class="['sidebar', { 'sidebar-collapsed': sidebarCollapsed }]">
       <div class="sidebar-brand">
         <span class="brand-name">数据质量检测工具</span>
       </div>
       <el-menu :default-active="activeNav" :default-openeds="openeds" class="sidebar-menu"
+        :collapse="sidebarCollapsed"
         @select="onMenuSelect" @open="onMenuOpen" @close="onMenuClose">
         <!-- 数据源:可展开的数据源树 + 标题右侧操作下拉(新增/导入/导出) -->
-        <el-sub-menu index="ds-root">
+        <el-sub-menu index="ds-root" class="ds-root">
           <template #title>
             <el-icon><Coin /></el-icon>
             <span>数据源</span>
@@ -53,6 +54,10 @@
           <span>授权管理</span>
         </el-menu-item>
       </el-menu>
+      <div class="sidebar-toggle" @click="toggleSidebar">
+        <el-icon><Expand v-if="sidebarCollapsed" /><Fold v-else /></el-icon>
+        <span v-if="!sidebarCollapsed" class="toggle-text">收起</span>
+      </div>
     </el-aside>
     <el-container direction="vertical">
       <el-header class="header" height="48px">
@@ -86,7 +91,7 @@
 import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
-import { Coin, Download, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Sunny, Moon } from '@element-plus/icons-vue'
+import { Coin, Document, Download, Expand, Fold, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Sunny, Moon } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
@@ -105,8 +110,17 @@ const router = useRouter()
 const otherNav = [
   { path: '/dashboard', label: '任务看板', icon: Odometer },
   { path: '/tags', label: '标记统计', icon: PriceTag },
-  { path: '/report-exports', label: '导出任务', icon: Download }
+  { path: '/report-exports', label: '报告列表', icon: Download },
+  { path: '/logs', label: '运行日志', icon: Document }
 ]
+
+// 侧边栏收起/展开(持久化到 localStorage)
+const sidebarCollapsed = ref(localStorage.getItem('dq-sidebar-collapsed') === 'true')
+const sidebarWidth = computed(() => (sidebarCollapsed.value ? '64px' : '200px'))
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem('dq-sidebar-collapsed', String(sidebarCollapsed.value))
+}
 
 // 侧边栏数据源树:进入数据源相关页/展开「数据源」子菜单时刷新(静默失败,失败维持旧列表)
 const datasources = ref([])
@@ -142,6 +156,7 @@ const activeNav = computed(() => {
   if (p === '/dashboard' || p.startsWith('/dashboard/')) return '/dashboard'
   if (p === '/tags' || p.startsWith('/tags/')) return '/tags'
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
+  if (p === '/logs' || p.startsWith('/logs/')) return '/logs'
   if (p.startsWith('/license-admin')) return '/license-admin'
   return '/datasources'
 })
