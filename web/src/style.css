@@ -138,6 +138,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.28s ease;
 }
 
 .sidebar-brand {
@@ -157,6 +158,37 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 收起态:隐藏品牌文字 */
+.sidebar-collapsed .brand-name {
+  display: none;
+}
+
+/* 侧边栏收起/展开按钮 */
+.sidebar-toggle {
+  height: 42px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px;
+  border-top: 1px solid var(--el-border-color-lighter);
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.sidebar-toggle:hover {
+  background: var(--el-fill-color-light);
+  color: var(--el-color-primary);
+}
+
+/* 收起态:按钮居中,仅显示图标 */
+.sidebar-collapsed .sidebar-toggle {
+  justify-content: center;
+  padding: 0;
 }
 
 .sidebar-menu {
@@ -180,6 +212,30 @@ body {
   font-size: 13.5px;
 }
 
+/* 数据源区块:整体淡背景(标题 + 展开子项),与其他一级菜单区分 */
+.sidebar-menu .el-sub-menu.ds-root {
+  margin: 2px 8px 6px;
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+}
+/* 深色主题下 lighter 与侧边栏背景几乎同色,稍提亮一档保持可见 */
+html.dark .sidebar-menu .el-sub-menu.ds-root {
+  background: var(--el-fill-color-light);
+}
+/* 标题行取消独立 margin,由区块容器统一控制(圆角贴合) */
+.sidebar-menu .el-sub-menu.ds-root > .el-sub-menu__title {
+  margin: 0;
+  border-radius: 8px;
+}
+/* 展开的子菜单继承区块背景,子项在背景内缩进 */
+.sidebar-menu .el-sub-menu.ds-root .el-menu--inline {
+  background: transparent;
+  padding: 4px 0 6px;
+}
+.sidebar-menu .el-sub-menu.ds-root .el-menu--inline .el-menu-item {
+  margin-left: 4px;
+  margin-right: 4px;
+}
 .sidebar-menu .el-menu-item.is-active {
   background: var(--el-color-primary-light-9);
   font-weight: 600;
@@ -188,6 +244,12 @@ body {
 html.dark .sidebar-menu .el-menu-item.is-active {
   background: var(--el-color-primary-dark-2);
   color: #fff;
+}
+
+/* 数据源二级菜单:数据库图标(DbTypeIcon 非 el-icon,EP 不自动加间距)与名称的间距 */
+.sidebar-menu .el-menu-item .db-icon,
+.sidebar-menu .el-menu-item .db-badge {
+  margin-right: 8px;
 }
 
 /* 数据源子菜单项:名称溢出省略 */

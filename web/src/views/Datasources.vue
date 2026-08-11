@@ -63,7 +63,7 @@
     <!-- 有数据源:轻量「下一步」提示 -->
     <el-alert v-else-if="list.length" type="info" :closable="false" show-icon class="next-tip">
       <template #title>
-        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片「浏览库」查看库与表并发起扫描;进度可在顶部「任务看板」跟进,报告在「导出任务」页下载。
+        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片「浏览库」查看库与表并发起扫描;进度可在顶部「任务看板」跟进,报告在「报告列表」页下载。
       </template>
     </el-alert>
 
@@ -216,7 +216,7 @@
               <el-checkbox :model-value="schemaCheckAll" :indeterminate="schemaIndeterminate" @change="onSchemaCheckAll">全部</el-checkbox>
               <span class="sf-count">已选 {{ schemaChecked.length }} / {{ schemaList.length }}</span>
             </div>
-            <el-checkbox-group v-model="schemaChecked" class="sf-list">
+            <el-checkbox-group v-model="schemaChecked" class="sf-list sf-grid">
               <el-checkbox v-for="db in schemaList" :key="db" :value="db">{{ db }}</el-checkbox>
             </el-checkbox-group>
           </template>
@@ -1122,9 +1122,9 @@ onActivated(loadList)
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-bottom: 8px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--el-border-color-lighter);
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 .sf-count {
   color: var(--el-text-color-secondary);
@@ -1133,8 +1133,29 @@ onActivated(loadList)
 .sf-list {
   display: flex;
   flex-direction: column;
-  max-height: 260px;
+  max-height: 400px;
   overflow-y: auto;
+}
+/* 库过滤列表:双列网格(与库列表页库过滤弹窗同风格) */
+.sf-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 16px;
+}
+.sf-list :deep(.el-checkbox) {
+  margin-right: 0;
+  height: auto;
+  padding: 7px 8px;
+  border-radius: 4px;
+  transition: background-color 0.15s;
+}
+.sf-list :deep(.el-checkbox:hover) {
+  background-color: var(--el-fill-color-light);
+}
+.sf-list :deep(.el-checkbox__label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .sf-current {
   line-height: 1.8;

@@ -7,6 +7,7 @@
 - 表列表点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;未扫描的表进入结构元数据页(字段名/类型/注释/约束 + 下方索引结构:索引名/唯一性/索引列,接口 `GET /api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns` 与 `.../indexes`,不含统计)
 - 结构元数据本地缓存(库/表/字段/索引):库列表统计(schema_stat)、表清单/字段/索引(meta_table/meta_column/meta_index)首次访问从业务库拉取落 H2,之后浏览读缓存不连业务库;库列表/表列表/字段明细页各有「刷新」按钮(接口带 `?refresh=true`)强制从数据源拉最新结构并覆盖缓存;发起扫描时同步刷新表/字段/索引缓存(createScan 刷表清单,planTable 刷字段+索引,失败不影响扫描)
 - 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫
+- 并发 worker 数可在发起扫描弹窗中设置(1~128,留空用配置默认 `dq.scan.workers`):落库 `scan_job.workers` 供详情展示与续扫恢复;扫描启动时动态调整全局扫描线程池 `ScanExecutor.resize`(每次发起都按本次任务设定调整,避免上次设置残留)
 - 非数值分段键(如 varchar 主键)的边界规划用 seek(keyset)+固定步进:每段从上一段边界之后按步进取边界,避免 OFFSET 深分页每次从索引头扫 N 行(O(N²),大表 varchar 键会把 MySQL 服务器 IO 打满导致新连接握手超时)
 - 业务库执行的 SQL 全部打日志(独立 logger `com.example.dq.sql`,默认 INFO):`DataSourceService` 连接出口统一 JDK 代理包装(`SqlLogConnection`),拦截 Statement/PreparedStatement 的 execute 类调用打印完整 SQL 与绑定参数;排查慢 SQL/深分页等场景用,日志文件按天滚动可回溯。本地 H2(repository 包)不走该出口,不打日志;不需要时把 logback 中 `com.example.dq.sql` 调为 WARN/OFF
 - 扫描的调度单元是"分段(chunk)",不是表:分段状态持久化在 `scan_chunk` 表,断点续扫只重跑未完成分段

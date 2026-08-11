@@ -162,6 +162,7 @@ public class WebServer {
         routes.post("/api/datasources/import", ds::importDs);
 
         // ---- 扫描作业 ----
+        routes.get("/api/scans/defaults", scan::defaults);
         routes.post("/api/scans", scan::create);
         routes.get("/api/scans", scan::list);
         routes.get("/api/scans/{jobId}", scan::get);

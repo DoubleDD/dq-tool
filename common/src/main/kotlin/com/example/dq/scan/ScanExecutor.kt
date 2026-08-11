@@ -37,6 +37,19 @@ class ScanExecutor(config: AppConfig) {
         }
     }
 
+    /** 动态调整线程池大小;新值小于当前值时先缩 max 再缩 core,避免 IllegalArgumentException */
+    fun resize(workers: Int) {
+        if (workers <= 0) return
+        synchronized(executor) {
+            if (workers < executor.maximumPoolSize) {
+                executor.corePoolSize = workers
+                executor.maximumPoolSize = workers
+            } else if (workers > executor.maximumPoolSize) {
+                executor.maximumPoolSize = workers
+                executor.corePoolSize = workers
+            }
+        }
+    }
     fun registerStatement(chunkId: Long, stmt: Statement) {
         activeStatements[chunkId] = stmt
     }

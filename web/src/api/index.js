@@ -28,7 +28,7 @@ request.interceptors.response.use(
   }
 )
 
-/** 提交 Word 报告异步导出任务,返回 taskId;进度与文件在「导出任务」页查看 */
+/** 提交 Word 报告异步导出任务,返回 taskId;进度与文件在「报告列表」页查看 */
 export async function submitReportExport(dsId, db, schemas) {
   const q = db ? `?db=${encodeURIComponent(db)}` : ''
   const resp = await request.post(`/datasources/${dsId}/report/exports${q}`, {

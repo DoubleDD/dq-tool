@@ -2,11 +2,11 @@
 
 > dq-tool 项目文档,索引见根 [AGENTS.md](../../AGENTS.md)。
 
-**异步任务**:导出耗时(逐库聚合 + 逐节 LLM 分析),点击「导出报告」只提交任务,在「导出任务」页签查看进度与产物。库列表页复用复选框选库(未勾选时弹窗确认后默认导出全部已完成全表扫描的库;勾选未完成全表扫描的库任务会 FAILED 并列出库名)、表列表页导出当前库(`schemas` 限定范围)。
+**异步任务**:导出耗时(逐库聚合 + 逐节 LLM 分析),点击「导出报告」只提交任务,在「报告列表」页签查看进度与产物。库列表页复用复选框选库(未勾选时弹窗确认后默认导出全部已完成全表扫描的库;勾选未完成全表扫描的库任务会 FAILED 并列出库名)、表列表页导出当前库(`schemas` 限定范围)。
 
 - 提交:`POST /api/datasources/{dsId}/report/exports?db=` body `{schemas:[...]}`(null=全部)→ `{taskId}`;列表:`GET /api/report-exports`;操作:`GET /api/report-exports/{id}/download`(浏览器环境显示「下载」)、`POST .../open`(调系统软件打开,顺序 MS Office → WPS → 默认关联,`util/SystemOpen.kt` 纯 ProcessBuilder 实现,不用 AWT)、`POST .../reveal`(打开文件目录并选中);tauri 套壳环境(检测 `window.__TAURI_INTERNALS__`)显示「另存为」,走 Rust 自定义命令 `save_report_as`(原生保存对话框 + 从数据目录复制产物,见 tauri/AGENTS.md)
 - 任务落 `report_export` 表(V9):状态机 PENDING→RUNNING→DONE/FAILED,进度(progress_done/total + stage 阶段文字)由内核 `WordReportService.export` 的 onProgress 回调落库(总步数=逐库聚合 N + 标记节 S + 固定分析 8 + 渲染 1);单线程队列执行(`WordReportExportService`),服务重启时未完成任务置 FAILED
-- 产物文件:`数据目录/reports/{数据源名}-数据调研报告-{taskId}.docx`(数据源名中的 `\/:*?"<>|` 替换为 `_`;任务 id 保证同名数据源多次导出不互相覆盖);渲染内核 `WordReportService` + poi-tl 模板 `common/src/main/resources/templates/data-survey-report.docx`;导出任务列表第一列「文件名」即该产物文件名,点击调系统软件打开
+- 产物文件:`数据目录/reports/{数据源名}-数据调研报告-{taskId}.docx`(数据源名中的 `\/:*?"<>|` 替换为 `_`;任务 id 保证同名数据源多次导出不互相覆盖);渲染内核 `WordReportService` + poi-tl 模板 `common/src/main/resources/templates/data-survey-report.docx`;报告列表第一列「文件名」即该产物文件名,点击调系统软件打开
 
 **渲染封面 + 一~四章全正文**:
 
