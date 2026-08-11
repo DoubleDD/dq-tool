@@ -1,7 +1,7 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <h3 style="margin: 0">表列表 - {{ db ? db + '.' + schema : schema }}</h3>
+      <Breadcrumb :items="breadcrumbItems" />
       <div>
         <el-button @click="goBack">返回</el-button>
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshTables">刷新</el-button>
@@ -259,6 +259,8 @@ import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import AiConfigDialog from '../components/AiConfigDialog.vue'
 import TableTagDialog from '../components/TableTagDialog.vue'
+import Breadcrumb from '../components/Breadcrumb.vue'
+import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { goBack as historyBack } from '../utils/back'
 
@@ -580,6 +582,15 @@ function latestScanTime(row) {
   return t ? new Date(t).getTime() : 0
 }
 
+// ---------- 面包屑 ----------
+const dsName = computed(() => getDsName(dsId) || `数据源 ${dsId}`)
+const schemaLabel = computed(() => (db ? `${db}.${schema}` : schema))
+const breadcrumbItems = computed(() => [
+  { label: '数据源列表', to: '/datasources' },
+  { label: dsName.value, to: `/datasources/${dsId}/schemas` },
+  { label: schemaLabel.value }
+])
+
 function dbQuery() {
   return db ? `?db=${encodeURIComponent(db)}` : ''
 }
@@ -593,16 +604,11 @@ function onSelectionChange(rows) {
   selectedTables.value = rows
 }
 
-// 点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;
-// 未扫描的表进入元数据字段明细页(仅结构,不含统计)
+// 点击表名统一进入字段明细页:已扫描带 jobId(展示扫描统计),未扫描仅结构
 function goTableDetail(row) {
   const s = latestScans.value[row.name]
-  if (s) {
-    // 旧版后端只返回 jobId 数字,做一层兼容,重启后端后可去掉
-    router.push(`/scans/${s.jobId ?? s}/tables/${encodeURIComponent(row.name)}`)
-  } else {
-    router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(row.name)}${dbQuery()}`)
-  }
+  const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(row.name)}${dbQuery()}`
+  router.push(s ? `${base}${dbQuery() ? '&' : '?'}jobId=${s.jobId ?? s}` : base)
 }
 
 function openScanDialog() {
@@ -655,6 +661,8 @@ onMounted(async () => {
   mounted.value = true
   fetchRunning()
   startPolling()
+  // 数据源名兜底解析:刷新/直达 URL 无 ?name= 时也能恢复真名,并刷新页签标题
+  ensureDsName(dsId).then(() => syncTab(route))
 })
 
 // 页签下钻时是失活而非卸载:停掉轮询,回来时重载表列表(行数/大小/最近扫描/表说明)并恢复轮询

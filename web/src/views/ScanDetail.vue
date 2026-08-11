@@ -190,8 +190,14 @@ async function onResume() {
   }
 }
 
+/** 统一进入字段明细页(带 jobId 展示该任务扫描统计):/datasources/:id/schemas/:schema/tables/:tableName?jobId= */
 function goColumns(row) {
-  router.push(`/scans/${jobId}/tables/${encodeURIComponent(row.tableName)}`)
+  const { datasourceId, schemaName, dbName } = job.value || {}
+  if (!datasourceId || !schemaName) return
+  const q = []
+  if (dbName) q.push(`db=${encodeURIComponent(dbName)}`)
+  q.push(`jobId=${jobId}`)
+  router.push(`/datasources/${datasourceId}/schemas/${encodeURIComponent(schemaName)}/tables/${encodeURIComponent(row.tableName)}?${q.join('&')}`)
 }
 
 // ---------- 面包屑 ----------

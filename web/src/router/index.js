@@ -9,10 +9,10 @@ const routes = [
   { path: '/datasources', component: () => import('../views/Datasources.vue') },
   { path: '/datasources/:id/schemas', component: () => import('../views/Schemas.vue') },
   { path: '/datasources/:id/schemas/:schema/tables', component: () => import('../views/Tables.vue') },
-  { path: '/datasources/:id/schemas/:schema/tables/:tableName', component: () => import('../views/TableColumnsMeta.vue') },
+  { path: '/datasources/:id/schemas/:schema/tables/:tableName', component: () => import('../views/TableDetail.vue') },
   { path: '/datasources/:id/schemas/:schema/scans', component: () => import('../views/Scans.vue') },
   { path: '/scans/:jobId', component: () => import('../views/ScanDetail.vue') },
-  { path: '/scans/:jobId/tables/:tableName', component: () => import('../views/TableColumns.vue') },
+  { path: '/scans/:jobId/tables/:tableName', component: () => import('../views/TableDetail.vue') },
   // 授权码管理:仅管理员实例(配置了签发私钥),守卫按 status.admin 放行
   { path: '/license-admin', component: () => import('../views/LicenseAdmin.vue') }
 ]

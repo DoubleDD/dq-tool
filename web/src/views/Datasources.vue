@@ -1,18 +1,76 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <h3 style="margin: 0">数据源管理</h3>
-      <div>
-        <el-button @click="openExportDialog">导出</el-button>
-        <el-button @click="openImportDialog">导入</el-button>
-        <el-button v-if="list.length" type="primary" @click="openDialog()">新增数据源</el-button>
+      <div class="toolbar-left">
+        <h3 style="margin: 0">数据源</h3>
+        <span v-if="list.length" class="toolbar-sub">{{ list.length }} 个连接</span>
+      </div>
+      <div class="toolbar-right">
+        <el-dropdown trigger="click" @command="onToolbarCommand">
+          <el-button>更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="export">导出配置(JSON)</el-dropdown-item>
+              <el-dropdown-item command="import">导入配置</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <el-button type="primary" @click="openDialog()">新增数据源</el-button>
       </div>
     </div>
 
-    <div class="ds-grid" v-loading="loading">
+    <!-- 空状态:四步上手引导,替代单纯 el-empty -->
+    <div v-if="!loading && !list.length" class="flow-guide">
+      <div class="flow-guide-title">快速上手</div>
+      <div class="flow-steps">
+        <div class="flow-step active" @click="openDialog()">
+          <div class="flow-step-no">1</div>
+          <div class="flow-step-body">
+            <div class="flow-step-name">连接数据源</div>
+            <div class="flow-step-desc">新增数据库连接,支持 7 种数据库</div>
+          </div>
+        </div>
+        <el-icon class="flow-arrow"><ArrowRight /></el-icon>
+        <div class="flow-step disabled">
+          <div class="flow-step-no">2</div>
+          <div class="flow-step-body">
+            <div class="flow-step-name">浏览库表</div>
+            <div class="flow-step-desc">查看库下的表、字段与索引结构</div>
+          </div>
+        </div>
+        <el-icon class="flow-arrow"><ArrowRight /></el-icon>
+        <div class="flow-step disabled">
+          <div class="flow-step-no">3</div>
+          <div class="flow-step-body">
+            <div class="flow-step-name">发起扫描</div>
+            <div class="flow-step-desc">检测空值、空表等数据质量问题</div>
+          </div>
+        </div>
+        <el-icon class="flow-arrow"><ArrowRight /></el-icon>
+        <div class="flow-step disabled">
+          <div class="flow-step-no">4</div>
+          <div class="flow-step-body">
+            <div class="flow-step-name">导出报告</div>
+            <div class="flow-step-desc">Excel 明细或 Word 调研报告</div>
+          </div>
+        </div>
+      </div>
+      <div class="flow-guide-foot">
+        <el-button type="primary" @click="openDialog()">新增数据源,开始第一步</el-button>
+      </div>
+    </div>
+
+    <!-- 有数据源:轻量「下一步」提示 -->
+    <el-alert v-else-if="list.length" type="info" :closable="false" show-icon class="next-tip">
+      <template #title>
+        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片「浏览库」查看库与表并发起扫描;进度可在顶部「任务看板」跟进,报告在「导出任务」页下载。
+      </template>
+    </el-alert>
+
+    <div v-if="list.length || loading" class="ds-grid" v-loading="loading">
       <el-card v-for="row in list" :key="row.id" shadow="hover" class="ds-card"
         :class="{ 'ds-no-password': row.hasPassword === false }"
-        :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : ''"
+        :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : row.jdbcUrl"
         @click="goSchemas(row)">
         <DbTypeIcon :type="row.dbType" :size="110" class="ds-bg-icon" />
         <div class="ds-card-header">
@@ -22,31 +80,24 @@
             </el-tooltip>
             {{ row.name }}
           </span>
-          <span>
+          <span class="ds-card-right">
             <el-tag size="small">{{ row.dbType }}</el-tag>
           </span>
         </div>
-        <div class="ds-field" :title="row.jdbcUrl">
-          <span class="ds-label">JDBC</span>
-          <span class="ds-value">{{ row.jdbcUrl }}</span>
+        <div class="ds-meta">
+          <span class="ds-meta-item"><el-icon><Connection /></el-icon>{{ dbHost(row.jdbcUrl) }}</span>
+          <span class="ds-meta-item" v-if="row.username"><el-icon><User /></el-icon>{{ row.username }}</span>
         </div>
-        <div class="ds-field">
-          <span class="ds-label">用户名</span>
-          <span class="ds-value">{{ row.username }}</span>
-        </div>
-        <div class="ds-field">
-          <span class="ds-label">阈值</span>
-          <span class="ds-value">{{ formatNumber(row.rowThreshold) }} 行 / {{ formatBytes(row.sizeThresholdBytes) }}</span>
-        </div>
-        <div class="ds-actions">
-          <el-button link type="primary" :disabled="row.hasPassword === false" @click.stop="goSchemas(row)">浏览库</el-button>
-          <el-button link type="primary" @click.stop="openDialog(row)">编辑</el-button>
-          <el-button link type="danger" @click.stop="onDelete(row)">删除</el-button>
+        <!-- 左下角编辑 / 右下角删除;浏览库靠点击卡片本体 -->
+        <div class="ds-card-foot">
+          <el-button link class="ds-icon-btn" @click.stop="openDialog(row)">
+            <el-icon><EditPen /></el-icon>
+          </el-button>
+          <el-button link type="danger" class="ds-icon-btn" @click.stop="onDelete(row)">
+            <el-icon><Delete /></el-icon>
+          </el-button>
         </div>
       </el-card>
-      <el-empty v-if="!loading && !list.length" description="暂无数据源" style="grid-column: 1 / -1">
-        <el-button type="primary" @click="openDialog()">新增数据源</el-button>
-      </el-empty>
     </div>
 
     <!-- 新增/编辑数据源:DataGrip 风格 —— 顶部名称+驱动,常规/SSH 隧道/高级分页,测试连接固定在左下 -->
@@ -285,9 +336,8 @@
 import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { UploadFilled, WarningFilled } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Connection, Delete, EditPen, UploadFilled, User, WarningFilled } from '@element-plus/icons-vue'
 import request from '../api'
-import { formatBytes, formatNumber } from '../utils/format'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
 import LicenseFooter from '../components/LicenseFooter.vue'
 
@@ -677,6 +727,17 @@ function goSchemas(row) {
   if (row.hasPassword === false) return
   router.push(`/datasources/${row.id}/schemas?name=${encodeURIComponent(row.name)}`)
 }
+/** 从 JDBC URL 提取主机名用于卡片摘要(仅展示,完整地址悬停卡片可见) */
+function dbHost(jdbcUrl) {
+  const m = (jdbcUrl || '').match(/(?:@\/\/|:\/\/)([^/:;?]+)/)
+  return m ? m[1] : ''
+}
+
+/** 工具栏「更多」下拉:导入/导出配置 */
+function onToolbarCommand(cmd) {
+  if (cmd === 'export') openExportDialog()
+  else if (cmd === 'import') openImportDialog()
+}
 
 // ---------- 导出 ----------
 const exportVisible = ref(false)
@@ -784,6 +845,110 @@ onActivated(loadList)
   min-height: calc(100% - 40px);
   box-sizing: border-box;
 }
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.toolbar-sub {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 空状态:四步上手引导卡 */
+.flow-guide {
+  border: 1px dashed var(--el-border-color);
+  border-radius: 8px;
+  padding: 24px 28px;
+  margin-bottom: 16px;
+  background: var(--dq-surface);
+}
+.flow-guide-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+  margin-bottom: 16px;
+}
+.flow-steps {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.flow-step {
+  flex: 1;
+  min-width: 180px;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+  cursor: default;
+}
+.flow-step.active {
+  border-color: var(--el-color-primary-light-5);
+  background: var(--el-color-primary-light-9);
+  cursor: pointer;
+  transition: transform 0.2s ease, border-color 0.2s ease;
+}
+.flow-step.active:hover {
+  transform: translateY(-2px);
+  border-color: var(--el-color-primary);
+}
+.flow-step.disabled {
+  opacity: 0.62;
+}
+.flow-step-no {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--el-text-color-placeholder);
+}
+.flow-step.active .flow-step-no {
+  background: var(--el-color-primary);
+}
+.flow-step-body {
+  min-width: 0;
+}
+.flow-step-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+.flow-step-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+}
+.flow-arrow {
+  align-self: center;
+  color: var(--el-text-color-placeholder);
+  flex-shrink: 0;
+}
+.flow-guide-foot {
+  margin-top: 18px;
+  text-align: center;
+}
+
+/* 有数据源:下一步提示条 */
+.next-tip {
+  margin-bottom: 16px;
+}
 .ds-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -842,26 +1007,51 @@ onActivated(loadList)
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ds-field {
+.ds-card-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ds-meta {
   display: flex;
-  font-size: 13px;
-  line-height: 24px;
-}
-.ds-label {
+  gap: 14px;
+  font-size: 12px;
   color: var(--el-text-color-secondary);
-  width: 48px;
-  flex-shrink: 0;
+  line-height: 20px;
 }
-.ds-value {
-  color: var(--el-text-color-regular);
+.ds-meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ds-actions {
+.ds-meta-item .el-icon {
+  color: var(--el-text-color-placeholder);
+}
+/* 卡片底部:左下编辑 / 右下删除,浏览库靠点击卡片本体 */
+.ds-card-foot {
   margin-top: 12px;
   padding-top: 8px;
   border-top: 1px solid var(--el-border-color-extra-light);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ds-icon-btn {
+  padding: 4px 6px;
+  font-size: 16px;
+  color: var(--el-text-color-secondary);
+}
+.ds-icon-btn:hover {
+  color: var(--el-color-primary);
+}
+.ds-icon-btn.el-button--danger {
+  color: var(--el-color-danger);
+}
+.ds-icon-btn.el-button--danger:hover {
+  color: var(--el-color-danger-light-3);
 }
 .db-option {
   display: inline-flex;

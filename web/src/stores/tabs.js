@@ -33,6 +33,32 @@ export function getDsName(id) {
   return dsNames[id] || ''
 }
 
+/** 数据源名兜底解析:缓存未命中时按 id 从 /datasources 列表获取并回写缓存(同 id 并发只发一次请求)。
+ * 只做尽力而为的补全——失败/找不到时返回空串,调用方维持「数据源 ${id}」兜底显示,不弹错误提示。
+ * 用裸 fetch 而非 api 封装,避免失败时触发全局错误提示。 */
+const dsNamePending = new Map()
+
+export function ensureDsName(id) {
+  if (dsNames[id]) return Promise.resolve(dsNames[id])
+  let p = dsNamePending.get(id)
+  if (!p) {
+    p = fetch('/api/datasources')
+      .then((res) => (res.ok ? res.json() : []))
+      .then((list) => {
+        const ds = (list || []).find((d) => String(d.id) === String(id))
+        if (ds && ds.name) {
+          dsNames[id] = ds.name
+          return ds.name
+        }
+        return ''
+      })
+      .catch(() => '')
+      .finally(() => dsNamePending.delete(id))
+    dsNamePending.set(id, p)
+  }
+  return p
+}
+
 /** 任务详情页从接口拿到库名后回写,供页签标题使用 */
 export function setScanSchema(jobId, schema) {
   if (schema) scanSchemas[jobId] = schema

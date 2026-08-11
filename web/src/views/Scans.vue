@@ -63,7 +63,7 @@ import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import JobTimeline from '../components/JobTimeline.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
-import { getDsName } from '../stores/tabs'
+import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
 const route = useRoute()
 const router = useRouter()
@@ -121,6 +121,8 @@ function goDetail(row) {
 
 onActivated(() => {
   load()
+  // 数据源名兜底解析:刷新/直达 URL 无 ?name= 时也能恢复真名,并刷新页签标题
+  ensureDsName(dsId).then(() => syncTab(route))
   // 有进行中的任务时每 2 秒自动刷新
   timer = setInterval(() => {
     if (jobs.value.some(j => ['PENDING', 'RUNNING'].includes(j.status))) {
