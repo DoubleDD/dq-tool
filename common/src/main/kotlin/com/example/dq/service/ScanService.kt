@@ -13,6 +13,7 @@ import com.example.dq.model.ScanStatus
 import com.example.dq.model.ScanTableView
 import com.example.dq.model.TableStat
 import com.example.dq.repository.DataSourceRepository
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.scan.ChunkRunner
@@ -26,6 +27,7 @@ class ScanService(
     private val repo: ScanRepository,
     private val dsRepo: DataSourceRepository,
     private val schemaStatRepo: SchemaStatRepository,
+    private val metaCacheRepo: MetaCacheRepository,
     private val dataSourceService: DataSourceService,
     private val dialectFactory: DialectFactory,
     private val config: AppConfig,
@@ -52,6 +54,9 @@ class ScanService(
             datasourceId, req.database,
             SchemaStatRepository.CachedStat(schema, all.size, sumSize(all))
         )
+        // 同步刷新表级结构缓存:all 是该 schema 最新全量表清单,覆盖本地(表清单/注释/估算行数/体积)
+        metaCacheRepo.replaceTables(datasourceId, normalizeDb(req.database), schema,
+            all.map { MetaCacheRepository.CachedTable(it.name ?: "", it.comment, it.storageInfo, it.estRows, it.sizeBytes) })
         var targets = all
         if (!req.tables.isNullOrEmpty()) {
             val wanted = req.tables.toSet()
@@ -107,6 +112,19 @@ class ScanService(
                     chunkRunner.failTable(scanTableId, "表不存在或没有字段")
                     return
                 }
+                // 同步刷新字段/索引结构缓存(扫描已拿到最新结构;失败不影响扫描)
+                try {
+                    metaCacheRepo.replaceColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName,
+                        cols.mapIndexed { i, c -> MetaCacheRepository.CachedColumn(
+                            i, c.name, c.typeName, c.displayType, c.jdbcType, c.nullable,
+                            c.defaultValue, c.comment, c.primaryKey, c.pkSeq, c.uniqueIndexFirst) })
+                    val idx = dialect.listIndexes(conn, job.schemaName, tableName)
+                    metaCacheRepo.replaceIndexes(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName,
+                        idx.flatMap { ix -> ix.columns.mapIndexed { i, col ->
+                            MetaCacheRepository.CachedIndex(ix.name, ix.unique, i, col) } })
+                } catch (e: Exception) {
+                    log.debug("扫描时同步结构缓存失败(不影响扫描): {}", e.message)
+                }
                 val chunkKey = dialect.pickChunkKey(cols)
                 val sampled = !job.forceFull && overThreshold(ds, table)
                 ranges = if (sampled) {
@@ -151,6 +169,9 @@ class ScanService(
         }
         return tables.sumOf { it.sizeBytes ?: 0L }
     }
+
+    /** 无库概念方言的 database 归一为空串,与 meta_* 缓存口径一致 */
+    private fun normalizeDb(database: String?): String = database ?: ""
 
     // ---------- 查询 ----------
 

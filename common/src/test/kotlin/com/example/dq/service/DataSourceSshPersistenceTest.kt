@@ -5,6 +5,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.util.CryptoUtil
@@ -33,7 +34,7 @@ class DataSourceSshPersistenceTest {
         dsRepo = DataSourceRepository(jdbc)
         val config = AppConfig(dataDir = Files.createTempDirectory("ds-ssh-test"))
         crypto = CryptoUtil(config)
-        service = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc))
+        service = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
     }
 
     private fun sshReq(name: String) = DataSourceRequest(

@@ -4,6 +4,7 @@
       <h3 style="margin: 0">表列表 - {{ db ? db + '.' + schema : schema }}</h3>
       <div>
         <el-button @click="goBack">返回</el-button>
+        <el-button :icon="Refresh" :loading="refreshing" @click="refreshTables">刷新</el-button>
         <el-button :loading="exporting" @click="exportReport">导出报告</el-button>
         <el-button @click="$router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${dbQuery()}`)">扫描记录</el-button>
         <AiConfigDialog />
@@ -24,6 +25,21 @@
 
     <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
       <el-input v-model="keyword" placeholder="按表名或注释搜索" clearable style="width: 280px" />
+      <el-select
+        v-if="!filterTagId"
+        v-model="selectedTagIds"
+        multiple
+        collapse-tags
+        collapse-tags-tooltip
+        clearable
+        placeholder="按标记筛选"
+        style="width: 240px"
+      >
+        <el-option v-for="tag in availableTags" :key="tag.id" :label="tag.name" :value="String(tag.id)">
+          <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle" :style="{ background: tag.color }" />
+          {{ tag.name }}
+        </el-option>
+      </el-select>
       <el-checkbox v-model="onlyEmpty">只看空表(行数为 0)</el-checkbox>
     </div>
 
@@ -43,8 +59,7 @@
       <el-table-column type="index" label="序号" width="60" />
       <el-table-column prop="name" label="表名" min-width="180" sortable show-overflow-tooltip>
         <template #default="{ row }">
-          <el-link v-if="latestScans[row.name]" type="primary" @click="goLatestResult(row)">{{ row.name }}</el-link>
-          <span v-else>{{ row.name }}</span>
+          <el-link type="primary" @click="goTableDetail(row)">{{ row.name }}</el-link>
         </template>
       </el-table-column>
       <el-table-column prop="comment" label="注释" min-width="160" show-overflow-tooltip>
@@ -255,6 +270,8 @@ const db = route.query.db || ''
 
 const tables = ref([])
 const loading = ref(false)
+// 手动刷新表结构缓存中状态
+const refreshing = ref(false)
 // Word 报告导出中状态(只导出当前库,未扫描时后端拦截提示)
 const exporting = ref(false)
 
@@ -273,6 +290,8 @@ async function exportReport() {
 // schema 下所有基表的字段总数(业务库元数据查询,失败时显示 -)
 const columnCount = ref(null)
 const keyword = ref('')
+// 本地标记多选筛选:选中的标记 id(字符串数组),OR 逻辑--任一命中即展示
+const selectedTagIds = ref([])
 const selectedTables = ref([])
 // 每张表最近一次 DONE 扫描的信息(表名 -> { jobId, finishedAt, totalRows, sizeBytes, sampled }),
 // 有值的表名渲染为链接;非采样表的 totalRows 为精确行数,优先于元数据估算展示
@@ -292,6 +311,16 @@ const docEditSaving = ref(false)
 
 // 整个库的表→标记 map(表名 -> [{id,name,color,kind}]),含系统驱动的空表标记
 const tableTags = ref({})
+// 当前库下已使用的标记列表(从 tableTags 提取去重,按 id 排序),供标记筛选下拉
+const availableTags = computed(() => {
+  const seen = new Map()
+  for (const tags of Object.values(tableTags.value)) {
+    for (const tag of tags) {
+      if (!seen.has(tag.id)) seen.set(tag.id, tag)
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.id - b.id)
+})
 // 打标弹窗
 const tagDialogVisible = ref(false)
 const tagDialogTable = ref('')
@@ -392,6 +421,11 @@ const filteredTables = computed(() => {
     list = list.filter((t) =>
       (tableTags.value[t.name] || []).some((tag) => String(tag.id) === filterTagId.value))
   }
+  // 本地标记多选筛选:选中的标记中任一命中即展示(OR)
+  if (selectedTagIds.value.length) {
+    list = list.filter((t) =>
+      (tableTags.value[t.name] || []).some((tag) => selectedTagIds.value.includes(String(tag.id))))
+  }
   const kw = keyword.value.trim().toLowerCase()
   if (kw) {
     list = list.filter((t) =>
@@ -400,14 +434,17 @@ const filteredTables = computed(() => {
   return list
 })
 
-async function load() {
+async function load(refresh = false) {
   loading.value = true
   try {
     const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
+    // refresh=true 时表清单强制从业务库拉最新结构并覆盖本地缓存;其余数据为本地 H2/实时查询,不受 refresh 影响
+    const q = dbQuery()
+    const tablesUrl = `${base}/tables${q}${refresh ? (q ? '&' : '?') + 'refresh=true' : ''}`
     // 最新扫描映射/表说明查的是本地 H2,失败时仅影响表名是否可点与说明展示,不阻塞表列表
     // 字段总数走业务库元数据,失败时也不阻塞表列表(显示 -)
     const [tableList, latest, tableDocs, colCount, tagMap] = await Promise.all([
-      request.get(`${base}/tables${dbQuery()}`),
+      request.get(tablesUrl),
       request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/column-count${dbQuery()}`).catch(() => null),
@@ -420,6 +457,17 @@ async function load() {
     tableTags.value = tagMap || {}
   } finally {
     loading.value = false
+  }
+}
+
+/** 手动刷新:从业务库拉最新表结构并覆盖本地缓存 */
+async function refreshTables() {
+  refreshing.value = true
+  try {
+    await load(true)
+    ElMessage.success('已从数据源刷新表结构缓存')
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -545,11 +593,16 @@ function onSelectionChange(rows) {
   selectedTables.value = rows
 }
 
-// 点击表名直达该表最近一次扫描完成的字段级结果
-// (旧版后端只返回 jobId 数字,做一层兼容,重启后端后可去掉)
-function goLatestResult(row) {
+// 点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;
+// 未扫描的表进入元数据字段明细页(仅结构,不含统计)
+function goTableDetail(row) {
   const s = latestScans.value[row.name]
-  router.push(`/scans/${s.jobId ?? s}/tables/${encodeURIComponent(row.name)}`)
+  if (s) {
+    // 旧版后端只返回 jobId 数字,做一层兼容,重启后端后可去掉
+    router.push(`/scans/${s.jobId ?? s}/tables/${encodeURIComponent(row.name)}`)
+  } else {
+    router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(row.name)}${dbQuery()}`)
+  }
 }
 
 function openScanDialog() {

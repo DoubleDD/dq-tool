@@ -176,6 +176,8 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas", meta::listSchemas);
         routes.get("/api/datasources/{dsId}/schema-stats", meta::listSchemaStats);
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables", meta::listTables);
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns", meta::tableColumns);
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", meta::tableIndexes);
         routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", meta::countColumns);
         routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", meta::latestScanJobs);
         routes.get("/api/datasources/{dsId}/schemas/{schema}/running-scans", meta::runningScans);

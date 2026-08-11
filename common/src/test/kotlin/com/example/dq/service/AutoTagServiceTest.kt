@@ -10,6 +10,7 @@ import com.example.dq.model.ScanStatus
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
@@ -71,7 +72,7 @@ class AutoTagServiceTest {
         val config = AppConfig(dataDir = Files.createTempDirectory("dq-autotag"), ai = ai)
         val crypto = CryptoUtil(config)
         val dsRepo = DataSourceRepository(jdbc)
-        val dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc))
+        val dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
         return AutoTagService(
             AiConfigService(AiConfigRepository(jdbc), crypto, config),
             AiService(), tagService, tagRepo, scanRepo, TableDocRepository(jdbc),

@@ -6,6 +6,7 @@ import com.example.dq.model.DataSourceRequest
 import com.example.dq.model.TestConnectionRequest
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.util.CryptoUtil
@@ -119,7 +120,7 @@ class SshTunnelIntegrationTest {
         val jdbc = Jdbc(ds)
         val config = AppConfig(dataDir = Files.createTempDirectory("ssh-it"))
         dataSourceService = DataSourceService(DataSourceRepository(jdbc), CryptoUtil(config),
-            DialectFactory, config, SchemaStatRepository(jdbc))
+            DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
     }
 
     @Test

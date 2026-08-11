@@ -11,6 +11,7 @@ import com.example.dq.model.ScanRequest
 import com.example.dq.model.ScanStatus
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
@@ -80,6 +81,7 @@ class ScanFlowTest {
     private val scanService: ScanService
     private val exportService: ExportService
     private val metadataService: MetadataService
+    private val metaCacheRepo: MetaCacheRepository
 
     init {
         val ds = JdbcDataSource()
@@ -89,9 +91,10 @@ class ScanFlowTest {
         val scanRepo = ScanRepository(jdbc)
         val dsRepo = DataSourceRepository(jdbc)
         val schemaStatRepo = SchemaStatRepository(jdbc)
+        metaCacheRepo = MetaCacheRepository(jdbc)
         val crypto = CryptoUtil(config)
         val dialectFactory = DialectFactory
-        dataSourceService = DataSourceService(dsRepo, crypto, dialectFactory, config, schemaStatRepo)
+        dataSourceService = DataSourceService(dsRepo, crypto, dialectFactory, config, schemaStatRepo, metaCacheRepo)
         val executor = ScanExecutor(config)
         val tagRepo = TagRepository(jdbc)
         val autoTagService = AutoTagService(
@@ -100,11 +103,11 @@ class ScanFlowTest {
             dataSourceService, dialectFactory)
         val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, config, executor,
             TagService(tagRepo, dsRepo), autoTagService)
-        scanService = ScanService(scanRepo, dsRepo, schemaStatRepo, dataSourceService,
+        scanService = ScanService(scanRepo, dsRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
             dialectFactory, config, executor, chunkRunner)
         exportService = ExportService(scanService)
-        metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo,
-            SchemaDocRepository(jdbc))
+        metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, SchemaDocRepository(jdbc),
+            metaCacheRepo)
     }
 
     @Test
@@ -112,6 +115,27 @@ class ScanFlowTest {
         seed(MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, "mysql")
         val dsId = dataSourceService.create(DataSourceRequest(
             "it-mysql", MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, null, null))
+
+        // 未扫描的表也可查字段元数据(表列表点击表名直达的结构明细)
+        val metas = metadataService.listTableColumns(dsId, null, "dqtest", "users")
+            .associateBy { it.name }
+        assertEquals(4, metas.size)
+        assertTrue(metas["id"]!!.primaryKey)
+        assertEquals("姓名", metas["name"]!!.comment)
+        assertTrue(metas["name"]!!.isCharacter())
+
+        // 未扫描的表也可查索引结构(主键索引 + 复合非唯一索引,列按顺序)
+        val indexes = metadataService.listTableIndexes(dsId, null, "dqtest", "users")
+        assertTrue(indexes.any { it.name == "PRIMARY" && it.unique && it.columns == listOf("id") },
+            "主键索引缺失: " + indexes)
+        assertTrue(indexes.any { it.name == "idx_status_remark" && !it.unique && it.columns == listOf("status", "remark") },
+            "复合索引缺失或列序错误: " + indexes)
+
+        // 首次访问已落本地缓存:字段/索引缓存就绪,再次查询不连业务库(命中缓存)
+        assertTrue(metaCacheRepo.isColumnCacheReady(dsId, "", "dqtest", "users"))
+        assertTrue(metaCacheRepo.isIndexCacheReady(dsId, "", "dqtest", "users"))
+        val cachedMetas = metadataService.listTableColumns(dsId, null, "dqtest", "users")
+        assertEquals(metas.keys.toList(), cachedMetas.map { it.name })
 
         // 首次访问库列表:从业务库元数据拉取表数量/占用空间并落缓存(覆盖方言聚合 SQL)
         val before = metadataService.listSchemaStats(dsId, null)
@@ -136,6 +160,10 @@ class ScanFlowTest {
         // 表级元数据:注释 + 存储引擎
         assertEquals("用户表", users.comment)
         assertEquals("InnoDB", users.storageInfo)
+
+        // 扫描同步刷新结构缓存:createScan 写入表清单,planTable 写入字段/索引
+        assertTrue(metaCacheRepo.isTableCacheReady(dsId, "", "dqtest"))
+        assertEquals(listOf("users"), metaCacheRepo.listTables(dsId, "", "dqtest").map { it.tableName })
 
         val cols = scanService.getColumns(jobId, "users").associateBy { it.columnName }
         // 字段级元数据:注释/类型长度/键约束/可空
@@ -193,6 +221,20 @@ class ScanFlowTest {
         val dsId = dataSourceService.create(DataSourceRequest(
             "it-pg", PG.jdbcUrl, PG.username, PG.password, null, null))
 
+        // 未扫描的表也可查字段元数据(表列表点击表名直达的结构明细)
+        val metas = metadataService.listTableColumns(dsId, null, "public", "users")
+            .associateBy { it.name }
+        assertEquals(4, metas.size)
+        assertTrue(metas["id"]!!.primaryKey)
+        assertEquals("姓名", metas["name"]!!.comment)
+
+        // 未扫描的表也可查索引结构(主键约束索引名随库变化,按唯一性+列断言;复合索引列按顺序)
+        val indexes = metadataService.listTableIndexes(dsId, null, "public", "users")
+        assertTrue(indexes.any { it.unique && it.columns == listOf("id") },
+            "主键索引缺失: " + indexes)
+        assertTrue(indexes.any { it.name == "idx_status_remark" && !it.unique && it.columns == listOf("status", "remark") },
+            "复合索引缺失或列序错误: " + indexes)
+
         val jobId = scanService.createScan(ScanRequest(dsId, "public", null, null, true,
             listOf(NullRule("status", listOf("0", "-1"))), null))
 
@@ -224,6 +266,20 @@ class ScanFlowTest {
         seed(url, MSSQL.username, MSSQL.password, "mssql")
         val dsId = dataSourceService.create(DataSourceRequest(
             "it-mssql", url, MSSQL.username, MSSQL.password, null, null))
+
+        // 未扫描的表也可查字段元数据(表列表点击表名直达的结构明细)
+        val metas = metadataService.listTableColumns(dsId, null, "dbo", "users")
+            .associateBy { it.name }
+        assertEquals(4, metas.size)
+        assertTrue(metas["id"]!!.primaryKey)
+        assertEquals("姓名", metas["name"]!!.comment)
+
+        // 未扫描的表也可查索引结构(主键约束索引名随库变化,按唯一性+列断言;复合索引列按顺序)
+        val indexes = metadataService.listTableIndexes(dsId, null, "dbo", "users")
+        assertTrue(indexes.any { it.unique && it.columns == listOf("id") },
+            "主键索引缺失: " + indexes)
+        assertTrue(indexes.any { it.name == "idx_status_remark" && !it.unique && it.columns == listOf("status", "remark") },
+            "复合索引缺失或列序错误: " + indexes)
 
         val jobId = scanService.createScan(ScanRequest(dsId, "dbo", null, null, true,
             listOf(NullRule("status", listOf("0", "-1"))), null))
@@ -316,6 +372,8 @@ class ScanFlowTest {
                             + "ENGINE=InnoDB COMMENT='用户表'")
                     }
                 }
+                // 复合非唯一索引:验证索引结构查询的列顺序
+                st.execute("CREATE INDEX idx_status_remark ON users(status, remark)")
                 for (i in 1..ROWS) {
                     val name = if (i % 10 == 0) "NULL" else if (i % 7 == 0) "''" else "'n$i'"
                     val status = if (i % 10 == 0) "NULL"

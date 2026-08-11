@@ -5,6 +5,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.util.CryptoUtil
@@ -37,7 +38,7 @@ class DataSourceTransferServiceTest {
         dsRepo = DataSourceRepository(jdbc)
         val config = AppConfig(dataDir = Files.createTempDirectory("ds-transfer-test"))
         crypto = CryptoUtil(config)
-        dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc))
+        dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
         service = DataSourceTransferService(dsRepo, crypto, dataSourceService)
     }
 

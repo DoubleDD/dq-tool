@@ -8,6 +8,7 @@ import com.example.dq.model.ScanStatus
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ReportExportRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
@@ -52,8 +53,8 @@ class WordReportExportServiceTest {
         val schemaDocRepo = SchemaDocRepository(jdbc)
         config = AppConfig(dataDir = Files.createTempDirectory("report-export-test"))
         val crypto = CryptoUtil(config)
-        dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, schemaStatRepo)
-        val metadataService = MetadataService(dataSourceService, DialectFactory, scanRepo, schemaStatRepo, schemaDocRepo)
+        dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, schemaStatRepo, MetaCacheRepository(jdbc))
+        val metadataService = MetadataService(dataSourceService, DialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, MetaCacheRepository(jdbc))
         val reportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
             DialectFactory, TagRepository(jdbc), TableDocRepository(jdbc),
             AiConfigService(AiConfigRepository(jdbc), crypto, config), AiService())

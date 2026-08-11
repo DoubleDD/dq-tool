@@ -7,9 +7,11 @@ import com.example.dq.model.DataSourceRequest
 import com.example.dq.model.DbType
 import com.example.dq.model.TestConnectionRequest
 import com.example.dq.repository.DataSourceRepository
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.util.CryptoUtil
 import com.example.dq.util.JdbcUrlRewriter
+import com.example.dq.util.SqlLogConnection
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import java.sql.Connection
@@ -24,6 +26,7 @@ class DataSourceService(
     private val dialectFactory: DialectFactory,
     private val config: AppConfig,
     private val schemaStatRepo: SchemaStatRepository,
+    private val metaCacheRepo: MetaCacheRepository,
     private val sshTunnelService: SshTunnelService = SshTunnelService(),
 ) {
 
@@ -101,6 +104,7 @@ class DataSourceService(
     fun delete(id: Long) {
         repo.delete(id)
         schemaStatRepo.deleteByDatasource(id)
+        metaCacheRepo.deleteByDatasource(id)
         evictPool(id)
     }
 
@@ -127,7 +131,7 @@ class DataSourceService(
             throw SQLException("JDBC 驱动未加载: " + dialect.driverClassName(), e)
         }
         return withOptionalTunnel(req) { url ->
-            DriverManager.getConnection(url, req.username, req.password).use { conn ->
+            SqlLogConnection.wrap(DriverManager.getConnection(url, req.username, req.password)).use { conn ->
                 dialect.detectDbMode(conn)
             }
         }
@@ -144,7 +148,7 @@ class DataSourceService(
             throw SQLException("JDBC 驱动未加载: " + dialect.driverClassName(), e)
         }
         return withOptionalTunnel(req) { url ->
-            DriverManager.getConnection(url, req.username, req.password).use { conn ->
+            SqlLogConnection.wrap(DriverManager.getConnection(url, req.username, req.password)).use { conn ->
                 // 只有多库方言(SQL Server)实现 listDatabases;其余方言的「库」就是 schema 列表(MySQL 的 schema 即库)
                 val databases = dialect.listDatabases(conn)
                 if (databases.isNotEmpty()) databases else dialect.listSchemas(conn)
@@ -169,7 +173,7 @@ class DataSourceService(
                 sshUsername = req.sshUsername, sshAuthMethod = req.sshAuthMethod,
                 sshPassword = sshPassword, sshPrivateKey = sshPrivateKey, sshPassphrase = sshPassphrase)
             withOptionalTunnel(testReq) { url ->
-                DriverManager.getConnection(url, req.username, password).use { conn ->
+                SqlLogConnection.wrap(DriverManager.getConnection(url, req.username, password)).use { conn ->
                     dialect.detectDbMode(conn)
                 }
             }
@@ -195,8 +199,11 @@ class DataSourceService(
     }
 
     @Throws(SQLException::class)
-    fun getConnection(datasourceId: Long): Connection =
-        pools.computeIfAbsent(datasourceId) { createPool(it) }.connection
+    fun getConnection(datasourceId: Long): Connection {
+        val raw = pools.computeIfAbsent(datasourceId) { createPool(it) }.connection
+        // 出口统一包 SQL 日志代理:业务库全部 execute 打日志(独立 logger com.example.dq.sql)
+        return SqlLogConnection.wrap(raw)
+    }
 
     private fun createPool(datasourceId: Long): HikariDataSource {
         val c = get(datasourceId)

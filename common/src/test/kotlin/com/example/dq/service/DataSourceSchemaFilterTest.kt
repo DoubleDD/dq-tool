@@ -5,6 +5,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
@@ -37,7 +38,7 @@ class DataSourceSchemaFilterTest {
         dsRepo = DataSourceRepository(jdbc)
         schemaStatRepo = SchemaStatRepository(jdbc)
         val config = AppConfig(dataDir = Files.createTempDirectory("ds-schema-filter-test"))
-        dataSourceService = DataSourceService(dsRepo, CryptoUtil(config), DialectFactory, config, schemaStatRepo)
+        dataSourceService = DataSourceService(dsRepo, CryptoUtil(config), DialectFactory, config, schemaStatRepo, MetaCacheRepository(jdbc))
     }
 
     private fun req(schemaFilter: List<String>?) =
@@ -116,8 +117,8 @@ class DataSourceSchemaFilterTest {
             SchemaStatRepository.CachedStat("report_agent", 5, 100),
             SchemaStatRepository.CachedStat("xxl_job", 8, 200),
         ))
-        val meta = MetadataService(dataSourceService, DialectFactory, ScanRepository(jdbc), schemaStatRepo,
-            SchemaDocRepository(jdbc))
+        val meta = MetadataService(dataSourceService, DialectFactory, ScanRepository(jdbc), schemaStatRepo, SchemaDocRepository(jdbc),
+            MetaCacheRepository(jdbc))
         val stats = meta.listSchemaStats(id, null)
         assertEquals(listOf("report_agent", "xxl_job"), stats.map { it.name })
     }

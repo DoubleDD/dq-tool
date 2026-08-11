@@ -2,6 +2,7 @@ package com.example.dq.dialect
 
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DbType
+import com.example.dq.model.IndexMeta
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
 import com.example.dq.model.TableStat
@@ -59,6 +60,10 @@ interface DbDialect {
     /** 字段元数据 */
     @Throws(SQLException::class)
     fun listColumns(conn: Connection, schema: String, table: String): List<ColumnMeta>
+
+    /** 表索引结构(索引名/是否唯一/索引列);主键索引通常也包含在内;方言不支持时为默认空实现 */
+    @Throws(SQLException::class)
+    fun listIndexes(conn: Connection, schema: String, table: String): List<IndexMeta> = emptyList()
 
     /** 选分段键:单列可比主键 > 主键首列 > 唯一索引首列;无则 null */
     fun pickChunkKey(cols: List<ColumnMeta>): ColumnMeta?

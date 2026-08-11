@@ -1,14 +1,21 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <h3 style="margin: 0">库列表{{ dsName ? ` - ${dsName}` : '' }}</h3>
+      <Breadcrumb :items="breadcrumbItems" />
       <div>
-        <el-button :loading="exporting" @click="exportReport">导出报告</el-button>
-        <el-button @click="openFilter">库过滤</el-button>
+        <el-button :icon="Refresh" :loading="refreshing" @click="refreshStats">刷新</el-button>
         <el-button type="primary" :disabled="!selected.length" :loading="submitting" @click="scanSelected">
           批量扫描{{ selected.length ? `(${selected.length})` : '' }}
         </el-button>
-        <el-button @click="goBack">返回数据源</el-button>
+        <el-dropdown trigger="click" @command="onMoreCommand">
+          <el-button>更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="export" :loading="exporting">导出报告</el-dropdown-item>
+              <el-dropdown-item command="filter">库过滤</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </div>
     <div v-if="databases.length" style="margin-bottom: 12px">
@@ -142,11 +149,11 @@
 import { computed, h, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElCheckbox, ElMessage, ElMessageBox } from 'element-plus'
+import { ArrowDown, Refresh } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import { setDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber, statusTagType, statusText } from '../utils/format'
-import { goBack as historyBack } from '../utils/back'
-
+import Breadcrumb from '../components/Breadcrumb.vue'
 const route = useRoute()
 const router = useRouter()
 const dsId = route.params.id
@@ -157,11 +164,24 @@ const databases = ref([])
 const currentDb = ref('')
 const loading = ref(false)
 const statsLoaded = ref(false)
+const refreshing = ref(false)
 const keyword = ref('')
 const selected = ref([])
 const submitting = ref(false)
 const exporting = ref(false)
 let timer = null
+
+// ---------- 面包屑 ----------
+const breadcrumbItems = computed(() => [
+  { label: '数据源列表', to: '/datasources' },
+  { label: dsName.value || `数据源 ${dsId}` }
+])
+
+// ---------- "更多"下拉 ----------
+function onMoreCommand(cmd) {
+  if (cmd === 'export') exportReport()
+  else if (cmd === 'filter') openFilter()
+}
 
 // ---------- 库描述编辑(Word 报告「实例描述」列) ----------
 const descVisible = ref(false)
@@ -310,8 +330,11 @@ function parseDefaultDb(jdbcUrl) {
 }
 
 /** 先渲染库名列表,再异步补表数量/最近扫描/标记统计(失败不影响列表) */
-async function loadSchemaStats() {
-  const q = currentDb.value ? `?db=${encodeURIComponent(currentDb.value)}` : ''
+async function loadSchemaStats(refresh = false) {
+  const params = new URLSearchParams()
+  if (currentDb.value) params.set('db', currentDb.value)
+  if (refresh) params.set('refresh', 'true')
+  const q = params.toString() ? `?${params.toString()}` : ''
   try {
     // 标记统计与库统计并行拉取;标记接口失败时返回 null,保留行内已有标记数据(轮询不刷丢)
     const [stats, tagStats] = await Promise.all([
@@ -332,6 +355,17 @@ async function loadSchemaStats() {
     statsLoaded.value = true
     // 有进行中的任务时启动轮询,实时刷新进度
     if (hasRunning() && !timer) startPolling()
+  }
+}
+
+/** 手动刷新:从业务库拉最新库结构统计并覆盖本地缓存 */
+async function refreshStats() {
+  refreshing.value = true
+  try {
+    await loadSchemaStats(true)
+    ElMessage.success('已从数据源刷新库结构缓存')
+  } finally {
+    refreshing.value = false
   }
 }
 
@@ -386,11 +420,6 @@ function goTagTables(row, tag) {
       tagName: tag.tagName
     }
   })
-}
-
-// 原路返回;无历史记录(直接打开)时兜底回数据源列表
-function goBack() {
-  historyBack(router, '/datasources')
 }
 
 function onSelectionChange(rows) {

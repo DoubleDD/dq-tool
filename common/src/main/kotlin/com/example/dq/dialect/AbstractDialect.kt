@@ -1,6 +1,7 @@
 package com.example.dq.dialect
 
 import com.example.dq.model.ColumnMeta
+import com.example.dq.model.IndexMeta
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
 
@@ -9,8 +10,8 @@ import java.math.MathContext
 import java.sql.Connection
 import java.sql.DatabaseMetaData
 import java.sql.SQLException
+import java.util.TreeMap
 import java.util.regex.Pattern
-
 /** 各方言的通用实现:元数据读取、分段规划、统计 SQL 模板 */
 abstract class AbstractDialect : DbDialect {
 
@@ -113,6 +114,34 @@ abstract class AbstractDialect : DbDialect {
         return cols
     }
 
+    /** 表索引结构:索引名 + 是否唯一 + 按 ORDINAL_POSITION 排序的索引列;主键索引也包含在内 */
+    @Throws(SQLException::class)
+    override fun listIndexes(conn: Connection, schema: String, table: String): List<IndexMeta> {
+        val meta = conn.metaData
+        val catalog = if (catalogBased()) schema else null
+        val schemaPattern = if (catalogBased()) null else schema
+
+        val uniqueByIndex = HashMap<String, Boolean>()
+        val colsByIndex = HashMap<String, TreeMap<Int, String>>()
+        try {
+            meta.getIndexInfo(catalog, schemaPattern, table, false, false).use { rs ->
+                while (rs.next()) {
+                    val idx = rs.getString("INDEX_NAME")
+                    val col = rs.getString("COLUMN_NAME")
+                    // 跳过表统计行(null 索引名)与表达式/函数索引行(null 列名)
+                    if (idx == null || col == null) continue
+                    uniqueByIndex[idx] = !rs.getBoolean("NON_UNIQUE")
+                    colsByIndex.getOrPut(idx) { TreeMap() }[rs.getInt("ORDINAL_POSITION")] = col
+                }
+            }
+        } catch (ignored: SQLException) {
+            // 部分驱动不支持 getIndexInfo,返回空(索引结构展示缺省,不影响字段)
+        }
+        return colsByIndex.entries
+            .sortedBy { it.key }
+            .map { (name, cols) -> IndexMeta(name, uniqueByIndex[name] ?: false, cols.values.toList()) }
+    }
+
     /** 统计指定库/schema 下所有基表的字段总数;只算基表(与 listTables 一致),不含视图 */
     @Throws(SQLException::class)
     override fun countColumns(conn: Connection, schema: String): Long {
@@ -189,13 +218,14 @@ abstract class AbstractDialect : DbDialect {
             }
         } else {
             // 非数值键:按估算行数步进取边界值
+            // 采用 seek(keyset)+固定步进:每段从上一段边界(prev)之后取第 step 条,避免
+            // OFFSET 深分页每次从索引头扫 N 行(O(N²) 全表遍历,大表 varchar 键场景会把服务器 IO 打满)
             val step = maxOf(1L, estRows / chunksPerTable)
             var prev: String? = null
             for (i in 1 until chunksPerTable) {
-                val offset = step * i
                 var boundary: String? = null
                 conn.createStatement().use { st ->
-                    st.executeQuery(boundaryQuery(conn, qTable, qKey, offset)).use { rs ->
+                    st.executeQuery(boundaryQuery(conn, qTable, qKey, prev, step)).use { rs ->
                         if (rs.next()) {
                             boundary = rs.getString(1)
                         }
@@ -215,7 +245,9 @@ abstract class AbstractDialect : DbDialect {
         }
 
         if (ranges.isEmpty()) {
-            ranges.add(Range.whole())
+            // 查不到任何分段边界(键全为 NULL,或非 NULL 行数不足 step):whole 已覆盖全表含 NULL 行,
+            // 直接返回,不能再追加 nullChunk 段,否则 NULL 行被统计两次
+            return listOf(Range.whole())
         }
 
         // 分段键为 NULL 的行需要补充分段
@@ -342,11 +374,16 @@ abstract class AbstractDialect : DbDialect {
         return " LIMIT 1 OFFSET $offset"
     }
 
-    /** 非数值分段键的边界值查询:取按键排序后第 offset 行的值 */
+    /** 非数值分段键的边界值查询:seek(keyset)+固定步进。
+     *  prev 为空时从头取第 offset 行(首段);非空时取 "大于 prev 后偏移 offset 行" 的值,
+     *  避免每次从头 OFFSET 深分页。 */
     @Throws(SQLException::class)
-    protected open fun boundaryQuery(conn: Connection, qTable: String, qKey: String, offset: Long): String {
+    protected open fun boundaryQuery(conn: Connection, qTable: String, qKey: String,
+                                     prev: String?, offset: Long): String {
+        val seek = if (prev == null) "" else " AND " + qKey + " > " + quoteString(prev)
         return "SELECT " + qKey + " FROM " + qTable +
-                " WHERE " + qKey + " IS NOT NULL ORDER BY " + qKey +
+                " WHERE " + qKey + " IS NOT NULL" + seek +
+                " ORDER BY " + qKey +
                 boundarySuffix(offset)
     }
 

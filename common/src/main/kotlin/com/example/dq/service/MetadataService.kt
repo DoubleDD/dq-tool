@@ -1,9 +1,12 @@
 package com.example.dq.service
 
 import com.example.dq.dialect.DialectFactory
+import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DataSourceConfig
+import com.example.dq.model.IndexMeta
 import com.example.dq.model.SchemaStat
 import com.example.dq.model.TableStat
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaStatRepository
@@ -17,6 +20,7 @@ class MetadataService(
     private val scanRepository: ScanRepository,
     private val schemaStatRepo: SchemaStatRepository,
     private val schemaDocRepo: SchemaDocRepository,
+    private val metaCacheRepo: MetaCacheRepository,
 ) {
 
     /** dbType 在数据源保存时一定已写入,此处直接解空 */
@@ -55,7 +59,20 @@ class MetadataService(
     }
 
     @Throws(SQLException::class)
-    fun listTables(datasourceId: Long, database: String?, schema: String): List<TableStat> {
+    fun listTables(datasourceId: Long, database: String?, schema: String, refresh: Boolean = false): List<TableStat> {
+        val db = normalizeDb(database)
+        if (!refresh && metaCacheRepo.isTableCacheReady(datasourceId, db, schema)) {
+            return metaCacheRepo.listTables(datasourceId, db, schema).map { it.toTableStat() }
+        }
+        // 缓存未就绪或强制刷新:从业务库拉最新结构并覆盖本地缓存
+        val fresh = fetchTables(datasourceId, database, schema)
+        metaCacheRepo.replaceTables(datasourceId, db, schema, fresh.map { it.toCached() })
+        return fresh
+    }
+
+    /** 实时表清单(不经缓存) */
+    @Throws(SQLException::class)
+    private fun fetchTables(datasourceId: Long, database: String?, schema: String): List<TableStat> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
         dataSourceService.getConnection(datasourceId).use { conn ->
@@ -75,6 +92,56 @@ class MetadataService(
         }
     }
 
+    /** 单表字段元数据(结构明细:字段名/类型/注释/约束),未扫描的表也可查看;不含扫描统计 */
+    @Throws(SQLException::class)
+    fun listTableColumns(datasourceId: Long, database: String?, schema: String, table: String, refresh: Boolean = false): List<ColumnMeta> {
+        val db = normalizeDb(database)
+        if (!refresh && metaCacheRepo.isColumnCacheReady(datasourceId, db, schema, table)) {
+            return metaCacheRepo.listColumns(datasourceId, db, schema, table).map { it.toColumnMeta() }
+        }
+        val fresh = fetchColumns(datasourceId, database, schema, table)
+        metaCacheRepo.replaceColumns(datasourceId, db, schema, table, fresh.mapIndexed { i, c -> c.toCached(i) })
+        return fresh
+    }
+
+    /** 实时单表字段(不经缓存) */
+    @Throws(SQLException::class)
+    private fun fetchColumns(datasourceId: Long, database: String?, schema: String, table: String): List<ColumnMeta> {
+        val ds = dataSourceService.get(datasourceId)
+        val dialect = dialectOf(ds)
+        dataSourceService.getConnection(datasourceId).use { conn ->
+            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+            return dialect.listColumns(conn, schema, table)
+        }
+    }
+
+    /** 单表索引结构(索引名/唯一性/索引列),未扫描的表也可查看 */
+    @Throws(SQLException::class)
+    fun listTableIndexes(datasourceId: Long, database: String?, schema: String, table: String, refresh: Boolean = false): List<IndexMeta> {
+        val db = normalizeDb(database)
+        if (!refresh && metaCacheRepo.isIndexCacheReady(datasourceId, db, schema, table)) {
+            return metaCacheRepo.listIndexes(datasourceId, db, schema, table)
+                .groupBy { it.indexName }
+                .map { (name, rows) -> IndexMeta(name, rows.first().unique, rows.map { it.columnName }) }
+        }
+        val fresh = fetchIndexes(datasourceId, database, schema, table)
+        metaCacheRepo.replaceIndexes(datasourceId, db, schema, table,
+            fresh.flatMap { idx -> idx.columns.mapIndexed { i, col ->
+                MetaCacheRepository.CachedIndex(idx.name, idx.unique, i, col) } })
+        return fresh
+    }
+
+    /** 实时单表索引(不经缓存) */
+    @Throws(SQLException::class)
+    private fun fetchIndexes(datasourceId: Long, database: String?, schema: String, table: String): List<IndexMeta> {
+        val ds = dataSourceService.get(datasourceId)
+        val dialect = dialectOf(ds)
+        dataSourceService.getConnection(datasourceId).use { conn ->
+            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+            return dialect.listIndexes(conn, schema, table)
+        }
+    }
+
     /** 表列表页:每张表最近一次 DONE 扫描的信息(任务 id + 完成时间),本地查询不连业务库 */
     fun latestScanJobsByTable(datasourceId: Long, database: String?, schema: String): Map<String, ScanRepository.LatestScan> =
         scanRepository.latestDoneJobsByTable(datasourceId, database, schema)
@@ -89,11 +156,11 @@ class MetadataService(
      * 之后只读缓存,由扫描创建时按 schema 刷新;最近扫描信息本就来自本地 H2,不参与缓存。
      */
     @Throws(SQLException::class)
-    fun listSchemaStats(datasourceId: Long, database: String?): List<SchemaStat> {
+    fun listSchemaStats(datasourceId: Long, database: String?, refresh: Boolean = false): List<SchemaStat> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
         var cached = schemaStatRepo.findAll(datasourceId, database)
-        if (cached.isEmpty()) {
+        if (cached.isEmpty() || refresh) {
             cached = fetchAndCache(datasourceId, database)
         }
         // 白名单在读取路径同样生效:过滤规则变更后旧缓存无需重建;多库方言的 schema 层级不过滤
@@ -138,6 +205,23 @@ class MetadataService(
             schemaDocRepo.upsert(datasourceId, database ?: "", schema, text)
         }
     }
+
+    /** 无库概念方言的 database 归一为空串,与 schema_doc/table_doc/meta_* 缓存口径一致 */
+    private fun normalizeDb(database: String?): String = database ?: ""
+
+    // ---------- 结构缓存模型转换 ----------
+
+    private fun TableStat.toCached() = MetaCacheRepository.CachedTable(name ?: "", comment, storageInfo, estRows, sizeBytes)
+
+    private fun MetaCacheRepository.CachedTable.toTableStat() = TableStat(tableName, estRows, sizeBytes, comment, storageInfo)
+
+    private fun ColumnMeta.toCached(ordinal: Int) = MetaCacheRepository.CachedColumn(
+        ordinal, name, typeName, displayType, jdbcType, nullable, defaultValue, comment, primaryKey, pkSeq, uniqueIndexFirst
+    )
+
+    private fun MetaCacheRepository.CachedColumn.toColumnMeta() = ColumnMeta(
+        columnName, typeName, displayType, jdbcType, nullable, defaultValue, comment, primaryKey, pkSeq, uniqueIndexFirst
+    )
 
     /** 首次访问:从业务库元数据拉取 schema 列表/表数量/占用空间并整体落缓存 */
     @Throws(SQLException::class)

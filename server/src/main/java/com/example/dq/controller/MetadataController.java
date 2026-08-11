@@ -29,17 +29,31 @@ public class MetadataController {
     }
 
     /** 库列表页概览:schema + 表数量 + 最近一次扫描 */
+    /** 库列表页概览:schema + 表数量 + 占用空间 + 最近一次扫描;refresh=true 强制从业务库刷新并覆盖本地缓存 */
     public void listSchemaStats(Context ctx) throws SQLException {
-        ctx.json(service.listSchemaStats(dsId(ctx), ctx.queryParam("db")));
+        ctx.json(service.listSchemaStats(dsId(ctx), ctx.queryParam("db"), refresh(ctx)));
     }
 
+    /** 表列表:本地缓存优先;refresh=true 强制从业务库拉最新结构覆盖本地缓存 */
     public void listTables(Context ctx) throws SQLException {
-        ctx.json(service.listTables(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema")));
+        ctx.json(service.listTables(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), refresh(ctx)));
     }
 
     /** 表列表页汇总:schema 下所有基表的字段总数 */
     public void countColumns(Context ctx) throws SQLException {
         ctx.json(service.countColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema")));
+    }
+
+    /** 单表字段元数据(结构明细:字段名/类型/注释/约束),未扫描的表也可查看;refresh=true 强制刷新缓存 */
+    public void tableColumns(Context ctx) throws SQLException {
+        ctx.json(service.listTableColumns(dsId(ctx), ctx.queryParam("db"),
+                ctx.pathParam("schema"), ctx.pathParam("table"), refresh(ctx)));
+    }
+
+    /** 单表索引结构(索引名/唯一性/索引列),未扫描的表也可查看;refresh=true 强制刷新缓存 */
+    public void tableIndexes(Context ctx) throws SQLException {
+        ctx.json(service.listTableIndexes(dsId(ctx), ctx.queryParam("db"),
+                ctx.pathParam("schema"), ctx.pathParam("table"), refresh(ctx)));
     }
 
     /** 每张表最近一次 DONE 扫描的信息(表名 -> {jobId, finishedAt}),表列表页点击表名直达最新结果、展示最近扫描时间 */
@@ -85,5 +99,10 @@ public class MetadataController {
     /** all=true 旁路库过滤白名单:仅供编辑对话框「库过滤」页签拉全量列表 */
     private static boolean unfiltered(Context ctx) {
         return "true".equals(ctx.queryParam("all"));
+    }
+
+    /** refresh=true 强制从业务库拉最新结构并覆盖本地缓存(缺省读缓存) */
+    private static boolean refresh(Context ctx) {
+        return "true".equals(ctx.queryParam("refresh"));
     }
 }

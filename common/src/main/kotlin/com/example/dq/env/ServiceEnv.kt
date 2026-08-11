@@ -6,6 +6,7 @@ import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.LicenseRepository
 import com.example.dq.repository.ReportExportRepository
 import com.example.dq.repository.ScanRepository
@@ -54,6 +55,7 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceRepo = DataSourceRepository(jdbc)
     val scanRepo = ScanRepository(jdbc)
     val schemaStatRepo = SchemaStatRepository(jdbc)
+    val metaCacheRepo = MetaCacheRepository(jdbc)
     val schemaDocRepo = SchemaDocRepository(jdbc)
     val tableDocRepo = TableDocRepository(jdbc)
     val tagRepo = TagRepository(jdbc)
@@ -69,7 +71,7 @@ class ServiceEnv(val config: AppConfig) {
 
     // 服务(注意构造顺序:被依赖的在前)
     val sshTunnelService = SshTunnelService()
-    val dataSourceService = DataSourceService(dataSourceRepo, crypto, dialectFactory, config, schemaStatRepo, sshTunnelService)
+    val dataSourceService = DataSourceService(dataSourceRepo, crypto, dialectFactory, config, schemaStatRepo, metaCacheRepo, sshTunnelService)
     val dataSourceTransferService = DataSourceTransferService(dataSourceRepo, crypto, dataSourceService)
     val tagService = TagService(tagRepo, dataSourceRepo)
     val aiService = AiService()
@@ -78,9 +80,9 @@ class ServiceEnv(val config: AppConfig) {
         tableDocRepo, dataSourceService, dialectFactory)
     private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, config, executor,
         tagService, autoTagService)
-    val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, dataSourceService,
+    val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
         dialectFactory, config, executor, chunkRunner)
-    val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo)
+    val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     val exportService = ExportService(scanService)
     val wordReportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
         dialectFactory, tagRepo, tableDocRepo, aiConfigService, aiService)

@@ -18,18 +18,29 @@ export const tabState = reactive({
   activeKey: 'home'
 })
 
-// 路由里拿不到名称时的兜底缓存:数据源 id -> 数据源名,任务 id -> 库名标签
+// 路由里拿不到名称时的兜底缓存:数据源 id -> 数据源名,任务 id -> 库名标签,任务 id -> 数据源 id
 const dsNames = reactive({})
 const scanSchemas = reactive({})
+const scanDsIds = reactive({})
 
-/** 页面从接口拿到数据源名后回写,供页签标题使用 */
+/** 页面从接口拿到数据源名后回写,供页签标题和面包屑使用 */
 export function setDsName(id, name) {
   if (name) dsNames[id] = name
+}
+
+/** 读取缓存的数据源名(在 computed 中调用可响应式更新) */
+export function getDsName(id) {
+  return dsNames[id] || ''
 }
 
 /** 任务详情页从接口拿到库名后回写,供页签标题使用 */
 export function setScanSchema(jobId, schema) {
   if (schema) scanSchemas[jobId] = schema
+}
+
+/** 任务详情页从接口拿到数据源 id 后回写,供关闭页签时跳回父级数据源页签 */
+export function setScanDs(jobId, dsId) {
+  if (dsId) scanDsIds[jobId] = dsId
 }
 
 /** 库名标签:有数据库实例时拼成 db.schema */
@@ -59,6 +70,7 @@ function resolveTab(route) {
     const dsName = route.query.name || dsNames[id] || `数据源 ${id}`
     let title = `${dsName} - 库列表`
     if (p.endsWith('/tables')) title = `${schemaLabel(route)} - 表列表`
+    else if (p.includes('/tables/')) title = `${route.params.tableName} - 字段明细`
     else if (p.endsWith('/scans')) title = `${schemaLabel(route)} - 扫描记录`
     return { key: `ds-${id}`, title, closable: true }
   }
@@ -98,6 +110,18 @@ export function closeTab(key) {
   if (idx === -1 || !tabState.tabs[idx].closable) return null
   tabState.tabs.splice(idx, 1)
   if (tabState.activeKey === key) {
+    // 关闭扫描任务页签时,优先跳回其来源数据源页签(而非相邻页签)
+    if (key.startsWith('scan-')) {
+      const jobId = key.slice(5)
+      const dsId = scanDsIds[jobId]
+      if (dsId) {
+        const dsTab = tabState.tabs.find((t) => t.key === `ds-${dsId}`)
+        if (dsTab) {
+          tabState.activeKey = dsTab.key
+          return dsTab.path
+        }
+      }
+    }
     const next = tabState.tabs[Math.min(idx, tabState.tabs.length - 1)]
     tabState.activeKey = next.key
     return next.path

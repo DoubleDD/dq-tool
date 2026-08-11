@@ -9,6 +9,7 @@ import com.example.dq.model.ScanStatus
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
+import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
@@ -63,8 +64,8 @@ class WordReportServiceTest {
         tableDocRepo = TableDocRepository(jdbc)
         val config = AppConfig(dataDir = Files.createTempDirectory("word-report-test"))
         val crypto = CryptoUtil(config)
-        dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, schemaStatRepo)
-        metadataService = MetadataService(dataSourceService, DialectFactory, scanRepo, schemaStatRepo, schemaDocRepo)
+        dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, schemaStatRepo, MetaCacheRepository(jdbc))
+        metadataService = MetadataService(dataSourceService, DialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, MetaCacheRepository(jdbc))
         chatCalls = 0
         val countingChat: (AiConfigService.Config, String, String) -> String = { c, s, u ->
             chatCalls++
