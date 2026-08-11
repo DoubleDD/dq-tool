@@ -131,15 +131,144 @@ body {
 
 /* ---------- 布局骨架 ---------- */
 
+/* 侧边栏:一级功能导航 */
+.sidebar {
+  background: var(--dq-surface);
+  border-right: 1px solid var(--el-border-color-lighter);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-brand {
+  height: 48px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 16px 0 20px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.sidebar-brand .brand-name {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--el-text-color-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar-menu {
+  flex: 1;
+  border-right: none;
+  padding: 8px 0;
+  overflow-y: auto;
+  /* 跟随主题变量,暗色无需单独覆盖 */
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: var(--el-text-color-regular);
+  --el-menu-active-color: var(--el-color-primary);
+  --el-menu-hover-bg-color: var(--el-fill-color-light);
+  --el-menu-item-height: 42px;
+  --el-menu-sub-item-height: 36px;
+}
+
+.sidebar-menu .el-menu-item,
+.sidebar-menu .el-sub-menu__title {
+  border-radius: 6px;
+  margin: 2px 8px;
+  font-size: 13.5px;
+}
+
+.sidebar-menu .el-menu-item.is-active {
+  background: var(--el-color-primary-light-9);
+  font-weight: 600;
+}
+
+html.dark .sidebar-menu .el-menu-item.is-active {
+  background: var(--el-color-primary-dark-2);
+  color: #fff;
+}
+
+/* 数据源子菜单项:名称溢出省略 */
+.sidebar-menu .ds-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-menu .ds-empty {
+  color: var(--el-text-color-placeholder);
+  cursor: default;
+}
+
+/* 「数据源」标题右侧操作下拉(⋮):整体 stop 冒泡,点击不触发展开 */
+.ds-more {
+  margin-left: auto;
+  /* 右侧让位给 el-sub-menu 自带的展开箭头(absolute right:20px,宽 12px),避免图标重叠 */
+  margin-right: 30px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  padding: 1px;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.ds-more:hover {
+  background: var(--el-fill-color-light);
+}
+
+.ds-more .ds-more-btn {
+  border-radius: 4px;
+  padding: 3px;
+  font-size: 15px;
+  color: var(--el-text-color-secondary);
+}
+
+.ds-more:hover .ds-more-btn {
+  color: var(--el-color-primary);
+}
+
+/* 自绘下拉菜单(popover 内容,渲染在 body,不受 sidebar 影响) */
+.ds-more-pop.el-popover {
+  padding: 4px;
+  min-width: 120px;
+}
+
+.ds-more-menu .ds-more-item {
+  padding: 7px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.ds-more-menu .ds-more-item:hover {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
+
+.ds-more-menu .ds-more-item + .ds-more-item {
+  margin-top: 1px;
+}
+
+.sidebar-menu .el-sub-menu .el-sub-menu__title {
+  padding-right: 4px;
+}
+
 .header {
   background: var(--dq-surface);
   border-bottom: 1px solid var(--el-border-color-lighter);
   display: flex;
   align-items: center;
+  padding: 0 16px !important;
 }
 
-.header .title {
-  font-size: 15px;
+.header .header-title {
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--el-text-color-primary);

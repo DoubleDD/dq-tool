@@ -340,6 +340,7 @@ import { ArrowDown, ArrowRight, Connection, Delete, EditPen, UploadFilled, User,
 import request from '../api'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
 import LicenseFooter from '../components/LicenseFooter.vue'
+import { tabState } from '../stores/tabs'
 
 const router = useRouter()
 const list = ref([])
@@ -833,7 +834,22 @@ function onImportClosed() {
   importText.value = ''
 }
 
-// 首页是常驻页签,用 onActivated 保证每次切回都刷新(首次挂载也会触发)
+// 侧边栏「数据源」操作下拉(pendingDsDialog = new|import|export)时自动打开对应对话框。
+// 导出依赖 list(全选),先等列表加载完成再开框;命令消费后立即清空,避免重复弹框。
+watch(
+  () => tabState.pendingDsDialog,
+  async (v) => {
+    if (!v) return
+    tabState.pendingDsDialog = ''
+    await loadList()
+    if (v === 'new') openDialog()
+    else if (v === 'import') openImportDialog()
+    else if (v === 'export') openExportDialog()
+  },
+  { immediate: true }
+)
+
+// 数据源页切回时刷新(首次挂载也会触发)
 onActivated(loadList)
 </script>
 
