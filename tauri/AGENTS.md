@@ -77,9 +77,12 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   后端日志无记录,错误只 toast 在前端)。坑:`permissions/` 目录不存在时 build.rs 不会对其发
   `cargo:rerun-if-changed`,**首次新增权限文件后要 `touch build.rs` 触发重跑构建脚本**。
   现有命令:
-  `save_report_as(id, name)` —— 导出任务「另存为」:原生保存对话框 + 从数据目录
-  (`data_dir()`,与后端 `-Ddq.data-dir` 同口径)复制 `reports/report-{id}.docx` 到目标位置,
-  不引 HTTP client / fs 插件;前端检测 `__TAURI_INTERNALS__` 存在才显示「另存为」,浏览器环境显示「下载」
+  `save_report_as(name, sourceName)` —— 导出任务「另存为」:原生保存对话框 + 从数据目录
+  (`data_dir()`,与后端 `-Ddq.data-dir` 同口径)复制产物到目标位置;`sourceName` 由前端传后端
+  返回的真实文件名(磁盘 basename,如「数据源名-数据调研报告-任务id.docx」),**不要按 `report-{id}.docx`
+  猜文件名**——后端产物命名是「数据源名-数据调研报告-任务id.docx」,2026-08 曾因猜错名字导致
+  Windows 另存为必报「报告文件不存在或已被移动」;不引 HTTP client / fs 插件;前端检测
+  `__TAURI_INTERNALS__` 存在才显示「另存为」,浏览器环境显示「下载」
 - **Windows 不弹终端**:crate 根 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
   使 release exe 为 GUI 子系统(双击不出控制台;debug 保留控制台看日志),拉起 java.exe 子进程时
   再加 `CREATE_NO_WINDOW`(0x08000000)—— 控制台子系统的子进程被 GUI 父进程拉起时会新分配控制台窗口

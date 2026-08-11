@@ -160,7 +160,11 @@ async function saveAs(row) {
   row._saving = true
   try {
     const name = row.fileName || `${row.datasourceName || '数据调研报告'}-数据调研报告.docx`
-    const saved = await window.__TAURI_INTERNALS__.invoke('save_report_as', { id: row.id, name })
+    // sourceName 传磁盘上的真实文件名(后端返回的 basename),Rust 侧按它定位产物文件
+    const saved = await window.__TAURI_INTERNALS__.invoke('save_report_as', {
+      name,
+      sourceName: row.fileName || '',
+    })
     if (saved) ElMessage.success('已保存')
   } catch (e) {
     ElMessage.error(String(e))

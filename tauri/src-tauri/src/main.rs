@@ -359,10 +359,12 @@ fn data_dir() -> PathBuf {
 /// 产物本就落在本机数据目录,直接复制——不引 HTTP client,也不需要 fs 插件权限。
 /// 返回 Ok(false) 表示用户在对话框中取消。
 #[tauri::command]
-async fn save_report_as(app: tauri::AppHandle, id: i64, name: String) -> Result<bool, String> {
+async fn save_report_as(app: tauri::AppHandle, name: String, source_name: String) -> Result<bool, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let src = data_dir().join("reports").join(format!("report-{id}.docx"));
+    // sourceName 由前端传后端返回的真实文件名(磁盘 basename,如「数据源名-数据调研报告-任务id.docx」),
+    // 与后端 WordReportExportService 产物命名保持一致;文件名由后端过滤非法字符生成,可直接 join
+    let src = data_dir().join("reports").join(&source_name);
     if !src.is_file() {
         return Err("报告文件不存在或已被移动,请重新导出".into());
     }
