@@ -30,8 +30,11 @@
         <template #default="{ row }">
           <el-tag :type="statusType(row.status)" size="small" style="margin-right: 8px">{{ statusText(row.status) }}</el-tag>
           <template v-if="row.status === 'RUNNING' || row.status === 'PENDING'">
-            <el-progress :percentage="percent(row)" :stroke-width="10" style="width: 130px; display: inline-flex; vertical-align: middle" />
-            <span style="margin-left: 8px; color: var(--el-text-color-secondary); font-size: 12px">{{ row.stage || '排队中' }}</span>
+            <!-- 进度条与阶段文案纵向排列:文案换行显示在进度条下面,避免长文案把单元格撑得过宽 -->
+            <span style="display: inline-flex; flex-direction: column; gap: 2px; vertical-align: middle">
+              <el-progress :percentage="percent(row)" :stroke-width="10" style="width: 130px" />
+              <span style="color: var(--el-text-color-secondary); font-size: 12px">{{ row.stage || '排队中' }}</span>
+            </span>
           </template>
           <span v-else-if="row.status === 'FAILED'" style="color: var(--el-color-danger); font-size: 12px" :title="row.error">{{ row.error }}</span>
         </template>
