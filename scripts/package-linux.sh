@@ -31,6 +31,8 @@ INPUT=server/build/jpackage/input
 DIST=server/build/jpackage/dist
 rm -rf "$INPUT" && mkdir -p "$INPUT"
 cp "$JAR" "$INPUT/"
+# 原生启动画面:打包进 app 镜像,经 -splash:${APPDIR}/splash.png 点击图标即显示(见下方 jpackage 参数)
+cp server/src/main/resources/splash.png "$INPUT/"
 
 # 数据目录存到 ~/.dq-tool/data(${user.home} 由应用启动时展开,见 ConfigLoader)
 # 内嵌完整 JRE 而非 jdeps/jlink 裁剪:JDBC 驱动大量反射/按名加载(实测:达梦驱动初始化要
@@ -55,6 +57,7 @@ jpackage \
   --java-options '-Ddq.data-dir=${user.home}/.dq-tool/data' \
   --java-options '-Djava.awt.headless=false' \
   --java-options '-XX:+UseZGC' \
+  --java-options '-splash:${APPDIR}/splash.png' \
   --dest "$DIST"
 
 if [[ "$PKG_TYPE" == deb ]]; then

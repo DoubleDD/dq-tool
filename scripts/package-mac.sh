@@ -19,6 +19,8 @@ INPUT=server/build/jpackage/input
 DIST=server/build/jpackage/dist
 rm -rf "$INPUT" && mkdir -p "$INPUT"
 cp "$JAR" "$INPUT/"
+# 原生启动画面:打包进 app 镜像,经 -splash:${APPDIR}/splash.png 点击图标即显示(见下方 jpackage 参数)
+cp server/src/main/resources/splash.png "$INPUT/"
 
 # 数据目录:应用双击启动时工作目录不可写,改为存到 ~/.dq-tool/data
 # (${user.home} 由应用启动时展开,见 ConfigLoader)
@@ -44,6 +46,7 @@ jpackage \
   --java-options '-XX:+UseZGC' \
   --java-options '-Djava.awt.headless=false' \
   --java-options '-Dapple.awt.UIElement=true' \
+  --java-options '-splash:${APPDIR}/splash.png' \
   --dest "$DIST"
 
 echo "产物: $DIST/dq-tool-${PKG_VERSION}.dmg"

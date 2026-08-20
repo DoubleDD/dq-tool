@@ -1,10 +1,12 @@
 <template>
-  <!-- 激活页为全屏独立页,不渲染框架(侧边栏/页签栏) -->
-  <div v-if="route.path === '/activate'" class="activate-wrap">
-    <router-view />
-  </div>
-  <el-container v-else class="layout">
-    <!-- 侧边栏:一级功能导航(「数据源」为可展开树,含新增/导入/导出下拉;下钻页高亮对应数据源;一级页面不占页签) -->
+  <!-- 全局语言配置:按需引入后原 app.use(ElementPlus, { locale }) 不再全量注册,locale 改走组件方式 -->
+  <el-config-provider :locale="zhCn">
+    <!-- 激活页为全屏独立页,不渲染框架(侧边栏/页签栏) -->
+    <div v-if="route.path === '/activate'" class="activate-wrap">
+      <router-view />
+    </div>
+    <el-container v-else class="layout">
+    <!-- 侧边栏:一级功能导航(「数据源」为可展开树,含新增/导入/导出下拉;下钻页高亮对应数据源;「数据源」一级页不占页签,其余一级功能页各占一个固定页签) -->
     <el-aside :width="sidebarWidth" :class="['sidebar', { 'sidebar-collapsed': sidebarCollapsed }]">
       <div class="sidebar-brand">
         <template v-if="!sidebarCollapsed">
@@ -74,7 +76,7 @@
           </el-button>
         </el-tooltip>
       </el-header>
-      <!-- 页签栏:仅下钻页(库/表/字段/任务详情)占用,全部关闭后整条隐藏 -->
+      <!-- 页签栏:下钻页(库/表/字段/任务详情)与数据源外的一级功能页(任务看板/标记统计/报告列表/运行日志/授权管理)占用,全部关闭后整条隐藏 -->
       <div v-if="tabState.tabs.length" class="tab-bar">
         <el-tabs v-model="tabState.activeKey" type="card" @tab-click="onTabClick" @tab-remove="onTabRemove">
           <el-tab-pane v-for="t in tabState.tabs" :key="t.key" :name="t.key" :closable="t.closable">
@@ -92,13 +94,15 @@
       <!-- 全局底部授权信息条:所有页面可见(客户/用户名/有效期/版本号 + 更换授权码);授权码管理入口在侧边栏 -->
       <LicenseFooter />
     </el-container>
-  </el-container>
+    </el-container>
+  </el-config-provider>
 </template>
 
 <script setup>
 import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
+import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import { Coin, Document, Download, Expand, Fold, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Sunny, Moon } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'

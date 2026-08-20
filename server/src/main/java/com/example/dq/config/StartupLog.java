@@ -26,7 +26,81 @@ public final class StartupLog {
     private static BufferedWriter writer;
     private static Path file;
 
+    // ---- 启动耗时统计:t0 为 init 时刻(main 第一行),mark 记录阶段打点,logTiming 输出汇总 ----
+    private static long startNanos;
+    private static long lastMarkNanos;
+
+    private record StageMark(String name, long millis) {
+    }
+
+    private static final java.util.List<StageMark> marks = new java.util.ArrayList<>();
+
     private StartupLog() {
+    }
+
+    /**
+     * 记录一个启动阶段的完成打点(阶段名 + 距上一阶段的耗时);只累计不输出,
+     * 由 logTiming 在启动结束时统一输出汇总。只在 main 线程调用(并行线程的耗时单独 log)。
+     */
+    public static synchronized void mark(String stage) {
+        long now = System.nanoTime();
+        if (lastMarkNanos == 0) {
+            // init 未先于 mark 调用(理论上不会发生),以首次打点为基准
+            startNanos = now;
+            lastMarkNanos = now;
+        }
+        marks.add(new StageMark(stage, (now - lastMarkNanos) / 1_000_000));
+        lastMarkNanos = now;
+    }
+
+    /** 输出启动耗时统计汇总(表格:各阶段耗时 + 自 main 起的总耗时);启动失败路径同样可调用 */
+    public static synchronized void logTiming() {
+        if (marks.isEmpty()) {
+            return;
+        }
+        long totalMs = (System.nanoTime() - startNanos) / 1_000_000;
+        // 中文双宽:列宽按显示宽度算,否则表格边框对不齐
+        int nameWidth = displayWidth("阶段");
+        int timeWidth = displayWidth("耗时");
+        for (StageMark m : marks) {
+            nameWidth = Math.max(nameWidth, displayWidth(m.name()));
+            timeWidth = Math.max(timeWidth, displayWidth(m.millis() + "ms"));
+        }
+        StringBuilder table = new StringBuilder();
+        String top = "┌" + "─".repeat(nameWidth + 2) + "┬" + "─".repeat(timeWidth + 2) + "┐";
+        String mid = "├" + "─".repeat(nameWidth + 2) + "┼" + "─".repeat(timeWidth + 2) + "┤";
+        String bottom = "└" + "─".repeat(nameWidth + 2) + "┴" + "─".repeat(timeWidth + 2) + "┘";
+        table.append(top).append('\n');
+        table.append(row("阶段", "耗时", nameWidth, timeWidth)).append('\n');
+        table.append(mid).append('\n');
+        for (StageMark m : marks) {
+            table.append(row(m.name(), m.millis() + "ms", nameWidth, timeWidth)).append('\n');
+        }
+        table.append(mid).append('\n');
+        table.append(row("总计(自 main 起)", totalMs + "ms", nameWidth, timeWidth)).append('\n');
+        table.append(bottom);
+        log("启动耗时统计(main 线程):" + System.lineSeparator() + table);
+        marks.clear();
+    }
+
+    private static String row(String name, String time, int nameWidth, int timeWidth) {
+        return "│ " + padDisplay(name, nameWidth) + " │ " + padDisplay(time, timeWidth) + " │";
+    }
+
+    /** 显示宽度:CJK/全角字符按 2 列计(等宽字体/终端下对齐用) */
+    private static int displayWidth(String s) {
+        int width = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            width += c > 0x2E7F ? 2 : 1;
+        }
+        return width;
+    }
+
+    /** 按显示宽度右侧补空格 */
+    private static String padDisplay(String s, int width) {
+        int pad = width - displayWidth(s);
+        return pad > 0 ? s + " ".repeat(pad) : s;
     }
 
     /**
@@ -47,6 +121,9 @@ public final class StartupLog {
         if (writer != null) {
             return;
         }
+        // 耗时统计基准:main 第一行,近似进程启动时刻(不含 JVM 引导)
+        startNanos = System.nanoTime();
+        lastMarkNanos = startNanos;
         String dir = firstNonBlank(System.getProperty("dq.data-dir"), System.getProperty("dq.data.dir"), "./data");
         open(logDirFor(dir));
         if (writer == null) {

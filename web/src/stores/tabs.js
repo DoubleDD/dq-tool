@@ -4,10 +4,10 @@ import { reactive } from 'vue'
  * 顶部页签状态(轻量实现,未引入 pinia)
  * tab: { key, title, path, closable }
  *  - key   页签身份:每个数据源一个页签,库→表/扫描记录在其内下钻;
- *          扫描任务详情每个任务一个页签
+ *          扫描任务详情每个任务一个页签;数据源之外的一级功能页各占一个固定页签
  *  - path  页签当前停留的路由 fullPath,切换页签时恢复
  *  - title 随路由动态计算,反映页签当前停留的页面(库列表/表列表/扫描记录/扫描详情/字段统计)
- * 一级功能页(数据源/任务看板/标记统计/报告列表)不占页签,由侧边栏导航直接切换
+ * 「数据源」一级页(列表/库表树)不占页签,由侧边栏导航直接切换
  */
 export const tabState = reactive({
   tabs: [],
@@ -74,7 +74,16 @@ function schemaLabel(route) {
   return route.query.db ? `${route.query.db}.${schema}` : schema
 }
 
-/** 根据路由解析所属页签及标题;不属于任何页签的路由(一级功能页、/ 重定向中间态、/license-admin 等)返回 null */
+// 数据源之外的一级功能页:各占一个固定页签(点击侧边栏已存在则定位,不存在则追加到最右)
+const PAGE_TABS = {
+  '/dashboard': '任务看板',
+  '/tags': '标记统计',
+  '/report-exports': '报告列表',
+  '/logs': '运行日志',
+  '/license-admin': '授权管理'
+}
+
+/** 根据路由解析所属页签及标题;不属于任何页签的路由(数据源一级页、/ 重定向中间态等)返回 null */
 function resolveTab(route) {
   const p = route.path
   if (p.startsWith('/datasources/')) {
@@ -95,8 +104,11 @@ function resolveTab(route) {
     if (p.includes('/tables/')) title = `${route.params.tableName} - 字段统计`
     return { key: `scan-${jobId}`, title, closable: true }
   }
+  // 数据源之外的一级功能页:固定 key,路由命中即占一个页签
+  const pageTitle = PAGE_TABS[p]
+  if (pageTitle) return { key: `page-${p}`, title: pageTitle, closable: true }
   // 不匹配任何页签的路由(如启动时 START_LOCATION 的 '/':若会话落在非首页路由,
-  // 兜底归到首页会把 home.path 污染成 '/',导致点击「首页」跳到 '/';/license-admin 同理)
+  // 兜底归到首页会把 home.path 污染成 '/',导致点击「首页」跳到 '/')
   return null
 }
 

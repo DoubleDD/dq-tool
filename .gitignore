@@ -46,7 +46,9 @@ license-private.key
 
 # 本地工具产物(pi 子代理/构建目录/reasonix 权限配置,勿提交)
 .kotlin/
+.pi/
 .pi-subagents/
+.pnpm-store/
 .gradle-home*/
 .reasonix/
 reasonix.toml

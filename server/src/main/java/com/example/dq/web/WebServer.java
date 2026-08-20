@@ -7,6 +7,7 @@ import com.example.dq.config.DesktopSession;
 import com.example.dq.config.DqProperties;
 import com.example.dq.config.KernelConfigAdapter;
 import com.example.dq.config.StartupLog;
+import com.example.dq.config.StartupStage;
 import com.example.dq.config.TrayManager;
 import com.example.dq.controller.AiConfigController;
 import com.example.dq.controller.DataSourceController;
@@ -49,28 +50,42 @@ import java.util.concurrent.atomic.AtomicReference;
  * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)、
  * 就绪闸门与 /api/health 就绪探针(共享内核未就绪前业务接口统一 503,前端轮询到 200 再加载数据)。
  * Javalin 7 的路由只能在 Javalin.create 的配置回调里注册(cfg.routes),创建后不可追加。
- * 启动时序:构造(内核对象图 + 路由)→ start 绑定 → openBrowser 开窗 → finishInit 完成建表/迁移并置就绪。
+ *
+ * 启动时序(启动优化:先开窗、后建内核):
+ * 构造(路由引用骨架 + 静态资源 + 探针,毫秒级,不建 ServiceEnv)→ start 绑定 → openBrowser 开窗
+ * (页面外壳秒出,前端轮询 /api/health 看到实时启动阶段)→ finishInit 构建共享内核
+ * (H2 池 + 服务对象图 + 建表/迁移/恢复)并置就绪。业务路由在 create 回调里照常注册,
+ * 但 handler 引用 AtomicReference 控制器,内核构建完成后注入——就绪闸门保证注入前
+ * 业务接口统一 503,不会触到空引用。
  */
 public class WebServer {
 
     private static final Logger log = LoggerFactory.getLogger(WebServer.class);
 
     private final Javalin app;
-    private final ServiceEnv env;
+    /** 共享内核(H2 池 + 服务对象图),openBrowser 开窗后才构建(启动优化) */
+    private volatile ServiceEnv env;
+    private final ConfigLoader.AppConfig config;
     private final DesktopSession session;
     private final BrowserOpener browserOpener;
     private final TrayManager trayManager;
     /** 共享内核就绪标志:finishInit 完成建表/迁移/恢复后置 true,之前业务接口被闸门拦成 503 */
     private final AtomicBoolean ready = new AtomicBoolean(false);
 
-    public WebServer(ConfigLoader.AppConfig config) throws Exception {
-        DqProperties props = config.dq();
+    // 控制器/服务引用:路由在 create 回调里注册,内核(finishInit)构建完成后注入。
+    // 就绪闸门在授权校验之前短路(未就绪一律 503),注入前不会触到空引用
+    private final AtomicReference<LicenseService> licenseServiceRef = new AtomicReference<>();
+    private final AtomicReference<DataSourceController> dataSourceCtrl = new AtomicReference<>();
+    private final AtomicReference<ScanController> scanCtrl = new AtomicReference<>();
+    private final AtomicReference<MetadataController> metaCtrl = new AtomicReference<>();
+    private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
+    private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
+    private final AtomicReference<AiConfigController> aiCtrl = new AtomicReference<>();
+    private final AtomicReference<LicenseController> licenseCtrl = new AtomicReference<>();
 
-        // ---- 共享内核:H2 连接池 + 全部业务服务对象图(纯内存装配);建表/迁移/中断恢复等
-        //      持久化重活延后到 HTTP 绑定与开窗之后(finishInit),期间业务接口由就绪闸门返回 503 ----
-        StartupLog.log("  创建共享内核 ServiceEnv(H2 连接池 + 业务服务对象图)...");
-        this.env = new ServiceEnv(KernelConfigAdapter.toKernelConfig(config));
-        StartupLog.log("  ServiceEnv 就绪,创建 Javalin 与路由...");
+    public WebServer(ConfigLoader.AppConfig config) throws Exception {
+        this.config = config;
+        DqProperties props = config.dq();
 
         // 全应用共享的 Jackson 3 mapper:序列化默认值与原 Spring Boot 托管配置对齐
         // (ISO 日期/不报空 bean/忽略未知字段;Jackson 3 默认 FAIL_ON_NULL_FOR_PRIMITIVES=true 与 Boot 相反,须显式关掉);
@@ -115,30 +130,31 @@ public class WebServer {
                 files.headers = Map.of("Cache-Control", "no-cache");
             });
             cfg.startup.showJavalinBanner = false;
-            registerRoutes(cfg.routes, env.getLicenseService(),
-                    new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService()),
-                    new ScanController(env.getScanService(), env.getExportService()),
-                    new MetadataController(env.getMetadataService(), env.getTableDocService()),
-                    new ReportExportController(env.getWordReportExportService()),
-                    new TagController(env.getTagService()),
-                    new AiConfigController(env.getAiConfigService()), new LicenseController(env.getLicenseService()),
+            registerRoutes(cfg.routes, licenseServiceRef,
+                    dataSourceCtrl, scanCtrl, metaCtrl, reportCtrl, tagCtrl, aiCtrl, licenseCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
 
         // ---- 桌面生命周期(原 Spring 事件/调度挂载点,改显式装配;退出动作统一走 AppShutdown) ----
-        AppShutdown shutdown = new AppShutdown(app, env.getDataSource());
+        // 连接池由共享内核懒构建,退出时按需取(内核未构建完就退出时跳过关池)
+        AppShutdown shutdown = new AppShutdown(app, () -> env == null ? null : env.getDataSource());
         this.session = new DesktopSession(props, shutdown);
         this.browserOpener = new BrowserOpener(session);
         this.trayManager = new TrayManager(browserOpener, session, shutdown);
         sessionRef.set(session);
         this.session.start();
-        StartupLog.log("  WebServer 构造完成(路由 + 桌面生命周期组件)");
+        StartupLog.log("  WebServer 构造完成(路由引用骨架 + 桌面生命周期组件)");
     }
 
-    private void registerRoutes(RoutesConfig routes, LicenseService licenseService, DataSourceController ds,
-                                ScanController scan, MetadataController meta, ReportExportController reportExport,
-                                TagController tag, AiConfigController aiConfig,
-                                LicenseController license, LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
+    private void registerRoutes(RoutesConfig routes, AtomicReference<LicenseService> licenseServiceRef,
+                                AtomicReference<DataSourceController> dataSourceCtrl,
+                                AtomicReference<ScanController> scanCtrl,
+                                AtomicReference<MetadataController> metaCtrl,
+                                AtomicReference<ReportExportController> reportCtrl,
+                                AtomicReference<TagController> tagCtrl,
+                                AtomicReference<AiConfigController> aiCtrl,
+                                AtomicReference<LicenseController> licenseCtrl,
+                                LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
         routes.beforeMatched("/api/*", ctx -> {
@@ -151,6 +167,7 @@ public class WebServer {
             if (!ready.get()) {
                 throw new ServiceNotReadyException();
             }
+            LicenseService licenseService = licenseServiceRef.get();
             // 授权码管理(license_admin 受控功能):/api/license 前缀下不被激活拦截,但需授权码显式包含该功能
             if (path.startsWith("/api/license/admin")) {
                 licenseService.checkFeature(LicenseFeature.LICENSE_ADMIN, false);
@@ -207,68 +224,68 @@ public class WebServer {
         });
 
         // ---- 数据源 ----
-        routes.get("/api/datasources", ds::list);
-        routes.post("/api/datasources", ds::create);
-        routes.put("/api/datasources/{id}", ds::update);
-        routes.put("/api/datasources/{id}/schema-filter", ds::updateSchemaFilter);
-        routes.delete("/api/datasources/{id}", ds::delete);
-        routes.post("/api/datasources/test", ds::test);
-        routes.post("/api/datasources/preview-databases", ds::previewDatabases);
-        routes.get("/api/datasources/export", ds::export);
-        routes.post("/api/datasources/import", ds::importDs);
+        routes.get("/api/datasources", ctx -> dataSourceCtrl.get().list(ctx));
+        routes.post("/api/datasources", ctx -> dataSourceCtrl.get().create(ctx));
+        routes.put("/api/datasources/{id}", ctx -> dataSourceCtrl.get().update(ctx));
+        routes.put("/api/datasources/{id}/schema-filter", ctx -> dataSourceCtrl.get().updateSchemaFilter(ctx));
+        routes.delete("/api/datasources/{id}", ctx -> dataSourceCtrl.get().delete(ctx));
+        routes.post("/api/datasources/test", ctx -> dataSourceCtrl.get().test(ctx));
+        routes.post("/api/datasources/preview-databases", ctx -> dataSourceCtrl.get().previewDatabases(ctx));
+        routes.get("/api/datasources/export", ctx -> dataSourceCtrl.get().export(ctx));
+        routes.post("/api/datasources/import", ctx -> dataSourceCtrl.get().importDs(ctx));
 
         // ---- 扫描作业 ----
-        routes.get("/api/scans/defaults", scan::defaults);
-        routes.post("/api/scans", scan::create);
-        routes.get("/api/scans", scan::list);
-        routes.get("/api/scans/{jobId}", scan::get);
-        routes.post("/api/scans/{jobId}/cancel", scan::cancel);
-        routes.post("/api/scans/{jobId}/resume", scan::resume);
-        routes.delete("/api/scans/{jobId}", scan::delete);
-        routes.get("/api/scans/{jobId}/tables/{tableName}/columns", scan::columns);
-        routes.get("/api/scans/{jobId}/export", scan::export);
+        routes.get("/api/scans/defaults", ctx -> scanCtrl.get().defaults(ctx));
+        routes.post("/api/scans", ctx -> scanCtrl.get().create(ctx));
+        routes.get("/api/scans", ctx -> scanCtrl.get().list(ctx));
+        routes.get("/api/scans/{jobId}", ctx -> scanCtrl.get().get(ctx));
+        routes.post("/api/scans/{jobId}/cancel", ctx -> scanCtrl.get().cancel(ctx));
+        routes.post("/api/scans/{jobId}/resume", ctx -> scanCtrl.get().resume(ctx));
+        routes.delete("/api/scans/{jobId}", ctx -> scanCtrl.get().delete(ctx));
+        routes.get("/api/scans/{jobId}/tables/{tableName}/columns", ctx -> scanCtrl.get().columns(ctx));
+        routes.get("/api/scans/{jobId}/export", ctx -> scanCtrl.get().export(ctx));
 
         // ---- 元数据/浏览(/api/datasources/{dsId} 下) ----
-        routes.get("/api/datasources/{dsId}/databases", meta::listDatabases);
-        routes.get("/api/datasources/{dsId}/schemas", meta::listSchemas);
-        routes.get("/api/datasources/{dsId}/schema-stats", meta::listSchemaStats);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables", meta::listTables);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns", meta::tableColumns);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", meta::tableIndexes);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", meta::countColumns);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", meta::latestScanJobs);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/running-scans", meta::runningScans);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/table-docs", meta::tableDocs);
-        routes.post("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", meta::generateTableDoc);
-        routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", meta::updateTableDoc);
-        routes.put("/api/datasources/{dsId}/schemas/{schema}/description", meta::updateSchemaDescription);
+        routes.get("/api/datasources/{dsId}/databases", ctx -> metaCtrl.get().listDatabases(ctx));
+        routes.get("/api/datasources/{dsId}/schemas", ctx -> metaCtrl.get().listSchemas(ctx));
+        routes.get("/api/datasources/{dsId}/schema-stats", ctx -> metaCtrl.get().listSchemaStats(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables", ctx -> metaCtrl.get().listTables(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns", ctx -> metaCtrl.get().tableColumns(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", ctx -> metaCtrl.get().tableIndexes(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", ctx -> metaCtrl.get().countColumns(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", ctx -> metaCtrl.get().latestScanJobs(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/running-scans", ctx -> metaCtrl.get().runningScans(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/table-docs", ctx -> metaCtrl.get().tableDocs(ctx));
+        routes.post("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().generateTableDoc(ctx));
+        routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().updateTableDoc(ctx));
+        routes.put("/api/datasources/{dsId}/schemas/{schema}/description", ctx -> metaCtrl.get().updateSchemaDescription(ctx));
 
         // ---- Word 报告异步导出任务 ----
-        routes.post("/api/datasources/{dsId}/report/exports", reportExport::submit);
-        routes.get("/api/report-exports", reportExport::list);
-        routes.get("/api/report-exports/{id}/download", reportExport::download);
-        routes.post("/api/report-exports/{id}/open", reportExport::open);
-        routes.post("/api/report-exports/{id}/reveal", reportExport::reveal);
+        routes.post("/api/datasources/{dsId}/report/exports", ctx -> reportCtrl.get().submit(ctx));
+        routes.get("/api/report-exports", ctx -> reportCtrl.get().list(ctx));
+        routes.get("/api/report-exports/{id}/download", ctx -> reportCtrl.get().download(ctx));
+        routes.post("/api/report-exports/{id}/open", ctx -> reportCtrl.get().open(ctx));
+        routes.post("/api/report-exports/{id}/reveal", ctx -> reportCtrl.get().reveal(ctx));
 
         // ---- 表标记与统计 ----
-        routes.get("/api/tags", tag::list);
-        routes.post("/api/tags", tag::create);
-        routes.put("/api/tags/{id}", tag::update);
-        routes.delete("/api/tags/{id}", tag::delete);
-        routes.get("/api/tags/{id}/stats", tag::stats);
-        routes.get("/api/datasources/{dsId}/schema-tag-stats", tag::schemaTagStats);
-        routes.get("/api/datasources/{dsId}/schemas/{schema}/table-tags", tag::tableTags);
-        routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/tags", tag::replaceTableTags);
+        routes.get("/api/tags", ctx -> tagCtrl.get().list(ctx));
+        routes.post("/api/tags", ctx -> tagCtrl.get().create(ctx));
+        routes.put("/api/tags/{id}", ctx -> tagCtrl.get().update(ctx));
+        routes.delete("/api/tags/{id}", ctx -> tagCtrl.get().delete(ctx));
+        routes.get("/api/tags/{id}/stats", ctx -> tagCtrl.get().stats(ctx));
+        routes.get("/api/datasources/{dsId}/schema-tag-stats", ctx -> tagCtrl.get().schemaTagStats(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/table-tags", ctx -> tagCtrl.get().tableTags(ctx));
+        routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/tags", ctx -> tagCtrl.get().replaceTableTags(ctx));
 
         // ---- AI 配置 / 授权 / 心跳 ----
-        routes.get("/api/ai-config", aiConfig::get);
-        routes.put("/api/ai-config", aiConfig::save);
-        routes.get("/api/license/status", license::status);
-        routes.post("/api/license/activate", license::activate);
+        routes.get("/api/ai-config", ctx -> aiCtrl.get().get(ctx));
+        routes.put("/api/ai-config", ctx -> aiCtrl.get().save(ctx));
+        routes.get("/api/license/status", ctx -> licenseCtrl.get().status(ctx));
+        routes.post("/api/license/activate", ctx -> licenseCtrl.get().activate(ctx));
         // 授权码管理(仅配置了签发私钥的管理员实例;在 /api/license 前缀下,不被激活拦截)
-        routes.get("/api/license/admin/codes", license::adminList);
-        routes.post("/api/license/admin/codes", license::adminGenerate);
-        routes.delete("/api/license/admin/codes/{id}", license::adminDelete);
+        routes.get("/api/license/admin/codes", ctx -> licenseCtrl.get().adminList(ctx));
+        routes.post("/api/license/admin/codes", ctx -> licenseCtrl.get().adminGenerate(ctx));
+        routes.delete("/api/license/admin/codes/{id}", ctx -> licenseCtrl.get().adminDelete(ctx));
         routes.get("/api/heartbeat", ctx -> {
             DesktopSession desktopSession = sessionRef.get();
             if (desktopSession != null) {
@@ -277,13 +294,15 @@ public class WebServer {
             ctx.status(204);
         });
 
-        // 就绪探针:前端挂载应用前轮询本端点,共享内核就绪后返回 200(未就绪 503 + Retry-After)。
-        // 与 /api/heartbeat(页面心跳,只表示服务在跑)区分:业务可用性由本端点表达
+        // 就绪探针:前端挂载应用前轮询本端点,共享内核就绪后返回 200(未就绪 503 + Retry-After + 启动阶段)。
+        // 与 /api/heartbeat(页面心跳,只表示服务在跑)区分:业务可用性由本端点表达;
+        // stage 供占位页展示"正在启动服务"的实时进度(见 StartupStage)
         routes.get("/api/health", ctx -> {
             if (ready.get()) {
                 ctx.json(Map.of("status", "ok"));
             } else {
-                ctx.status(503).header("Retry-After", "1").json(Map.of("status", "starting"));
+                ctx.status(503).header("Retry-After", "1")
+                        .json(Map.of("status", "starting", "stage", StartupStage.get()));
             }
         });
 
@@ -317,7 +336,9 @@ public class WebServer {
     /** 停止 Web 服务并关闭内核连接池(不走 System.exit,与 AppShutdown 的进程退出路径区分;测试与嵌入式使用) */
     public void stop() {
         app.stop();
-        env.shutdown();
+        if (env != null) {
+            env.shutdown();
+        }
     }
 
     /** 实际监听端口(server.port=0 时为容器随机分配的结果) */
@@ -327,23 +348,69 @@ public class WebServer {
 
     /**
      * HTTP 绑定后立即打开应用窗口(桌面安装版):页面外壳秒出,后端就绪由前端轮询
-     * /api/health 等待——不再等共享内核初始化完成(原 onReady 拆分为 openBrowser + finishInit)。
-     * 必须在 start() 之后调用;headless 服务器部署自动跳过(见 BrowserOpener)。
+     * /api/health 等待(占位页同步展示实时启动阶段)。
+     * 必须 start() 之后调用;headless 服务器部署自动跳过(见 BrowserOpener)。
+     * 启动画面不在本方法关闭(原实现在这里关,造成 Chrome 冷启动期间的死区)——改由
+     * DqApplication 在 finishInit 就绪后关闭,此时 Chrome 已显示占位页,无缝衔接。
      */
     public void openBrowser() {
         browserOpener.openBrowser(app.port());
     }
 
     /**
-     * 完成共享内核重活(H2 建表/迁移 + 中断任务恢复 + 报告任务恢复)并置服务就绪:
-     * 就绪前业务接口由闸门返回 503,完成后 /api/health 转 200,前端随即加载数据。
-     * 启动失败时由 main 调 closeBrowserWindow。托盘回填由 main 在就绪后调 markTrayReady,
-     * 不并入本方法——避免测试 JVM(非 headless)里误装系统托盘图标。
+     * 完成共享内核重活(启动优化:开窗后才构建):
+     * 1) 构建 ServiceEnv(H2 连接池 + 全部业务服务对象图)并注入路由引用的控制器;
+     * 2) 持久化重活(H2 建表/迁移 + 中断任务恢复 + 报告任务恢复);
+     * 3) 置服务就绪,/api/health 转 200,前端随即加载数据。
+     * 就绪前业务接口由闸门返回 503。启动失败时由 main 调 closeBrowserWindow。
+     * 托盘回填由 main 在就绪后调 markTrayReady,不并入本方法——避免测试 JVM(非 headless)
+     * 里误装系统托盘图标。幂等:重复调用只执行一次内核构建。
      */
     public void finishInit() {
-        env.initDatabase();
+        if (env == null) {
+            StartupLog.log("  创建共享内核 ServiceEnv(H2 连接池 + 业务服务对象图)...");
+            ServiceEnv env = new ServiceEnv(KernelConfigAdapter.toKernelConfig(config));
+            injectKernel(env);
+            StartupLog.log("  ServiceEnv 就绪,初始化共享内核(建表/迁移/中断恢复)...");
+            env.initDatabase();
+        }
         ready.set(true);
         StartupLog.log("  共享内核初始化完成,服务就绪");
+    }
+
+    /**
+     * 并行启动变体:内核已在后台线程与 Web 装配/开窗并行构建(见 DqApplication),
+     * 此处只等待结果并注入引用;内核构建异常原样抛出,由 main 走统一启动失败路径。
+     */
+    public void finishInit(java.util.concurrent.CompletableFuture<ServiceEnv> kernelFuture) {
+        if (env == null) {
+            ServiceEnv env;
+            try {
+                env = kernelFuture.join();
+            } catch (java.util.concurrent.CompletionException e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                if (cause instanceof RuntimeException re) {
+                    throw re;
+                }
+                throw new IllegalStateException("共享内核初始化失败", cause);
+            }
+            injectKernel(env);
+        }
+        ready.set(true);
+        StartupLog.log("  共享内核初始化完成,服务就绪");
+    }
+
+    /** 注入内核服务对象图到路由引用骨架,并把内核挂到本实例(stop/AppShutdown 用) */
+    private void injectKernel(ServiceEnv env) {
+        this.env = env;
+        licenseServiceRef.set(env.getLicenseService());
+        dataSourceCtrl.set(new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService()));
+        scanCtrl.set(new ScanController(env.getScanService(), env.getExportService()));
+        metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService()));
+        reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
+        tagCtrl.set(new TagController(env.getTagService()));
+        aiCtrl.set(new AiConfigController(env.getAiConfigService()));
+        licenseCtrl.set(new LicenseController(env.getLicenseService()));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

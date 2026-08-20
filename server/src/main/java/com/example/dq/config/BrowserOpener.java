@@ -44,9 +44,12 @@ public class BrowserOpener {
         this.session = session;
     }
 
-    /** 服务已完全就绪(原 ApplicationReadyEvent 挂载点):关闭启动画面(未显示时为空操作),紧接着打开应用窗口 */
+    /**
+     * HTTP 绑定后立即打开应用窗口(桌面安装版)。
+     * 启动画面不再在这里关闭(启动优化):改由 DqApplication 在服务就绪(finishInit)后关闭,
+     * 此时 Chrome 已显示带启动进度的占位页,避免"启动画面关了、Chrome 还没起来"的死区。
+     */
     public void openBrowser(int port) {
-        DesktopSplash.close();
         if (GraphicsEnvironment.isHeadless()) {
             StartupLog.log("headless 环境,不自动打开浏览器,访问 http://localhost:" + port);
             return;

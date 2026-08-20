@@ -35,6 +35,8 @@ set DIST=server\build\jpackage\dist
 if exist "%INPUT%" rmdir /s /q "%INPUT%"
 mkdir "%INPUT%"
 copy "%JAR%" "%INPUT%\" >nul
+rem 原生启动画面:打包进 app 镜像,启动时经 -splash:${APPDIR}/splash.png 立即显示(见下方 jpackage 参数)
+copy "server\src\main\resources\splash.png" "%INPUT%\" >nul
 
 rem 免安装绿色目录(app-image),解压后双击 dq-tool.exe 即用
 rem 数据目录固定为 %%USERPROFILE%%\.dq-tool\data(${user.home} 由应用启动时展开,见 ConfigLoader)
@@ -63,6 +65,7 @@ jpackage ^
   --java-options "-Ddq.data-dir=${user.home}/.dq-tool/data" ^
   --java-options "-Djava.awt.headless=false" ^
   --java-options "-XX:+UseZGC" ^
+  --java-options "-splash:${APPDIR}/splash.png" ^
   --dest "%DIST%" || exit /b 1
 
 rem 打成 zip 便于分发

@@ -66,6 +66,8 @@ tasks.named<JavaExec>("run") {
     workingDir = rootDir
     // 统一使用 ZGC(JDK 25 默认即为分代模式,无需其他 GC 参数)
     jvmArgs("-XX:+UseZGC")
+    // 原生启动画面(开发模式无 jar,走文件系统相对路径;生产由打包脚本注入 -splash:${APPDIR}/splash.png)
+    jvmArgs("-splash:server/src/main/resources/splash.png")
 }
 
 // ---- 前端构建:processResources 的强前置依赖 ----

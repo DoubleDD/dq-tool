@@ -43,6 +43,8 @@ public class TrayManager {
 
     /** 已安装的托盘图标;null 表示未安装(early 阶段与 ready 兜底共用,保证幂等) */
     private static volatile TrayIcon installedIcon;
+    /** 后台安装进行中标志:onReady 见其置位则跳过同步安装,不等待后台线程的锁(启动优化) */
+    private static volatile boolean installInProgress;
     /** 服务就绪后回填,托盘菜单动作使用;就绪前点击菜单做降级处理 */
     private static volatile BrowserOpener browserOpenerRef;
     private static volatile AppShutdown shutdownRef;
@@ -99,11 +101,44 @@ public class TrayManager {
         }
     }
 
-    /** 服务就绪(原 ApplicationReadyEvent 挂载点):回填菜单动作引用,兜底安装托盘图标 */
+    /**
+     * 后台线程安装托盘图标(启动优化):托盘不是启动关键路径,不再阻塞主流程。
+     * AWT 已由 DqApplication 在开窗后于主线程完成初始化,后台安装安全;
+     * 与 onReady 的兜底安装靠 synchronized + 幂等检查互斥,重复调用自动跳过。
+     */
+    public static void installEarlyAsync(String url) {
+        installInProgress = true;
+        Thread t = new Thread(() -> {
+            try {
+                boolean ok = installEarly(url);
+                StartupLog.log("托盘图标安装" + (ok ? "成功" : "失败/不可用"));
+            } catch (Throwable e) {
+                StartupLog.log("托盘图标后台安装异常(不影响启动)", e);
+            } finally {
+                installInProgress = false;
+            }
+        }, "tray-install");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * 服务就绪(原 ApplicationReadyEvent 挂载点):回填菜单动作引用;托盘兜底安装。
+     * 启动优化:后台安装(installEarlyAsync)进行中或已完成时不重复安装、不等待其锁——
+     * 托盘安装在本机可能耗时秒级(首建托盘图标),主流程不为其停顿,托盘稍后自行就绪;
+     * 未走后台安装的场景(如 IDE 直接运行)在这里同步兜底安装。
+     */
     public void onReady(int port) {
         browserOpenerRef = browserOpener;
         shutdownRef = shutdown;
-        // 幂等:安装版在 main 阶段已装过;未走 early 路径的场景(如 IDE 直接运行)在这里兜底
+        if (installedIcon != null || installInProgress) {
+            if (installedIcon != null) {
+                session.markTrayActive();
+                log.info("系统托盘图标已就绪(右键菜单:打开窗口 / 退出)");
+            }
+            return;
+        }
+        // 未启动过后台安装(IDE 直接运行等):同步兜底安装,行为与原实现一致
         if (installEarly("http://localhost:" + port)) {
             session.markTrayActive();
             log.info("系统托盘图标已就绪(右键菜单:打开窗口 / 退出)");

@@ -88,8 +88,8 @@ build: ## 构建前端 + 后端 fat jar(跳过测试)
 test: ## 全部测试(含 Testcontainers,需要 Docker)
 	./gradlew :common:test :server:test
 
-run: build ## 构建并运行 fat jar,带窗口/托盘
-	java -XX:+UseZGC -Djava.awt.headless=false -jar $(JAR)
+run: build ## 构建并运行 fat jar,带窗口/托盘(原生 -splash 启动画面;注意 -jar 模式下 -splash 按文件系统相对路径找)
+	java -XX:+UseZGC -Djava.awt.headless=false -splash:server/src/main/resources/splash.png -jar $(JAR)
 
 run-headless: build ## 构建并运行 fat jar,无窗口/托盘(服务器方式)
 	java -XX:+UseZGC -jar $(JAR)

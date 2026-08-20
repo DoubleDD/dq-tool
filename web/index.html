@@ -9,24 +9,56 @@
       if (localStorage.getItem('dq-theme') === 'dark') document.documentElement.classList.add('dark')
     </script>
     <style>
-      /* 挂载前占位(后端就绪探针 /api/health 返回 200 前):静态外壳秒出,避免白屏;Vue 挂载后自动替换 */
+      /* 挂载前占位(后端就绪探针 /api/health 返回 200 前):静态外壳秒出,避免白屏;Vue 挂载后自动替换。
+         启动优化:占位页展示品牌 + 实时启动阶段(1 加载配置 / 2 启动服务 / 3 初始化数据),
+         main.js 轮询 /api/health 时按 stage 字段点亮对应步骤,等待有动效反馈 */
+      html, body { margin: 0; padding: 0; height: 100%; }
       .boot-loading {
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        gap: 12px; height: 100vh; color: #909399; font-size: 14px; font-family: system-ui, sans-serif;
+        gap: 16px; height: 100vh; font-family: system-ui, -apple-system, sans-serif;
+        background: #fff; color: #909399; font-size: 13px;
       }
-      .boot-loading-spinner {
-        width: 28px; height: 28px; border-radius: 50%;
+      .dark .boot-loading { background: #141414; color: #909399; }
+      .boot-logo { display: flex; align-items: center; justify-content: center; }
+      .boot-title { font-size: 17px; font-weight: 600; color: #303133; letter-spacing: 1px; }
+      .dark .boot-title { color: #e5eaf3; }
+      .boot-spinner {
+        width: 26px; height: 26px; border-radius: 50%;
         border: 3px solid rgba(64, 158, 255, .25); border-top-color: #409eff;
         animation: boot-spin 1s linear infinite;
       }
       @keyframes boot-spin { to { transform: rotate(360deg); } }
+      /* 三阶段步骤条:已过=done(绿),进行中=active(蓝,呼吸动画),未到=默认灰 */
+      .boot-steps { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+      .boot-step { display: flex; align-items: center; gap: 6px; color: #c0c4cc; font-size: 12px; }
+      .boot-step i { width: 8px; height: 8px; border-radius: 50%; background: #dcdfe6; display: inline-block; }
+      .boot-step + .boot-step::before { content: ''; width: 28px; height: 1px; background: #dcdfe6; }
+      .boot-step.active { color: #409eff; font-weight: 500; }
+      .boot-step.active i { background: #409eff; box-shadow: 0 0 0 3px rgba(64, 158, 255, .18); animation: boot-pulse 1.2s ease-in-out infinite; }
+      .boot-step.done { color: #67c23a; }
+      .boot-step.done i { background: #67c23a; }
+      @keyframes boot-pulse { 50% { box-shadow: 0 0 0 5px rgba(64, 158, 255, .06); } }
+      .boot-text { font-size: 12px; }
     </style>
   </head>
   <body>
     <div id="app">
       <div class="boot-loading">
-        <div class="boot-loading-spinner"></div>
-        <div class="boot-loading-text">正在连接服务…</div>
+        <div class="boot-logo">
+          <svg width="52" height="52" viewBox="0 0 64 64" aria-hidden="true">
+            <rect x="0" y="0" width="64" height="64" rx="14" fill="#409eff"/>
+            <text x="32" y="43" text-anchor="middle" font-family="Arial, Helvetica, sans-serif"
+              font-size="26" font-weight="bold" fill="#ffffff">DQ</text>
+          </svg>
+        </div>
+        <div class="boot-title">数据质量检测工具</div>
+        <div class="boot-spinner"></div>
+        <div class="boot-steps">
+          <div class="boot-step active" data-step="1"><i></i><span>加载配置</span></div>
+          <div class="boot-step" data-step="2"><i></i><span>启动服务</span></div>
+          <div class="boot-step" data-step="3"><i></i><span>初始化数据</span></div>
+        </div>
+        <div class="boot-text">正在启动服务…</div>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>
