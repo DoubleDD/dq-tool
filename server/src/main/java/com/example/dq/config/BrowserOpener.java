@@ -5,10 +5,16 @@ import org.slf4j.LoggerFactory;
 
 import java.awt.Desktop;
 import java.awt.GraphicsEnvironment;
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -22,6 +28,9 @@ import java.util.concurrent.TimeUnit;
  * 应用模式使用独立的 --user-data-dir(~/.dq-tool/browser-profile):若与用户日常浏览器共用配置,
  * 浏览器已在运行时新进程会把窗口交接给已有实例后立即退出,进程句柄失效,托盘「退出」就杀不到窗口;
  * 独立配置保证窗口属于本进程拉起的浏览器实例,句柄一直有效,closeWindow() 能可靠关闭。
+ * 打开窗口前按 /static/index.html 内容 hash 校验前端是否变化(vite 产物名带内容 hash,前端一构建就变),
+ * 变化则删除整个 browser-profile 目录(含 HTTP 缓存)再拉起,浏览器自动重建空配置——
+ * 防止旧缓存 index.html 引用新包里不存在的旧 hash 资源,模块脚本 MIME 报错白屏。
  */
 public class BrowserOpener {
 
@@ -115,6 +124,21 @@ public class BrowserOpener {
             return false;
         }
         closeWindow();
+        // 前端 hash 校验:内容变了说明升过级,先清掉浏览器配置目录(含 HTTP 缓存)再开窗——
+        // 旧缓存的 index.html 会引用新包里已不存在的旧 hash 资源,模块脚本拿到 SPA 回退的
+        // text/html 报 MIME 错误白屏(2026-08 免安装版实测)。删目录后浏览器启动时自动重建
+        String frontendHash = frontendHash();
+        if (frontendHash != null) {
+            try {
+                if (resetProfileIfFrontendChanged(browserProfileDir(), profileHashMarker(), frontendHash)) {
+                    StartupLog.log("前端资源 hash 已变化,已清理浏览器配置目录(含缓存): " + browserProfileDir());
+                    log.info("前端资源 hash 已变化,已清理浏览器配置目录 {}", browserProfileDir());
+                }
+            } catch (Exception e) {
+                // 清理失败(如文件被占用)不阻断打开窗口
+                log.warn("清理浏览器配置目录失败,按原样打开窗口: {}", e.getMessage());
+            }
+        }
         List<String> command = new ArrayList<>();
         command.add(browser);
         command.add("--user-data-dir=" + browserProfileDir());
@@ -139,6 +163,54 @@ public class BrowserOpener {
     /** 应用模式专用的浏览器配置目录,与用户日常浏览器配置隔离 */
     private static Path browserProfileDir() {
         return Path.of(System.getProperty("user.home"), ".dq-tool", "browser-profile");
+    }
+
+    /**
+     * 前端 hash 标记文件:记录上次打开窗口时的前端 hash。
+     * 必须放在 profile 目录**外面**——放里面会随目录一起被删,下次启动标记缺失又会误判为"已变化",
+     * 把浏览器刚重建的空配置再删一遍,陷入每次启动都清缓存的死循环。
+     */
+    private static Path profileHashMarker() {
+        return browserProfileDir().resolveSibling("browser-profile.frontend-hash");
+    }
+
+    /**
+     * 当前内嵌前端的标识 hash:取 /static/index.html 内容的 SHA-256。
+     * vite 产物文件名带内容 hash,index.html 里引用的资源名随每次前端构建变化,其内容 hash 即前端版本指纹。
+     * 无内嵌前端(纯 API 测试环境)返回 null,跳过校验。
+     */
+    private static String frontendHash() {
+        try (InputStream in = BrowserOpener.class.getResourceAsStream("/static/index.html")) {
+            if (in == null) {
+                return null;
+            }
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(in.readAllBytes()));
+        } catch (IOException | NoSuchAlgorithmException e) {
+            log.warn("计算前端 hash 失败,跳过浏览器配置目录校验: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 前端 hash 与标记文件不一致时删除整个浏览器配置目录并更新标记,返回是否发生了清理。
+     * 独立成包私有静态方法以便单测(不依赖 user.home 与 classpath)。
+     */
+    static boolean resetProfileIfFrontendChanged(Path profileDir, Path markerFile, String frontendHash)
+            throws IOException {
+        String recorded = Files.exists(markerFile) ? Files.readString(markerFile).trim() : null;
+        if (frontendHash.equals(recorded)) {
+            return false;
+        }
+        if (Files.exists(profileDir)) {
+            try (var stream = Files.walk(profileDir)) {
+                for (Path p : stream.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.delete(p);
+                }
+            }
+        }
+        Files.createDirectories(markerFile.getParent());
+        Files.writeString(markerFile, frontendHash);
+        return true;
     }
 
     private void openInDefaultBrowser(String url) {
