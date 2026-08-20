@@ -91,10 +91,20 @@ public class WebServer {
 
         this.app = Javalin.create(cfg -> {
             cfg.jsonMapper(new JavalinJackson3(objectMapper, false));
+            // 指纹资源(文件名带内容 hash,内容变则文件名变):长缓存 immutable;须先注册,优先于根目录条目命中
+            cfg.staticFiles.add(files -> {
+                files.hostedPath = "/assets";
+                files.directory = "/static/assets";
+                files.location = Location.CLASSPATH;
+                files.headers = Map.of("Cache-Control", "public, max-age=31536000, immutable");
+            });
+            // 入口 index.html 等:每次重校验。不缓存是硬要求——否则升级后浏览器仍用旧 index.html,
+            // 引用已不存在的旧 hash 资源,模块脚本拿到 SPA 回退的 text/html 报 MIME 错误白屏
             cfg.staticFiles.add(files -> {
                 files.hostedPath = "/";
                 files.directory = "/static";
                 files.location = Location.CLASSPATH;
+                files.headers = Map.of("Cache-Control", "no-cache");
             });
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, env.getLicenseService(),
@@ -238,14 +248,18 @@ public class WebServer {
         routes.sse("/api/logs/stream", logCtrl::stream);
 
         // SPA 回退(替代 SpaWebConfig):静态资源未命中且非 /api/** 的 GET 一律回退 index.html 交给前端路由;
+        // 但路径末段带扩展名(如 /assets/xxx.js)说明是静态文件缺失,必须真实 404——
+        // 回退成 text/html 会让浏览器把 404 的 js 当 HTML 解析,报 MIME 错误白屏且掩盖真实问题;
         // /api/** 未匹配保持 JSON 404
         routes.error(404, ctx -> {
             String path = ctx.path();
             boolean api = path.startsWith("/api/") || path.equals("/api");
-            if (!api && "GET".equals(ctx.method().name())) {
+            boolean looksLikeFile = path.substring(path.lastIndexOf('/') + 1).contains(".");
+            if (!api && !looksLikeFile && "GET".equals(ctx.method().name())) {
                 InputStream index = WebServer.class.getResourceAsStream("/static/index.html");
                 if (index != null) {
-                    ctx.status(200).contentType("text/html;charset=utf-8").result(index);
+                    ctx.status(200).contentType("text/html;charset=utf-8")
+                            .header("Cache-Control", "no-cache").result(index);
                     return;
                 }
             }

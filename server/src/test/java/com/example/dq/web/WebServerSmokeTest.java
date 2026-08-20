@@ -188,6 +188,35 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 静态资源缓存策略与SPA回退边界() throws Exception {
+        // 入口 index.html:no-cache 每次重校验,防止升级后浏览器拿旧入口引用已不存在的旧 hash 资源(白屏)
+        HttpResponse<String> index = get("/");
+        assertEquals(200, index.statusCode());
+        assertTrue(index.headers().firstValue("Content-Type").orElse("").startsWith("text/html"),
+                String.valueOf(index.headers().map()));
+        assertEquals("no-cache", index.headers().firstValue("Cache-Control").orElse(""),
+                String.valueOf(index.headers().map()));
+
+        // 前端路由(无扩展名):SPA 回退 index.html,同样 no-cache
+        HttpResponse<String> route = get("/datasources");
+        assertEquals(200, route.statusCode());
+        assertTrue(route.headers().firstValue("Content-Type").orElse("").startsWith("text/html"));
+        assertEquals("no-cache", route.headers().firstValue("Cache-Control").orElse(""));
+
+        // 缺失的静态文件(带扩展名):必须真实 404,绝不回退成 text/html(否则模块脚本 MIME 报错)
+        HttpResponse<String> missing = get("/assets/not-exists-deadbeef.js");
+        assertEquals(404, missing.statusCode());
+
+        // 真实存在的指纹资源:长缓存 immutable(从 index.html 里取当前真实资源名,避免硬编码 hash)
+        String jsPath = index.body().replaceAll("(?s).*src=\"(/assets/[^\"]+\\.js)\".*", "$1");
+        assertTrue(jsPath.startsWith("/assets/"), index.body());
+        HttpResponse<String> asset = get(jsPath);
+        assertEquals(200, asset.statusCode());
+        assertTrue(asset.headers().firstValue("Cache-Control").orElse("").contains("immutable"),
+                String.valueOf(asset.headers().map()));
+    }
+
+    @Test
     void 标记列表含系统空表标记() throws Exception {
         activateLicense();
         HttpResponse<String> resp = get("/api/tags");
