@@ -7,7 +7,15 @@
     <!-- 侧边栏:一级功能导航(「数据源」为可展开树,含新增/导入/导出下拉;下钻页高亮对应数据源;一级页面不占页签) -->
     <el-aside :width="sidebarWidth" :class="['sidebar', { 'sidebar-collapsed': sidebarCollapsed }]">
       <div class="sidebar-brand">
-        <span class="brand-name">数据质量检测工具</span>
+        <template v-if="!sidebarCollapsed">
+          <span class="brand-logo">
+            <el-icon><Coin /></el-icon>
+          </span>
+          <span class="brand-name">数据质量检测工具</span>
+        </template>
+        <span class="brand-toggle" :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'" @click="toggleSidebar">
+          <el-icon><Expand v-if="sidebarCollapsed" /><Fold v-else /></el-icon>
+        </span>
       </div>
       <el-menu :default-active="activeNav" :default-openeds="openeds" class="sidebar-menu"
         :collapse="sidebarCollapsed"
@@ -48,16 +56,14 @@
         <el-menu-item v-for="item in otherNav" :key="item.path" :index="item.path">
           <el-icon><component :is="item.icon" /></el-icon>
           <span>{{ item.label }}</span>
+          <span v-if="item.dev" class="dev-badge">dev</span>
         </el-menu-item>
-        <el-menu-item v-if="isAdmin" index="/license-admin">
+        <el-menu-item v-if="isAdmin && hasFeature('license_admin')" index="/license-admin">
           <el-icon><Key /></el-icon>
           <span>授权管理</span>
+          <span class="dev-badge">dev</span>
         </el-menu-item>
       </el-menu>
-      <div class="sidebar-toggle" @click="toggleSidebar">
-        <el-icon><Expand v-if="sidebarCollapsed" /><Fold v-else /></el-icon>
-        <span v-if="!sidebarCollapsed" class="toggle-text">收起</span>
-      </div>
     </el-aside>
     <el-container direction="vertical">
       <el-header class="header" height="48px">
@@ -83,6 +89,8 @@
           </keep-alive>
         </router-view>
       </el-main>
+      <!-- 全局底部授权信息条:所有页面可见(客户/用户名/有效期/版本号 + 更换授权码);授权码管理入口在侧边栏 -->
+      <LicenseFooter />
     </el-container>
   </el-container>
 </template>
@@ -95,6 +103,7 @@ import { Coin, Document, Download, Expand, Fold, Grid, Key, Monitor, MoreFilled,
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
+import LicenseFooter from './components/LicenseFooter.vue'
 import DbTypeIcon from './components/DbTypeIcon.vue'
 
 // 恢复上次主题(需在挂载早期执行,避免首帧闪烁)
@@ -107,12 +116,22 @@ const route = useRoute()
 const router = useRouter()
 
 // 「数据源」为特殊导航(可展开树 + 操作下拉),其余一级功能项
-const otherNav = [
-  { path: '/dashboard', label: '任务看板', icon: Odometer },
-  { path: '/tags', label: '标记统计', icon: PriceTag },
-  { path: '/report-exports', label: '报告列表', icon: Download },
-  { path: '/logs', label: '运行日志', icon: Document }
-]
+// 「数据源」为特殊导航(可展开树 + 操作下拉);其余一级功能项按授权功能过滤(业务功能恒有;运行日志需授权码包含 logs)
+const licenseFeatures = ref([])
+const otherNav = computed(() => {
+  const navs = [
+    { path: '/dashboard', label: '任务看板', icon: Odometer },
+    { path: '/tags', label: '标记统计', icon: PriceTag },
+    { path: '/report-exports', label: '报告列表', icon: Download }
+  ]
+  if (hasFeature('logs')) {
+    navs.push({ path: '/logs', label: '运行日志', icon: Document, dev: true })
+  }
+  return navs
+})
+function hasFeature(key) {
+  return licenseFeatures.value.includes(key)
+}
 
 // 侧边栏收起/展开(持久化到 localStorage)
 const sidebarCollapsed = ref(localStorage.getItem('dq-sidebar-collapsed') === 'true')
@@ -189,17 +208,18 @@ function onDsCommand(cmd) {
 // 顶栏左侧显示当前一级功能名,给位置感
 const activeNavLabel = computed(() => {
   if (activeNav.value === '/datasources' || activeNav.value.startsWith('/datasources/')) return '数据源'
-  const item = otherNav.find((n) => n.path === activeNav.value)
+  const item = otherNav.value.find((n) => n.path === activeNav.value)
   if (item) return item.label
   if (activeNav.value === '/license-admin') return '授权管理'
   return ''
 })
 
-// 授权管理入口仅管理员实例可见(复用路由守卫的缓存请求)
+// 授权管理入口仅管理员实例 + 授权码包含 license_admin 功能可见;运行日志入口需授权码包含 logs(复用路由守卫的缓存请求)
 const isAdmin = ref(false)
 onMounted(async () => {
   const status = await fetchLicenseStatus()
   isAdmin.value = !!status.admin
+  licenseFeatures.value = status.features || []
 })
 
 // 侧边栏数据源树初始加载;进入数据源相关页(增删改后回来)时刷新

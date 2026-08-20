@@ -1,7 +1,9 @@
 package com.example.dq.service
 
 import com.example.dq.license.LicenseCodec
+import com.example.dq.license.LicenseFeature
 import com.example.dq.model.LicenseAdminRequiredException
+import com.example.dq.model.LicenseFeatureRequiredException
 import com.example.dq.model.LicenseGenerateRequest
 import com.example.dq.model.LicenseRecord
 import com.example.dq.model.LicenseRecordView
@@ -92,7 +94,7 @@ class LicenseService(
         return recordRepo.findAll().map { toView(it) }
     }
 
-    /** 生成新授权码:payload 绑定当前软件版本号,签发后留档;字段校验(非空/不含 |)由 encode 兜底 */
+    /** 生成新授权码:payload 绑定当前软件版本号与功能列表,签发后留档;字段校验(非空/不含 |)由 encode 兜底 */
     @Synchronized
     fun generateLicense(req: LicenseGenerateRequest): LicenseRecordView {
         val key = requireAdmin()
@@ -112,14 +114,19 @@ class LicenseService(
         // SID 未填时自动生成(UUID 去横杠,32 位);显式传入仍生效(向后兼容)
         val sid = req.sid?.trim()?.ifBlank { null }
             ?: UUID.randomUUID().toString().replace("-", "")
+        // 功能列表:签发请求传入的功能 key 集合(基础功能恒有可不传);未知 key 忽略并按枚举声明顺序规范化
+        val features = LicenseFeature.encode(
+            LicenseFeature.parse(req.features?.joinToString(",") { it.trim() })
+        ).ifBlank { null }
         val issuedAt = System.currentTimeMillis()
         val code = LicenseCodec.encode(customer, expiresAt, key,
             appVersion = appVersion, serverUrl = serverUrl.orEmpty(),
-            username = username.orEmpty(), sid = sid.orEmpty(), timestamp = issuedAt)
+            username = username.orEmpty(), sid = sid.orEmpty(), timestamp = issuedAt,
+            features = features.orEmpty())
         val record = LicenseRecord(
             id = 0, appVersion = appVersion, customer = customer, expiresAt = expiresAt,
             serverUrl = serverUrl, username = username, sid = sid,
-            issuedAt = issuedAt, codeEnc = crypto.encrypt(code)!!, createdAt = null)
+            issuedAt = issuedAt, features = features, codeEnc = crypto.encrypt(code)!!, createdAt = null)
         val id = recordRepo.insert(record)
         return toView(record.copy(id = id))
     }
@@ -141,12 +148,37 @@ class LicenseService(
             id = record.id, appVersion = record.appVersion, customer = record.customer,
             expiresAt = record.expiresAt, serverUrl = record.serverUrl, username = record.username,
             sid = record.sid, issuedAt = record.issuedAt,
+            features = record.features,
             code = crypto.decrypt(record.codeEnc)!!, createdAt = record.createdAt)
 
     /** 从库中加载并校验(库里被手改导致验签失败时按未激活处理) */
     private fun loadStatus(): LicenseStatusView {
         val base = loadActivationStatus()
         return base.copy(admin = privateKey != null, appVersion = appVersion)
+    }
+
+    /**
+     * 受控功能前置校验:授权码未包含该功能抛 LicenseFeatureRequiredException(web 层转 403)。
+     * @param requireActive 是否要求已激活未过期;授权码管理(license_admin)在 /api/license 前缀下,
+     *                      管理员实例可不激活使用 —— 未激活直接放行,已激活则校验授权码是否包含该功能
+     */
+    @JvmOverloads
+    fun checkFeature(feature: LicenseFeature, requireActive: Boolean = true) {
+        if (requireActive) {
+            checkActive()
+        } else {
+            val pre = status()
+            if (pre.activated && pre.expired) {
+                throw LicenseRequiredException("授权已于 ${pre.expiresAt} 到期,请更新授权码")
+            }
+            if (!pre.activated) {
+                return
+            }
+        }
+        val granted = status().features.orEmpty()
+        if (feature.key !in granted) {
+            throw LicenseFeatureRequiredException("当前授权不含「${feature.label}」功能,请联系分发方升级授权码")
+        }
     }
 
     private fun loadActivationStatus(): LicenseStatusView {
@@ -159,7 +191,8 @@ class LicenseService(
             val expired = LicenseCodec.isExpired(payload.expiresAt, today)
             val daysLeft = payload.expiresAt?.let { maxOf(ChronoUnit.DAYS.between(today, it), 0) }
             LicenseStatusView(true, expired, payload.customer, payload.expiresAt, daysLeft,
-                username = payload.username, sid = payload.sid, timestamp = payload.timestamp)
+                username = payload.username, sid = payload.sid, timestamp = payload.timestamp,
+                features = LicenseFeature.ALL.filter { it in LicenseFeature.granted(payload.features) }.map { it.key })
         } catch (e: RuntimeException) {
             log.warn("库存授权码校验失败,按未激活处理: {}", e.message)
             LicenseStatusView.notActivated()

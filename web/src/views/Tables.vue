@@ -605,7 +605,6 @@ function latestScanTime(row) {
 const dsName = computed(() => getDsName(dsId) || `数据源 ${dsId}`)
 const schemaLabel = computed(() => (db ? `${db}.${schema}` : schema))
 const breadcrumbItems = computed(() => [
-  { label: '数据源列表', to: '/datasources' },
   { label: dsName.value, to: `/datasources/${dsId}/schemas` },
   { label: schemaLabel.value }
 ])

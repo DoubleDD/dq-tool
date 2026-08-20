@@ -54,9 +54,14 @@ export function markActivated(newStatus) {
 router.beforeEach(async (to) => {
   if (to.path === '/activate') return true
   const status = await fetchLicenseStatus()
-  // 授权码管理页:仅管理员可见(未激活的管理员实例也放行);非管理员跳回首页
+  const features = status.features || []
+  // 授权码管理页:仅管理员实例 + 授权码包含 license_admin 功能(未激活的管理员实例也放行);否则跳回首页
   if (to.path === '/license-admin') {
-    return status.admin ? true : '/'
+    return (status.admin && features.includes('license_admin')) ? true : '/'
+  }
+  // 运行日志页:需授权码包含 logs 功能(入口已按授权隐藏,防直接输入 URL)
+  if (to.path === '/logs') {
+    return features.includes('logs') ? true : '/'
   }
   const ok = !!(status.activated && !status.expired)
   return ok ? true : '/activate'

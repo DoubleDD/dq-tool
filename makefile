@@ -132,18 +132,8 @@ package-tauri-win-skip: ## Windows:跳过构建,重打 Tauri 2 套壳版(仅 Win
 license-keypair: ## 生成授权密钥对(只需一次,公钥写入 license-public.key 并拷入 server/src/main/resources/)
 	java scripts/LicenseKeygen.java --gen-keypair
 
-license: ## 签发授权码(交互式;默认客户=内部测试、有效期=30 天后;也可 customer=... expires=... 直接传参)[KEY=私钥文件 SERVER_URL/USERNAME/SID=扩展字段]
-	@bash -c 'c="$(customer)"; e="$(expires)"; \
-		[ -n "$$c" ] || read -r -p "客户名称(回车=内部测试): " c; \
-		c=$${c:-内部测试}; \
-		[ -n "$$e" ] || { d=$$(date -v+30d +%F 2>/dev/null || date -d "+30 days" +%F); \
-			read -r -p "有效期(yyyy-MM-dd 或 permanent,回车=$$d 即 30 天后): " e; e=$${e:-$$d}; }; \
-		extra=""; \
-		[ -z "$(LICENSE_VERSION)" ] || extra="$$extra --version $(LICENSE_VERSION)"; \
-		[ -z "$(SERVER_URL)" ] || extra="$$extra --server-url $(SERVER_URL)"; \
-		[ -z "$(USERNAME)" ] || extra="$$extra --username $(USERNAME)"; \
-		[ -z "$(SID)" ] || extra="$$extra --sid $(SID)"; \
-		java scripts/LicenseKeygen.java --key $(KEY) --customer "$$c" --expires "$$e" $$extra'
+license: ## 签发授权码(交互式:依次输入私钥/客户/有效期/版本/扩展字段/功能列表,回车用默认值;生成密钥对用 make license-keypair)
+	java scripts/LicenseKeygen.java
 
 clean: ## 清理构建产物(server/build/ 与 web/dist/)
 	./gradlew :server:clean

@@ -29,6 +29,8 @@ public class DqApplication {
         }
         // 兼容仅支持 TLS 1.0/1.1 的老版本 SQL Server;必须在任何 TLS 使用之前调用(详见 LegacyTlsSupport)
         LegacyTlsSupport.enable();
+        // try 外声明:启动失败(如共享内核初始化异常)时 catch 里要关掉已拉起的应用窗口
+        WebServer server = null;
         try {
             StartupLog.log("加载配置(application.yml)...");
             ConfigLoader.AppConfig config = ConfigLoader.load();
@@ -70,19 +72,33 @@ public class DqApplication {
                 earlyDesktopFeedback(port);
             }
 
-            // WebServer 构造时完成共享内核装配(H2 连接池 + Flyway 迁移 + 业务服务)
-            StartupLog.log("装配 WebServer(H2 连接池 + Flyway 迁移 + 业务服务)...");
-            WebServer server = new WebServer(config);
+            // WebServer 只完成共享内核对象图 + 路由;建表/迁移/中断恢复等重活延后到绑定、开窗之后
+            StartupLog.log("装配 WebServer(共享内核对象图 + 路由)...");
+            server = new WebServer(config);
             StartupLog.log("WebServer 装配完成,启动 HTTP 监听 port=" + port + " ...");
             server.start(port);
-            StartupLog.log("HTTP 服务已就绪,执行就绪动作(关启动画面 + 打开窗口)...");
-            // 服务完全就绪:关启动画面 + 打开应用窗口、回填托盘引用(port=0 时以实际分配端口为准)
-            server.onReady(server.port());
+            // 先绑定再开窗:首页(静态外壳)秒出,前端轮询 /api/health 等待后端就绪后再加载数据,
+            // 不再等共享内核初始化完成(避免服务初始化期间的白屏;原 onReady 的开窗提前到此刻)
+            StartupLog.log("HTTP 已监听,立即打开应用窗口(页面外壳秒出,后端就绪由前端轮询等待)...");
+            server.openBrowser();
+            // 共享内核重活(H2 建表/迁移 + 中断/报告任务恢复),完成后 /api/health 转 200
+            StartupLog.log("完成共享内核初始化(建表/迁移/中断恢复)...");
+            server.finishInit();
+            // 回填托盘菜单引用(原 onReady 的托盘部分;headless 下 installEarly 自动跳过)
+            server.markTrayReady();
             StartupLog.log("启动流程全部完成,实际端口=" + server.port());
         } catch (Throwable t) {
             // 安装版无控制台,未捕获异常必须落文件;同时保留 stderr 输出(开发/服务器部署排障)
             StartupLog.log("启动失败,进程即将退出(startup.log=" + StartupLog.file() + ")", t);
             t.printStackTrace();
+            // 启动早期已开窗时,关掉本进程拉起的 --app 窗口,避免进程退出后残留孤儿窗口
+            if (server != null) {
+                try {
+                    server.closeBrowserWindow();
+                } catch (Exception ignore) {
+                    // 关窗失败不影响退出
+                }
+            }
             DesktopSplash.close();
             System.exit(1);
         }

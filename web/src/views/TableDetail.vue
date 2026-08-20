@@ -280,7 +280,6 @@ const tablesPath = computed(() => {
 })
 const breadcrumbItems = computed(() => {
   const items = [
-    { label: '数据源列表', to: '/datasources' },
     { label: dsName.value, to: `/datasources/${dsId.value}/schemas` },
     { label: schemaLabel.value, to: tablesPath.value }
   ]

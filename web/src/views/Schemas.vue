@@ -173,7 +173,6 @@ let timer = null
 
 // ---------- 面包屑 ----------
 const breadcrumbItems = computed(() => [
-  { label: '数据源列表', to: '/datasources' },
   { label: dsName.value || `数据源 ${dsId}` }
 ])
 

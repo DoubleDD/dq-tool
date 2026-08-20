@@ -12,9 +12,10 @@ import java.util.Base64
  * 授权码编解码与离线验签(纯函数,不依赖任何框架)。
  *
  * 授权码格式:DQ1.<base64url(payload)>.<base64url(signature)>
- *  - payload   = "客户名|yyyy-MM-dd|软件版本|server_url|username|sid|timestamp"(永久授权有效期段为 PERMANENT)的 UTF-8 字节;
- *                timestamp 为签发时间(epoch 毫秒);server_url 属敏感信息,仅存于授权码,禁止回传前端状态接口
- *  - 兼容旧格式:2 段 "客户名|yyyy-MM-dd" 与 6 段(无软件版本段),解码后缺失的扩展字段为 null
+ *  - payload   = "客户名|yyyy-MM-dd|软件版本|server_url|username|sid|timestamp|features" 的 UTF-8 字节;
+ *                timestamp 为签发时间(epoch 毫秒);features 为逗号分隔的功能 key 列表(8 段新格式,可空);
+ *                server_url 属敏感信息,仅存于授权码,禁止回传前端状态接口
+ *  - 兼容旧格式:2 段 "客户名|yyyy-MM-dd" 与 6 段(无软件版本段)、7 段(无功能段),解码后缺失的扩展字段为 null
  *  - signature = Ed25519(payload),由签发方私钥生成,程序内嵌公钥离线验证
  * DQ1 为版本前缀,便于将来格式演进。
  */
@@ -41,6 +42,8 @@ object LicenseCodec {
         val username: String? = null,
         val sid: String? = null,
         val timestamp: Long? = null,
+        /** 授权码显式包含的功能 key(逗号分隔,8 段新格式;旧格式为 null);最终授权集 = 基础功能集 ∪ 该字段,见 LicenseFeature.granted */
+        val features: String? = null,
     )
 
     /**
@@ -59,6 +62,7 @@ object LicenseCodec {
         username: String = "",
         sid: String = "",
         timestamp: Long = System.currentTimeMillis(),
+        features: String = "",
     ): String {
         require(customer.isNotBlank()) { "客户标识不能为空" }
         require(!customer.contains("|")) { "客户标识不能包含 | 字符" }
@@ -66,8 +70,9 @@ object LicenseCodec {
         require(!serverUrl.contains("|")) { "server_url 不能包含 | 字符" }
         require(!username.contains("|")) { "username 不能包含 | 字符" }
         require(!sid.contains("|")) { "sid 不能包含 | 字符" }
+        require(!features.contains("|")) { "功能列表不能包含 | 字符" }
         val expiry = expiresAt?.toString() ?: PERMANENT
-        val payload = "$customer|$expiry|$appVersion|$serverUrl|$username|$sid|$timestamp"
+        val payload = "$customer|$expiry|$appVersion|$serverUrl|$username|$sid|$timestamp|$features"
             .toByteArray(StandardCharsets.UTF_8)
         val signature = sign(payload, privateKey)
         return "$VERSION.${B64.encodeToString(payload)}.${B64.encodeToString(signature)}"
@@ -99,9 +104,9 @@ object LicenseCodec {
         if (!verify(payload, signature, publicKey)) {
             throw invalid()
         }
-        // 签发侧已拒绝字段含 |,这里可直接按段拆分;2/6/7 段为合法历史与当前格式,其余一律无效
+        // 签发侧已拒绝字段含 |,这里可直接按段拆分;2/6/7/8 段为合法历史与当前格式,其余一律无效
         val fields = String(payload, StandardCharsets.UTF_8).split("|")
-        if (fields.size != 2 && fields.size != 6 && fields.size != 7) {
+        if (fields.size != 2 && fields.size != 6 && fields.size != 7 && fields.size != 8) {
             throw invalid()
         }
         val customer = fields[0]
@@ -129,11 +134,12 @@ object LicenseCodec {
         }
         return LicensePayload(
             customer, expiresAt,
-            appVersion = if (fields.size == 7) fields[2].ifBlank { null } else null,
+            appVersion = if (fields.size == 7 || fields.size == 8) fields[2].ifBlank { null } else null,
             serverUrl = fields[3 + offset].ifBlank { null },
             username = fields[4 + offset].ifBlank { null },
             sid = fields[5 + offset].ifBlank { null },
             timestamp = timestamp,
+            features = if (fields.size == 8) fields[7].ifBlank { null } else null,
         )
     }
 

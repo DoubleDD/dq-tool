@@ -2,7 +2,9 @@ package com.example.dq.service
 
 import com.example.dq.config.AppConfig
 import com.example.dq.license.LicenseCodec
+import com.example.dq.license.LicenseFeature
 import com.example.dq.model.LicenseAdminRequiredException
+import com.example.dq.model.LicenseFeatureRequiredException
 import com.example.dq.model.LicenseGenerateRequest
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
@@ -42,6 +44,10 @@ class LicenseServiceTest {
 
     private fun newService(privateKeyBase64: String = "", appVersion: String = "1.5"): LicenseService =
         LicenseService(licenseRepo, crypto, "", recordRepo, privateKeyBase64, appVersion)
+
+    /** 同时配置验签公钥与签发私钥的实例(可激活 + 可签发) */
+    private fun newServiceWithKey(publicKeyBase64: String, privateKeyBase64: String = "", appVersion: String = "1.5"): LicenseService =
+        LicenseService(licenseRepo, crypto, publicKeyBase64, recordRepo, privateKeyBase64, appVersion)
 
     @Test
     fun `非管理员实例管理方法一律拒绝`() {
@@ -123,5 +129,76 @@ class LicenseServiceTest {
         assertThrows(IllegalArgumentException::class.java) {
             service.generateLicense(LicenseGenerateRequest("甲公司", "permanent", sid = "含|竖线"))
         }
+    }
+
+    @Test
+    fun `激活授权码含功能列表时status透出并校验`() {
+        val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val service = newServiceWithKey(
+            Base64.getEncoder().encodeToString(kp.public.encoded),
+            Base64.getEncoder().encodeToString(kp.private.encoded))
+        // 管理员签发:业务功能 + 受控功能 logs/license_admin
+        val record = service.generateLicense(
+            LicenseGenerateRequest("甲公司", "2027-12-31", features = listOf("scan", "logs", "license_admin")))
+
+        service.activate(record.code)
+        val status = service.status()
+        assertTrue(status.activated)
+        // 业务功能恒有 + 显式包含的受控功能
+        assertEquals(
+            setOf("scan", "datasource", "excel", "report", "ai_doc", "ai_tag", "tag", "logs", "license_admin"),
+            status.features!!.toSet())
+        // 受控功能校验通过
+        service.checkFeature(LicenseFeature.LOGS)
+        service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
+        // 留档可见功能列表(按枚举声明顺序规范化)
+        assertEquals("scan,logs,license_admin", service.listLicenses().single().features)
+    }
+
+    @Test
+    fun `签发未勾选受控功能则status不含且校验拒绝`() {
+        val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val service = newServiceWithKey(
+            Base64.getEncoder().encodeToString(kp.public.encoded),
+            Base64.getEncoder().encodeToString(kp.private.encoded))
+        // 只签业务功能(显式传 scan),受控功能不勾
+        val record = service.generateLicense(
+            LicenseGenerateRequest("甲公司", "permanent", features = listOf("scan")))
+
+        service.activate(record.code)
+        val status = service.status()
+        assertTrue(status.activated)
+        // 业务功能全有,受控功能没有
+        assertEquals(LicenseFeature.BASE_FEATURES.map { it.key }.toSet(), status.features!!.toSet())
+        // 受控功能校验拒绝
+        assertThrows(LicenseFeatureRequiredException::class.java) { service.checkFeature(LicenseFeature.LOGS) }
+        assertThrows(LicenseFeatureRequiredException::class.java) {
+            service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
+        }
+        // 留档 features 仅显式传入的 scan
+        assertEquals("scan", service.listLicenses().single().features)
+    }
+
+    @Test
+    fun `旧格式授权码仅基础功能受控功能被拒`() {
+        val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val service = newServiceWithKey(Base64.getEncoder().encodeToString(kp.public.encoded))
+        // 手工构造 7 段旧格式授权码(无功能段),验签通过
+        val legacyPayload = "老客户|2027-06-30|1.5||scott|ORCL|1755000000000".toByteArray()
+        val sig = java.security.Signature.getInstance("Ed25519").apply {
+            initSign(kp.private)
+            update(legacyPayload)
+        }.sign()
+        val b64 = Base64.getUrlEncoder().withoutPadding()
+        val code = "DQ1.${b64.encodeToString(legacyPayload)}.${b64.encodeToString(sig)}"
+
+        service.activate(code)
+        val status = service.status()
+        assertTrue(status.activated)
+        // 业务功能全有,受控功能没有
+        assertEquals(LicenseFeature.BASE_FEATURES.map { it.key }.toSet(), status.features!!.toSet())
+        assertFalse(status.features!!.contains("logs"))
+        // 受控功能校验拒绝
+        assertThrows(LicenseFeatureRequiredException::class.java) { service.checkFeature(LicenseFeature.LOGS) }
     }
 }

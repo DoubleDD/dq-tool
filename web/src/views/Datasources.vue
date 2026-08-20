@@ -4,17 +4,12 @@
       <div class="toolbar-left">
         <h3 style="margin: 0">数据源</h3>
         <span v-if="list.length" class="toolbar-sub">{{ list.length }} 个连接</span>
+        <el-input v-if="list.length" v-model="keyword" placeholder="搜索名称/主机/类型" clearable
+          :prefix-icon="Search" style="width: 220px" />
       </div>
       <div class="toolbar-right">
-        <el-dropdown trigger="click" @command="onToolbarCommand">
-          <el-button>更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="export">导出配置(JSON)</el-dropdown-item>
-              <el-dropdown-item command="import">导入配置</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
+        <el-button @click="openExportDialog()">导出配置(JSON)</el-button>
+        <el-button @click="openImportDialog()">导入配置</el-button>
         <el-button type="primary" @click="openDialog()">新增数据源</el-button>
       </div>
     </div>
@@ -63,12 +58,13 @@
     <!-- 有数据源:轻量「下一步」提示 -->
     <el-alert v-else-if="list.length" type="info" :closable="false" show-icon class="next-tip">
       <template #title>
-        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片「浏览库」查看库与表并发起扫描;进度可在顶部「任务看板」跟进,报告在「报告列表」页下载。
+        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片查看库与表并发起扫描;进度可在顶部「任务看板」跟进,报告在「报告列表」页下载。
       </template>
     </el-alert>
 
     <div v-if="list.length || loading" class="ds-grid" v-loading="loading">
-      <el-card v-for="row in list" :key="row.id" shadow="hover" class="ds-card"
+      <el-empty v-if="!loading && !filteredList.length" description="没有匹配的数据源" :image-size="80" style="grid-column: 1 / -1" />
+      <el-card v-for="row in filteredList" :key="row.id" shadow="hover" class="ds-card"
         :class="{ 'ds-no-password': row.hasPassword === false }"
         :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : row.jdbcUrl"
         @click="goSchemas(row)">
@@ -81,6 +77,11 @@
             {{ row.name }}
           </span>
           <span class="ds-card-right">
+            <el-icon class="ds-fav" :class="{ 'ds-fav-on': isFav(row.id) }"
+              :title="isFav(row.id) ? '取消收藏' : '收藏(置顶展示)'"
+              @click.stop="toggleFavorite(row)">
+              <StarFilled v-if="isFav(row.id)" /><Star v-else />
+            </el-icon>
             <el-tag size="small">{{ row.dbType }}</el-tag>
           </span>
         </div>
@@ -328,7 +329,6 @@
       </template>
     </el-dialog>
 
-    <LicenseFooter />
   </div>
 </template>
 
@@ -336,15 +336,41 @@
 import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowRight, Connection, Delete, EditPen, UploadFilled, User, WarningFilled } from '@element-plus/icons-vue'
+import { ArrowRight, Connection, Delete, EditPen, Search, Star, StarFilled, UploadFilled, User, WarningFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
-import LicenseFooter from '../components/LicenseFooter.vue'
 import { tabState } from '../stores/tabs'
 
 const router = useRouter()
 const list = ref([])
 const loading = ref(false)
+// 搜索关键字(匹配名称/主机/用户名/类型)
+const keyword = ref('')
+// 收藏:前端本地偏好,按数据源 id 存 localStorage,收藏的卡片排最前
+const favorites = ref(JSON.parse(localStorage.getItem('dq-ds-favorites') || '[]'))
+
+function isFav(id) {
+  return favorites.value.includes(id)
+}
+
+function toggleFavorite(row) {
+  const i = favorites.value.indexOf(row.id)
+  if (i >= 0) favorites.value.splice(i, 1)
+  else favorites.value.push(row.id)
+  localStorage.setItem('dq-ds-favorites', JSON.stringify(favorites.value))
+}
+
+/** 搜索过滤 + 收藏置顶 */
+const filteredList = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  let arr = list.value
+  if (kw) {
+    arr = arr.filter((r) =>
+      [r.name, r.jdbcUrl, r.username, r.dbType].some((v) => (v || '').toLowerCase().includes(kw))
+    )
+  }
+  return [...arr].sort((a, b) => Number(isFav(b.id)) - Number(isFav(a.id)))
+})
 const dialogVisible = ref(false)
 const saving = ref(false)
 const testing = ref(false)
@@ -734,12 +760,6 @@ function dbHost(jdbcUrl) {
   return m ? m[1] : ''
 }
 
-/** 工具栏「更多」下拉:导入/导出配置 */
-function onToolbarCommand(cmd) {
-  if (cmd === 'export') openExportDialog()
-  else if (cmd === 'import') openImportDialog()
-}
-
 // ---------- 导出 ----------
 const exportVisible = ref(false)
 const exportChecked = ref([])
@@ -854,13 +874,6 @@ onActivated(loadList)
 </script>
 
 <style scoped>
-/* 授权栏钉在视口底部:卡片撑满主区域,flex 布局配合 LicenseFooter 的 margin-top:auto */
-.page-card {
-  display: flex;
-  flex-direction: column;
-  min-height: calc(100% - 40px);
-  box-sizing: border-box;
-}
 .toolbar-left {
   display: flex;
   align-items: center;
@@ -1027,6 +1040,20 @@ onActivated(loadList)
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+/* 收藏星标:默认灰,收藏后高亮 */
+.ds-fav {
+  cursor: pointer;
+  font-size: 15px;
+  color: var(--el-text-color-placeholder);
+  transition: color 0.2s ease, transform 0.2s ease;
+}
+.ds-fav:hover {
+  color: var(--el-color-warning);
+  transform: scale(1.15);
+}
+.ds-fav-on {
+  color: var(--el-color-warning);
 }
 .ds-meta {
   display: flex;

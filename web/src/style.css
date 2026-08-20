@@ -146,11 +146,28 @@ body {
   flex-shrink: 0;
   display: flex;
   align-items: center;
-  padding: 0 16px 0 20px;
+  gap: 8px;
+  padding: 0 12px 0 16px;
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
+/* 品牌 logo:圆角方块 + 数据库图标 */
+.brand-logo {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 15px;
+}
+
 .sidebar-brand .brand-name {
+  flex: 1;
+  min-width: 0;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -160,33 +177,28 @@ body {
   text-overflow: ellipsis;
 }
 
-/* 收起态:隐藏品牌文字 */
-.sidebar-collapsed .brand-name {
-  display: none;
-}
-
-/* 侧边栏收起/展开按钮 */
-.sidebar-toggle {
-  height: 42px;
+/* 侧边栏收起/展开按钮(品牌行右侧) */
+.brand-toggle {
   flex-shrink: 0;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 20px;
-  border-top: 1px solid var(--el-border-color-lighter);
+  justify-content: center;
+  border-radius: 5px;
   cursor: pointer;
   color: var(--el-text-color-secondary);
-  font-size: 13px;
+  font-size: 16px;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-.sidebar-toggle:hover {
+.brand-toggle:hover {
   background: var(--el-fill-color-light);
   color: var(--el-color-primary);
 }
 
-/* 收起态:按钮居中,仅显示图标 */
-.sidebar-collapsed .sidebar-toggle {
+/* 收起态:仅保留居中的展开按钮 */
+.sidebar-collapsed .sidebar-brand {
   justify-content: center;
   padding: 0;
 }
@@ -210,6 +222,15 @@ body {
   border-radius: 6px;
   margin: 2px 8px;
   font-size: 13.5px;
+}
+
+/* 收起态:取消菜单项左右 margin,让元素占满 64px 宽度,由 EP 自带的
+   padding(0 20px)保证图标居中;否则 8px margin 会把图标整体右移 */
+.sidebar-collapsed .sidebar-menu .el-menu-item,
+.sidebar-collapsed .sidebar-menu .el-sub-menu__title,
+.sidebar-collapsed .sidebar-menu .el-sub-menu.ds-root {
+  margin-left: 0;
+  margin-right: 0;
 }
 
 /* 数据源区块:整体淡背景(标题 + 展开子项),与其他一级菜单区分 */
@@ -259,10 +280,27 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 .sidebar-menu .ds-empty {
   color: var(--el-text-color-placeholder);
   cursor: default;
+}
+
+/* dev 水印:标注开发向功能(运行日志/授权管理),仅授权码开启后可见 */
+.sidebar-menu .dev-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 16px;
+  border-radius: 4px;
+  color: var(--el-text-color-placeholder);
+  background: var(--el-fill-color-lighter);
+  border: 1px dashed var(--el-border-color);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+/* 收起态:水印随文字一起隐藏(仅留图标) */
+.sidebar-collapsed .sidebar-menu .dev-badge {
+  display: none;
 }
 
 /* 「数据源」标题右侧操作下拉(⋮):整体 stop 冒泡,点击不触发展开 */

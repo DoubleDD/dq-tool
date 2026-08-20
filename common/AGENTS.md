@@ -22,8 +22,11 @@ src/main/kotlin/com/example/dq/
   repository/              Jdbc.kt 薄封装 + 10 仓储(MetaCacheRepository:库/表/字段/索引结构本地缓存,懒加载 + 手动/扫描刷新,meta_cache_flag 区分「未缓存」与「已缓存但为空」)+ SchemaInit(Flyway 迁移封装)
   scan/                    ScanExecutor(线程池)/ ChunkRunner(表 DONE 后联动 TagService 自动打/摘「空表」标记 + 提交 AutoTagService 异步入队)/ InterruptRecovery
   service/                 13 个服务(含 LicenseService、DataSourceTransferService 数据源导入导出、SshTunnelService SSH 隧道本地端口转发、AutoTagService 扫描后 AI 自动打标——2 worker 守护线程池,表注释/字段注释/表描述全空时抽样 100 行业务数据发给 LLM 选 USER 标记,幂等只增不删,LLM 调用点可注入 fake 便于单测,构造器注入、WordReportService Word 数据调研报告导出——poi-tl 模板渲染(模板 resources/templates/data-survey-report.docx),封面+一~四章全量;取每库最近 DONE 历史快照,选中库未全表扫描 409 拦截,体积快照缺失实时补算;分组 vMerge 表与第三章按 USER 标记分节走 WordReportTables 代码建表(LoopRow 不适用合并组);分析文字经可注入 LLM 调用点生成,失败落「(待人工编写)」)
-  license/LicenseCodec.kt  授权码编解码与 Ed25519 验签(object 纯函数)
-  env/ServiceEnv.kt        服务组装器:H2 连接池 + Flyway 迁移 + 全部 service,server 启动时构建一次;
+  license/LicenseCodec.kt  授权码编解码与 Ed25519 验签(object 纯函数;payload 第 8 段为逗号分隔功能列表)
+  license/LicenseFeature.kt 授权码功能清单(9 项;基础功能集=全部业务功能恒可用,受控功能 logs/license_admin 需授权码显式包含)
+  env/ServiceEnv.kt        服务组装器:H2 连接池 + 全部 service 对象图,server 启动时构建一次;
+                           构造不做持久化重活(建表/迁移/中断恢复),由 initDatabase() 显式完成——
+                           server 先绑定端口开窗、前端轮询 /api/health,再调 initDatabase 置就绪;
                            对 Java 友好(属性即 getter,dataSource 暴露给 server 的 AppShutdown)
   util/CryptoUtil.kt       AES-GCM(数据库密文);TransferCrypto(导出文件固定口令)/NavicatCrypto(.ncx 密码解密);
                            JdbcUrlRewriter(JDBC URL host:port 解析与改写,SSH 隧道用)
@@ -38,6 +41,7 @@ src/main/resources/db/migration/
   V8__schema_doc.sql         库级描述表 schema_doc(库列表页可编辑,Word 报告「实例描述」列)
   V9__report_export.sql       Word 报告异步导出任务表 report_export(任务列表轮询进度)
   V10__meta_cache.sql        结构元数据本地缓存:meta_table(表清单/注释/估算行数/体积)/meta_column(字段)/meta_index(索引列展开多行)+ meta_cache_flag(缓存存在标记)
+  V12__license_record_features.sql  license_record.features 列(授权码功能列表留档,8 段新格式;旧记录 NULL=仅基础功能)
 src/test/kotlin/           方言/分段/级联删除/标记(TagRepository/TagService)/AI prompt/授权码/Flyway 迁移单测 + Testcontainers 端到端(MySQL/PG/SQLServer;SSH 隧道 SshTunnelIntegrationTest:linuxserver/openssh-server 跳板机 + MySQL 网络别名,注意该镜像 sshd 监听 2222 且默认 AllowTcpForwarding no 需 custom-cont-init.d 打开)
 ```
 

@@ -178,6 +178,7 @@ onDeactivated(() => {
 .log-line {
   padding: 1px 12px;
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   gap: 8px;
   white-space: nowrap;
@@ -234,6 +235,8 @@ onDeactivated(() => {
 }
 
 .log-stack {
+  /* 独占一行:跟在日志头后面换行展示,避免与消息文本并排挤压/重叠 */
+  flex-basis: 100%;
   margin: 2px 0 0 0;
   padding: 0;
   color: var(--el-color-danger);

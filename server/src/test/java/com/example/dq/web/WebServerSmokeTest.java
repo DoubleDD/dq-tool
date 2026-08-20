@@ -47,6 +47,8 @@ class WebServerSmokeTest {
         server = new WebServer(new ConfigLoader.AppConfig(dq, new AiProperties(), 0,
                 dataDir.toString(), "1.5-test"));
         server.start(0);
+        // 共享内核初始化(H2 建表/迁移 + 中断恢复)在绑定后显式完成,与 DqApplication 启动时序一致
+        server.finishInit();
         client = HttpClient.newHttpClient();
     }
 
@@ -116,6 +118,7 @@ class WebServerSmokeTest {
         WebServer admin = new WebServer(new ConfigLoader.AppConfig(adminDq, new AiProperties(), 0,
                 java.nio.file.Files.createTempDirectory("dq-admin-test").toString(), "1.5-test"));
         admin.start(0);
+        admin.finishInit();
         try {
             java.util.function.BiFunction<String, String, HttpResponse<String>> call = (method, path) -> {
                 try {
@@ -185,6 +188,50 @@ class WebServerSmokeTest {
     @Test
     void 心跳接口不被拦截() throws Exception {
         assertEquals(204, get("/api/heartbeat").statusCode());
+    }
+
+    @Test
+    void 就绪闸门与健康探针_未就绪503就绪后放行() throws Exception {
+        // 另起一个未完成初始化的实例:绑定后、finishInit 前,业务接口应被闸门拦成 503
+        DqProperties bootDq = new DqProperties();
+        bootDq.getLicense().setPublicKey(Base64.getEncoder().encodeToString(licenseKeyPair.getPublic().getEncoded()));
+        WebServer booting = new WebServer(new ConfigLoader.AppConfig(bootDq, new AiProperties(), 0,
+                java.nio.file.Files.createTempDirectory("dq-booting-test").toString(), "1.5-test"));
+        booting.start(0);
+        try {
+            java.util.function.Function<String, HttpResponse<String>> bootGet = (path) -> {
+                try {
+                    return client.send(HttpRequest.newBuilder(
+                            URI.create("http://localhost:" + booting.port() + path)).build(),
+                            HttpResponse.BodyHandlers.ofString());
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+            };
+            // 未就绪:健康探针 503(带 Retry-After 与 starting 状态),业务接口 503——
+            // 闸门在授权校验之前短路,未激活也应返回 503 而非 401
+            HttpResponse<String> health = bootGet.apply("/api/health");
+            assertEquals(503, health.statusCode(), health.body());
+            assertTrue(health.body().contains("starting"), health.body());
+            assertEquals("1", health.headers().firstValue("Retry-After").orElse(""),
+                    String.valueOf(health.headers().map()));
+            assertEquals(503, bootGet.apply("/api/datasources").statusCode());
+
+            // 静态页面不受闸门影响(首页秒出,等待后端就绪的占位)
+            HttpResponse<String> index = bootGet.apply("/");
+            assertEquals(200, index.statusCode());
+            assertTrue(index.headers().firstValue("Content-Type").orElse("").startsWith("text/html"),
+                    String.valueOf(index.headers().map()));
+
+            // 就绪后:健康探针 200,业务接口回到授权前置校验(未激活 → 401)
+            booting.finishInit();
+            HttpResponse<String> readyHealth = bootGet.apply("/api/health");
+            assertEquals(200, readyHealth.statusCode(), readyHealth.body());
+            assertTrue(readyHealth.body().contains("ok"), readyHealth.body());
+            assertEquals(401, bootGet.apply("/api/datasources").statusCode());
+        } finally {
+            booting.stop();
+        }
     }
 
     @Test

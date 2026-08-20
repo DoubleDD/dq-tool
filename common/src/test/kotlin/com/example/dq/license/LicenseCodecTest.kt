@@ -147,6 +147,9 @@ class LicenseCodecTest {
         assertThrows(IllegalArgumentException::class.java) {
             LicenseCodec.encode("客户A", LocalDate.now(), kp.private, sid = "含|竖线")
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            LicenseCodec.encode("客户A", LocalDate.now(), kp.private, features = "logs,含|竖线")
+        }
     }
 
     @Test
@@ -231,5 +234,48 @@ class LicenseCodecTest {
         val expires = LocalDate.of(2026, 12, 31)
         assertFalse(LicenseCodec.isExpired(expires, LocalDate.of(2026, 12, 31)))
         assertTrue(LicenseCodec.isExpired(expires, LocalDate.of(2027, 1, 1)))
+    }
+
+    @Test
+    fun `八段新格式功能列表往返`() {
+        val kp = genKeyPair()
+        val code = LicenseCodec.encode("某某公司", LocalDate.of(2026, 12, 31), kp.private,
+            username = "scott", timestamp = 1755000000000L, features = "scan,excel,report,ai_doc,ai_tag,tag,logs,license_admin")
+
+        val payload = LicenseCodec.decodeAndVerify(code, kp.public)
+
+        assertEquals("某某公司", payload.customer)
+        assertEquals("scan,excel,report,ai_doc,ai_tag,tag,logs,license_admin", payload.features)
+    }
+
+    @Test
+    fun `功能列表空串解码为null`() {
+        val kp = genKeyPair()
+        // features 段为空串:与 7 段旧格式等价
+        val code = LicenseCodec.encode("某某公司", LocalDate.of(2026, 12, 31), kp.private,
+            username = "scott", timestamp = 1755000000000L, features = "")
+
+        val payload = LicenseCodec.decodeAndVerify(code, kp.public)
+
+        assertNull(payload.features)
+    }
+
+    @Test
+    fun `兼容七段旧格式功能列表为null`() {
+        val kp = genKeyPair()
+        // 手工构造 7 段旧格式 payload(客户名|有效期|版本|server_url|username|sid|timestamp),无功能段
+        val legacyPayload = "老客户|2027-06-30|1.5|http://db:1521|scott|ORCL|1755000000000".toByteArray()
+        val sig = java.security.Signature.getInstance("Ed25519").apply {
+            initSign(kp.private)
+            update(legacyPayload)
+        }.sign()
+        val b64 = Base64.getUrlEncoder().withoutPadding()
+        val code = "DQ1.${b64.encodeToString(legacyPayload)}.${b64.encodeToString(sig)}"
+
+        val payload = LicenseCodec.decodeAndVerify(code, kp.public)
+
+        assertEquals("老客户", payload.customer)
+        assertEquals("1.5", payload.appVersion)
+        assertNull(payload.features)
     }
 }

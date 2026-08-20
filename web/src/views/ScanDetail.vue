@@ -209,7 +209,6 @@ const breadcrumbItems = computed(() => {
     : job.value.schemaName
   const scansPath = `/datasources/${job.value.datasourceId}/schemas/${encodeURIComponent(job.value.schemaName)}/scans${job.value.dbName ? `?db=${encodeURIComponent(job.value.dbName)}` : ''}`
   return [
-    { label: '数据源列表', to: '/datasources' },
     { label: job.value.datasourceName, to: `/datasources/${job.value.datasourceId}/schemas` },
     { label: schemaLabel, to: scansPath },
     { label: `扫描 #${jobId}` }

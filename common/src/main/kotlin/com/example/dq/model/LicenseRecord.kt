@@ -16,6 +16,8 @@ data class LicenseRecord(
     val sid: String?,
     /** 签发时间戳(epoch 毫秒,与授权码 payload 内一致) */
     val issuedAt: Long,
+    /** 授权码显式包含的功能 key(逗号分隔,可空);基础功能恒有不在其中 */
+    val features: String?,
     val codeEnc: String,
     val createdAt: LocalDateTime?,
 )
@@ -30,6 +32,8 @@ data class LicenseRecordView(
     val username: String?,
     val sid: String?,
     val issuedAt: Long,
+    /** 授权码显式包含的功能 key(逗号分隔,可空);基础功能恒有不在其中 */
+    val features: String?,
     val code: String,
     val createdAt: LocalDateTime?,
 )
@@ -43,4 +47,6 @@ data class LicenseGenerateRequest(
     val serverUrl: String? = null,
     val username: String? = null,
     val sid: String? = null,
+    /** 授权码显式包含的功能 key 列表;为空表示仅基础功能(业务功能恒有)。未传/为空时服务端按基础功能处理 */
+    val features: List<String>? = null,
 )

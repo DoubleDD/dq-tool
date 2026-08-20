@@ -38,6 +38,9 @@ import com.zaxxer.hikari.HikariDataSource
 
 /**
  * 应用级服务容器:共享内核的手动依赖组装,server(Javalin)与 desktop(Compose)启动时各构建一次。
+ * 构造只完成 H2 连接池 + 全部 service 对象图(纯内存装配,毫秒级);
+ * 建表/迁移/中断恢复等持久化重活由 [initDatabase] 显式完成——server 先绑定 HTTP 端口
+ * 提供静态页面与就绪探针(/api/health),再调用本方法,期间业务接口由就绪闸门返回 503。
  */
 class ServiceEnv(val config: AppConfig) {
 
@@ -91,8 +94,12 @@ class ServiceEnv(val config: AppConfig) {
     val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey,
         licenseRecordRepo, config.licensePrivateKey, config.appVersion)
 
-    init {
-        // 建表/老库升级 + 把上次异常退出的 RUNNING 任务标记为已中断
+    /**
+     * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的
+     * RUNNING 任务标记为已中断 + 恢复未完成的 Word 报告导出任务。
+     * 从构造函数移出(原 init 块):server 绑定端口、打开窗口后再调用,避免首页等待初始化完成。
+     */
+    fun initDatabase() {
         SchemaInit.run(dataSource)
         InterruptRecovery(scanService).recover()
         wordReportExportService.recoverUnfinished()

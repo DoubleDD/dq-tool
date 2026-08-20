@@ -17,7 +17,9 @@ import com.example.dq.controller.LogController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
+import com.example.dq.license.LicenseFeature;
 import com.example.dq.model.LicenseAdminRequiredException;
+import com.example.dq.model.LicenseFeatureRequiredException;
 import com.example.dq.model.LicenseRequiredException;
 import com.example.dq.service.LicenseService;
 import io.javalin.Javalin;
@@ -37,14 +39,17 @@ import tools.jackson.module.kotlin.KotlinModule;
 import java.io.InputStream;
 import java.sql.SQLException;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Web 层装配与路由(去 Spring 后替代容器装配 + DispatcherServlet):
  * 构造对象图(repository → service → handler,全部构造注入),注册 31 个端点、
  * 授权前置校验(替代 LicenseInterceptor)、统一异常映射(响应体 {"message": ...},
- * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)。
+ * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)、
+ * 就绪闸门与 /api/health 就绪探针(共享内核未就绪前业务接口统一 503,前端轮询到 200 再加载数据)。
  * Javalin 7 的路由只能在 Javalin.create 的配置回调里注册(cfg.routes),创建后不可追加。
+ * 启动时序:构造(内核对象图 + 路由)→ start 绑定 → openBrowser 开窗 → finishInit 完成建表/迁移并置就绪。
  */
 public class WebServer {
 
@@ -55,12 +60,15 @@ public class WebServer {
     private final DesktopSession session;
     private final BrowserOpener browserOpener;
     private final TrayManager trayManager;
+    /** 共享内核就绪标志:finishInit 完成建表/迁移/恢复后置 true,之前业务接口被闸门拦成 503 */
+    private final AtomicBoolean ready = new AtomicBoolean(false);
 
     public WebServer(ConfigLoader.AppConfig config) throws Exception {
         DqProperties props = config.dq();
 
-        // ---- 共享内核:H2 连接池 + Flyway 迁移 + 全部业务服务,构造即完成建表/老库升级与中断任务恢复 ----
-        StartupLog.log("  创建共享内核 ServiceEnv(H2 连接池 + Flyway 迁移)...");
+        // ---- 共享内核:H2 连接池 + 全部业务服务对象图(纯内存装配);建表/迁移/中断恢复等
+        //      持久化重活延后到 HTTP 绑定与开窗之后(finishInit),期间业务接口由就绪闸门返回 503 ----
+        StartupLog.log("  创建共享内核 ServiceEnv(H2 连接池 + 业务服务对象图)...");
         this.env = new ServiceEnv(KernelConfigAdapter.toKernelConfig(config));
         StartupLog.log("  ServiceEnv 就绪,创建 Javalin 与路由...");
 
@@ -135,12 +143,28 @@ public class WebServer {
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
         routes.beforeMatched("/api/*", ctx -> {
             String path = ctx.path();
+            // 就绪闸门:共享内核(建表/迁移/中断恢复)未就绪前,除就绪探针与页面心跳外所有业务接口统一 503。
+            // 必须在授权校验之前短路——licenseService 虽已构建,但依赖的库表可能尚未迁移完成
+            if (path.equals("/api/health") || path.equals("/api/heartbeat")) {
+                return;
+            }
+            if (!ready.get()) {
+                throw new ServiceNotReadyException();
+            }
+            // 授权码管理(license_admin 受控功能):/api/license 前缀下不被激活拦截,但需授权码显式包含该功能
+            if (path.startsWith("/api/license/admin")) {
+                licenseService.checkFeature(LicenseFeature.LICENSE_ADMIN, false);
+                return;
+            }
             if (path.startsWith("/api/license") || path.equals("/api/heartbeat")) {
                 return;
             }
             licenseService.checkActive();
+            // 受控功能校验(业务功能恒有,无需校验):运行日志页需授权码显式包含 logs 功能
+            if (path.startsWith("/api/logs")) {
+                licenseService.checkFeature(LicenseFeature.LOGS);
+            }
         });
-
         // ---- 统一异常映射(替代 GlobalExceptionHandler,响应体保持 {"message": ...}) ----
         routes.exception(IllegalArgumentException.class, (e, ctx) -> {
             log.warn("请求参数错误: {}", e.getMessage(), e);
@@ -154,6 +178,15 @@ public class WebServer {
         routes.exception(LicenseAdminRequiredException.class, (e, ctx) -> {
             log.warn("非管理员访问授权码管理: {}", e.getMessage());
             ctx.status(403).json(Map.of("message", String.valueOf(e.getMessage())));
+        });
+        routes.exception(LicenseFeatureRequiredException.class, (e, ctx) -> {
+            log.warn("授权码未包含受控功能: {}", e.getMessage());
+            ctx.status(403).json(Map.of("message", String.valueOf(e.getMessage())));
+        });
+        routes.exception(ServiceNotReadyException.class, (e, ctx) -> {
+            // 启动早期绑定后、共享内核就绪前的统一响应:前端 /api/health 轮询到 200 前不挂载应用,
+            // 页面停留在 index.html 的「正在连接服务」占位,不弹业务错误
+            ctx.status(503).header("Retry-After", "1").json(Map.of("message", "服务启动中,请稍候…"));
         });
         routes.exception(IllegalStateException.class, (e, ctx) -> {
             log.warn("业务状态冲突: {}", e.getMessage(), e);
@@ -244,6 +277,16 @@ public class WebServer {
             ctx.status(204);
         });
 
+        // 就绪探针:前端挂载应用前轮询本端点,共享内核就绪后返回 200(未就绪 503 + Retry-After)。
+        // 与 /api/heartbeat(页面心跳,只表示服务在跑)区分:业务可用性由本端点表达
+        routes.get("/api/health", ctx -> {
+            if (ready.get()) {
+                ctx.json(Map.of("status", "ok"));
+            } else {
+                ctx.status(503).header("Retry-After", "1").json(Map.of("status", "starting"));
+            }
+        });
+
         // ---- 实时日志流(SSE) ----
         routes.sse("/api/logs/stream", logCtrl::stream);
 
@@ -282,9 +325,34 @@ public class WebServer {
         return app.port();
     }
 
-    /** 服务就绪后的桌面动作(原 ApplicationReadyEvent 挂载点):关启动画面 + 打开窗口、回填托盘引用 */
-    public void onReady(int actualPort) {
-        browserOpener.openBrowser(actualPort);
-        trayManager.onReady(actualPort);
+    /**
+     * HTTP 绑定后立即打开应用窗口(桌面安装版):页面外壳秒出,后端就绪由前端轮询
+     * /api/health 等待——不再等共享内核初始化完成(原 onReady 拆分为 openBrowser + finishInit)。
+     * 必须在 start() 之后调用;headless 服务器部署自动跳过(见 BrowserOpener)。
+     */
+    public void openBrowser() {
+        browserOpener.openBrowser(app.port());
+    }
+
+    /**
+     * 完成共享内核重活(H2 建表/迁移 + 中断任务恢复 + 报告任务恢复)并置服务就绪:
+     * 就绪前业务接口由闸门返回 503,完成后 /api/health 转 200,前端随即加载数据。
+     * 启动失败时由 main 调 closeBrowserWindow。托盘回填由 main 在就绪后调 markTrayReady,
+     * 不并入本方法——避免测试 JVM(非 headless)里误装系统托盘图标。
+     */
+    public void finishInit() {
+        env.initDatabase();
+        ready.set(true);
+        StartupLog.log("  共享内核初始化完成,服务就绪");
+    }
+
+    /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */
+    public void markTrayReady() {
+        trayManager.onReady(app.port());
+    }
+
+    /** 启动失败时关闭本进程拉起的 --app 窗口,避免残留孤儿浏览器窗口 */
+    public void closeBrowserWindow() {
+        browserOpener.closeWindow();
     }
 }

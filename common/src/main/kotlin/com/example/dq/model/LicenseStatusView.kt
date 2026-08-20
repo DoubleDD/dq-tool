@@ -22,6 +22,8 @@ data class LicenseStatusView(
     val admin: Boolean = false,
     /** 软件版本号(构建期注入;页脚展示) */
     val appVersion: String? = null,
+    /** 已授权功能 key 列表(基础功能恒有;受控功能 logs/license_admin 需授权码显式包含);未激活为 null */
+    val features: List<String>? = null,
 ) {
     companion object {
         @JvmStatic
