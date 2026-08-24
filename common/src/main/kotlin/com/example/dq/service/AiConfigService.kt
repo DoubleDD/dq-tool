@@ -14,6 +14,7 @@ class AiConfigService(
     private val repository: AiConfigRepository,
     private val crypto: CryptoUtil,
     private val config: AppConfig,
+    private val aiService: AiService,
 ) {
 
     /**
@@ -61,6 +62,31 @@ class AiConfigService(
             return null
         }
         return Config(baseUrl.replace(Regex("/+$"), ""), apiKey, model, effective.usingDefault)
+    }
+
+    /**
+     * 测试连通性:「AI 配置」的「测试连接」按钮用。
+     * 按请求参数(当前表单值,未保存也可)合并已存配置与配置文件默认值后调用大模型接口;
+     * 配置不完整或接口调用失败时抛异常(消息可直接展示)。
+     */
+    fun test(req: AiConfigRequest) {
+        val effective = resolveConfig(req)
+            ?: throw IllegalStateException("请先在「AI 配置」中填写完整的大模型接口信息(接口地址 / API Key / 模型)")
+        aiService.test(effective)
+    }
+
+    /** 合并口径:请求参数优先于已存配置(H2),空字段回落到配置文件默认值;仍不完整返回 null */
+    internal fun resolveConfig(req: AiConfigRequest): Config? {
+        val row = repository.get()
+        val baseUrl = trim(req.baseUrl) ?: row?.let { trim(it.baseUrl) } ?: trim(config.ai.baseUrl)
+        val model = trim(req.model) ?: row?.let { trim(it.model) } ?: trim(config.ai.model)
+        val apiKey = if (!req.apiKey.isNullOrBlank()) req.apiKey.trim()
+        else if (row != null && !row.apiKeyEnc.isNullOrEmpty()) crypto.decrypt(row.apiKeyEnc)
+        else trim(config.ai.apiKey)
+        if (baseUrl.isNullOrBlank() || model.isNullOrBlank() || apiKey.isNullOrBlank()) {
+            return null
+        }
+        return Config(baseUrl.replace(Regex("/+$"), ""), apiKey, model, usingDefault = false)
     }
 
     /** 逐字段合并:页面配置(H2)优先,空字段回落到 AppConfig 的 ai.* 默认值 */

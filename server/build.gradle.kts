@@ -67,17 +67,25 @@ tasks.named<JavaExec>("run") {
     // 统一使用 ZGC(JDK 25 默认即为分代模式,无需其他 GC 参数)
     jvmArgs("-XX:+UseZGC")
     // 原生启动画面(开发模式无 jar,走文件系统相对路径;生产由打包脚本注入 -splash:${APPDIR}/splash.png)
-    jvmArgs("-splash:server/src/main/resources/splash.png")
+    // 仅桌面开发模式启用:原生 splash 由 launcher 在 main() 之前显示,main 里再设 headless=true 也收不回去,
+    // headless 调试(make dev-headless)带 -splash 会常驻一张启动图并把进程变成 GUI 应用(Dock 图标/抢焦点)。
+    // 桌面判定与 make dev 注入方式一致:JAVA_TOOL_OPTIONS 含 -Djava.awt.headless=false
+    val desktopDev = providers.environmentVariable("JAVA_TOOL_OPTIONS")
+        .map { it.contains("java.awt.headless=false") }
+        .getOrElse(false)
+    if (desktopDev) {
+        jvmArgs("-splash:server/src/main/resources/splash.png")
+    }
 }
 
-// ---- 前端构建:processResources 的强前置依赖 ----
-// 之前"dist 缺失时静默跳过"导致产出 jar 内静态资源旧版/缺失(MIME 报错)。
-// 现在注册 buildWeb 任务,打 jar 前自动保证 web/dist 是最新的:
-//  - 增量:仅 web/src、index.html、vite.config.ts、package.json 变化时才真正执行 npm run build;
-//  - node_modules 缺失直接报错并给出修复指引,不再静默产出坏包。
+// ---- 前端构建:dev 模式与 release 打包拆开 ----
+// dev 模式(:server:run,make dev / dev-headless)不构建前端——前端开发走 make dev-web(vite 5173 热更新),
+// 或直接使用磁盘上已有的 web/dist;processResources 仅在有 dist 时拷入 static,缺失时跳过(API-only 调试)。
+// release 打包正确性由 buildWebForRelease 保障(见下)::server:shadowJar 前强制前端产物最新且存在,
+// 不再存在"旧版/缺失"的静默坏包(此前 buildWeb 挂在 processResources 上导致 dev 运行也被迫构建前端)。
 val buildWeb by tasks.registering(Exec::class) {
     group = "build"
-    description = "构建前端产物 web/dist(processResources/shadowJar 的强前置依赖)"
+    description = "构建前端产物 web/dist(增量;release 打包与测试的前置)"
 
     // 统一在 web/ 目录执行;npm 在 Windows 上是 npm.cmd,直接写 npm 会找不到
     workingDir = rootProject.layout.projectDirectory.dir("web").asFile
@@ -99,19 +107,47 @@ val buildWeb by tasks.registering(Exec::class) {
     }
 }
 
-tasks.processResources {
-    // 强依赖前端构建:打 jar 前 web/dist 一定存在且最新
+// release 打包专用保障(新增):打 fat jar 前强制前端产物最新且存在。
+// dev 模式(:server:run)不经过本任务,因此不会触发前端构建。
+val buildWebForRelease by tasks.registering {
+    group = "build"
+    description = "release 打包保障:构建前端产物并校验 web/dist 存在(shadowJar 的前置,dev 模式不触发)"
     dependsOn(buildWeb)
-    from(rootProject.layout.projectDirectory.dir("web/dist")) {
-        into("static")
+    doLast {
+        val dist = rootProject.layout.projectDirectory.dir("web/dist").asFile
+        if (!dist.isDirectory || !dist.resolve("index.html").isFile) {
+            throw GradleException(
+                "web/dist 缺失或为空,release 打包需要前端产物。请先执行: cd web && npm install && npm run build " +
+                    "(或让 buildWeb 自动构建;若 web/node_modules 不存在会先报 npm 依赖错误)"
+            )
+        }
     }
+}
+
+tasks.processResources {
+    // dev 模式与测试不再强依赖前端构建:dist 存在则拷入 static,缺失则跳过(API-only 调试)
+    val distDir = rootProject.layout.projectDirectory.dir("web/dist").asFile
+    if (distDir.isDirectory) {
+        from(distDir) {
+            into("static")
+        }
+    }
+    // 当 buildWeb 在任务图中(release 打包 / 测试)时,确保先构建、后拷贝,拷入的始终是最新产物
+    mustRunAfter(buildWeb)
     // 软件版本号构建期注入 app-version.txt:去 0. 前缀(如 0.1.7 -> 1.7),与打包脚本 PKG_VERSION 口径一致;版本号源头为根目录 VERSION 文件
     filesMatching("app-version.txt") {
         expand(mapOf("appVersion" to project.version.toString().replaceFirst(Regex("^0\\."), "")))
     }
 }
 
+tasks.shadowJar {
+    // release 打包正确性:打 fat jar 前强制前端产物最新且存在(经 buildWebForRelease)
+    dependsOn(buildWebForRelease)
+}
+
 tasks.test {
+    // 测试需要静态资源验证 SPA 行为(WebServerSmokeTest),保持测试完整性
+    dependsOn(buildWeb)
     useJUnitPlatform()
     testLogging {
         events("passed", "failed", "skipped")

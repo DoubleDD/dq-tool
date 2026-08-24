@@ -26,6 +26,38 @@ class AiService {
     fun describeTable(config: AiConfigService.Config, table: TableStat, columns: List<ColumnMeta>): String =
         chat(config, SYSTEM_PROMPT, buildTablePrompt(table, columns))
 
+    /**
+     * 连通性测试:发一个最小 chat 请求(max_tokens=1),只校验接口可达与鉴权,不解析返回内容。
+     * 供「AI 配置」的「测试连接」按钮使用(未保存的表单值也可测);失败统一包装为 IllegalStateException。
+     */
+    fun test(config: AiConfigService.Config) {
+        val body = mapOf(
+            "model" to config.model,
+            "temperature" to 0,
+            "max_tokens" to 1,
+            "messages" to listOf(mapOf("role" to "user", "content" to "ping")),
+        )
+        try {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create(config.baseUrl + "/chat/completions"))
+                .timeout(Duration.ofMillis(30_000))
+                .header("Authorization", "Bearer " + config.apiKey)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() !in 200..299) {
+                throw IllegalStateException(
+                    "大模型接口测试失败:HTTP " + response.statusCode() + " " + abbreviate(response.body())
+                )
+            }
+        } catch (e: IllegalStateException) {
+            throw e
+        } catch (e: Exception) {
+            throw IllegalStateException("大模型接口测试失败:" + abbreviate(e.message), e)
+        }
+    }
+
     /** 通用对话调用(表说明与自动打标共用);失败统一包装为 IllegalStateException */
     fun chat(config: AiConfigService.Config, systemPrompt: String, userPrompt: String): String {
         val body = mapOf(

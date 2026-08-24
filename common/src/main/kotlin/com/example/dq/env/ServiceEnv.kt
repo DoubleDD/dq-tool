@@ -13,6 +13,7 @@ import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
+import com.example.dq.repository.SystemSettingsRepository
 import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
 import com.example.dq.scan.ChunkRunner
@@ -20,14 +21,18 @@ import com.example.dq.scan.InterruptRecovery
 import com.example.dq.scan.ScanExecutor
 import com.example.dq.service.AiConfigService
 import com.example.dq.service.AiService
+import com.example.dq.service.AnnotationTransferService
 import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
 import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
 import com.example.dq.service.MetadataService
+import com.example.dq.service.PreviewService
+import com.example.dq.service.ScanDocService
 import com.example.dq.service.ScanService
 import com.example.dq.service.SshTunnelService
+import com.example.dq.service.SystemSettingsService
 import com.example.dq.service.TableDocService
 import com.example.dq.service.TagService
 import com.example.dq.service.WordReportExportService
@@ -63,6 +68,7 @@ class ServiceEnv(val config: AppConfig) {
     val tableDocRepo = TableDocRepository(jdbc)
     val tagRepo = TagRepository(jdbc)
     val aiConfigRepo = AiConfigRepository(jdbc)
+    val systemSettingsRepo = SystemSettingsRepository(jdbc)
     val licenseRepo = LicenseRepository(jdbc)
     val licenseRecordRepo = LicenseRecordRepository(jdbc)
     val reportExportRepo = ReportExportRepository(jdbc)
@@ -78,19 +84,23 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceTransferService = DataSourceTransferService(dataSourceRepo, crypto, dataSourceService)
     val tagService = TagService(tagRepo, dataSourceRepo)
     val aiService = AiService()
-    val aiConfigService = AiConfigService(aiConfigRepo, crypto, config)
+    val aiConfigService = AiConfigService(aiConfigRepo, crypto, config, aiService)
+    val systemSettingsService = SystemSettingsService(systemSettingsRepo, config)
     val autoTagService = AutoTagService(aiConfigService, aiService, tagService, tagRepo, scanRepo,
         tableDocRepo, dataSourceService, dialectFactory)
-    private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, config, executor,
-        tagService, autoTagService)
+    val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, dataSourceService, dialectFactory)
+    val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService)
+    private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
+        tagService, autoTagService, scanDocService)
     val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
-        dialectFactory, config, executor, chunkRunner)
+        dialectFactory, systemSettingsService, executor, chunkRunner)
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
-    val exportService = ExportService(scanService)
+    val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
+    val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, dataSourceRepo)
+    val exportService = ExportService(scanService, tableDocRepo)
     val wordReportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
         dialectFactory, tagRepo, tableDocRepo, aiConfigService, aiService)
     val wordReportExportService = WordReportExportService(wordReportService, reportExportRepo, dataSourceRepo, config)
-    val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, dataSourceService, dialectFactory)
     val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey,
         licenseRecordRepo, config.licensePrivateKey, config.appVersion)
 

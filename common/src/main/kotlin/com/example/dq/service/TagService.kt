@@ -21,25 +21,27 @@ class TagService(
     /** 全部标记(含系统「空表」),带打标表数 */
     fun list(): List<Tag> = tagRepo.listAll()
 
-    fun create(name: String?, color: String?): Tag {
+    fun create(name: String?, color: String?, description: String? = null): Tag {
         val n = normalizeName(name)
         val c = normalizeColor(color)
+        val d = normalizeDescription(description)
         if (tagRepo.findByName(n) != null) {
             throw IllegalStateException("标记名称已存在:$n")
         }
-        return tagRepo.create(n, c)
+        return tagRepo.create(n, c, d)
     }
 
-    fun update(id: Long, name: String?, color: String?): Tag {
+    fun update(id: Long, name: String?, color: String?, description: String? = null): Tag {
         val tag = requireTag(id)
         requireUserKind(tag)
         val n = normalizeName(name)
         val c = normalizeColor(color)
+        val d = normalizeDescription(description)
         val dup = tagRepo.findByName(n)
         if (dup != null && dup.id != id) {
             throw IllegalStateException("标记名称已存在:$n")
         }
-        tagRepo.update(id, n, c)
+        tagRepo.update(id, n, c, d)
         return tagRepo.findById(id)!!
     }
 
@@ -127,6 +129,15 @@ class TagService(
     /** 颜色缺省回落到默认色,与 tag_def.color 默认值一致 */
     private fun normalizeColor(color: String?): String =
         color?.trim()?.takeIf { it.isNotEmpty() } ?: "#409EFF"
+
+    /** 描述 trim 后空串归一为 null;超长 400,与 tag_def.description VARCHAR(500) 对齐 */
+    private fun normalizeDescription(description: String?): String? {
+        val d = description?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (d.length > 500) {
+            throw IllegalArgumentException("标记描述不能超过 500 字符")
+        }
+        return d
+    }
 
     private companion object {
 

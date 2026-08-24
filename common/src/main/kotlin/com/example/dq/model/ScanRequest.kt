@@ -12,6 +12,7 @@ import jakarta.validation.constraints.NotNull
  * @property maxTableSizeBytes 表大小上限(字节);只扫描不超过该大小的表,null 表示不限制
  * @property autoTag           表扫描完成后由大模型从 USER 标记中自动选择打标
  * @property workers           并发 worker 线程数;null 表示使用配置默认值(dq.scan.workers)
+ * @property genDoc            表扫描完成后由大模型生成表描述;null 视为 true(向后兼容老请求)
  */
 data class ScanRequest(
     @field:NotNull val datasourceId: Long?,
@@ -23,4 +24,5 @@ data class ScanRequest(
     val maxTableSizeBytes: Long?,
     val autoTag: Boolean = false,
     val workers: Int? = null,
+    val genDoc: Boolean? = null,
 )

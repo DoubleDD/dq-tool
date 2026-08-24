@@ -98,7 +98,7 @@ class AutoTagService(
         val answer: String
         try {
             answer = chat(config, SYSTEM_PROMPT, buildClassifyPrompt(
-                candidates.map { it.name }, tableName, table.comment, doc, columns, sampleRows))
+                candidates.map { it.name to it.description }, tableName, table.comment, doc, columns, sampleRows))
         } catch (e: Exception) {
             disabledJobs.add(job.id)
             log.warn("AI 自动打标调用大模型失败,本任务剩余表跳过 jobId={} table={}: {}", job.id, tableName, e.message)
@@ -152,10 +152,10 @@ class AutoTagService(
 
         const val SYSTEM_PROMPT = "从给定标记列表中选择最合适的一个,只输出标记名本身;没有合适的输出 NONE。"
 
-        /** 拼分类 prompt:候选标记清单 + 表名/注释/AI 描述/字段 + 抽样数据 Markdown;纯函数便于单测 */
+        /** 拼分类 prompt:候选标记清单(名字 + 可选描述)+ 表名/注释/AI 描述/字段 + 抽样数据 Markdown;纯函数便于单测 */
         @JvmStatic
         fun buildClassifyPrompt(
-            candidateTags: List<String>,
+            candidateTags: List<Pair<String, String?>>,
             tableName: String,
             tableComment: String?,
             tableDoc: String?,
@@ -163,9 +163,13 @@ class AutoTagService(
             sampleRows: List<List<String>>,
         ): String {
             val sb = StringBuilder()
-            sb.append("候选标记:\n")
-            for (name in candidateTags) {
-                sb.append("- ").append(name).append('\n')
+            sb.append("候选标记(冒号后为标记描述,用于解释该标记的含义;无描述时只列名字):\n")
+            for ((name, description) in candidateTags) {
+                sb.append("- ").append(name)
+                if (!description.isNullOrBlank()) {
+                    sb.append(":").append(description)
+                }
+                sb.append('\n')
             }
             sb.append("\n表名:").append(tableName).append('\n')
             if (!tableComment.isNullOrBlank()) {
@@ -201,7 +205,7 @@ class AutoTagService(
                     sb.append("| ").append(row.joinToString(" | ") { cell(it) }).append(" |\n")
                 }
             }
-            sb.append("\n请从候选标记中选择最合适的一个。")
+            sb.append("\n请从候选标记中选择最合适的一个,只输出标记名本身,不要输出描述或其他内容。")
             return sb.toString()
         }
 

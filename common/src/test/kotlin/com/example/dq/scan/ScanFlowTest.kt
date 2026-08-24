@@ -16,6 +16,7 @@ import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
+import com.example.dq.repository.SystemSettingsRepository
 import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
 import com.example.dq.repository.AiConfigRepository
@@ -25,7 +26,10 @@ import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.ExportService
 import com.example.dq.service.MetadataService
+import com.example.dq.service.ScanDocService
 import com.example.dq.service.ScanService
+import com.example.dq.service.SystemSettingsService
+import com.example.dq.service.TableDocService
 import com.example.dq.service.TagService
 import com.example.dq.util.CryptoUtil
 import org.h2.jdbcx.JdbcDataSource
@@ -82,6 +86,7 @@ class ScanFlowTest {
     private val exportService: ExportService
     private val metadataService: MetadataService
     private val metaCacheRepo: MetaCacheRepository
+    private val tableDocRepo: TableDocRepository
 
     init {
         val ds = JdbcDataSource()
@@ -92,20 +97,25 @@ class ScanFlowTest {
         val dsRepo = DataSourceRepository(jdbc)
         val schemaStatRepo = SchemaStatRepository(jdbc)
         metaCacheRepo = MetaCacheRepository(jdbc)
+        tableDocRepo = TableDocRepository(jdbc)
         val crypto = CryptoUtil(config)
         val dialectFactory = DialectFactory
         dataSourceService = DataSourceService(dsRepo, crypto, dialectFactory, config, schemaStatRepo, metaCacheRepo)
         val executor = ScanExecutor(config)
         val tagRepo = TagRepository(jdbc)
         val autoTagService = AutoTagService(
-            AiConfigService(AiConfigRepository(jdbc), crypto, config), AiService(),
+            AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService()), AiService(),
             TagService(tagRepo, dsRepo), tagRepo, scanRepo, TableDocRepository(jdbc),
             dataSourceService, dialectFactory)
-        val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, config, executor,
-            TagService(tagRepo, dsRepo), autoTagService)
+        val aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
+        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, dialectFactory)
+        val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService)
+        val systemSettingsService = SystemSettingsService(SystemSettingsRepository(jdbc), config)
+        val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
+            TagService(tagRepo, dsRepo), autoTagService, scanDocService)
         scanService = ScanService(scanRepo, dsRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
-            dialectFactory, config, executor, chunkRunner)
-        exportService = ExportService(scanService)
+            dialectFactory, systemSettingsService, executor, chunkRunner)
+        exportService = ExportService(scanService, tableDocRepo)
         metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, SchemaDocRepository(jdbc),
             metaCacheRepo)
     }
@@ -184,6 +194,7 @@ class ScanFlowTest {
         assertEquals(100L, cols["remark"]!!.ruleHitCount)
 
         // 导出
+        tableDocRepo.upsert(dsId, "", "dqtest", "users", "AI 生成的用户表说明", "test-model")
         val out = ByteArrayOutputStream()
         exportService.export(jobId, out)
         assertTrue(out.size() > 1000)
@@ -196,6 +207,21 @@ class ScanFlowTest {
             val expected = job.tables!!.filter { it.status == ScanStatus.DONE }
                 .sumOf { scanService.getColumns(jobId, it.tableName!!).size }
             assertEquals(expected, summary.lastRowNum)
+        }
+
+        // 「表列表」sheet:「表描述」列取 AI 生成/人工维护的表说明(table_doc),未勾选时不导出
+        XSSFWorkbook(ByteArrayInputStream(out.toByteArray())).use { wb ->
+            val tables = wb.getSheet("表列表")
+            val header = tables.getRow(0).map { it.stringCellValue }
+            val descIdx = header.indexOf("表描述")
+            assertTrue(descIdx > 0, "表列表应包含「表描述」列: " + header)
+            assertEquals("AI 生成的用户表说明", tables.getRow(1).getCell(descIdx).stringCellValue)
+        }
+        val outNoDesc = ByteArrayOutputStream()
+        exportService.export(jobId, listOf("comment", "status"), null, outNoDesc)
+        XSSFWorkbook(ByteArrayInputStream(outNoDesc.toByteArray())).use { wb ->
+            val header = wb.getSheet("表列表").getRow(0).map { it.stringCellValue }
+            assertEquals(listOf("英文表名", "中文表名", "状态"), header)
         }
 
         // DONE 的任务不允许续扫

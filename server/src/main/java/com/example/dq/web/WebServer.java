@@ -10,12 +10,15 @@ import com.example.dq.config.StartupLog;
 import com.example.dq.config.StartupStage;
 import com.example.dq.config.TrayManager;
 import com.example.dq.controller.AiConfigController;
+import com.example.dq.controller.AnnotationController;
 import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.LicenseController;
 import com.example.dq.controller.MetadataController;
+import com.example.dq.controller.PreviewController;
 import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.LogController;
 import com.example.dq.controller.ScanController;
+import com.example.dq.controller.SystemSettingsController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
 import com.example.dq.license.LicenseFeature;
@@ -45,7 +48,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Web 层装配与路由(去 Spring 后替代容器装配 + DispatcherServlet):
- * 构造对象图(repository → service → handler,全部构造注入),注册 31 个端点、
+ * 构造对象图(repository → service → handler,全部构造注入),注册 61 个端点、
  * 授权前置校验(替代 LicenseInterceptor)、统一异常映射(响应体 {"message": ...},
  * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)、
  * 就绪闸门与 /api/health 就绪探针(共享内核未就绪前业务接口统一 503,前端轮询到 200 再加载数据)。
@@ -81,7 +84,10 @@ public class WebServer {
     private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
     private final AtomicReference<AiConfigController> aiCtrl = new AtomicReference<>();
+    private final AtomicReference<SystemSettingsController> settingsCtrl = new AtomicReference<>();
     private final AtomicReference<LicenseController> licenseCtrl = new AtomicReference<>();
+    private final AtomicReference<PreviewController> previewCtrl = new AtomicReference<>();
+    private final AtomicReference<AnnotationController> annotationCtrl = new AtomicReference<>();
 
     public WebServer(ConfigLoader.AppConfig config) throws Exception {
         this.config = config;
@@ -131,8 +137,8 @@ public class WebServer {
             });
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
-                    dataSourceCtrl, scanCtrl, metaCtrl, reportCtrl, tagCtrl, aiCtrl, licenseCtrl,
-                    new LogController(logStreamAppender), sessionRef);
+                    dataSourceCtrl, scanCtrl, metaCtrl, reportCtrl, tagCtrl, aiCtrl, settingsCtrl, licenseCtrl,
+                    previewCtrl, annotationCtrl, new LogController(logStreamAppender), sessionRef);
         });
 
         // ---- 桌面生命周期(原 Spring 事件/调度挂载点,改显式装配;退出动作统一走 AppShutdown) ----
@@ -153,7 +159,10 @@ public class WebServer {
                                 AtomicReference<ReportExportController> reportCtrl,
                                 AtomicReference<TagController> tagCtrl,
                                 AtomicReference<AiConfigController> aiCtrl,
+                                AtomicReference<SystemSettingsController> settingsCtrl,
                                 AtomicReference<LicenseController> licenseCtrl,
+                                AtomicReference<PreviewController> previewCtrl,
+                                AtomicReference<AnnotationController> annotationCtrl,
                                 LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
@@ -252,6 +261,7 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables", ctx -> metaCtrl.get().listTables(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns", ctx -> metaCtrl.get().tableColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", ctx -> metaCtrl.get().tableIndexes(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/preview", ctx -> previewCtrl.get().preview(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", ctx -> metaCtrl.get().countColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", ctx -> metaCtrl.get().latestScanJobs(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/running-scans", ctx -> metaCtrl.get().runningScans(ctx));
@@ -277,9 +287,17 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/table-tags", ctx -> tagCtrl.get().tableTags(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/tags", ctx -> tagCtrl.get().replaceTableTags(ctx));
 
-        // ---- AI 配置 / 授权 / 心跳 ----
+        // ---- 标记与描述数据导出/导入(跨机器迁移) ----
+        routes.get("/api/annotations/export", ctx -> annotationCtrl.get().export(ctx));
+        routes.post("/api/annotations/import", ctx -> annotationCtrl.get().importAnnotations(ctx));
+
+        // ---- AI 配置 / 系统设置 / 授权 / 心跳 ----
         routes.get("/api/ai-config", ctx -> aiCtrl.get().get(ctx));
         routes.put("/api/ai-config", ctx -> aiCtrl.get().save(ctx));
+        routes.post("/api/ai-config/test", ctx -> aiCtrl.get().test(ctx));
+        routes.get("/api/system-settings/scan", ctx -> settingsCtrl.get().scanGet(ctx));
+        routes.put("/api/system-settings/scan", ctx -> settingsCtrl.get().scanSave(ctx));
+        routes.delete("/api/system-settings/scan", ctx -> settingsCtrl.get().scanReset(ctx));
         routes.get("/api/license/status", ctx -> licenseCtrl.get().status(ctx));
         routes.post("/api/license/activate", ctx -> licenseCtrl.get().activate(ctx));
         // 授权码管理(仅配置了签发私钥的管理员实例;在 /api/license 前缀下,不被激活拦截)
@@ -410,7 +428,10 @@ public class WebServer {
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));
+        settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService()));
         licenseCtrl.set(new LicenseController(env.getLicenseService()));
+        previewCtrl.set(new PreviewController(env.getPreviewService()));
+        annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

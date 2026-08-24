@@ -9,7 +9,7 @@ package com.example.dq.license
  * - 受控功能(系统/管理功能):必须授权码显式包含才可用;未授权时前端隐藏入口、后端接口返回 403。
  */
 enum class LicenseFeature(val key: String, val label: String) {
-    /** 表级/字段级扫描检测、分段扫描、断点续扫、扫描记录/详情、任务看板 */
+    /** 表级/字段级扫描检测、分段扫描、断点续扫、扫描记录/详情 */
     SCAN("scan", "扫描检测"),
     /** 数据源管理:增删改/测试连接/SSH 隧道/库过滤/导入导出配置 */
     DATASOURCE("datasource", "数据源管理"),

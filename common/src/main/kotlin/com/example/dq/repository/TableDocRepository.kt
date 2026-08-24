@@ -13,6 +13,16 @@ class TableDocRepository(private val jdbc: Jdbc) {
         return map
     }
 
+    /** 导出用:全量表说明行 */
+    data class TableDocRow(val datasourceId: Long, val dbName: String, val schemaName: String,
+                           val tableName: String, val description: String)
+
+    fun findAll(): List<TableDocRow> =
+        jdbc.query("SELECT datasource_id, db_name, schema_name, table_name, description FROM table_doc " +
+                "ORDER BY datasource_id, db_name, schema_name, table_name") { rs ->
+            TableDocRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5))
+        }
+
     fun upsert(datasourceId: Long, dbName: String, schema: String, table: String, description: String, model: String) {
         jdbc.update("MERGE INTO table_doc(datasource_id, db_name, schema_name, table_name, description, model, updated_at) " +
                 "KEY(datasource_id, db_name, schema_name, table_name) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",

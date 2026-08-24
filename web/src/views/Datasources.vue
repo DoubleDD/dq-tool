@@ -58,7 +58,7 @@
     <!-- 有数据源:轻量「下一步」提示 -->
     <el-alert v-else-if="list.length" type="info" :closable="false" show-icon class="next-tip">
       <template #title>
-        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片查看库与表并发起扫描;进度可在顶部「任务看板」跟进,报告在「报告列表」页下载。
+        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片查看库与表并发起扫描;进度可在顶部「扫描记录」跟进,报告在「报告列表」页下载。
       </template>
     </el-alert>
 
@@ -340,14 +340,15 @@ import { ArrowRight, Connection, Delete, EditPen, Search, Star, StarFilled, Uplo
 import request from '../api'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
 import { tabState } from '../stores/tabs'
+import { loadDsFavorites, saveDsFavorites, sortDsByFavorite } from '../utils/dsFavorites'
 
 const router = useRouter()
 const list = ref([])
 const loading = ref(false)
 // 搜索关键字(匹配名称/主机/用户名/类型)
 const keyword = ref('')
-// 收藏:前端本地偏好,按数据源 id 存 localStorage,收藏的卡片排最前
-const favorites = ref(JSON.parse(localStorage.getItem('dq-ds-favorites') || '[]'))
+// 收藏:前端本地偏好,按数据源 id 存 localStorage;收藏的卡片排最前,同收藏按收藏时间倒序(与侧边栏共用 dsFavorites 工具)
+const favorites = ref(loadDsFavorites())
 
 function isFav(id) {
   return favorites.value.includes(id)
@@ -357,10 +358,10 @@ function toggleFavorite(row) {
   const i = favorites.value.indexOf(row.id)
   if (i >= 0) favorites.value.splice(i, 1)
   else favorites.value.push(row.id)
-  localStorage.setItem('dq-ds-favorites', JSON.stringify(favorites.value))
+  saveDsFavorites(favorites.value)
 }
 
-/** 搜索过滤 + 收藏置顶 */
+/** 搜索过滤 + 收藏置顶(收藏时间倒序) */
 const filteredList = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   let arr = list.value
@@ -369,7 +370,7 @@ const filteredList = computed(() => {
       [r.name, r.jdbcUrl, r.username, r.dbType].some((v) => (v || '').toLowerCase().includes(kw))
     )
   }
-  return [...arr].sort((a, b) => Number(isFav(b.id)) - Number(isFav(a.id)))
+  return sortDsByFavorite(arr, favorites.value)
 })
 const dialogVisible = ref(false)
 const saving = ref(false)

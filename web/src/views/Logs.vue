@@ -154,7 +154,11 @@ onDeactivated(() => {
 .logs-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 48px - 40px);
+  /* 填满 .main 可视高度:100% 相对 el-main(flex:1,有确定高度)解析,随页签栏/页脚有无自动伸缩;
+     只减 page-card 自身上下 margin(20+20);border-box 让 padding/border 计入高度,不再多减。
+     不要写死 100vh-固定值:页签栏/授权页脚出现时必溢出产生滚动条 */
+  box-sizing: border-box;
+  height: calc(100% - 40px);
 }
 
 .log-container {

@@ -27,12 +27,12 @@ public class TagController {
 
     public void create(Context ctx) {
         TagRequest req = Validators.validate(ctx.bodyAsClass(TagRequest.class));
-        ctx.json(service.create(req.name(), req.color()));
+        ctx.json(service.create(req.name(), req.color(), req.description()));
     }
 
     public void update(Context ctx) {
         TagRequest req = Validators.validate(ctx.bodyAsClass(TagRequest.class));
-        ctx.json(service.update(tagId(ctx), req.name(), req.color()));
+        ctx.json(service.update(tagId(ctx), req.name(), req.color(), req.description()));
     }
 
     public void delete(Context ctx) {
@@ -69,8 +69,8 @@ public class TagController {
         return ctx.pathParamAsClass("id", Long.class).get();
     }
 
-    /** 标记新建/编辑请求体;名称为空、颜色缺省等细节由 TagService 归一 */
-    public record TagRequest(String name, String color) {
+    /** 标记新建/编辑请求体;名称为空、颜色缺省、描述归一等细节由 TagService 处理 */
+    public record TagRequest(String name, String color, String description) {
     }
 
     /** 单表打标请求体:整体替换的 USER 标记 id 列表 */

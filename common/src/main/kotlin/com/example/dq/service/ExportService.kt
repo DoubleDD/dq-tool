@@ -5,6 +5,7 @@ import com.example.dq.model.ScanColumnView
 import com.example.dq.model.ScanJobView
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.ScanTableView
+import com.example.dq.repository.TableDocRepository
 import org.apache.poi.ss.usermodel.Row
 import org.apache.poi.ss.usermodel.Sheet
 import org.apache.poi.xssf.streaming.SXSSFWorkbook
@@ -15,6 +16,7 @@ import java.time.format.DateTimeFormatter
 /** 扫描结果导出 xlsx(SXSSF 流式写,大结果集不占内存) */
 class ExportService(
     private val scanService: ScanService,
+    private val tableDocRepository: TableDocRepository,
 ) {
 
     /** 带 key 的列定义,供导出预览按 key 选择要导出的列 */
@@ -23,18 +25,18 @@ class ExportService(
         val header: String
     }
 
-    /** 字段明细 sheet 的可选列定义;"表名/表注释/字段"为固定前列,不参与选择 */
+    /** 字段明细 sheet 的可选列定义;"英文表名/中文表名/字段"为固定前列,不参与选择 */
     private data class Col(
         override val key: String,
         override val header: String,
         val value: (ScanColumnView) -> Any?,
     ) : Keyed
 
-    /** 表列表 sheet 的可选列定义;"表名"列恒为第一列,不参与选择;value 第二参为该表字段平均有值率 */
+    /** 表列表 sheet 的可选列定义;"英文表名"列恒为第一列,不参与选择;value 第二参为该表字段平均有值率,第三参为表名 -> AI 表描述 */
     private data class TCol(
         override val key: String,
         override val header: String,
-        val value: (ScanTableView, Double) -> Any?,
+        val value: (ScanTableView, Double, Map<String, String>) -> Any?,
     ) : Keyed
 
     @Throws(IOException::class)
@@ -46,7 +48,7 @@ class ExportService(
      * 导出扫描结果。
      *
      * @param tableCols 表列表 sheet 要导出的列 key(见 TABLE_DEFS);null = 全部列,空集 = 只要固定首列
-     * @param cols      字段明细/字段汇总 sheet 要导出的列 key(见 COLUMN_DEFS);null = 全部列,空集 = 只要固定列(表名/表注释/字段)
+     * @param cols      字段明细/字段汇总 sheet 要导出的列 key(见 COLUMN_DEFS);null = 全部列,空集 = 只要固定列(英文表名/中文表名/字段)
      */
     @Throws(IOException::class)
     fun export(jobId: Long, tableCols: List<String>?, cols: List<String>?, out: OutputStream) {
@@ -129,7 +131,9 @@ class ExportService(
     private fun writeTables(wb: SXSSFWorkbook, job: ScanJobView, tableCols: List<String>?) {
         val selected = selectCols(TABLE_DEFS, tableCols)
         val sheet = wb.createSheet("表列表")
-        writeHeader(sheet.createRow(0), selected, "表名")
+        writeHeader(sheet.createRow(0), selected, "英文表名")
+        // AI 表描述:按数据源+库+schema 一次性取出,无库概念的方言 db 落空串(与 TableDocService 一致)
+        val docs = tableDocRepository.findBySchema(job.datasourceId, job.dbName ?: "", job.schemaName ?: "")
         var r = 1
         for (t in job.tables ?: emptyList()) {
             val cols = scanService.getColumns(job.id, t.tableName!!)
@@ -138,7 +142,7 @@ class ExportService(
             var c = 0
             row.createCell(c++).setCellValue(t.tableName)
             for (def in selected) {
-                cell(row.createCell(c++), def.value(t, avgRate))
+                cell(row.createCell(c++), def.value(t, avgRate, docs))
             }
         }
     }
@@ -152,7 +156,7 @@ class ExportService(
                 continue
             }
             val sheet = wb.createSheet(sheetName(t.tableName!!, usedNames))
-            writeHeader(sheet.createRow(0), selected, "表名", "表注释", "字段")
+            writeHeader(sheet.createRow(0), selected, "英文表名", "中文表名", "字段")
             writeColumnRows(sheet, 1, job.id, t, selected)
         }
     }
@@ -161,7 +165,7 @@ class ExportService(
     private fun writeAllColumns(wb: SXSSFWorkbook, job: ScanJobView, cols: List<String>?) {
         val selected = selectCols(COLUMN_DEFS, cols)
         val sheet = wb.createSheet("字段汇总")
-        writeHeader(sheet.createRow(0), selected, "表名", "表注释", "字段")
+        writeHeader(sheet.createRow(0), selected, "英文表名", "中文表名", "字段")
         var r = 1
         for (t in job.tables ?: emptyList()) {
             if (t.status != ScanStatus.DONE) {
@@ -171,7 +175,7 @@ class ExportService(
         }
     }
 
-    /** 把单张表的字段行写入 sheet(固定前列 表名/表注释/字段 + 选中的可选列),返回下一个可用行号 */
+    /** 把单张表的字段行写入 sheet(固定前列 英文表名/中文表名/字段 + 选中的可选列),返回下一个可用行号 */
     private fun writeColumnRows(sheet: Sheet, r0: Int, jobId: Long, t: ScanTableView, selected: List<Col>): Int {
         var r = r0
         val tableName = t.tableName!!
@@ -243,13 +247,14 @@ class ExportService(
         )
 
         val TABLE_DEFS: List<TCol> = listOf(
-            TCol("comment", "注释") { t, _ -> nullSafe(t.comment) },
-            TCol("storage", "引擎/表空间") { t, _ -> nullSafe(t.storageInfo) },
-            TCol("totalRows", "总行数") { t, _ -> t.totalRows ?: "" },
-            TCol("sampled", "是否采样") { t, _ -> if (t.sampled) "是(估算)" else "否" },
-            TCol("sampleRows", "采样行数") { t, _ -> t.sampleRows ?: "" },
-            TCol("fillRate", "整体有值率%") { _, avg -> round2(avg) },
-            TCol("status", "状态") { t, _ -> t.status!!.name },
+            TCol("comment", "中文表名") { t, _, _ -> nullSafe(t.comment) },
+            TCol("description", "表描述") { t, _, docs -> nullSafe(docs[t.tableName]) },
+            TCol("storage", "引擎/表空间") { t, _, _ -> nullSafe(t.storageInfo) },
+            TCol("totalRows", "总行数") { t, _, _ -> t.totalRows ?: "" },
+            TCol("sampled", "是否采样") { t, _, _ -> if (t.sampled) "是(估算)" else "否" },
+            TCol("sampleRows", "采样行数") { t, _, _ -> t.sampleRows ?: "" },
+            TCol("fillRate", "整体有值率%") { _, avg, _ -> round2(avg) },
+            TCol("status", "状态") { t, _, _ -> t.status!!.name },
         )
 
         /** 表头:固定前列 + 选中的可选列 */

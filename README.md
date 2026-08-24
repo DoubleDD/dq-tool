@@ -36,11 +36,11 @@
 cd web && npm install && npm run dev
 ```
 
-打包交付(单 jar 内嵌前端):
+打包交付(单 jar 内嵌前端;前端由 Gradle 的 shadowJar 前置任务 buildWebForRelease 自动构建,无需手动 build):
 
 ```bash
-cd web && npm install && npm run build   # 产物在 web/dist
-cd .. && ./gradlew :server:shadowJar     # processResources 自动把 web/dist 拷进 jar
+cd web && npm install                 # 首次需装前端依赖(仅构建前端时需要 Node)
+cd .. && ./gradlew :server:shadowJar  # 自动构建 web/dist 并拷进 jar
 java -jar server/build/libs/dq-tool-0.1.6.jar
 ```
 
@@ -72,7 +72,7 @@ scripts/package-linux.sh
 
 - **数据源管理**:页面增删改查、测试连接;连接信息存本地 H2(`./data/dqconfig.mv.db`),密码 AES-GCM 加密存储(密钥见配置 `dq.security.secret`,生产环境请修改)
 - **库/表浏览**:库列表带统计缓存(schema-stats);表列表展示估算行数(约)与数据+索引总占用,支持排序/搜索,并可直达每表最近一次扫描结果
-- **任务看板**:Dashboard 汇总扫描任务状态,任务详情含状态变更时间线
+- **扫描记录**:Dashboard 汇总扫描任务状态,任务详情含状态变更时间线
 - **扫描统计**:勾选表或全库扫描;后台线程池(默认 8 worker)按"分段"并发执行
 - **真实进度**:每张表按主键/唯一键切分(默认 100 段),分段完成数即进度;任务总进度按行数加权
 - **空值定义**:默认 NULL + 空字符串/纯空白(仅字符列);可添加自定义规则(如 `status IN (0,-1)`、`* IN (N/A)`),随任务持久化,结果与导出中注明
@@ -129,6 +129,8 @@ dq:
 | `dq.license.public-key-file` | classpath:license-public.key | 授权码验签公钥(Ed25519)文件路径:`classpath:` 前缀读 jar 内资源,否则按文件系统路径(支持 `${user.home}`);公钥文件由 `scripts/LicenseKeygen.java --gen-keypair` 生成 |
 | `dq.license.private-key-file` | — | 签发私钥文件路径(写法同上);配置即管理员实例,开放授权码管理(生成/查看/删除)。仅分发方配置 |
 | `ai.base-url` / `ai.api-key` / `ai.model` | — | AI 表说明的默认接口配置,页面配置优先,未设置的字段逐字段回落到此默认值(默认 key 为明文,仅适合内网) |
+
+> 上表中 `dq.scan.*` 扫描参数与 AI 接口配置均可在页面「系统设置」中可视化维护:页面保存的自定义值优先,未自定义的项回落到本配置文件默认值;`dq.security.secret`、授权密钥等部署级配置仅能在配置文件中修改,不在页面暴露。
 
 阈值也可在每个数据源上单独覆盖。
 

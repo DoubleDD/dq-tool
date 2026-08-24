@@ -93,4 +93,15 @@ interface DbDialect {
 
     /** 抽样数据 SQL:取前 limit 行的指定列(空则全部列);不加 ORDER BY,任意 N 行即可(AI 自动打标的上下文用) */
     fun sampleRowsSql(schema: String, table: String, columns: List<String>, limit: Int): String
+
+    /** 表总行数查询 SQL(数据预览分页的总数用);where 为用户输入的过滤条件原文(不含 WHERE 关键字),可空 */
+    fun countRowsSql(schema: String, table: String, where: String?): String
+
+    /**
+     * 分页数据 SQL:取第 offset 行起的 limit 行(数据预览翻页);
+     * where/orderBy 为用户输入原文(不含关键字),可空;无 orderBy 时页间顺序不保证稳定
+     */
+    @Throws(SQLException::class)
+    fun pageRowsSql(conn: Connection, schema: String, table: String, columns: List<String>,
+                    where: String?, orderBy: String?, offset: Long, limit: Int): String
 }
