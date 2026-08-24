@@ -96,6 +96,45 @@ class AnnotationTransferServiceTest {
     }
 
     @Test
+    fun `数据源名不同时按显式映射导入 映射为0强制跳过`() {
+        val src = Env()
+        val srcDsId = src.createDs("生产库")
+        val core = src.tagRepo.create("核心表", "#F5222D", null)
+        src.tagRepo.ensureTableTag(core.id, srcDsId, "", "public", "users")
+        src.tableDocRepo.upsert(srcDsId, "", "public", "users", "用户主表说明", "m")
+        val out = ByteArrayOutputStream()
+        src.service.export(out)
+
+        // 预检:聚合出文件里的数据源分布
+        val preview = src.service.preview(ByteArrayInputStream(out.toByteArray()))
+        assertEquals(1, preview.tags)
+        assertEquals(1, preview.datasources.size)
+        assertEquals("生产库", preview.datasources[0].datasourceName)
+        assertEquals(1, preview.datasources[0].tableTags)
+        assertEquals(1, preview.datasources[0].tableDocs)
+
+        val dst = Env()
+        val localId = dst.createDs("本地生产")  // 同一数据源,不同命名:按名匹配会落空
+        // 无映射:表级行全部跳过
+        val noMapping = dst.service.importJson(ByteArrayInputStream(out.toByteArray()))
+        assertEquals(1, noMapping.tableTagsSkipped)
+        assertEquals(1, noMapping.docsSkipped)
+        // 显式映射:导入到本地数据源
+        val mapped = dst.service.importJson(ByteArrayInputStream(out.toByteArray()), mapOf("生产库" to localId))
+        assertEquals(1, mapped.tableTagsAdded)
+        assertEquals(0, mapped.tableTagsSkipped)
+        assertEquals(1, mapped.docsUpserted)
+        assertEquals(listOf("核心表"), dst.tagRepo.tableTagsBySchema(localId, "", "public")["users"]!!.map { it.name })
+        assertEquals("用户主表说明", dst.tableDocRepo.findBySchema(localId, "", "public")["users"])
+        // 映射为 0:强制跳过(即使存在同名数据源)
+        val dst2 = Env()
+        dst2.createDs("生产库")
+        val skipped = dst2.service.importJson(ByteArrayInputStream(out.toByteArray()), mapOf("生产库" to 0L))
+        assertEquals(1, skipped.tableTagsSkipped)
+        assertEquals(1, skipped.docsSkipped)
+    }
+
+    @Test
     fun `标记按名称合并更新颜色与描述`() {
         val dst = Env()
         dst.createDs("生产库")

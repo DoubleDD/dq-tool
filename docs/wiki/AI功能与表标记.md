@@ -16,4 +16,4 @@
 
 ## 标记与描述数据导出/导入
 
-换机迁移用:`AnnotationTransferService` 把 USER 标记定义(name/color/description,不含 id)、USER 标记的表-标记关联、全部表描述(table_doc)打包成 JSON(`app=dq-tool-annotations, version=1`),表级数据导出为 数据源名+db+schema+table(不导内部 id)。导入按 name 合并标记(不存在创建、已存在覆盖 color/description;系统空表标记不动),表级行按数据源名匹配本机数据源(匹配不到或标记不存在的行跳过并计数),表标记 ensure 幂等插入、表描述 upsert 覆盖(model 记 `import`)。接口 `GET /api/annotations/export`(附件下载)、`POST /api/annotations/import`(multipart,返回 新建/更新标记、新增/跳过表标记、覆盖/跳过描述 六项摘要);入口在系统设置页「标记与描述数据」卡片。
+换机迁移用:`AnnotationTransferService` 把 USER 标记定义(name/color/description,不含 id)、USER 标记的表-标记关联、全部表描述(table_doc)打包成 JSON(`app=dq-tool-annotations, version=1`),表级数据导出为 数据源名+db+schema+table(不导内部 id)。导入按 name 合并标记(不存在创建、已存在覆盖 color/description;系统空表标记不动);表级行的数据源对应走**显式映射**——不同机器上同一数据源命名可能不同,导入前先 `POST /api/annotations/import/preview` 解析文件里的数据源分布,前端弹窗让用户把每个文件数据源映射到本机数据源(同名自动预填,可选「不导入」=映射值 0),`POST /api/annotations/import` 带 mapping JSON 执行;未给映射时回退按数据源名匹配(兼容无映射直接导入),匹配不到的行跳过并计数。表标记 ensure 幂等插入、表描述 upsert 覆盖(model 记 `import`)。接口 `GET /api/annotations/export`(附件下载)、`POST /api/annotations/import`(multipart,返回 新建/更新标记、新增/跳过表标记、覆盖/跳过描述 六项摘要);入口在系统设置页「标记与描述数据」卡片。

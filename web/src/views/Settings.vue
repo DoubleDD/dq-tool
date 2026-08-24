@@ -71,7 +71,8 @@
       </template>
       <div class="settings-desc">
         把标记定义(含描述)、表-标记关联、表描述导出为 JSON 文件,在另一台机器导入,避免换机后重新打标与重新生成描述。
-        导入时标记按名称合并(已存在则覆盖颜色与描述),表级数据按数据源名匹配,本机没有同名数据源的行会跳过并在结果中计数。
+        导入时标记按名称合并(已存在则覆盖颜色与描述);表级数据按数据源对应——不同机器上同一数据源的命名可能不同,
+        导入前会把文件里的数据源逐个映射到本机数据源(同名自动预填,也可选择不导入)。
       </div>
       <div class="card-actions" style="padding-left: 0">
         <el-button @click="exportAnnotations">导出</el-button>
@@ -81,6 +82,30 @@
         </el-upload>
       </div>
     </el-card>
+
+    <!-- 导入数据源映射弹窗:文件里的数据源 → 本机数据源 -->
+    <el-dialog v-model="importDialogVisible" title="导入标记与描述数据" width="680px" :close-on-click-modal="false">
+      <div class="settings-desc" style="margin-bottom: 12px">
+        文件包含 {{ importPreview.tags }} 个标记(按名称合并导入)。表级数据来自以下数据源,请逐个选择对应的本机数据源:
+      </div>
+      <el-table :data="importMappingRows" size="small" border>
+        <el-table-column label="文件中的数据源" prop="datasourceName" min-width="130" show-overflow-tooltip />
+        <el-table-column label="表标记" width="70" align="right" prop="tableTags" />
+        <el-table-column label="表描述" width="70" align="right" prop="tableDocs" />
+        <el-table-column label="导入到本机数据源" min-width="200">
+          <template #default="{ row }">
+            <el-select v-model="row.targetDsId" size="small" style="width: 100%">
+              <el-option :value="0" label="— 不导入该数据源 —" />
+              <el-option v-for="ds in localDatasources" :key="ds.id" :value="ds.id" :label="ds.name" />
+            </el-select>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="importDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="annotationImporting" @click="confirmImport">确认导入</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 外观:主题 -->
     <el-card class="settings-card" shadow="never">
@@ -188,16 +213,54 @@ function exportAnnotations() {
   window.open('/api/annotations/export', '_blank')
 }
 
-// 导入:选文件即上传,成功后弹窗展示合并摘要;失败消息由拦截器统一弹出
+// 导入:选文件先预检(解析文件里的数据源分布),弹窗让用户把文件数据源映射到本机数据源后再执行;
+// 文件只有标记没有表级数据时跳过映射直接导入;失败消息由拦截器统一弹出
 const annotationImporting = ref(false)
+const importDialogVisible = ref(false)
+const importPreview = ref({ tags: 0, datasources: [] })
+const importMappingRows = ref([])   // [{datasourceName, tableTags, tableDocs, targetDsId}],targetDsId=0 表示不导入
+const localDatasources = ref([])
+let importFileRaw = null            // 暂存待导入的文件,确认时随映射一起提交
 
 async function onAnnotationFile(file) {
   if (annotationImporting.value || !file?.raw) return
   annotationImporting.value = true
   try {
+    importFileRaw = file.raw
     const formData = new FormData()
     formData.append('file', file.raw)
+    const preview = await request.post('/annotations/import/preview', formData)
+    importPreview.value = preview
+    if (!preview.datasources?.length) {
+      // 无表级数据:无需映射,直接导入
+      await confirmImport()
+      return
+    }
+    // 本机数据源清单 + 默认映射:同名自动预填,对不上默认不导入(由用户手动选择)
+    localDatasources.value = await request.get('/datasources')
+    const byName = new Map(localDatasources.value.map((d) => [d.name, d.id]))
+    importMappingRows.value = preview.datasources.map((d) => ({
+      ...d,
+      targetDsId: byName.get(d.datasourceName) ?? 0,
+    }))
+    importDialogVisible.value = true
+  } catch {
+    // 错误提示由响应拦截器统一弹出
+  } finally {
+    annotationImporting.value = false
+  }
+}
+
+async function confirmImport() {
+  if (!importFileRaw) return
+  annotationImporting.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', importFileRaw)
+    const mapping = Object.fromEntries(importMappingRows.value.map((r) => [r.datasourceName, r.targetDsId]))
+    formData.append('mapping', JSON.stringify(mapping))
     const r = await request.post('/annotations/import', formData)
+    importDialogVisible.value = false
     ElMessageBox.alert(
       `新建标记 ${r.tagsCreated} 个,更新标记 ${r.tagsUpdated} 个;` +
       `新增表标记 ${r.tableTagsAdded} 条,跳过 ${r.tableTagsSkipped} 条;` +

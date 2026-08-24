@@ -35,7 +35,7 @@ data class AnnotationTableDocItem(
     val description: String,
 )
 
-/** 导入摘要:新建/更新标记数、新增/跳过表标记数、新增或覆盖/跳过描述数(跳过=本机无同名数据源或标记) */
+/** 导入摘要:新建/更新标记数、新增/跳过表标记数、新增或覆盖/跳过描述数(跳过=数据源未映射/未匹配或标记不存在) */
 data class AnnotationImportResult(
     var tagsCreated: Int = 0,
     var tagsUpdated: Int = 0,
@@ -43,4 +43,17 @@ data class AnnotationImportResult(
     var tableTagsSkipped: Int = 0,
     var docsUpserted: Int = 0,
     var docsSkipped: Int = 0,
+)
+
+/** 导入预检:文件里标记数量与表级数据按数据源的分布(导入前让用户把文件数据源映射到本机数据源) */
+data class AnnotationImportPreview(
+    val tags: Int,
+    val datasources: List<AnnotationPreviewDs>,
+)
+
+/** 文件里单个数据源名下的表级行数 */
+data class AnnotationPreviewDs(
+    val datasourceName: String,
+    val tableTags: Int,
+    val tableDocs: Int,
 )

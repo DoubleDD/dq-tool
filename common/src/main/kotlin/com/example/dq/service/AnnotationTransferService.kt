@@ -1,7 +1,9 @@
 package com.example.dq.service
 
 import com.example.dq.model.AnnotationExportFile
+import com.example.dq.model.AnnotationImportPreview
 import com.example.dq.model.AnnotationImportResult
+import com.example.dq.model.AnnotationPreviewDs
 import com.example.dq.model.AnnotationTableDocItem
 import com.example.dq.model.AnnotationTableTagItem
 import com.example.dq.model.AnnotationTagItem
@@ -21,8 +23,9 @@ import java.time.format.DateTimeFormatter
  * 在另一台机器导入,避免换机后重新打标与重新生成描述。
  * 跨实例对齐键:标记按 name,表级数据按 数据源名 + db + schema + table;不导出任何内部 id。
  * 导入合并规则:标记不存在则创建、已存在则用文件里的 color/description 覆盖更新;
- * 表级行按数据源名匹配本机数据源,找不到同名数据源(或标记)的行跳过并计数;
- * 表标记 ensure 幂等插入,表描述 upsert 覆盖现有内容。
+ * 表级行的数据源对应:显式映射(dsMapping:文件数据源名 → 本机数据源 id,值 0 表示强制跳过)优先,
+ * 未给映射的名称回退按数据源名匹配(不同机器上同一数据源的命名可能不同,故提供预检+映射);
+ * 匹配不到的行跳过并计数;表标记 ensure 幂等插入,表描述 upsert 覆盖现有内容。
  * EMPTY 系统空表标记由扫描自动维护,定义与关联都不参与导出/导入。
  */
 class AnnotationTransferService(
@@ -56,16 +59,29 @@ class AnnotationTransferService(
         objectMapper.writerWithDefaultPrettyPrinter().writeValue(out, file)
     }
 
-    /** 导入导出文件;格式标识不对抛 IllegalArgumentException(Web 层映射 400) */
-    fun importJson(input: InputStream): AnnotationImportResult {
-        val file: AnnotationExportFile = try {
-            objectMapper.readValue(input)
-        } catch (e: Exception) {
-            throw IllegalArgumentException("不是有效的标记与描述导出文件", e)
+    /** 导入预检:解析文件并按数据源名聚合表级行数,供前端做数据源映射;格式不对抛 IllegalArgumentException */
+    fun preview(input: InputStream): AnnotationImportPreview {
+        val file = parseFile(input)
+        val dsRows = LinkedHashMap<String, AnnotationPreviewDs>()
+        for (item in file.tableTags) {
+            val row = dsRows.getOrPut(item.datasourceName) { AnnotationPreviewDs(item.datasourceName, 0, 0) }
+            dsRows[item.datasourceName] = row.copy(tableTags = row.tableTags + 1)
         }
-        if (file.app != APP_MARKER || file.version != VERSION) {
-            throw IllegalArgumentException("不是有效的标记与描述导出文件")
+        for (item in file.tableDocs) {
+            val row = dsRows.getOrPut(item.datasourceName) { AnnotationPreviewDs(item.datasourceName, 0, 0) }
+            dsRows[item.datasourceName] = row.copy(tableDocs = row.tableDocs + 1)
         }
+        return AnnotationImportPreview(tags = file.tags.size, datasources = dsRows.values.toList())
+    }
+
+    /**
+     * 导入导出文件;格式标识不对抛 IllegalArgumentException(Web 层映射 400)。
+     * dsMapping:文件数据源名 → 本机数据源 id;值 0 表示该数据源的表级行强制跳过;
+     * 未包含的名称回退按数据源名匹配本机数据源(兼容无映射的直接导入)。
+     */
+    @JvmOverloads
+    fun importJson(input: InputStream, dsMapping: Map<String, Long> = emptyMap()): AnnotationImportResult {
+        val file = parseFile(input)
 
         val result = AnnotationImportResult()
 
@@ -91,13 +107,21 @@ class AnnotationTransferService(
             }
         }
 
-        // 2. 表级数据按数据源名匹配本机数据源,匹配不到的行跳过并计数
+        // 2. 表级数据:显式映射优先,未映射的名称回退按数据源名匹配;匹配不到(或映射为跳过)的行计数跳过
         val dsIds = dataSourceRepo.findAll()
             .mapNotNull { c -> c.name?.takeIf { it.isNotBlank() }?.let { it to c.id!! } }
             .toMap()
 
+        fun resolveDs(datasourceName: String): Long? {
+            val mapped = dsMapping[datasourceName]
+            if (mapped != null) {
+                return mapped.takeIf { it > 0 }
+            }
+            return dsIds[datasourceName]
+        }
+
         for (item in file.tableTags) {
-            val dsId = dsIds[item.datasourceName]
+            val dsId = resolveDs(item.datasourceName)
             val tag = item.tagName.trim().takeIf { it.isNotEmpty() }?.let { tagRepo.findByName(it) }
             if (dsId == null || tag == null || tag.kind != TagKind.USER || item.tableName.isBlank()) {
                 result.tableTagsSkipped++
@@ -109,7 +133,7 @@ class AnnotationTransferService(
         }
 
         for (item in file.tableDocs) {
-            val dsId = dsIds[item.datasourceName]
+            val dsId = resolveDs(item.datasourceName)
             if (dsId == null || item.tableName.isBlank()) {
                 result.docsSkipped++
                 continue
@@ -119,6 +143,19 @@ class AnnotationTransferService(
             result.docsUpserted++
         }
         return result
+    }
+
+    /** 解析并校验导出文件;格式不对抛 IllegalArgumentException(Web 层映射 400) */
+    private fun parseFile(input: InputStream): AnnotationExportFile {
+        val file: AnnotationExportFile = try {
+            objectMapper.readValue(input)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("不是有效的标记与描述导出文件", e)
+        }
+        if (file.app != APP_MARKER || file.version != VERSION) {
+            throw IllegalArgumentException("不是有效的标记与描述导出文件")
+        }
+        return file
     }
 
     private companion object {

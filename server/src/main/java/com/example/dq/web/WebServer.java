@@ -289,6 +289,7 @@ public class WebServer {
 
         // ---- 标记与描述数据导出/导入(跨机器迁移) ----
         routes.get("/api/annotations/export", ctx -> annotationCtrl.get().export(ctx));
+        routes.post("/api/annotations/import/preview", ctx -> annotationCtrl.get().previewImport(ctx));
         routes.post("/api/annotations/import", ctx -> annotationCtrl.get().importAnnotations(ctx));
 
         // ---- AI 配置 / 系统设置 / 授权 / 心跳 ----
