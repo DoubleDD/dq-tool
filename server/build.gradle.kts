@@ -102,7 +102,7 @@ val buildWeb by tasks.registering(Exec::class) {
 
     doFirst {
         if (!rootProject.layout.projectDirectory.dir("web/node_modules").asFile.exists()) {
-            throw GradleException("web/node_modules 不存在,请先执行: cd web && npm install(或 npm ci)")
+            throw GradleException("web/node_modules 不存在,请先执行: cd web && pnpm install")
         }
     }
 }
