@@ -48,6 +48,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [代码约定与安全](docs/wiki/代码约定与安全.md) — 分层与装配约定、配置/迁移新增流程、错误日志纪律、加密与敏感信息边界
 - [桌面版与数据目录](docs/wiki/桌面版与数据目录.md) — 托盘/心跳看门狗生命周期、headless 行为、数据目录与日志滚动
 - [打包与发布](docs/wiki/打包与发布.md) — jpackage/tauri 安装包、内嵌完整 JRE、版本号映射、CI release.yml 启停状态、.bat 坑
+- [发布 skill](.agents/skills/dq-tool-release/SKILL.md) — AI 代理发布全流程:提交改动到 main → 推 GitHub → 指定 tag 指向最新提交并推送(含同名分支/tag refspec 与 force-with-lease 安全移动)
 
 ### 子模块自有文档
 
