@@ -57,7 +57,7 @@ class WordReportExportServiceTest {
         val metadataService = MetadataService(dataSourceService, DialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, MetaCacheRepository(jdbc))
         val reportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
             DialectFactory, TagRepository(jdbc), TableDocRepository(jdbc),
-            AiConfigService(AiConfigRepository(jdbc), crypto, config), AiService())
+            AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService()), AiService())
         service = WordReportExportService(reportService, exportRepo, dsRepo, config)
     }
 

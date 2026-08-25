@@ -33,7 +33,7 @@
         <table class="preview-table">
           <thead>
             <tr>
-              <th class="fixed-col">表名</th>
+              <th class="fixed-col">英文表名</th>
               <th v-for="c in visibleTableCols" :key="c.key">{{ c.label }}</th>
             </tr>
           </thead>
@@ -56,8 +56,8 @@
         <table class="preview-table">
           <thead>
             <tr>
-              <th class="fixed-col">表名</th>
-              <th class="fixed-col">表注释</th>
+              <th class="fixed-col">英文表名</th>
+              <th class="fixed-col">中文表名</th>
               <th class="fixed-col">字段</th>
               <th v-for="c in visibleFieldCols" :key="c.key">{{ c.label }}</th>
             </tr>
@@ -79,8 +79,8 @@
         <table class="preview-table">
           <thead>
             <tr>
-              <th class="fixed-col">表名</th>
-              <th class="fixed-col">表注释</th>
+              <th class="fixed-col">英文表名</th>
+              <th class="fixed-col">中文表名</th>
               <th class="fixed-col">字段</th>
               <th v-for="c in visibleFieldCols" :key="c.key">{{ c.label }}</th>
             </tr>
@@ -123,7 +123,8 @@ import { computed, ref } from 'vue'
 
 // 与后端 ExportService.TABLE_DEFS / COLUMN_DEFS 的 key 一一对应,改动需同步
 const TABLE_COLS = [
-  { key: 'comment', label: '注释' },
+  { key: 'comment', label: '中文表名' },
+  { key: 'description', label: '表描述' },
   { key: 'storage', label: '引擎/表空间' },
   { key: 'totalRows', label: '总行数' },
   { key: 'sampled', label: '是否采样' },
@@ -176,8 +177,8 @@ const OVERVIEW_SAMPLE = [
 
 // 示例行按列 key 存值,保证预览时表头与表体始终对齐
 const TABLE_SAMPLE = [
-  { name: 'user_order', comment: '订单表', storage: 'InnoDB · 1.2 GB', totalRows: '12,500,000', sampled: '是(估算)', sampleRows: '1,000,000', fillRate: '87.32', status: 'DONE' },
-  { name: 'user_info', comment: '用户表', storage: 'InnoDB · 64 MB', totalRows: '53,210', sampled: '否', sampleRows: '', fillRate: '95.10', status: 'DONE' }
+  { name: 'user_order', comment: '订单表', description: '记录用户下单信息,含订单号、金额与状态', storage: 'InnoDB · 1.2 GB', totalRows: '12,500,000', sampled: '是(估算)', sampleRows: '1,000,000', fillRate: '87.32', status: 'DONE' },
+  { name: 'user_info', comment: '用户表', description: '平台注册用户主档,含账号与联系方式', storage: 'InnoDB · 64 MB', totalRows: '53,210', sampled: '否', sampleRows: '', fillRate: '95.10', status: 'DONE' }
 ]
 
 const FIELD_SAMPLE = [
@@ -200,7 +201,9 @@ const visible = ref(false)
 // 默认打开「字段明细」页签
 const activeSheet = ref('fields')
 const tableChecked = ref(TABLE_COLS.map((c) => c.key))
-const fieldChecked = ref(FIELD_COLS.map((c) => c.key))
+// 「规则命中数」默认不勾选,由用户按需选择(未配置空值规则时该列无意义)
+const DEFAULT_FIELD_KEYS = FIELD_COLS.map((c) => c.key).filter((k) => k !== 'ruleHitCount')
+const fieldChecked = ref([...DEFAULT_FIELD_KEYS])
 
 // 只渲染勾选的列(保持定义顺序),表头表体天然对齐
 const visibleTableCols = computed(() => TABLE_COLS.filter((c) => tableChecked.value.includes(c.key)))
@@ -208,7 +211,7 @@ const visibleFieldCols = computed(() => FIELD_COLS.filter((c) => fieldChecked.va
 
 function reset() {
   tableChecked.value = TABLE_COLS.map((c) => c.key)
-  fieldChecked.value = FIELD_COLS.map((c) => c.key)
+  fieldChecked.value = [...DEFAULT_FIELD_KEYS]
 }
 
 function open() {

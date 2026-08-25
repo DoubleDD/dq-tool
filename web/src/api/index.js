@@ -6,6 +6,12 @@ const request = axios.create({
   timeout: 30000
 })
 
+// 所有请求统一追加时间戳参数,避免浏览器缓存 GET 响应
+request.interceptors.request.use((config) => {
+  config.params = { ...config.params, _t: Date.now() }
+  return config
+})
+
 request.interceptors.response.use(
   (response) => response.data,
   async (error) => {

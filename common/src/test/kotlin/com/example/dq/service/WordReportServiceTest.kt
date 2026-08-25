@@ -71,7 +71,7 @@ class WordReportServiceTest {
             chatCalls++
             chat(c, s, u)
         }
-        aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config)
+        aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
         service = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo, DialectFactory,
             tagRepo, tableDocRepo, aiConfigService, AiService(), countingChat)
     }

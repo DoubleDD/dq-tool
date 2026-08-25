@@ -6,6 +6,7 @@ const routes = [
   { path: '/dashboard', component: () => import('../views/Dashboard.vue') },
   { path: '/tags', component: () => import('../views/TagStats.vue') },
   { path: '/report-exports', component: () => import('../views/ReportExports.vue') },
+  { path: '/settings', component: () => import('../views/Settings.vue') },
   { path: '/logs', component: () => import('../views/Logs.vue') },
   { path: '/datasources', component: () => import('../views/Datasources.vue') },
   { path: '/datasources/:id/schemas', component: () => import('../views/Schemas.vue') },
@@ -32,7 +33,7 @@ let licenseStatusPromise = null
  */
 export function fetchLicenseStatus() {
   if (!licenseStatusPromise) {
-    licenseStatusPromise = fetch('/api/license/status')
+    licenseStatusPromise = fetch(`/api/license/status?_t=${Date.now()}`)
       .then((res) => res.json())
       .catch(() => {
         // 后端不可达时放行,让页面里的 API 错误提示正常展示
@@ -49,6 +50,8 @@ export function markActivated(newStatus) {
   } else if (licenseStatusPromise) {
     licenseStatusPromise = licenseStatusPromise.then((s) => ({ ...s, activated: true, expired: false }))
   }
+  // 广播授权变化:侧边栏菜单按授权功能过滤(App.vue),换码成功后需整体重算
+  window.dispatchEvent(new CustomEvent('dq-license-changed'))
 }
 
 router.beforeEach(async (to) => {

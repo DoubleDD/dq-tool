@@ -1,6 +1,5 @@
 package com.example.dq.scan
 
-import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.ColChunkStat
 import com.example.dq.model.ColumnMeta
@@ -11,6 +10,8 @@ import com.example.dq.model.ScanTableView
 import com.example.dq.repository.ScanRepository
 import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
+import com.example.dq.service.ScanDocService
+import com.example.dq.service.SystemSettingsService
 import com.example.dq.service.TagService
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -24,10 +25,11 @@ class ChunkRunner(
     private val repo: ScanRepository,
     private val dataSourceService: DataSourceService,
     private val dialectFactory: DialectFactory,
-    private val config: AppConfig,
+    private val systemSettings: SystemSettingsService,
     private val executor: ScanExecutor,
     private val tagService: TagService,
     private val autoTagService: AutoTagService,
+    private val scanDocService: ScanDocService,
 ) {
 
     private val objectMapper = jacksonObjectMapper()
@@ -52,6 +54,7 @@ class ChunkRunner(
 
         val ds = dataSourceService.get(job.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
+        val settings = systemSettings.scanSettings()
         repo.markChunkRunning(chunkId)
         try {
             dataSourceService.getConnection(job.datasourceId).use { conn ->
@@ -67,10 +70,10 @@ class ChunkRunner(
                 for (batch in partition(cols, COL_BATCH)) {
                     val sql = dialect.buildColumnStatsSql(job.schemaName, table.tableName, batch,
                         range, chunkKey, rules, table.sampled,
-                        table.sampleRows ?: config.scan.sampleRows,
+                        table.sampleRows ?: settings.sampleRows,
                         table.estRows)
                     conn.createStatement().use { stmt ->
-                        stmt.queryTimeout = config.scan.statementTimeoutSeconds
+                        stmt.queryTimeout = settings.statementTimeoutSeconds
                         executor.registerStatement(chunkId, stmt)
                         try {
                             stmt.executeQuery(sql).use { rs ->
@@ -186,6 +189,7 @@ class ChunkRunner(
             repo.finishTable(table.id, ScanStatus.DONE, totalRows, null)
             syncEmptyTag(job, table.tableName, totalRows)
             autoTag(job, table)
+            genDoc(job, table)
             checkJobCompletion(table.jobId)
         } catch (e: Exception) {
             log.error("表结果聚合失败 scanTableId={}", table.id, e)
@@ -209,6 +213,15 @@ class ChunkRunner(
             autoTagService.submit(job.id, table.id)
         } catch (e: Exception) {
             log.warn("AI 自动打标提交失败 jobId={} table={}: {}", job.id, table.tableName, e.message)
+        }
+    }
+
+    /** 扫描后生成表描述:表 DONE 后异步入队(LLM 调用慢,不占扫描 worker);失败只记日志,不影响扫描结果 */
+    private fun genDoc(job: ScanRepository.JobRow, table: ScanTableView) {
+        try {
+            scanDocService.submit(job.id, table.id)
+        } catch (e: Exception) {
+            log.warn("生成表描述提交失败 jobId={} table={}: {}", job.id, table.tableName, e.message)
         }
     }
 

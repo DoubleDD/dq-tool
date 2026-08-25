@@ -364,6 +364,29 @@ abstract class AbstractDialect : DbDialect {
         return "SELECT $cols FROM $from" + limitClause(limit.toLong())
     }
 
+    override fun countRowsSql(schema: String, table: String, where: String?): String {
+        val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
+        return "SELECT COUNT(*) FROM $from" + wherePart(where)
+    }
+
+    override fun pageRowsSql(conn: Connection, schema: String, table: String, columns: List<String>,
+                             where: String?, orderBy: String?, offset: Long, limit: Int): String {
+        val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
+        return pageRowsSql(from, columns, where, orderBy, offset, limit)
+    }
+
+    /** LIMIT/OFFSET 分页(MySQL/PG/Kingbase/OceanBase/达梦通用);拆出纯函数便于单测 */
+    internal fun pageRowsSql(qTable: String, columns: List<String>, where: String?, orderBy: String?, offset: Long, limit: Int): String {
+        val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
+        return "SELECT $cols FROM $qTable" + wherePart(where) + orderPart(orderBy) + " LIMIT $limit OFFSET $offset"
+    }
+
+    /** WHERE 子句片段(用户输入原文透传,本地单机工具与 DataGrip 同口径) */
+    protected fun wherePart(where: String?): String = if (where.isNullOrBlank()) "" else " WHERE $where"
+
+    /** ORDER BY 子句片段(用户输入原文透传) */
+    protected fun orderPart(orderBy: String?): String = if (orderBy.isNullOrBlank()) "" else " ORDER BY $orderBy"
+
     /** LIMIT 子句方言 */
     protected open fun limitClause(n: Long): String {
         return " LIMIT $n"

@@ -1,0 +1,4 @@
+# pnpm 10+ 默认阻止依赖的 postinstall 脚本;esbuild 的 install 脚本用于校验/放置平台二进制,
+# 批准执行后 CI 的 pnpm install 不再出现 ignored-builds 警告(vite 实际不依赖该脚本也能构建)
+allowBuilds:
+  esbuild: true

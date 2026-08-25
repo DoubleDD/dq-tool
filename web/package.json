@@ -3,14 +3,22 @@
   "private": true,
   "version": "0.1.2",
   "type": "module",
+  "packageManager": "pnpm@11.7.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.9",
     "@element-plus/icons-vue": "^2.3.2",
+    "@lezer/highlight": "^1.2.3",
     "axios": "^1.7.2",
+    "codemirror": "^6.0.2",
     "element-plus": "^2.7.8",
     "vue": "^3.4.31",
     "vue-router": "^4.4.0"

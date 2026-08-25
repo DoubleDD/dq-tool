@@ -20,4 +20,10 @@ public class AiConfigController {
     public void save(Context ctx) {
         service.save(ctx.bodyAsClass(AiConfigRequest.class));
     }
+
+    /** 测试连通性:按请求参数(未保存也可)合并已存配置后调用大模型接口;成功返回「连接成功」 */
+    public void test(Context ctx) {
+        service.test(ctx.bodyAsClass(AiConfigRequest.class));
+        ctx.json(java.util.Map.of("message", "连接成功"));
+    }
 }

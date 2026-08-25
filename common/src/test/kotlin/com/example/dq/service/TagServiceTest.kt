@@ -41,6 +41,23 @@ class TagServiceTest {
     }
 
     @Test
+    fun `描述随创建更新读写且空串归一为null`() {
+        val tag = service.create("水利对象表", null, "  水库/河湖等基础对象主表  ")
+        assertEquals("水库/河湖等基础对象主表", tag.description)
+        assertEquals("水库/河湖等基础对象主表", tagRepo.findById(tag.id)!!.description)
+
+        // 更新清空描述(空串归一为 null)
+        val cleared = service.update(tag.id, "水利对象表", null, "   ")
+        assertNull(cleared.description)
+        assertNull(service.list().first { it.id == tag.id }.description)
+
+        // 超长 400
+        assertThrows(IllegalArgumentException::class.java) {
+            service.create("超长描述", null, "x".repeat(501))
+        }
+    }
+
+    @Test
     fun `重名创建与改名抛状态冲突`() {
         service.create("水利对象表", null)
         assertThrows(IllegalStateException::class.java) { service.create("水利对象表", "#FF0000") }

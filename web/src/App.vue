@@ -7,7 +7,7 @@
     </div>
     <el-container v-else class="layout">
     <!-- 侧边栏:一级功能导航(「数据源」为可展开树,含新增/导入/导出下拉;下钻页高亮对应数据源;「数据源」一级页不占页签,其余一级功能页各占一个固定页签) -->
-    <el-aside :width="sidebarWidth" :class="['sidebar', { 'sidebar-collapsed': sidebarCollapsed }]">
+    <el-aside :width="sidebarWidth" :class="['sidebar', { 'sidebar-collapsed': sidebarCollapsed, 'sidebar-resizing': sidebarResizing }]">
       <div class="sidebar-brand">
         <template v-if="!sidebarCollapsed">
           <span class="brand-logo">
@@ -47,10 +47,13 @@
             <el-icon><Grid /></el-icon>
             <span>全部数据源</span>
           </el-menu-item>
-          <el-menu-item v-for="ds in datasources" :key="ds.id" :index="`/datasources/${ds.id}/schemas`">
-            <DbTypeIcon :type="ds.dbType" :size="15" />
-            <span class="ds-name">{{ ds.name }}</span>
-          </el-menu-item>
+          <!-- 数据源列表可能很长:限高滚动,「全部数据源」固定在可视区不随列表滚动 -->
+          <div class="ds-list">
+            <el-menu-item v-for="ds in sortedDatasources" :key="ds.id" :index="`/datasources/${ds.id}/schemas`">
+              <DbTypeIcon :type="ds.dbType" :size="15" />
+              <span class="ds-name">{{ ds.name }}</span>
+            </el-menu-item>
+          </div>
           <el-menu-item v-if="!datasources.length" index="/datasources" class="ds-empty">
             <span>暂无数据源,点 ⋮ 新增</span>
           </el-menu-item>
@@ -66,6 +69,8 @@
           <span class="dev-badge">dev</span>
         </el-menu-item>
       </el-menu>
+      <!-- 宽度拖拽手柄:贴右边框,左右拖动调整侧边栏宽度(收起态隐藏,由收起按钮恢复) -->
+      <div v-if="!sidebarCollapsed" class="sidebar-resizer" title="拖动调整宽度" @mousedown="startSidebarResize" />
     </el-aside>
     <el-container direction="vertical">
       <el-header class="header" height="48px">
@@ -76,7 +81,7 @@
           </el-button>
         </el-tooltip>
       </el-header>
-      <!-- 页签栏:下钻页(库/表/字段/任务详情)与数据源外的一级功能页(任务看板/标记统计/报告列表/运行日志/授权管理)占用,全部关闭后整条隐藏 -->
+      <!-- 页签栏:下钻页(库/表/字段/任务详情)与数据源外的一级功能页(扫描记录/标记统计/报告列表/运行日志/授权管理)占用,全部关闭后整条隐藏 -->
       <div v-if="tabState.tabs.length" class="tab-bar">
         <el-tabs v-model="tabState.activeKey" type="card" @tab-click="onTabClick" @tab-remove="onTabRemove">
           <el-tab-pane v-for="t in tabState.tabs" :key="t.key" :name="t.key" :closable="t.closable">
@@ -103,12 +108,13 @@ import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Coin, Document, Download, Expand, Fold, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Sunny, Moon } from '@element-plus/icons-vue'
+import { Coin, Document, Download, Expand, Fold, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
 import LicenseFooter from './components/LicenseFooter.vue'
 import DbTypeIcon from './components/DbTypeIcon.vue'
+import { loadDsFavorites, sortDsByFavorite, DS_FAVORITES_CHANGED_EVENT } from './utils/dsFavorites'
 
 // 恢复上次主题(需在挂载早期执行,避免首帧闪烁)
 initTheme()
@@ -124,9 +130,10 @@ const router = useRouter()
 const licenseFeatures = ref([])
 const otherNav = computed(() => {
   const navs = [
-    { path: '/dashboard', label: '任务看板', icon: Odometer },
+    { path: '/dashboard', label: '扫描记录', icon: Odometer },
     { path: '/tags', label: '标记统计', icon: PriceTag },
-    { path: '/report-exports', label: '报告列表', icon: Download }
+    { path: '/report-exports', label: '报告列表', icon: Download },
+    { path: '/settings', label: '系统设置', icon: Setting }
   ]
   if (hasFeature('logs')) {
     navs.push({ path: '/logs', label: '运行日志', icon: Document, dev: true })
@@ -139,19 +146,60 @@ function hasFeature(key) {
 
 // 侧边栏收起/展开(持久化到 localStorage)
 const sidebarCollapsed = ref(localStorage.getItem('dq-sidebar-collapsed') === 'true')
-const sidebarWidth = computed(() => (sidebarCollapsed.value ? '64px' : '200px'))
+// 侧边栏宽度(可拖拽调整,持久化):最小 160px,最大为视口宽度的 40%(随窗口缩放动态计算)
+const SIDEBAR_MIN_WIDTH = 160
+const maxSidebarWidth = () => Math.round(window.innerWidth * 0.4)
+const sidebarWidthPx = ref(Number(localStorage.getItem('dq-sidebar-width')) || 200)
+const sidebarResizing = ref(false)
+const sidebarWidth = computed(() =>
+  sidebarCollapsed.value ? '64px' : Math.min(sidebarWidthPx.value, maxSidebarWidth()) + 'px'
+)
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
   localStorage.setItem('dq-sidebar-collapsed', String(sidebarCollapsed.value))
 }
 
+/** 侧边栏宽度拖拽:命中手柄后全局跟踪 mousemove,松手持久化;拖拽期间禁用宽度过渡避免跟手延迟 */
+function startSidebarResize(e) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = sidebarWidthPx.value
+  sidebarResizing.value = true
+  // 拖拽期间禁止文本选中、统一光标(移到手柄外也保持)
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+  const onMove = (ev) => {
+    sidebarWidthPx.value = Math.min(maxSidebarWidth(), Math.max(SIDEBAR_MIN_WIDTH, startWidth + ev.clientX - startX))
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+    sidebarResizing.value = false
+    localStorage.setItem('dq-sidebar-width', String(sidebarWidthPx.value))
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
 // 侧边栏数据源树:进入数据源相关页/展开「数据源」子菜单时刷新(静默失败,失败维持旧列表)
 const datasources = ref([])
+// 收藏 id 数组(localStorage 本地偏好):与主界面同一排序——收藏的在前,同收藏按收藏时间倒序
+const dsFavorites = ref(loadDsFavorites())
+const sortedDatasources = computed(() => sortDsByFavorite(datasources.value, dsFavorites.value))
 async function loadDatasources() {
+  dsFavorites.value = loadDsFavorites()
   try {
-    const res = await fetch('/api/datasources')
+    const res = await fetch(`/api/datasources?_t=${Date.now()}`)
     if (res.ok) datasources.value = await res.json()
   } catch { /* 后端不可达时维持旧列表,不弹错误 */ }
+}
+// 主界面切换收藏时即时刷新排序,不等下次路由进入
+window.addEventListener(DS_FAVORITES_CHANGED_EVENT, onDsFavoritesChanged)
+onUnmounted(() => window.removeEventListener(DS_FAVORITES_CHANGED_EVENT, onDsFavoritesChanged))
+function onDsFavoritesChanged() {
+  dsFavorites.value = loadDsFavorites()
 }
 
 // 「数据源」子菜单展开状态:默认展开;下钻到数据源时强制展开
@@ -167,7 +215,7 @@ function onMenuClose(index) {
 // 当前路由高亮的一级导航:
 //  /datasources/:id/* 下钻页(库/表/字段/扫描记录)→ 高亮对应数据源项(自动展开「数据源」树)
 //  /datasources 列表页 → 高亮「全部数据源」
-//  /scans/* 任务详情/字段统计 → 高亮「任务看板」(任务域)
+//  /scans/* 任务详情/字段统计 → 高亮「扫描记录」(任务域)
 const activeNav = computed(() => {
   const p = route.path
   if (p === '/datasources') return '/datasources'
@@ -179,6 +227,7 @@ const activeNav = computed(() => {
   if (p === '/dashboard' || p.startsWith('/dashboard/')) return '/dashboard'
   if (p === '/tags' || p.startsWith('/tags/')) return '/tags'
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
+  if (p === '/settings' || p.startsWith('/settings/')) return '/settings'
   if (p === '/logs' || p.startsWith('/logs/')) return '/logs'
   if (p.startsWith('/license-admin')) return '/license-admin'
   return '/datasources'
@@ -220,11 +269,28 @@ const activeNavLabel = computed(() => {
 
 // 授权管理入口仅管理员实例 + 授权码包含 license_admin 功能可见;运行日志入口需授权码包含 logs(复用路由守卫的缓存请求)
 const isAdmin = ref(false)
-onMounted(async () => {
+async function refreshLicenseMenus() {
   const status = await fetchLicenseStatus()
   isAdmin.value = !!status.admin
   licenseFeatures.value = status.features || []
-})
+}
+onMounted(refreshLicenseMenus)
+// 更换授权码成功后(Activate/LicenseFooter 经 markActivated 广播)整体刷新侧边栏:
+// 授权功能可能变化(logs/license_admin 等入口增删),先重取状态再刷新数据源树
+window.addEventListener('dq-license-changed', onLicenseChanged)
+onUnmounted(() => window.removeEventListener('dq-license-changed', onLicenseChanged))
+async function onLicenseChanged() {
+  await refreshLicenseMenus()
+  loadDatasources()
+  // 当前页可能因新授权失去入口权限(如正在运行日志页而新码不含 logs),主动跳回首页,
+  // 不等下次路由守卫拦截(运行日志页留着一个永远 403 的界面没有意义)
+  const features = licenseFeatures.value
+  const lostLogs = route.path === '/logs' && !features.includes('logs')
+  const lostAdmin = route.path.startsWith('/license-admin') && !(isAdmin.value && features.includes('license_admin'))
+  if (lostLogs || lostAdmin) {
+    router.replace('/')
+  }
+}
 
 // 侧边栏数据源树初始加载;进入数据源相关页(增删改后回来)时刷新
 onMounted(loadDatasources)

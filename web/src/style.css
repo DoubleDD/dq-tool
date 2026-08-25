@@ -139,6 +139,34 @@ body {
   flex-direction: column;
   overflow: hidden;
   transition: width 0.28s ease;
+  /* 宽度拖拽手柄的定位锚点 */
+  position: relative;
+}
+
+/* 拖拽期间禁用宽度过渡,避免跟手延迟 */
+.sidebar-resizing {
+  transition: none;
+}
+
+/* 侧边栏宽度拖拽手柄:贴右边框的隐形命中条,悬停/拖拽时高亮 */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizing .sidebar-resizer {
+  background: var(--el-color-primary-light-7);
+}
+
+html.dark .sidebar-resizer:hover,
+html.dark .sidebar-resizing .sidebar-resizer {
+  background: var(--el-color-primary-dark-2);
 }
 
 .sidebar-brand {
@@ -279,6 +307,12 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 数据源列表限高滚动:条数多时不再把整个侧边栏撑长,
+   「全部数据源」与其余一级导航保持在可视区 */
+.sidebar-menu .ds-list {
+  max-height: 40vh;
+  overflow-y: auto;
 }
 .sidebar-menu .ds-empty {
   color: var(--el-text-color-placeholder);

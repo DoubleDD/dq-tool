@@ -1,6 +1,5 @@
 package com.example.dq.service
 
-import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.NullRule
@@ -30,7 +29,7 @@ class ScanService(
     private val metaCacheRepo: MetaCacheRepository,
     private val dataSourceService: DataSourceService,
     private val dialectFactory: DialectFactory,
-    private val config: AppConfig,
+    private val systemSettings: SystemSettingsService,
     private val executor: ScanExecutor,
     private val chunkRunner: ChunkRunner,
 ) {
@@ -78,11 +77,12 @@ class ScanService(
         }
 
         val rulesJson = objectMapper.writeValueAsString(req.nullRules ?: emptyList<NullRule>())
-        // 并发 worker 数:null 表示用配置默认;校验合法范围(1~128)。
+        // 并发 worker 数:null 表示用全局设置(页面「系统设置」可改,兜底配置文件默认);校验合法范围(1~128)。
         // 无论是否自定义都调用 resize,保证每次扫描的池大小与本次任务设定一致(避免上次设置残留)
         val workers = req.workers?.let { it.coerceIn(1, 128) }
-        executor.resize(workers ?: config.scan.workers)
-        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size, req.autoTag, workers)
+        executor.resize(workers ?: systemSettings.scanSettings().workers)
+        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size,
+            req.autoTag, workers, req.genDoc ?: true)
         val scanTableIds = ArrayList<Long>()
         for (t in targets) {
             scanTableIds.add(
@@ -107,6 +107,7 @@ class ScanService(
         try {
             val ds = dataSourceService.get(job.datasourceId)
             val dialect = dialectFactory.get(ds.dbType!!)
+            val settings = systemSettings.scanSettings()
             val tableName = table.tableName!!
             var ranges: List<Range> = emptyList()
             dataSourceService.getConnection(job.datasourceId).use { conn ->
@@ -137,12 +138,12 @@ class ScanService(
                     dialect.planChunks(
                         conn, job.schemaName, tableName,
                         chunkKey, table.estRows ?: 0,
-                        config.scan.chunksPerTable
+                        settings.chunksPerTable
                     )
                 }
                 repo.markTablePlanned(
                     scanTableId, chunkKey?.name,
-                    sampled, if (sampled) config.scan.sampleRows else null, ranges.size
+                    sampled, if (sampled) settings.sampleRows else null, ranges.size
                 )
             }
             val chunkIds = ArrayList<Long>()
@@ -158,8 +159,9 @@ class ScanService(
     }
 
     private fun overThreshold(ds: DataSourceConfig, table: ScanTableView): Boolean {
-        val rowThreshold = ds.rowThreshold ?: config.scan.rowThreshold
-        val sizeThreshold = ds.sizeThresholdBytes ?: config.scan.sizeThresholdBytes
+        val settings = systemSettings.scanSettings()
+        val rowThreshold = ds.rowThreshold ?: settings.rowThreshold
+        val sizeThreshold = ds.sizeThresholdBytes ?: settings.sizeThresholdBytes
         if (table.estRows != null && table.estRows > rowThreshold) {
             return true
         }
@@ -179,8 +181,8 @@ class ScanService(
 
     // ---------- 查询 ----------
 
-    /** 配置默认的并发 worker 线程数,供前端弹窗展示默认值 */
-    fun defaultWorkers(): Int = config.scan.workers
+    /** 全局默认的并发 worker 线程数(页面「系统设置」可改),供前端弹窗展示默认值 */
+    fun defaultWorkers(): Int = systemSettings.scanSettings().workers
 
     fun listJobs(datasourceId: Long?, dbName: String?, schemaName: String?): List<ScanJobView> {
         val dsNames = dsRepo.findAll().associate { it.id to it.name }
@@ -296,8 +298,8 @@ class ScanService(
         val ds = dataSourceService.get(job.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
 
-        // 续扫时恢复任务创建时设定的并发数(老任务无记录则用配置默认)
-        executor.resize(job.workers ?: config.scan.workers)
+        // 续扫时恢复任务创建时设定的并发数(老任务无记录则用全局设置默认)
+        executor.resize(job.workers ?: systemSettings.scanSettings().workers)
         repo.markJobRunning(jobId)
         for (t in repo.listScanTables(jobId)) {
             if (t.status == ScanStatus.DONE) {

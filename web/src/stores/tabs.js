@@ -41,7 +41,7 @@ export function ensureDsName(id) {
   if (dsNames[id]) return Promise.resolve(dsNames[id])
   let p = dsNamePending.get(id)
   if (!p) {
-    p = fetch('/api/datasources')
+    p = fetch(`/api/datasources?_t=${Date.now()}`)
       .then((res) => (res.ok ? res.json() : []))
       .then((list) => {
         const ds = (list || []).find((d) => String(d.id) === String(id))
@@ -76,9 +76,10 @@ function schemaLabel(route) {
 
 // 数据源之外的一级功能页:各占一个固定页签(点击侧边栏已存在则定位,不存在则追加到最右)
 const PAGE_TABS = {
-  '/dashboard': '任务看板',
+  '/dashboard': '扫描记录',
   '/tags': '标记统计',
   '/report-exports': '报告列表',
+  '/settings': '系统设置',
   '/logs': '运行日志',
   '/license-admin': '授权管理'
 }

@@ -33,6 +33,7 @@ class FlywayMigrationTest {
         assertTrue(tableExists(ds, "license_info"))
         assertTrue(tableExists(ds, "tag_def"))
         assertTrue(tableExists(ds, "table_tag"))
+        assertTrue(tableExists(ds, "system_settings"))
         // 系统「空表」标记随迁移自动插入
         Jdbc(ds).queryOne("SELECT COUNT(*) FROM tag_def WHERE name='空表' AND kind='EMPTY'") {
             it.getLong(1)

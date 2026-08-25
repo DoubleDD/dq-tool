@@ -207,6 +207,16 @@
             <el-icon style="vertical-align: -2px; margin-left: 4px"><QuestionFilled /></el-icon>
           </el-tooltip>
         </el-form-item>
+        <el-form-item label="生成表描述">
+          <el-checkbox v-model="scanForm.genDoc">扫描完成后由大模型生成表描述</el-checkbox>
+          <el-tooltip placement="top" :show-after="200">
+            <template #content>
+              <div>每张表扫描完成后,由大模型根据表结构生成表描述;已有描述的表不覆盖</div>
+              <div>未配置大模型时自动跳过</div>
+            </template>
+            <el-icon style="vertical-align: -2px; margin-left: 4px"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </el-form-item>
         <el-form-item label="并发线程数">
           <el-input-number v-model="scanForm.workers" :min="1" :max="128" placeholder="默认"
                            controls-position="right" style="width: 160px" />
@@ -360,7 +370,7 @@ async function reloadTableTags() {
 const scanDialogVisible = ref(false)
 const submitting = ref(false)
 // maxSizeValue 为空(null)表示不限制表大小
-const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: false, workers: null })
+const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: false, genDoc: true, workers: null })
 // 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走
 const singleTable = ref('')
 
@@ -378,7 +388,7 @@ async function fetchScanDefaults() {
   }
 }
 
-// 大模型配置是否可用(合并默认值后完整),决定「AI 自动打标」复选框默认勾选;首次打开扫描对话框时拉取并缓存
+// 大模型配置是否可用(合并默认值后完整),决定「AI 自动打标」「生成表描述」复选框默认勾选;首次打开扫描对话框时拉取并缓存
 const aiAvailable = ref(false)
 let aiConfigFetched = false
 async function fetchAiAvailable() {
@@ -388,6 +398,7 @@ async function fetchAiAvailable() {
     const cfg = await request.get('/ai-config')
     aiAvailable.value = !!cfg.available
     scanForm.autoTag = aiAvailable.value
+    scanForm.genDoc = aiAvailable.value
   } catch {
     // 拉取失败按不可用处理,复选框默认不勾
   }
@@ -636,6 +647,7 @@ function openScanDialog() {
   scanForm.maxSizeValue = null
   scanForm.maxSizeUnit = 'GB'
   scanForm.autoTag = aiAvailable.value
+  scanForm.genDoc = aiAvailable.value
   scanForm.workers = null
   fetchAiAvailable()
   fetchScanDefaults()
@@ -662,6 +674,7 @@ async function submitScan() {
       nullRules,
       maxTableSizeBytes: maxSizeBytes(),
       autoTag: scanForm.autoTag,
+      genDoc: scanForm.genDoc,
       workers: scanForm.workers || null,
     })
     ElMessage.success('扫描任务已提交')

@@ -213,4 +213,21 @@ class SqlServerDialect : AbstractDialect() {
         val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
         return "SELECT TOP $limit $cols FROM " + qualifiedTable(schema, table)
     }
+
+    override fun pageRowsSql(conn: Connection, schema: String, table: String, columns: List<String>,
+                             where: String?, orderBy: String?, offset: Long, limit: Int): String {
+        return pageRowsSql(qualifiedTable(schema, table), columns, where, orderBy, offset, limit, sqlServerMajor(conn))
+    }
+
+    /** 2012(11)起 OFFSET/FETCH(OFFSET 必须配 ORDER BY,无用户排序时用 (SELECT NULL) 占位);2008/2008R2 用 ROW_NUMBER 包装 */
+    internal fun pageRowsSql(qTable: String, columns: List<String>, where: String?, orderBy: String?, offset: Long, limit: Int, major: Int): String {
+        val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
+        val order = if (orderBy.isNullOrBlank()) "(SELECT NULL)" else orderBy
+        if (major >= 11) {
+            return "SELECT $cols FROM $qTable" + wherePart(where) +
+                " ORDER BY $order OFFSET $offset ROWS FETCH NEXT $limit ROWS ONLY"
+        }
+        return "SELECT $cols FROM (SELECT $cols, ROW_NUMBER() OVER (ORDER BY $order) AS dq_rn FROM $qTable" +
+            wherePart(where) + ") dq_p WHERE dq_rn > $offset AND dq_rn <= ${offset + limit}"
+    }
 }

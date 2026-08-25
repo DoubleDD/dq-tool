@@ -186,6 +186,22 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 表数据预览缺省rows参数不报NPE() throws Exception {
+        activateLicense();
+        HttpResponse<String> created = send("POST", "/api/datasources",
+                "{\"name\":\"预览源\",\"jdbcUrl\":\"jdbc:mysql://127.0.0.1:59998/db\",\"username\":\"root\",\"password\":\"p\"}");
+        assertEquals(200, created.statusCode(), created.body());
+        long id = Long.parseLong(created.body().replaceAll(".*\"id\":(\\d+).*", "$1"));
+
+        // 不传 rows:缺省 100;目标库不可达(Hikari 池初始化失败,RuntimeException → 500 统一映射),
+        // 不能再现 queryParamAsClass.getOrDefault(null) 的 Kotlin 非空 NPE
+        HttpResponse<String> resp = get("/api/datasources/" + id + "/schemas/db/tables/t_preview/preview");
+        assertEquals(500, resp.statusCode(), resp.body());
+        assertTrue(resp.body().contains("message"), resp.body());
+        assertFalse(resp.body().contains("NullPointerException"), resp.body());
+    }
+
+    @Test
     void 心跳接口不被拦截() throws Exception {
         assertEquals(204, get("/api/heartbeat").statusCode());
     }
@@ -463,5 +479,65 @@ class WebServerSmokeTest {
                 .POST(HttpRequest.BodyPublishers.ofByteArray(bad.toByteArray()))
                 .build();
         assertEquals(400, client.send(badReq, HttpResponse.BodyHandlers.ofString()).statusCode());
+    }
+
+    @Test
+    void 系统设置扫描参数读取保存恢复默认() throws Exception {
+        // 未激活时被授权前置校验拦截
+        assertEquals(401, get("/api/system-settings/scan").statusCode());
+
+        activateLicense();
+        // 初始:配置文件默认值(与 application.yml dq.scan.* 一致),customized=false
+        HttpResponse<String> initial = get("/api/system-settings/scan");
+        assertEquals(200, initial.statusCode(), initial.body());
+        assertTrue(initial.body().contains("\"workers\":8"), initial.body());
+        assertTrue(initial.body().contains("\"chunksPerTable\":100"), initial.body());
+        assertTrue(initial.body().contains("\"sizeThresholdBytes\":10737418240"), initial.body());
+        assertTrue(initial.body().contains("\"customized\":false"), initial.body());
+
+        // 保存:自定义值生效,未提交字段保留默认
+        HttpResponse<String> saved = send("PUT", "/api/system-settings/scan",
+                "{\"workers\":16,\"chunksPerTable\":200}");
+        assertEquals(200, saved.statusCode(), saved.body());
+        assertTrue(saved.body().contains("\"workers\":16"), saved.body());
+        assertTrue(saved.body().contains("\"chunksPerTable\":200"), saved.body());
+        assertTrue(saved.body().contains("\"customized\":true"), saved.body());
+
+        // 恢复默认:回到配置文件值
+        HttpResponse<String> reset = send("DELETE", "/api/system-settings/scan", null);
+        assertEquals(200, reset.statusCode(), reset.body());
+        assertTrue(reset.body().contains("\"workers\":8"), reset.body());
+        assertTrue(reset.body().contains("\"customized\":false"), reset.body());
+    }
+
+    @Test
+    void AI配置测试连接端点() throws Exception {
+        activateLicense();
+        // 配置不完整(无 key,且无已存/默认配置):409 提示,不发起真实调用
+        HttpResponse<String> bad = send("POST", "/api/ai-config/test",
+                "{\"baseUrl\":\"http://127.0.0.1:1/v1\",\"model\":\"m\"}");
+        assertEquals(409, bad.statusCode(), bad.body());
+        assertTrue(bad.body().contains("填写完整"), bad.body());
+
+        // 完整配置:本地桩服务返回 200 → 连接成功
+        com.sun.net.httpserver.HttpServer stub = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        stub.createContext("/v1/chat/completions", ex -> {
+            byte[] body = "{\"choices\":[{\"message\":{\"content\":\"p\"}}]}".getBytes(StandardCharsets.UTF_8);
+            ex.sendResponseHeaders(200, body.length);
+            try (var os = ex.getResponseBody()) {
+                os.write(body);
+            }
+        });
+        stub.start();
+        try {
+            HttpResponse<String> ok = send("POST", "/api/ai-config/test",
+                    "{\"baseUrl\":\"http://127.0.0.1:" + stub.getAddress().getPort() + "/v1\","
+                            + "\"apiKey\":\"k\",\"model\":\"m\"}");
+            assertEquals(200, ok.statusCode(), ok.body());
+            assertTrue(ok.body().contains("连接成功"), ok.body());
+        } finally {
+            stub.stop(0);
+        }
     }
 }

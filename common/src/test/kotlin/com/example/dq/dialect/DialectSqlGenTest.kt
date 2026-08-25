@@ -3,6 +3,7 @@ package com.example.dq.dialect
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
+import com.example.dq.service.PreviewService
 import org.junit.jupiter.api.Test
 
 import java.sql.Types
@@ -327,5 +328,64 @@ class DialectSqlGenTest {
         assertTrue(mssql.nullChunkProbeSql("[dbo].[t]", "[id]", 10).contains("TOP 1"))
         assertFalse(mssql.nullChunkProbeSql("[dbo].[t]", "[id]", 10).contains("OFFSET"))
         assertTrue(mssql.nullChunkProbeSql("[dbo].[t]", "[id]", 15).contains("OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY"))
+    }
+
+    @Test
+    fun `分页预览 默认方言 LIMIT OFFSET 与总数`() {
+        val sql = mysql.pageRowsSql("`db1`.`user`", listOf("id", "name"), null, null, 40, 20)
+        assertEquals("SELECT `id`, `name` FROM `db1`.`user` LIMIT 20 OFFSET 40", sql)
+        assertEquals("SELECT COUNT(*) FROM `db1`.`user`", mysql.countRowsSql("db1", "user", null))
+    }
+
+    @Test
+    fun `分页预览 默认方言带 WHERE 与 ORDER BY`() {
+        val sql = mysql.pageRowsSql("`db1`.`user`", listOf("id"), "age > 18", "id desc", 0, 20)
+        assertEquals("SELECT `id` FROM `db1`.`user` WHERE age > 18 ORDER BY id desc LIMIT 20 OFFSET 0", sql)
+        assertEquals("SELECT COUNT(*) FROM `db1`.`user` WHERE age > 18", mysql.countRowsSql("db1", "user", "age > 18"))
+    }
+
+    @Test
+    fun `分页预览 SqlServer 2012起OFFSET_FETCH 2008用ROW_NUMBER`() {
+        val mssql = SqlServerDialect()
+        val cols = listOf("id")
+        val modern = mssql.pageRowsSql("[dbo].[t]", cols, null, null, 40, 20, 15)
+        assertEquals("SELECT [id] FROM [dbo].[t] ORDER BY (SELECT NULL) OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY", modern)
+        val legacy = mssql.pageRowsSql("[dbo].[t]", cols, null, null, 40, 20, 10)
+        assertTrue(legacy.contains("ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS dq_rn"), legacy)
+        assertTrue(legacy.contains("dq_rn > 40 AND dq_rn <= 60"), legacy)
+        // 带过滤与用户排序:WHERE 进 FROM 之后,用户排序替换 (SELECT NULL) 占位
+        val filtered = mssql.pageRowsSql("[dbo].[t]", cols, "x = 1", "id desc", 40, 20, 15)
+        assertEquals("SELECT [id] FROM [dbo].[t] WHERE x = 1 ORDER BY id desc OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY", filtered)
+        val legacyFiltered = mssql.pageRowsSql("[dbo].[t]", cols, "x = 1", "id desc", 40, 20, 10)
+        assertTrue(legacyFiltered.contains("ROW_NUMBER() OVER (ORDER BY id desc)"), legacyFiltered)
+        assertTrue(legacyFiltered.contains("FROM [dbo].[t] WHERE x = 1) dq_p"), legacyFiltered)
+    }
+
+    @Test
+    fun `分页预览 Oracle 12c起OFFSET_FETCH 11g用ROWNUM包装`() {
+        val oracle = OracleDialect()
+        val cols = listOf("id")
+        val modern = oracle.pageRowsSql("\"SCOTT\".\"T\"", cols, null, null, 40, 20, 19)
+        assertEquals("SELECT \"id\" FROM \"SCOTT\".\"T\" OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY", modern)
+        val legacy = oracle.pageRowsSql("\"SCOTT\".\"T\"", cols, null, null, 40, 20, 11)
+        assertTrue(legacy.contains("ROWNUM <= 60"), legacy)
+        assertTrue(legacy.contains("dq_rn > 40"), legacy)
+        // 带过滤与排序:12c 直接拼;11g 排序进最内层,ROWNUM 包装保序
+        val filtered = oracle.pageRowsSql("\"SCOTT\".\"T\"", cols, "x = 1", "id desc", 40, 20, 19)
+        assertEquals("SELECT \"id\" FROM \"SCOTT\".\"T\" WHERE x = 1 ORDER BY id desc OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY", filtered)
+        val legacyFiltered = oracle.pageRowsSql("\"SCOTT\".\"T\"", cols, "x = 1", "id desc", 40, 20, 11)
+        assertTrue(legacyFiltered.contains("(SELECT \"id\" FROM \"SCOTT\".\"T\" WHERE x = 1 ORDER BY id desc) dq_i"), legacyFiltered)
+    }
+
+    @Test
+    fun `过滤输入归一 剥离前导关键字`() {
+        assertEquals("x = 1", PreviewService.stripKeyword("  WHERE x = 1 ", "where"))
+        assertEquals("x = 1", PreviewService.stripKeyword("where x = 1", "where"))
+        assertEquals("id desc", PreviewService.stripKeyword("Order By id desc", "order by"))
+        // 不以关键字开头或关键字后无空白时原样保留(如列名 whereabouts)
+        assertEquals("whereabouts = 1", PreviewService.stripKeyword("whereabouts = 1", "where"))
+        assertNull(PreviewService.stripKeyword("   ", "where"))
+        assertNull(PreviewService.stripKeyword(null, "where"))
+        assertNull(PreviewService.stripKeyword("WHERE", "where"))
     }
 }

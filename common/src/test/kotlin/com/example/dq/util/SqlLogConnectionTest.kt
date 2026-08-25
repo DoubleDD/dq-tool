@@ -167,6 +167,31 @@ class SqlLogConnectionTest {
     }
 
     @Test
+    fun `执行出错时抛出原始SQLException而非代理包装异常`() {
+        connect().use { conn ->
+            // Statement 直执行:无效表名,底层 SQLException 必须原样透出
+            // (否则动态代理包成 UndeclaredThrowableException,方言层 catch(SQLException) 降级失效)
+            conn.createStatement().use { st ->
+                try {
+                    st.executeQuery("SELECT * FROM not_exist_table")
+                    throw AssertionError("应抛 SQLException")
+                } catch (e: SQLException) {
+                    // 预期
+                }
+            }
+            // PreparedStatement 同样验证(H2 在 prepare 阶段解析,异常可能提前抛出)
+            try {
+                conn.prepareStatement("SELECT * FROM not_exist_table2").use { st ->
+                    st.executeQuery()
+                }
+                throw AssertionError("应抛 SQLException")
+            } catch (e: SQLException) {
+                // 预期
+            }
+        }
+    }
+
+    @Test
     fun `statement复用后 陈旧参数被清空`() {
         connect().use { conn ->
             conn.prepareStatement("CREATE TABLE r(id INT PRIMARY KEY, name VARCHAR(20))").use { st ->

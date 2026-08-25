@@ -2,11 +2,15 @@ package com.example.dq.service
 
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.TableStat
+import com.sun.net.httpserver.HttpServer
 import org.junit.jupiter.api.Test
 
+import java.net.InetSocketAddress
 import java.sql.Types
+import java.util.concurrent.atomic.AtomicReference
 
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 
 /** 表说明 prompt 组装(纯函数,不依赖大模型接口) */
@@ -58,5 +62,71 @@ class AiServiceTest {
         assertTrue(prompt.contains("col_" + AiService.MAX_PROMPT_COLUMNS))
         assertFalse(prompt.contains("col_" + (AiService.MAX_PROMPT_COLUMNS + 1) + " "))
         assertTrue(prompt.contains("其余 30 个字段省略"))
+    }
+
+    // ---------- 连通性测试(test) ----------
+
+    private fun configFor(port: Int) =
+        AiConfigService.Config("http://127.0.0.1:$port/v1", "test-key", "test-model", usingDefault = false)
+
+    /** 起一个最小 HTTP 服务,记录收到的请求体并按 handler 应答 */
+    private fun startServer(handler: (com.sun.net.httpserver.HttpExchange) -> Unit): Pair<HttpServer, AtomicReference<String>> {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val received = AtomicReference<String>()
+        server.createContext("/v1/chat/completions") { ex ->
+            received.set(String(ex.requestBody.readAllBytes()))
+            handler(ex)
+        }
+        server.start()
+        return server to received
+    }
+
+    @Test
+    fun `测试连接_接口返回200视为成功`() {
+        val (server, received) = startServer { ex ->
+            val body = "{\"choices\":[{\"message\":{\"content\":\"p\"}}]}".toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        try {
+            AiService().test(configFor(server.address.port))
+            // 请求体包含模型与鉴权信息
+            val body = received.get()
+            assertTrue(body.contains("\"model\":\"test-model\""), body)
+            assertTrue(body.contains("\"max_tokens\":1"), body)
+            assertTrue(body.contains("\"ping\""), body)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `测试连接_非2xx响应抛中文异常`() {
+        val (server, _) = startServer { ex ->
+            val body = "{\"error\":{\"message\":\"invalid api key\"}}".toByteArray()
+            ex.sendResponseHeaders(401, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        try {
+            val e = assertThrows(IllegalStateException::class.java) {
+                AiService().test(configFor(server.address.port))
+            }
+            assertTrue(e.message!!.contains("HTTP 401"), e.message)
+            assertTrue(e.message!!.contains("invalid api key"), e.message)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `测试连接_地址不可达抛中文异常`() {
+        // 先占一个端口再释放,确保无服务监听
+        val probe = java.net.ServerSocket(0)
+        val freePort = probe.localPort
+        probe.close()
+        val e = assertThrows(IllegalStateException::class.java) {
+            AiService().test(configFor(freePort))
+        }
+        assertTrue(e.message!!.contains("测试失败"), e.message)
     }
 }

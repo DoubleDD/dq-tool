@@ -26,16 +26,38 @@
         <el-color-picker v-model="createForm.color" :predefine="presetColors" />
         <el-button type="primary" :loading="operating" @click="createTag">新建</el-button>
       </div>
+      <div class="tag-edit-row">
+        <el-input
+          v-model="createForm.description"
+          placeholder="描述(可选,供 AI 自动打标理解标记含义)"
+          maxlength="500"
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 3 }"
+        />
+      </div>
       <div v-for="tag in userTags" :key="tag.id" class="tag-manage-row">
         <template v-if="editingId === tag.id">
-          <el-input v-model="editForm.name" maxlength="50" style="width: 200px" />
-          <el-color-picker v-model="editForm.color" :predefine="presetColors" />
-          <el-button link type="primary" :loading="operating" @click="saveEdit">保存</el-button>
-          <el-button link @click="editingId = null">取消</el-button>
+          <div class="tag-edit-fields">
+            <div class="tag-edit-row-inner">
+              <el-input v-model="editForm.name" maxlength="50" style="width: 200px" />
+              <el-color-picker v-model="editForm.color" :predefine="presetColors" />
+              <el-button link type="primary" :loading="operating" @click="saveEdit">保存</el-button>
+              <el-button link @click="editingId = null">取消</el-button>
+            </div>
+            <el-input
+              v-model="editForm.description"
+              placeholder="描述(可选,供 AI 自动打标理解标记含义)"
+              maxlength="500"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 3 }"
+            />
+          </div>
         </template>
         <template v-else>
           <span class="tag-dot" :style="{ background: tag.color }"></span>
-          <span class="tag-name">{{ tag.name }}</span>
+          <el-tooltip :content="tag.description" :disabled="!tag.description" placement="top" :show-after="200">
+            <span class="tag-name">{{ tag.name }}</span>
+          </el-tooltip>
           <span class="tag-count">{{ tag.tableCount }} 张表</span>
           <el-button link type="primary" @click="startEdit(tag)">编辑</el-button>
           <el-button link type="danger" @click="removeTag(tag)">删除</el-button>
@@ -73,8 +95,8 @@ const operating = ref(false)
 const userTags = ref([])
 const checkedTagIds = ref([])
 const editingId = ref(null)
-const createForm = reactive({ name: '', color: '#409EFF' })
-const editForm = reactive({ name: '', color: '#409EFF' })
+const createForm = reactive({ name: '', color: '#409EFF', description: '' })
+const editForm = reactive({ name: '', color: '#409EFF', description: '' })
 
 // 预设色板
 const presetColors = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#9B59B6', '#16A085', '#D35400']
@@ -102,6 +124,7 @@ function onOpen() {
   checkedTagIds.value = props.currentTags.filter((t) => t.kind === 'USER').map((t) => t.id)
   editingId.value = null
   createForm.name = ''
+  createForm.description = ''
   fetchTags()
 }
 
@@ -121,8 +144,9 @@ async function createTag() {
   }
   operating.value = true
   try {
-    await request.post('/tags', { name, color: createForm.color || '#409EFF' })
+    await request.post('/tags', { name, color: createForm.color || '#409EFF', description: createForm.description.trim() || null })
     createForm.name = ''
+    createForm.description = ''
     ElMessage.success('已创建')
     await refreshAfterOp()
   } finally {
@@ -134,6 +158,7 @@ function startEdit(tag) {
   editingId.value = tag.id
   editForm.name = tag.name
   editForm.color = tag.color
+  editForm.description = tag.description || ''
 }
 
 async function saveEdit() {
@@ -144,7 +169,7 @@ async function saveEdit() {
   }
   operating.value = true
   try {
-    await request.put(`/tags/${editingId.value}`, { name, color: editForm.color || '#409EFF' })
+    await request.put(`/tags/${editingId.value}`, { name, color: editForm.color || '#409EFF', description: editForm.description.trim() || null })
     editingId.value = null
     ElMessage.success('已保存')
     await refreshAfterOp()
@@ -207,6 +232,17 @@ async function save() {
   gap: 8px;
   align-items: center;
   margin-bottom: 6px;
+}
+.tag-edit-fields {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tag-edit-row-inner {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 .tag-name {
   min-width: 120px;

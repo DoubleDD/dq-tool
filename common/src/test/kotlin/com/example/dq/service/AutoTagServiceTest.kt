@@ -74,7 +74,7 @@ class AutoTagServiceTest {
         val dsRepo = DataSourceRepository(jdbc)
         val dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
         return AutoTagService(
-            AiConfigService(AiConfigRepository(jdbc), crypto, config),
+            AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService()),
             AiService(), tagService, tagRepo, scanRepo, TableDocRepository(jdbc),
             dataSourceService, DialectFactory
         ) { _, _, prompt ->
@@ -111,10 +111,10 @@ class AutoTagServiceTest {
             ScanColumnView.of("amount", "decimal(10,2)", null, true, null, "", 100, 0, 0, 0))
 
         val prompt = AutoTagService.buildClassifyPrompt(
-            listOf("订单", "用户"), "t_order", "订单表", "存储订单主数据", cols, emptyList())
+            listOf("订单" to "订单相关主数据表", "用户" to null), "t_order", "订单表", "存储订单主数据", cols, emptyList())
 
-        assertTrue(prompt.contains("- 订单"))
-        assertTrue(prompt.contains("- 用户"))
+        assertTrue(prompt.contains("- 订单:订单相关主数据表"))
+        assertTrue(prompt.contains("- 用户\n")) // 无描述只列名字
         assertTrue(prompt.contains("表名:t_order"))
         assertTrue(prompt.contains("表注释:订单表"))
         assertTrue(prompt.contains("表描述:存储订单主数据"))
@@ -131,7 +131,7 @@ class AutoTagServiceTest {
             ScanColumnView.of("status", "int", null, true, null, "", 2, 0, 0, 0))
 
         val prompt = AutoTagService.buildClassifyPrompt(
-            listOf("订单"), "t1", null, null, cols,
+            listOf("订单" to null), "t1", null, null, cols,
             listOf(listOf("1", "0"), listOf("2", "-1")))
 
         assertTrue(prompt.contains("抽样数据(前 2 行)"))

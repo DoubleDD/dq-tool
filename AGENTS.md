@@ -16,14 +16,14 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - 注释、提交信息、文档全部使用中文;代码标识符用英文
 - **业务代码只在 common 模块(Kotlin)写一份**,server 壳层(Javalin)只消费;所有数据库差异收敛在 `dialect/` 包
 - 库表结构变更一律新增 Flyway 迁移脚本,**已发布的迁移文件禁止修改**
-- 前端构建由 `buildWeb` 任务(增量)作为 `processResources` 的强前置依赖:`:server:shadowJar` 前自动保证 `web/dist` 最新,不再存在"旧版/缺失"的静默坏包
+- 前端构建与后端运行解耦:`make dev` / `make dev-headless`(`:server:run`)不构建前端,前端开发走 `make dev-web`(vite 5173);release 打包正确性由 Gradle `buildWebForRelease`(依赖增量 `buildWeb` 并校验 `web/dist` 存在)作为 `:server:shadowJar` 的前置保障,`processResources` 仅在有 `web/dist` 时拷入 static,不再存在"旧版/缺失"的静默坏包
 - `data/`(H2 数据文件)不应提交或外发;功能性 `.bat` 注释一律用英文且必须保持 CRLF 行尾
 
 ## 快速命令
 
 ```bash
-make dev          # 开发:后端 10000 + 前端 5173(web/src 有改动先重建 web/dist)
-make build        # 交付 fat jar(内嵌前端)
+make dev          # 开发:后端 10000(不构建前端);前端开发另起 make dev-web(5173)
+make build        # 交付 fat jar(前端由 Gradle buildWebForRelease 自动构建内嵌)
 make test         # ./gradlew :common:test :server:test
 make package      # macOS dmg 安装包(其他平台见 打包与发布)
 ```

@@ -122,6 +122,43 @@
           </el-table-column>
         </el-table>
       </el-tab-pane>
+
+      <el-tab-pane label="数据预览" name="preview">
+        <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px">
+          <h4 style="margin: 0">数据预览</h4>
+          <span style="color: var(--el-text-color-secondary)">共 {{ previewTotal }} 行,每页 {{ previewSize }} 条</span>
+        </div>
+        <div style="display: flex; gap: 8px; margin-bottom: 12px">
+          <SqlInput v-model="previewWhere" label="WHERE" :columns="completionColumns"
+                    placeholder="过滤条件,如 status = 'A' AND age > 18(回车应用)"
+                    @enter="applyPreviewFilter" />
+          <SqlInput v-model="previewOrderBy" label="ORDER BY" :columns="completionColumns"
+                    placeholder="排序,如 id desc(回车应用)"
+                    @enter="applyPreviewFilter" />
+          <el-button size="small" type="primary" plain @click="applyPreviewFilter">应用</el-button>
+        </div>
+        <el-alert v-if="previewError" type="error" :closable="false" show-icon :title="previewError" style="margin-bottom: 12px" />
+        <el-table v-else :data="previewTableData" v-loading="previewLoading" border size="small">
+          <el-table-column type="index" label="#" width="50" :index="(previewPage - 1) * previewSize + 1" />
+          <el-table-column v-for="col in previewColumns" :key="col.key" :prop="col.key" min-width="140" show-overflow-tooltip>
+            <template #header>
+              <span>{{ col.name }}</span>
+              <span style="margin-left: 6px; font-size: 12px; font-weight: normal; color: var(--el-text-color-placeholder)">{{ col.type }}</span>
+            </template>
+            <template #default="{ row }">
+              <span v-if="row[col.key] !== null && row[col.key] !== undefined">{{ row[col.key] }}</span>
+              <span v-else style="color: var(--el-text-color-placeholder)">NULL</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!previewLoading && !previewError && previewLoaded && !previewRows.length"
+                  description="表无数据" :image-size="60" />
+        <el-pagination v-if="previewLoaded && previewTotal > 0" v-model:current-page="previewPage"
+                       :page-size="previewSize" :total="previewTotal"
+                       layout="total, prev, pager, next, jumper" small background
+                       style="margin-top: 12px; justify-content: flex-end"
+                       @current-change="loadPreview" />
+      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -134,6 +171,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import request from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
+import SqlInput from '../components/SqlInput.vue'
 import { formatDuration, formatNumber } from '../utils/format'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 
@@ -154,6 +192,21 @@ const jobTable = ref(null)    // 任务中该表的统计概览
 const loading = ref(false)
 const indexesLoading = ref(false)
 const indexesLoaded = ref(false)  // 索引是否已加载(懒加载)
+const previewColumns = ref([])    // 预览列定义 [{key, name, type}],key 为 c+序号 映射行数组
+const previewRows = ref([])       // 预览行(原始数组,元素为字符串/null)
+const previewLoading = ref(false)
+const previewLoaded = ref(false)  // 预览是否已加载(懒加载)
+const previewError = ref('')      // 预览加载失败的内联错误提示
+const previewSize = 20            // 预览每页行数(服务端分页,固定 20 条)
+const previewPage = ref(1)        // 预览当前页码
+const previewTotal = ref(0)       // 预览全表总行数(COUNT(*) 实时)
+const previewWhere = ref('')      // 预览过滤条件输入(WHERE,DataGrip 风格原文)
+const previewOrderBy = ref('')    // 预览排序输入(ORDER BY 原文)
+const appliedWhere = ref('')      // 已应用的过滤条件(翻页用,输入未应用不影响)
+const appliedOrderBy = ref('')    // 已应用的排序
+// 过滤栏补全字段清单(复用字段明细的元数据,无需额外请求)
+const completionColumns = computed(() =>
+  metaColumns.value.map((c) => ({ name: c.name, type: c.displayType || '' })))
 const activeTab = ref('columns')
 const refreshing = ref(false)
 const keyword = ref('')
@@ -252,19 +305,61 @@ async function loadIndexes(force = false) {
   }
 }
 
-/** 切换 tab:切到索引时懒加载 */
-function onTabChange(name) {
-  if (name === 'indexes') loadIndexes()
+// 预览行数组转成 el-table 需要的行对象(c0/c1/... 与列定义 key 对应)
+const previewTableData = computed(() =>
+  previewRows.value.map((r) => Object.fromEntries(r.map((v, i) => ['c' + i, v]))))
+
+/** 数据预览:服务端分页,切页/首次切入/刷新时按页拉取;失败保留错误提示,可再次切换/刷新重试 */
+async function loadPreview(page = previewPage.value || 1) {
+  if (!dsId.value || !schema.value) return
+  previewLoading.value = true
+  previewError.value = ''
+  try {
+    const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
+    const params = new URLSearchParams()
+    if (db.value) params.set('db', db.value)
+    if (appliedWhere.value) params.set('where', appliedWhere.value)
+    if (appliedOrderBy.value) params.set('orderBy', appliedOrderBy.value)
+    params.set('page', String(page))
+    params.set('size', String(previewSize))
+    const url = `${base}/tables/${encodeURIComponent(tableName)}/preview?${params.toString()}`
+    const data = await request.get(url)
+    previewColumns.value = (data.columns || []).map((c, i) => ({ key: 'c' + i, name: c.name, type: c.type }))
+    previewRows.value = data.rows || []
+    previewTotal.value = data.total ?? 0
+    previewPage.value = data.page ?? page
+    previewLoaded.value = true
+  } catch (e) {
+    // 拦截器已弹出错误消息,这里留内联提示;不置 loaded,允许重试
+    previewError.value = e?.response?.data?.message || e?.message || '加载预览数据失败'
+  } finally {
+    previewLoading.value = false
+  }
 }
 
-/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引按当前 tab 决定是否重载 */
+/** 应用过滤/排序:同步到已应用变量并回到第 1 页重新查询 */
+function applyPreviewFilter() {
+  appliedWhere.value = previewWhere.value.trim()
+  appliedOrderBy.value = previewOrderBy.value.trim()
+  loadPreview(1)
+}
+
+/** 切换 tab:切到索引/预览时各自懒加载(预览仅首次,之后翻页由分页器触发) */
+function onTabChange(name) {
+  if (name === 'indexes') loadIndexes()
+  if (name === 'preview' && !previewLoaded.value) loadPreview(1)
+}
+
+/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引/预览按当前 tab 决定是否重载 */
 async function refreshAll() {
   refreshing.value = true
   try {
-    // 重置索引加载标记,若当前在索引 tab 则强制重新拉取
+    // 重置索引/预览加载标记,若当前在对应 tab 则强制重新拉取
     indexesLoaded.value = false
+    previewLoaded.value = false
     await load(true)
     if (activeTab.value === 'indexes') await loadIndexes(true)
+    if (activeTab.value === 'preview') await loadPreview(previewPage.value)
     ElMessage.success('已刷新结构与扫描信息')
   } finally {
     refreshing.value = false

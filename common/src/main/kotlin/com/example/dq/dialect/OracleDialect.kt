@@ -276,4 +276,21 @@ class OracleDialect : AbstractDialect() {
         val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
         return "SELECT $cols FROM " + qualifiedTable(schema, table) + " WHERE ROWNUM <= $limit"
     }
+
+    override fun pageRowsSql(conn: Connection, schema: String, table: String, columns: List<String>,
+                             where: String?, orderBy: String?, offset: Long, limit: Int): String {
+        return pageRowsSql(qualifiedTable(schema, table), columns, where, orderBy, offset, limit, oracleMajor(conn))
+    }
+
+    /** 12c 起 OFFSET/FETCH(Oracle 允许无 ORDER BY);11g 用 ROWNUM 双层包装(排序必须放最内层,ROWNUM 包装才保序) */
+    internal fun pageRowsSql(qTable: String, columns: List<String>, where: String?, orderBy: String?, offset: Long, limit: Int, major: Int): String {
+        val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
+        if (major >= 12) {
+            return "SELECT $cols FROM $qTable" + wherePart(where) + orderPart(orderBy) +
+                " OFFSET $offset ROWS FETCH NEXT $limit ROWS ONLY"
+        }
+        return "SELECT $cols FROM (SELECT dq_i.*, ROWNUM dq_rn FROM (SELECT $cols FROM $qTable" +
+            wherePart(where) + orderPart(orderBy) + ") dq_i" +
+            " WHERE ROWNUM <= ${offset + limit}) WHERE dq_rn > $offset"
+    }
 }

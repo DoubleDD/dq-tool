@@ -9,5 +9,7 @@ data class Tag(
     val name: String,
     val color: String,
     val kind: TagKind,
+    /** 标记含义说明(可空);AI 自动打标时随候选清单一并发给大模型 */
+    val description: String? = null,
     val tableCount: Long = 0,
 )

@@ -20,12 +20,8 @@ KEY ?= license-private.key
 # 授权码绑定的软件版本:与安装包版本口径一致(去 0. 前缀,如 0.1.6 -> 1.6)
 LICENSE_VERSION ?= $(VERSION:0.%=%)
 
-# 前端源码变动时重新构建 web/dist(后端 run 的静态资源来自 processResources 拷贝的 dist)
-WEB_SRC := $(shell find web/src -type f 2>/dev/null) web/index.html web/package.json
-
-web/dist/index.html: $(WEB_SRC)
-	@[ -d web/node_modules ] || (cd web && npm install)
-	cd web && npm run build
+# 前端构建完全交给 Gradle:dev 模式(:server:run)不构建前端(前端开发走 make dev-web);
+# release 打包由 :server:shadowJar 的前置任务 buildWebForRelease 保障 web/dist 最新且存在。
 
 .PHONY: help \
 	dev dev-headless dev-web tauri \
@@ -66,10 +62,10 @@ help: ## 显示全部可用命令(按用途分组)
 
 # ── 本地运行调试 ─────────────────────────────────────────────────────────────
 
-dev: web/dist/index.html ## 后端开发模式,带窗口/托盘(显式关闭 headless;前端有改动时先重新构建)
+dev: ## 后端开发模式,带窗口/托盘(显式关闭 headless;不构建前端,前端开发用 make dev-web)
 	DQ_LICENSE_PRIVATE_KEY_FILE=$(wildcard license-private.key) JAVA_TOOL_OPTIONS="-Djava.awt.headless=false" ./gradlew :server:run
 
-dev-headless: web/dist/index.html ## 后端开发模式,无窗口/托盘(服务器调试;前端有改动时先重新构建)
+dev-headless: ## 后端开发模式,无窗口/托盘(服务器方式调试;只启动 server,不构建前端)
 	DQ_LICENSE_PRIVATE_KEY_FILE=$(wildcard license-private.key) ./gradlew :server:run
 
 dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
@@ -81,8 +77,7 @@ tauri: build ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车拉起
 
 # ── 构建 / 测试 / 直接跑 jar ─────────────────────────────────────────────────
 
-build: ## 构建前端 + 后端 fat jar(跳过测试)
-	cd web && npm run build
+build: ## 构建后端 fat jar(前端由 Gradle 的 shadowJar 前置任务 buildWebForRelease 自动构建)
 	./gradlew :server:shadowJar
 
 test: ## 全部测试(含 Testcontainers,需要 Docker)

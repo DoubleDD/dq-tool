@@ -7,30 +7,16 @@
         <el-button link type="primary" :icon="Plus" @click="startCreate">新建</el-button>
       </div>
       <div v-loading="tagsLoading" class="tag-list">
-        <!-- 新建行:名称 + 颜色 -->
-        <div v-if="creating" class="tag-item tag-form-row">
-          <el-input v-model="createForm.name" placeholder="标记名称" maxlength="50" size="small"
-                    @keyup.enter="createTag" />
-          <el-color-picker v-model="createForm.color" :predefine="presetColors" size="small" />
-          <el-button link type="primary" size="small" :loading="operating" @click="createTag">确定</el-button>
-          <el-button link size="small" @click="creating = false">取消</el-button>
-        </div>
         <template v-for="tag in tags" :key="tag.id">
-          <!-- 编辑行:名称 + 颜色(仅用户标记) -->
-          <div v-if="editingId === tag.id" class="tag-item tag-form-row">
-            <el-input v-model="editForm.name" maxlength="50" size="small" @keyup.enter="saveEdit" />
-            <el-color-picker v-model="editForm.color" :predefine="presetColors" size="small" />
-            <el-button link type="primary" size="small" :loading="operating" @click="saveEdit">保存</el-button>
-            <el-button link size="small" @click="editingId = null">取消</el-button>
-          </div>
           <div
-            v-else
             class="tag-item"
             :class="{ active: currentTag && currentTag.id === tag.id }"
             @click="selectTag(tag)"
           >
             <span class="tag-dot" :style="{ background: tag.color }" />
-            <span class="tag-name" :title="tag.name">{{ tag.name }}</span>
+            <el-tooltip :content="tag.description" :disabled="!tag.description" placement="top" :show-after="200">
+              <span class="tag-name" :title="tag.name">{{ tag.name }}</span>
+            </el-tooltip>
             <el-tag v-if="tag.kind === 'EMPTY'" size="small" type="info">系统</el-tag>
             <span class="tag-count">{{ formatNumber(tag.tableCount ?? 0) }}</span>
             <span v-if="tag.kind !== 'EMPTY'" class="tag-actions">
@@ -39,7 +25,7 @@
             </span>
           </div>
         </template>
-        <el-empty v-if="!tagsLoading && !tags.length && !creating" description="暂无标记" :image-size="80">
+        <el-empty v-if="!tagsLoading && !tags.length" description="暂无标记" :image-size="80">
           <template #description>
             <span>暂无标记,点击右上角「新建」创建</span>
           </template>
@@ -112,6 +98,33 @@
         </div>
       </template>
     </div>
+
+    <!-- 标记新建/编辑弹窗(系统「空表」标记不可编辑) -->
+    <el-dialog
+      v-model="tagDialogVisible"
+      :title="tagDialogMode === 'create' ? '新建标记' : '编辑标记'"
+      width="420px"
+      @closed="resetTagForm"
+    >
+      <el-form label-width="64px" @submit.prevent>
+        <el-form-item label="名称" required>
+          <el-input v-model="tagForm.name" placeholder="标记名称" maxlength="50" @keyup.enter="submitTagForm" />
+        </el-form-item>
+        <el-form-item label="颜色">
+          <el-color-picker v-model="tagForm.color" :predefine="presetColors" />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="tagForm.description" placeholder="描述(可选,供 AI 自动打标理解标记含义)"
+                    maxlength="500" type="textarea" :rows="2" resize="none" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="tagDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="operating" @click="submitTagForm">
+          {{ tagDialogMode === 'create' ? '确定' : '保存' }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -131,12 +144,12 @@ const currentTag = ref(null)
 const stats = ref(null)
 const statsLoading = ref(false)
 
-// 标记管理:新建/编辑内联表单(系统「空表」标记不可编辑)
-const creating = ref(false)
+// 标记管理:新建/编辑弹窗(系统「空表」标记不可编辑)
+const tagDialogVisible = ref(false)
+const tagDialogMode = ref('create') // 'create' | 'edit'
 const editingId = ref(null)
 const operating = ref(false)
-const createForm = reactive({ name: '', color: '#409EFF' })
-const editForm = reactive({ name: '', color: '#409EFF' })
+const tagForm = reactive({ name: '', color: '#409EFF', description: '' })
 const presetColors = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#9B59B6', '#16A085', '#D35400']
 
 /** null(该库无已扫描表)显示「—」 */
@@ -184,47 +197,44 @@ function selectTag(tag) {
 // ---- 标记管理(与打标弹窗同一套 /tags 接口) ----
 
 function startCreate() {
-  creating.value = true
+  tagDialogMode.value = 'create'
   editingId.value = null
-  createForm.name = ''
-  createForm.color = '#409EFF'
-}
-
-async function createTag() {
-  const name = createForm.name.trim()
-  if (!name) {
-    ElMessage.warning('标记名称不能为空')
-    return
-  }
-  operating.value = true
-  try {
-    await request.post('/tags', { name, color: createForm.color || '#409EFF' })
-    creating.value = false
-    ElMessage.success('已创建')
-    await loadTags()
-  } finally {
-    operating.value = false
-  }
+  resetTagForm()
+  tagDialogVisible.value = true
 }
 
 function startEdit(tag) {
+  tagDialogMode.value = 'edit'
   editingId.value = tag.id
-  creating.value = false
-  editForm.name = tag.name
-  editForm.color = tag.color
+  tagForm.name = tag.name
+  tagForm.color = tag.color
+  tagForm.description = tag.description || ''
+  tagDialogVisible.value = true
 }
 
-async function saveEdit() {
-  const name = editForm.name.trim()
+function resetTagForm() {
+  tagForm.name = ''
+  tagForm.color = '#409EFF'
+  tagForm.description = ''
+}
+
+async function submitTagForm() {
+  const name = tagForm.name.trim()
   if (!name) {
     ElMessage.warning('标记名称不能为空')
     return
   }
+  const payload = { name, color: tagForm.color || '#409EFF', description: tagForm.description.trim() || null }
   operating.value = true
   try {
-    await request.put(`/tags/${editingId.value}`, { name, color: editForm.color || '#409EFF' })
-    editingId.value = null
-    ElMessage.success('已保存')
+    if (tagDialogMode.value === 'create') {
+      await request.post('/tags', payload)
+      ElMessage.success('已创建')
+    } else {
+      await request.put(`/tags/${editingId.value}`, payload)
+      ElMessage.success('已保存')
+    }
+    tagDialogVisible.value = false
     // loadTags 会用最新名称/颜色同步当前选中标记
     await loadTags()
   } finally {
@@ -350,15 +360,6 @@ onActivated(() => {
 }
 .tag-actions .el-button + .el-button {
   margin-left: 2px;
-}
-/* 新建/编辑内联表单行 */
-.tag-form-row {
-  cursor: default;
-  gap: 6px;
-}
-.tag-form-row .el-input {
-  flex: 1;
-  min-width: 0;
 }
 .stats-panel {
   flex: 1;

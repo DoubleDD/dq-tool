@@ -2,6 +2,7 @@ package com.example.dq.util
 
 import org.slf4j.LoggerFactory
 import java.lang.reflect.InvocationHandler
+import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.sql.CallableStatement
@@ -52,7 +53,7 @@ object SqlLogConnection {
     private class ConnectionHandler(private val target: Connection) : InvocationHandler {
         override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
             val name = method.name
-            val result = method.invoke(target, *argsOrEmpty(args))
+            val result = invokeUnwrapped(method, target, args)
             if (name == "close") {
                 return result
             }
@@ -90,7 +91,7 @@ object SqlLogConnection {
             // 流/大对象类参数渲染为占位符,避免打出对象地址
             if (name.startsWith("set") && name !in SET_CONTROL_METHODS
                 && args != null && args.isNotEmpty() && args[0] is Int) {
-                val result = method.invoke(target, *argsOrEmpty(args))
+                val result = invokeUnwrapped(method, target, args)
                 val idx = args[0] as Int
                 val rendered: String = when {
                     name == "setNull" -> "NULL"
@@ -107,9 +108,9 @@ object SqlLogConnection {
                 else sqlText(args)
                 logSql(sql, params)
                 params.clear()
-                return method.invoke(target, *argsOrEmpty(args))
+                return invokeUnwrapped(method, target, args)
             }
-            return method.invoke(target, *argsOrEmpty(args))
+            return invokeUnwrapped(method, target, args)
         }
 
         /** executeQuery(sql)/executeQuery() 两种形态:带参时取 args[0](Statement),否则用 prepareStatement 模板 */
@@ -132,6 +133,18 @@ object SqlLogConnection {
     }
 
     private fun argsOrEmpty(args: Array<out Any>?): Array<out Any> = args ?: emptyArray()
+
+    /**
+     * 反射调用并拆包 InvocationTargetException:底层 JDBC 抛出的 SQLException 必须原样透出,
+     * 否则动态代理会把它包成 UndeclaredThrowableException,方言层的 catch(SQLException) 降级逻辑全部失效
+     */
+    private fun invokeUnwrapped(method: Method, target: Any, args: Array<out Any>?): Any? {
+        try {
+            return method.invoke(target, *argsOrEmpty(args))
+        } catch (e: InvocationTargetException) {
+            throw e.targetException ?: e
+        }
+    }
 
     private fun render(value: Any?): String {
         return when (value) {

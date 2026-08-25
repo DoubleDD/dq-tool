@@ -9,16 +9,16 @@ class TagRepository(private val jdbc: Jdbc) {
 
     private val mapper: (ResultSet) -> Tag = { rs ->
         Tag(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
-            TagKind.valueOf(rs.getString("kind")))
+            TagKind.valueOf(rs.getString("kind")), rs.getString("description"))
     }
 
     /** 全部标记(含系统「空表」),带打标表数 */
     fun listAll(): List<Tag> =
-        jdbc.query("SELECT d.id, d.name, d.color, d.kind, COUNT(t.id) AS table_count FROM tag_def d " +
+        jdbc.query("SELECT d.id, d.name, d.color, d.kind, d.description, COUNT(t.id) AS table_count FROM tag_def d " +
                 "LEFT JOIN table_tag t ON t.tag_id = d.id " +
-                "GROUP BY d.id, d.name, d.color, d.kind ORDER BY d.id") { rs ->
+                "GROUP BY d.id, d.name, d.color, d.kind, d.description ORDER BY d.id") { rs ->
             Tag(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
-                TagKind.valueOf(rs.getString("kind")), rs.getLong("table_count"))
+                TagKind.valueOf(rs.getString("kind")), rs.getString("description"), rs.getLong("table_count"))
         }
 
     fun findById(id: Long): Tag? =
@@ -31,13 +31,14 @@ class TagRepository(private val jdbc: Jdbc) {
     fun findEmptyTag(): Tag? =
         jdbc.queryOne("SELECT * FROM tag_def WHERE kind='EMPTY'", mapper = mapper)
 
-    fun create(name: String, color: String): Tag {
-        val id = jdbc.insert("INSERT INTO tag_def(name, color, kind) VALUES (?,?,'USER')", name, color)
-        return Tag(id, name, color, TagKind.USER)
+    fun create(name: String, color: String, description: String? = null): Tag {
+        val id = jdbc.insert("INSERT INTO tag_def(name, color, kind, description) VALUES (?,?,'USER',?)",
+            name, color, description)
+        return Tag(id, name, color, TagKind.USER, description)
     }
 
-    fun update(id: Long, name: String, color: String) {
-        jdbc.update("UPDATE tag_def SET name=?, color=? WHERE id=?", name, color, id)
+    fun update(id: Long, name: String, color: String, description: String? = null) {
+        jdbc.update("UPDATE tag_def SET name=?, color=?, description=? WHERE id=?", name, color, description, id)
     }
 
     /** 删除标记;table_tag 外键 ON DELETE CASCADE 自动解除全部打标关系 */
@@ -45,17 +46,28 @@ class TagRepository(private val jdbc: Jdbc) {
         jdbc.update("DELETE FROM tag_def WHERE id=?", id)
     }
 
+    /** 导出用:USER 标记的表级打标关系行(带标记名;EMPTY 系统标记由扫描自动维护,不导出) */
+    data class TableTagExportRow(val datasourceId: Long, val dbName: String, val schemaName: String,
+                                 val tableName: String, val tagName: String)
+
+    fun listUserTableTagRows(): List<TableTagExportRow> =
+        jdbc.query("SELECT tt.datasource_id, tt.db_name, tt.schema_name, tt.table_name, d.name AS tag_name " +
+                "FROM table_tag tt JOIN tag_def d ON d.id = tt.tag_id WHERE d.kind='USER' " +
+                "ORDER BY tt.datasource_id, tt.db_name, tt.schema_name, tt.table_name, d.name") { rs ->
+            TableTagExportRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5))
+        }
+
     /** 某库下全部表的打标情况:表名 -> 标记列表(一次拉回,供表列表页与客户端按标记过滤) */
     fun tableTagsBySchema(datasourceId: Long, dbName: String, schema: String): Map<String, List<Tag>> {
         val result = LinkedHashMap<String, MutableList<Tag>>()
-        jdbc.query("SELECT tt.table_name, d.id, d.name, d.color, d.kind FROM table_tag tt " +
+        jdbc.query("SELECT tt.table_name, d.id, d.name, d.color, d.kind, d.description FROM table_tag tt " +
                 "JOIN tag_def d ON d.id = tt.tag_id " +
                 "WHERE tt.datasource_id=? AND tt.db_name=? AND tt.schema_name=? " +
                 "ORDER BY tt.table_name, d.id",
             datasourceId, dbName, schema) { rs ->
             result.getOrPut(rs.getString("table_name")) { ArrayList() }
                 .add(Tag(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
-                    TagKind.valueOf(rs.getString("kind"))))
+                    TagKind.valueOf(rs.getString("kind")), rs.getString("description")))
         }
         return result
     }

@@ -20,8 +20,8 @@ src/main/kotlin/com/example/dq/
   dialect/                 DbDialect + AbstractDialect + 7 方言 + DialectFactory(object 单例)
   model/                   data class/枚举;3 个请求类带 @field:NotNull/@field:NotBlank(server 用 hibernate-validator 触发)
   repository/              Jdbc.kt 薄封装 + 10 仓储(MetaCacheRepository:库/表/字段/索引结构本地缓存,懒加载 + 手动/扫描刷新,meta_cache_flag 区分「未缓存」与「已缓存但为空」)+ SchemaInit(Flyway 迁移封装)
-  scan/                    ScanExecutor(线程池)/ ChunkRunner(表 DONE 后联动 TagService 自动打/摘「空表」标记 + 提交 AutoTagService 异步入队)/ InterruptRecovery
-  service/                 13 个服务(含 LicenseService、DataSourceTransferService 数据源导入导出、SshTunnelService SSH 隧道本地端口转发、AutoTagService 扫描后 AI 自动打标——2 worker 守护线程池,表注释/字段注释/表描述全空时抽样 100 行业务数据发给 LLM 选 USER 标记,幂等只增不删,LLM 调用点可注入 fake 便于单测,构造器注入、WordReportService Word 数据调研报告导出——poi-tl 模板渲染(模板 resources/templates/data-survey-report.docx),封面+一~四章全量;取每库最近 DONE 历史快照,选中库未全表扫描 409 拦截,体积快照缺失实时补算;分组 vMerge 表与第三章按 USER 标记分节走 WordReportTables 代码建表(LoopRow 不适用合并组);分析文字经可注入 LLM 调用点生成,失败落「(待人工编写)」)
+  scan/                    ScanExecutor(线程池)/ ChunkRunner(表 DONE 后联动 TagService 自动打/摘「空表」标记 + 提交 AutoTagService、ScanDocService 异步入队)/ InterruptRecovery
+  service/                 18 个服务(含 LicenseService、DataSourceTransferService 数据源导入导出、AnnotationTransferService 标记与描述数据导出/导入——按 name 合并标记、按数据源名匹配表级行,PreviewService 表数据预览——服务端分页(pageRowsSql 方言分页 + COUNT(*) 实时总数)、行值序列化字符串/null、单元格截断 1000 字符、SshTunnelService SSH 隧道本地端口转发、AutoTagService 扫描后 AI 自动打标——2 worker 守护线程池,表注释/字段注释/表描述全空时抽样 100 行业务数据发给 LLM 选 USER 标记(候选带标记描述),幂等只增不删,LLM 调用点可注入 fake 便于单测,构造器注入、ScanDocService 扫描后生成表描述——scan_job.gen_doc 开关(默认开),表 DONE 后 2 worker 守护线程异步复用 TableDocService.generate,已有描述/未配大模型/任务终止跳过,LLM 失败按 job 熔断、WordReportService Word 数据调研报告导出——poi-tl 模板渲染(模板 resources/templates/data-survey-report.docx),封面+一~四章全量;取每库最近 DONE 历史快照,选中库未全表扫描 409 拦截,体积快照缺失实时补算;分组 vMerge 表与第三章按 USER 标记分节走 WordReportTables 代码建表(LoopRow 不适用合并组);分析文字经可注入 LLM 调用点生成,失败落「(待人工编写)」)
   license/LicenseCodec.kt  授权码编解码与 Ed25519 验签(object 纯函数;payload 第 8 段为逗号分隔功能列表)
   license/LicenseFeature.kt 授权码功能清单(9 项;基础功能集=全部业务功能恒可用,受控功能 logs/license_admin 需授权码显式包含)
   env/ServiceEnv.kt        服务组装器:H2 连接池 + 全部 service 对象图,server 启动时构建一次;
@@ -41,7 +41,11 @@ src/main/resources/db/migration/
   V8__schema_doc.sql         库级描述表 schema_doc(库列表页可编辑,Word 报告「实例描述」列)
   V9__report_export.sql       Word 报告异步导出任务表 report_export(任务列表轮询进度)
   V10__meta_cache.sql        结构元数据本地缓存:meta_table(表清单/注释/估算行数/体积)/meta_column(字段)/meta_index(索引列展开多行)+ meta_cache_flag(缓存存在标记)
+  V11__scan_job_workers.sql   scan_job.workers 列(并发线程数,留空用全局默认)
   V12__license_record_features.sql  license_record.features 列(授权码功能列表留档,8 段新格式;旧记录 NULL=仅基础功能)
+  V13__system_settings.sql    系统设置单行表(全局扫描默认值覆盖,NULL=用配置默认)
+  V14__scan_job_gen_doc.sql   scan_job.gen_doc 列(扫描后生成表描述开关,默认 TRUE)
+  V15__tag_description.sql    tag_def.description 列(标记描述,供 AI 自动打标理解标记含义)
 src/test/kotlin/           方言/分段/级联删除/标记(TagRepository/TagService)/AI prompt/授权码/Flyway 迁移单测 + Testcontainers 端到端(MySQL/PG/SQLServer;SSH 隧道 SshTunnelIntegrationTest:linuxserver/openssh-server 跳板机 + MySQL 网络别名,注意该镜像 sshd 监听 2222 且默认 AllowTcpForwarding no 需 custom-cont-init.d 打开)
 ```
 
