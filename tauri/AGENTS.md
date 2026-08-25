@@ -27,11 +27,11 @@ server 模块的 Web UI 套壳成桌面应用。tauri 进程本身不含 Java:**
 
 ```bash
 # 前置:前端产物 + server fat jar
-cd web && npm install && npm run build
+cd web && pnpm install && npm run build
 ./gradlew :server:shadowJar
 
 # 开发运行(工作目录/数据目录 ./data 与其他模块口径一致)
-cd tauri && npm install && npm run dev
+cd tauri && pnpm install && npm run dev
 # 或根目录快捷命令(自动先构建 web/dist + fat jar):make tauri
 
 scripts/package-tauri-mac.sh          # macOS dmg + 自动更新包 .app.tar.gz(Linux 未实现,见脚本内 TODO)
@@ -39,8 +39,12 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
                                         # 快捷命令:make package-tauri / make package-tauri-skip(--skip-build)
 ```
 
-- 不是 Gradle 模块(npm + cargo 工程,同 web/ 的管理方式),`settings.gradle.kts` 不包含它
-- 要求:Rust(cargo 1.77+)、Node、`@tauri-apps/cli` ^2(npm devDependency,无前端框架依赖)
+- 不是 Gradle 模块(pnpm + cargo 工程,同 web/ 的管理方式),`settings.gradle.kts` 不包含它
+- 要求:Rust(cargo 1.77+)、Node、pnpm、`@tauri-apps/cli` ^2(devDependency,无前端框架依赖)
+- **依赖统一由 pnpm 管理**(2026-08,与 web 同批迁移):lock 唯一来源 `tauri/pnpm-lock.yaml`,
+  `tauri/package.json` 的 `packageManager` 固定 `pnpm@11.7.0`,npm 的 `package-lock.json` 已删除;
+  变更依赖用 `pnpm add -D`,lock 一并提交 —— CI/打包脚本走 `pnpm install --frozen-lockfile`,
+  失同步即报错。脚本执行仍可用 `npm run <script>`(pnpm 装的 node_modules 不受影响)
 - 开发模式数据目录 `./data`(cwd 切到仓库根,可用 `DQ_DATA_DIR` 环境变量覆盖);安装版 `~/.dq-tool/data`(由 Rust 侧传 `-Ddq.data-dir`)
 - **改了前端/后端代码要重新调试时,先彻底退出旧实例再 `make tauri`**:常驻+单实例模型下,重跑只会唤起已有窗口,旧 java 后端不重启,看到的还是旧 jar 内容 —— 退出走托盘菜单「退出」或 Cmd+Q(直接关窗只是隐藏,不算退出)
 

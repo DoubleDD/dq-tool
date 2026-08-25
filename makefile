@@ -72,7 +72,7 @@ dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
 	cd web && npm run dev
 
 tauri: build ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车拉起 java 子进程;tauri 非 Gradle 模块,需先构建 fat jar)
-	@[ -d tauri/node_modules ] || (cd tauri && npm install)
+	@[ -d tauri/node_modules ] || (cd tauri && pnpm install)
 	cd tauri && npm run dev
 
 # ── 构建 / 测试 / 直接跑 jar ─────────────────────────────────────────────────

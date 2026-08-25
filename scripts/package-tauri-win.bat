@@ -3,7 +3,7 @@ rem Packaging script for the tauri module (Tauri 2 desktop shell) on Windows:
 rem builds the frontend + server fat jar, embeds a full JRE together with the jar
 rem as Tauri bundle resources, and produces an NSIS installer (at runtime the Rust
 rem sidecar launches the embedded jre\bin\java.exe -jar, see tauri/src-tauri/src/main.rs).
-rem Prerequisites: JDK 25+, Node 24+, Rust (cargo).
+rem Prerequisites: JDK 25+, Node 24+, pnpm 11+, Rust (cargo).
 rem
 rem NOTE: keep every comment in this .bat ASCII-only. cmd parses .bat files as GBK on
 rem Chinese Windows, and UTF-8 Chinese comments can corrupt parsing (GBK trail bytes
@@ -70,8 +70,10 @@ if not defined TAURI_SIGNING_PRIVATE_KEY (
 )
 
 pushd tauri
-if not exist node_modules (call npm ci || (popd & exit /b 1))
+rem tauri dependencies are managed by pnpm now (single lock source: tauri/pnpm-lock.yaml)
+if not exist node_modules (call pnpm install --frozen-lockfile || (popd & exit /b 1))
 rem npm pass-through needs "npm run <script> -- <args>", otherwise --bundles is treated as a cargo flag
+rem (npm run works fine against a pnpm-installed node_modules; only installs moved to pnpm)
 rem The signing key has no password: tauri CLI uses TAURI_SIGNING_PRIVATE_KEY_PASSWORD when present,
 rem else falls back to an empty password when CI is truthy, else prompts (fatal in headless runs).
 rem cmd cannot define empty env vars (set VAR= deletes the var), so set CI=true as the fallback.

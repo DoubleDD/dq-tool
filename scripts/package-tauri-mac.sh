@@ -47,12 +47,13 @@ rm -f "$RES"/jre/bin/{javac,javadoc,javap,jar,jarsigner,serialver,jconsole,jdb,j
 export TAURI_SIGNING_PRIVATE_KEY="${TAURI_SIGNING_PRIVATE_KEY:-$(cat scripts/updater-private.key)}"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD-}"
 
+# tauri 依赖已迁 pnpm(与 web 一致,lock 唯一来源 tauri/pnpm-lock.yaml);
 # npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
-(cd tauri && npm install && npm run tauri -- build --bundles dmg)
+(cd tauri && pnpm install --frozen-lockfile && npm run tauri -- build --bundles dmg)
 
 # npm 参数透传要用 "npm run <script> -- <args>" 形式,否则 --bundles 会被当成 cargo 参数
 # app target 产出自动更新包 bundle/macos/*.app.tar.gz + .sig(dmg 不支持 updater 产物)
-(cd tauri && npm install && npm run tauri -- build --bundles app,dmg)
+(cd tauri && pnpm install --frozen-lockfile && npm run tauri -- build --bundles app,dmg)
 
 echo "产物: tauri/src-tauri/target/release/bundle/dmg/(安装包)"
 echo "      tauri/src-tauri/target/release/bundle/macos/(自动更新包 .app.tar.gz + .sig)"
