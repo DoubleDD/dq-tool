@@ -80,6 +80,7 @@ scripts/package-linux.sh
 - **断点续扫**:取消/中断/失败的任务可继续,只重跑未完成的分段;表结构变化时会拒绝续扫并提示重新扫描
 - **Excel 导出**:概览 + 表列表 + 每表字段明细(每表一个 Sheet)+ 异常表,流式写出;导出列可选,表名/表注释固定前列
 - **AI 表说明**:配置 OpenAI 兼容接口后,根据表结构(表名/字段/注释,不含业务数据)生成表用途描述,支持手动触发生成与手动编辑,结果存 H2
+- **AI Token/费用统计**:所有 AI 调用自动记录 token 用量与费用(价格可配置,默认 DeepSeek 官方价;支持峰谷计价开关——关闭用单一价格,开启则工作时间段按高峰价、其余时间及周末按谷价),「AI 统计」页展示金额/Token 可切换的消耗柱状图与场景/明细分布
 - **授权码**:程序需输入授权码激活后才能使用;授权码为离线 Ed25519 签名(含客户标识与有效期),到期后需换领新码
 
 ## 授权码
@@ -129,6 +130,7 @@ dq:
 | `dq.license.public-key-file` | classpath:license-public.key | 授权码验签公钥(Ed25519)文件路径:`classpath:` 前缀读 jar 内资源,否则按文件系统路径(支持 `${user.home}`);公钥文件由 `scripts/LicenseKeygen.java --gen-keypair` 生成 |
 | `dq.license.private-key-file` | — | 签发私钥文件路径(写法同上);配置即管理员实例,开放授权码管理(生成/查看/删除)。仅分发方配置 |
 | `ai.base-url` / `ai.api-key` / `ai.model` | — | AI 表说明的默认接口配置,页面配置优先,未设置的字段逐字段回落到此默认值(默认 key 为明文,仅适合内网) |
+| `ai.peak-valley-enabled` / `ai.peak-input-price` / `ai.peak-output-price` / `ai.valley-input-price` / `ai.valley-output-price` / `ai.work-periods` / `ai.weekend-valley` | true / 9 / 27 / 4.5 / 13.5 / `09:00-12:00,14:00-18:00` / true | AI 计费价格默认值(元/百万 token,DeepSeek 官方价):`peak-valley-enabled` 开启时工作时间段(可多段)按高峰价、其余时间与周末按谷价,关闭则只用单一输入/输出价;页面「AI 配置」可改,未设回落此默认 |
 
 > 上表中 `dq.scan.*` 扫描参数与 AI 接口配置均可在页面「系统设置」中可视化维护:页面保存的自定义值优先,未自定义的项回落到本配置文件默认值;`dq.security.secret`、授权密钥等部署级配置仅能在配置文件中修改,不在页面暴露。
 

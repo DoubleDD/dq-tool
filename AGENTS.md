@@ -34,7 +34,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 
 ### 功能
 
-- [扫描与 Excel 导出](docs/wiki/扫描与Excel导出.md) — 表级/字段级检测、分段扫描与断点续扫、采样估算、Oracle 空串/段视图降级、Excel sheet 结构
+- [扫描与 Excel 导出](docs/wiki/扫描与Excel导出.md) — 表级/字段级检测、分段扫描与断点续扫、采样估算、Oracle 空串/段视图降级、Excel sheet 结构、扫描结果 Word 表结构文档导出
 - [AI 功能与表标记](docs/wiki/AI功能与表标记.md) — AI 表说明、AI 自动打标(AutoTagService)、全局表标记与标记统计页
 - [Word 报告导出](docs/wiki/Word报告导出.md) — poi-tl 数据调研报告:封面+四章正文、DONE 快照口径、409 前置校验、模板改造脚本
 - [数据源](docs/wiki/数据源.md) — 连接信息加密存储、SSH 隧道、库过滤白名单、JSON/Navicat/DataGrip 导入导出

@@ -19,3 +19,33 @@
 ## Excel 导出
 
 sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 表字段 / 每表字段明细多 sheet / 异常表,列可选,固定前列的表名列名为「英文表名」、表注释列名为「中文表名」。「表列表」含「表描述」可选列(取 table_doc 中 AI 生成/人工维护的表说明,非表注释,按数据源+库+schema 匹配,未生成则为空)。
+
+## 扫描结果 Word 导出(数据库表结构文档)
+
+扫描结果除 Excel 外还可导出 Word 版「数据库表结构文档」:`GET /api/scans/{jobId}/export-word` 同步渲染下载(`dq-scan-{jobId}-表结构.docx`),前端入口是扫描结果导出弹窗(`ExportButton.vue`)底部的「导出 Word」。
+
+- **渲染**:内核 `ScanWordExportService` + poi-tl 模板 `common/src/main/resources/templates/db-structure-report.docx`(由 `scripts/make-word-template-dbstruct.py` 把《水库矩阵平台数据库表结构文档_模板V1.0.docx》改造为标签模板);数据全部来自该任务快照(scan_table/scan_column)+ 表标记(table_tag)+ 库描述(schema_doc),不回连业务库
+- **文档结构**:封面(数据源名)+ 一 总体情况(单行统计)/ 二 数据库清单(单行)/ 三 表清单(LoopRow,含表标签列,逗号分隔)/ 四 表结构(逐表「中文名:英文名」H3 + 六列字段表:字段英文/中文/类型/主键/非空/默认值;无注释处填「-」,默认值空填「—」)
+- **单库口径**:一个扫描任务 = 一个库(schema),故一/二章各只一行;数据库名取 `db_name`(空则回退 schema 名)
+- **四章逐表小节**用 `TableStructsPolicy` 深拷贝模板里的原型小节(H3 标题段 + 字段表)生成——标题编号(numId=7 ilvl=2,自动编 4.1.x)、表头蓝底/边框随克隆保留;渲染后删除原型与 `{{tableStructs}}` 锚点段;三章表清单走 LoopRow(`{{tables}}` 锚点在表头首格,循环行 `[name]` 等),与数据调研报告 1.2 同一写法
+- **目录**:模板已置 `w:updateFields`,Word/WPS 打开时自动刷新目录条目与页码
+- 渲染与策略有单测 `ScanWordExportTemplateTest`(标签残留/原型删除/行列数/零字段表/无表兜底)
+
+## 通用列表导出(各列表页「导出 Excel」)
+
+数据源菜单下所有列表页(数据源卡片、库列表、表列表、字段明细/索引结构/数据预览三个 tab、扫描记录)都有「导出 Excel」按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同)。
+
+- **机制**(`ListExportService` common + `ListExportController` server):前端把当前表格的表头与行(展示口径字符串,空单元格传空串)POST `/api/list-exports` → 后端 POI 渲染 xlsx 内存暂存并返回一次性 token → 前端 `utils/listExport.js` 的 `exportListToExcel` 拿 token 后走既有 `downloadFile` GET `/api/list-exports/{token}` 下载(桌面端 Tauri 原生保存对话框零改动);token 取走即删,5 分钟过期
+- **与扫描结果导出的分工**:扫描结果 Excel(`ExportService`)是含业务查询的多 sheet 定制结构;通用列表导出不含任何业务查询,数据完全由前端按展示口径组装,因此各列表页可直接复用
+- 数据预览 tab 为服务端分页(每页固定 20 条),导出的是当前页;rows 集合元素不建模为可空——Jackson 3 Kotlin 模块(NewStrictNullChecks)对嵌套集合内的 null 一律 400
+
+## 扫描记录导出/导入(跨机器迁移)
+
+把扫描记录(任务 + 事件时间线 + 表级/分段/字段明细)导出为 JSON 文件,在另一台机器的部署一键导入,扫描记录列表即可看到导入的历史记录。实现:`ScanTransferService`(common)+ `ScanTransferController`(server),前端入口在扫描记录页(`Scans.vue`)工具栏「导出记录/导入记录」。
+
+- **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[])`;job 含 events/tables,table 含 chunks/columns;不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响
+- **数据源对齐**:与标记导入一致走「预检 + 映射」——预检返回文件内各数据源的 job 数、本机同名数据源 id(前端自动预选)、本机全部数据源;导入 mapping 为「文件数据源名 → 本机数据源 id」,0/缺失/指向不存在的数据源 = 跳过该数据源的全部任务(计入 skipped)
+- **去重幂等**:同数据源 + db_name(可空等值,空白一律落 NULL)+ schema_name + created_at 已存在则跳过,重复导入同一文件不产生重复记录
+- **结果明细**:跳过(未映射/映射目标不存在/判重)与失败均逐条记 `warnings`(任务标签 + 原因),导入完成弹窗在汇总行下方逐行展示
+- **导入事务**:单任务在 `ScanRepository.insertImportedCascade` 同一事务内按 job → event → table → chunk/column 顺序插入,任一失败整体回滚;单任务失败计入 failed 并记 warning,不中断整批
+- **API**:`GET /api/scans/transfer/export?ids=1,2`(ids 可空 = 全部,下载 `dq-scans-yyyyMMdd-HHmmss.json`)、`POST /api/scans/transfer/preview`(multipart file)、`POST /api/scans/transfer/import`(multipart file + formParam `mapping` JSON);三个路由在 WebServer 中先于 `/api/scans/{jobId}` 注册,避免被路径参数截获
