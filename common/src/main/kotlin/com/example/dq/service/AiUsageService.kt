@@ -3,6 +3,7 @@ package com.example.dq.service
 import com.example.dq.config.AppConfig
 import com.example.dq.model.AiScene
 import com.example.dq.model.AiUsageDay
+import com.example.dq.model.AiUsageLogPage
 import com.example.dq.model.AiUsageLogView
 import com.example.dq.model.AiUsageScene
 import com.example.dq.model.AiUsageStatsView
@@ -92,9 +93,9 @@ class AiUsageService(
         )
     }
 
-    /** 最近调用明细(倒序),limit 已由调用方钳制 */
-    fun recent(limit: Int): List<AiUsageLogView> =
-        repo.recent(limit).map {
+    /** 最近调用明细分页(倒序),page/size 已由调用方钳制 */
+    fun recentPage(page: Int, size: Int): AiUsageLogPage {
+        val items = repo.recentPage((page - 1) * size, size).map {
             AiUsageLogView(
                 id = it.id,
                 scene = it.scene,
@@ -108,4 +109,6 @@ class AiUsageService(
                 createdAt = it.createdAt.toString(),
             )
         }
+        return AiUsageLogPage(items, repo.countAll())
+    }
 }

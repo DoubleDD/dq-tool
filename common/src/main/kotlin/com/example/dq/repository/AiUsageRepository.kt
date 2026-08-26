@@ -125,12 +125,12 @@ class AiUsageRepository(private val jdbc: Jdbc) {
             )
         } ?: Totals(0, 0, 0, 0, 0.0)
 
-    /** 最近 N 条明细(倒序) */
-    fun recent(limit: Int): List<LogRow> =
+    /** 明细分页(倒序),offset/limit 已由调用方钳制 */
+    fun recentPage(offset: Int, limit: Int): List<LogRow> =
         jdbc.query(
             """SELECT id, scene, model, prompt_tokens, completion_tokens, total_tokens, cost, period, created_at
-               FROM ai_usage_log ORDER BY id DESC LIMIT ?""",
-            limit,
+               FROM ai_usage_log ORDER BY id DESC LIMIT ? OFFSET ?""",
+            limit, offset,
         ) { rs ->
             LogRow(
                 rs.getLong("id"),
@@ -144,4 +144,8 @@ class AiUsageRepository(private val jdbc: Jdbc) {
                 rs.getObject("created_at", LocalDateTime::class.java),
             )
         }
+
+    /** 明细总数(分页用) */
+    fun countAll(): Long =
+        jdbc.queryOne("SELECT COUNT(*) AS c FROM ai_usage_log") { rs -> rs.getLong("c") } ?: 0L
 }

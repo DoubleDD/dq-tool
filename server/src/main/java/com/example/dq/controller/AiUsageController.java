@@ -3,8 +3,6 @@ package com.example.dq.controller;
 import com.example.dq.service.AiUsageService;
 import io.javalin.http.Context;
 
-import java.util.Map;
-
 /** AI 调用 Token/费用统计:汇总/每日序列/场景分布 + 最近调用明细 */
 public class AiUsageController {
 
@@ -20,10 +18,11 @@ public class AiUsageController {
         ctx.json(service.stats(days));
     }
 
-    /** 最近调用明细(默认 50 条,上限 200) */
+    /** 最近调用明细分页:page 默认 1,size 默认 20(上限 100),返回 items + total */
     public void logs(Context ctx) {
-        int limit = clampInt(ctx.queryParam("limit"), 50, 1, 200);
-        ctx.json(Map.of("items", service.recent(limit)));
+        int page = clampInt(ctx.queryParam("page"), 1, 1, Integer.MAX_VALUE);
+        int size = clampInt(ctx.queryParam("size"), 20, 1, 100);
+        ctx.json(service.recentPage(page, size));
     }
 
     private static int clampInt(String raw, int def, int min, int max) {

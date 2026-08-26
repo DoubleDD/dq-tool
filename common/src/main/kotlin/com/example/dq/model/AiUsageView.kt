@@ -54,3 +54,9 @@ data class AiUsageLogView(
     val period: String,
     val createdAt: String,
 )
+
+/** AI 用量明细分页结果 */
+data class AiUsageLogPage(
+    val items: List<AiUsageLogView>,
+    val total: Long,
+)
