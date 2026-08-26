@@ -22,7 +22,7 @@ import java.time.LocalTime
 
 /**
  * AI 用量统计:两档计费(工作时间=高峰价 / 非工作时间=谷价,工作时间段可多段)、费用计算、
- * 记录落库与 stats/recent 聚合。
+ * 记录落库与 stats/recentPage 聚合。
  */
 class AiUsageServiceTest {
 
@@ -208,10 +208,12 @@ class AiUsageServiceTest {
     }
 
     @Test
-    fun `recent按时间倒序且带场景中文标签`() {
+    fun `recentPage按时间倒序分页且带场景中文标签`() {
         service.record(AiScene.TEST, "m1", 10, 1, 11, LocalDateTime.of(2026, 8, 24, 10, 0))
         service.record(AiScene.WORD_REPORT, "m2", 20, 2, 22, LocalDateTime.of(2026, 8, 24, 11, 0))
-        val items = service.recent(10)
+        val page1 = service.recentPage(1, 10)
+        assertEquals(2, page1.total)
+        val items = page1.items
         assertEquals(2, items.size)
         // 倒序:后插入的在前
         assertEquals("WORD_REPORT", items[0].scene)
@@ -219,6 +221,13 @@ class AiUsageServiceTest {
         assertEquals("TEST", items[1].scene)
         assertEquals("连通测试", items[1].sceneLabel)
         assertEquals(11, items[1].totalTokens)
+        // 第二页无数据但总数不变
+        val page2 = service.recentPage(2, 1)
+        assertEquals(2, page2.total)
+        assertEquals(1, page2.items.size)
+        assertEquals("TEST", page2.items[0].scene)
+        val page3 = service.recentPage(3, 1)
+        assertEquals(0, page3.items.size)
         // 未记录的场景名映射为原名
         assertEquals("UNKNOWN", AiScene.labelOf("UNKNOWN"))
     }

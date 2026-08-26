@@ -103,6 +103,18 @@
           <template #default="{ row }">{{ formatCost(row.cost) }}</template>
         </el-table-column>
       </el-table>
+      <div class="log-pager">
+        <el-pagination
+          v-model:current-page="logPage"
+          v-model:page-size="logSize"
+          :total="logTotal"
+          :page-sizes="[20, 50, 100]"
+          layout="total, sizes, prev, pager, next"
+          background
+          @current-change="loadLogs"
+          @size-change="onLogSizeChange"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -125,6 +137,9 @@ const summary = ref({ calls: 0, promptTokens: 0, completionTokens: 0, totalToken
 const series = ref([])
 const scenes = ref([])
 const logs = ref([])
+const logPage = ref(1)
+const logSize = ref(20)
+const logTotal = ref(0)
 
 async function loadStats() {
   loading.value = true
@@ -140,9 +155,16 @@ async function loadStats() {
 
 async function loadLogs() {
   try {
-    const res = await request.get('/ai-usage/logs', { params: { limit: 50 } })
+    const res = await request.get('/ai-usage/logs', { params: { page: logPage.value, size: logSize.value } })
     logs.value = res.items || []
+    logTotal.value = res.total || 0
   } catch { /* 拦截器已提示 */ }
+}
+
+/** 每页条数变化:回到第一页再加载 */
+function onLogSizeChange() {
+  logPage.value = 1
+  loadLogs()
 }
 
 /** 金额格式:大额整数,小额保留足够精度 */
@@ -243,5 +265,10 @@ onActivated(() => {
 }
 .usage-table {
   width: 100%;
+}
+.log-pager {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
 }
 </style>
