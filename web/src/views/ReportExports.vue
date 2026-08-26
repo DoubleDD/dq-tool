@@ -76,6 +76,7 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } fro
 import { ElMessage } from 'element-plus'
 import request from '../api'
 import { formatBytes, formatDateTime } from '../utils/format'
+import { isTauri } from '../utils/download'
 
 const tasks = ref([])
 const keyword = ref('')
@@ -168,8 +169,6 @@ function download(row) {
 }
 
 // tauri 套壳环境(webview 注入 __TAURI_INTERNALS__):「另存为」走原生保存对话框,由 Rust 侧复制产物文件
-const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
-
 async function saveAs(row) {
   row._saving = true
   try {

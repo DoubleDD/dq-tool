@@ -3,7 +3,8 @@
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
       <div>
-        <ExportButton v-if="hasJob" :job-id="jobId" />
+        <ExportButton v-if="hasJob" :job-id="jobId" label="导出扫描结果" />
+        <el-button @click="exportExcel">导出列表</el-button>
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshAll">刷新</el-button>
       </div>
     </div>
@@ -173,6 +174,7 @@ import ExportButton from '../components/ExportButton.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import SqlInput from '../components/SqlInput.vue'
 import { formatDuration, formatNumber } from '../utils/format'
+import { cellText, exportListToExcel } from '../utils/listExport'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 
 const route = useRoute()
@@ -348,6 +350,51 @@ function applyPreviewFilter() {
 function onTabChange(name) {
   if (name === 'indexes') loadIndexes()
   if (name === 'preview' && !previewLoaded.value) loadPreview(1)
+}
+
+/** 导出当前 tab 的列表 Excel(字段明细/索引结构/数据预览当前页,列与页面一致) */
+function exportExcel() {
+  if (activeTab.value === 'columns') {
+    if (!filteredColumns.value.length) return ElMessage.warning('当前列表没有可导出的数据')
+    const headers = ['字段名', '注释', '类型', '键', '可空', '默认值']
+    if (hasJob.value) headers.push('空值数(合计)', '总行数', 'NULL 数', '空串数', '有值数', '有值率%')
+    const rows = filteredColumns.value.map((c) => {
+      const row = [
+        cellText(c.name),
+        cellText(c.comment),
+        cellText(c.displayType),
+        keyLabel(c),
+        c.nullable === null || c.nullable === undefined ? '' : (c.nullable ? '是' : '否'),
+        cellText(c.defaultValue)
+      ]
+      if (hasJob.value) {
+        row.push(
+          formatNumber(nullTotal(c)),
+          formatNumber(c.totalRows),
+          formatNumber(c.nullCount),
+          formatNumber(c.emptyCount),
+          formatNumber(c.valueCount),
+          c.fillRate === null || c.fillRate === undefined ? '' : String(Math.round(c.fillRate * 100) / 100)
+        )
+      }
+      return row
+    })
+    exportListToExcel(`字段明细-${tableName}`, headers, rows, '字段明细')
+  } else if (activeTab.value === 'indexes') {
+    if (!indexes.value.length) return ElMessage.warning('当前列表没有可导出的数据')
+    const headers = ['索引名', '唯一', '索引列']
+    const rows = indexes.value.map((i) => [
+      cellText(i.name),
+      i.unique ? '唯一' : '',
+      (i.columns || []).join(', ')
+    ])
+    exportListToExcel(`索引结构-${tableName}`, headers, rows, '索引结构')
+  } else {
+    if (!previewRows.value.length) return ElMessage.warning('当前列表没有可导出的数据')
+    const headers = previewColumns.value.map((c) => (c.type ? `${c.name} ${c.type}` : c.name))
+    const rows = previewRows.value.map((r) => r.map(cellText))
+    exportListToExcel(`数据预览-${tableName}-第${previewPage.value}页`, headers, rows, '数据预览')
+  }
 }
 
 /** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引/预览按当前 tab 决定是否重载 */

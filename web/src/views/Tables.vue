@@ -6,8 +6,8 @@
         <el-button @click="goBack">返回</el-button>
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshTables">刷新</el-button>
         <el-button :loading="exporting" @click="exportReport">导出报告</el-button>
+        <el-button :disabled="!filteredTables.length" @click="exportExcel">导出 Excel</el-button>
         <el-button @click="$router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${dbQuery()}`)">扫描记录</el-button>
-        <AiConfigDialog />
         <template v-if="!filterTagId">
           <el-button :disabled="!selectedTables.length" :loading="batchDocLoading" @click="generateDocsBatch">
             生成描述{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
@@ -272,11 +272,11 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
-import AiConfigDialog from '../components/AiConfigDialog.vue'
 import TableTagDialog from '../components/TableTagDialog.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
+import { cellText, exportListToExcel } from '../utils/listExport'
 import { goBack as historyBack } from '../utils/back'
 
 const route = useRoute()
@@ -303,6 +303,26 @@ async function exportReport() {
   } finally {
     exporting.value = false
   }
+}
+
+/** 导出当前过滤后的表列表 Excel(列与页面一致,行数/大小取值口径同表格展示) */
+function exportExcel() {
+  const headers = ['表名', '注释', '标记', '描述', '引擎/表空间', '行数', '总大小', '最近扫描时间']
+  const rows = filteredTables.value.map((t) => {
+    const er = effectiveRows(t)
+    const latest = latestScans.value[t.name]
+    return [
+      cellText(t.name),
+      cellText(t.comment),
+      (tableTags.value[t.name] || []).map((tag) => tag.name).join(', '),
+      cellText(docs.value[t.name]),
+      cellText(t.storageInfo),
+      er.value === null || er.value === undefined ? '' : (er.exact ? '' : '约 ') + formatNumber(er.value),
+      formatBytes(effectiveSize(t)),
+      latest ? formatDateTime(latest.finishedAt) : ''
+    ]
+  })
+  exportListToExcel(`表列表-${schemaLabel.value}`, headers, rows, '表列表')
 }
 // schema 下所有基表的字段总数(业务库元数据查询,失败时显示 -)
 const columnCount = ref(null)
@@ -370,11 +390,11 @@ async function reloadTableTags() {
 const scanDialogVisible = ref(false)
 const submitting = ref(false)
 // maxSizeValue 为空(null)表示不限制表大小
-const scanForm = reactive({ forceFull: false, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: false, genDoc: true, workers: null })
+const scanForm = reactive({ forceFull: true, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: true, genDoc: true, workers: null })
 // 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走
 const singleTable = ref('')
 
-// 配置默认的并发 worker 线程数,扫描弹窗中展示
+// 配置默认的并发 worker 线程数,扫描弹窗中展示并作为「并发线程数」默认值;首次打开扫描对话框时拉取并缓存
 const defaultWorkers = ref(null)
 let scanDefaultsFetched = false
 async function fetchScanDefaults() {
@@ -383,24 +403,10 @@ async function fetchScanDefaults() {
   try {
     const cfg = await request.get('/scans/defaults')
     defaultWorkers.value = cfg.defaultWorkers ?? null
+    // 首次拉取到默认值后回填弹窗(用户尚未填写时);拉取失败则留空,提交时按后端默认处理
+    if (scanForm.workers == null) scanForm.workers = defaultWorkers.value
   } catch {
     // 拉取失败不影响扫描,弹窗中默认值显示 "-"
-  }
-}
-
-// 大模型配置是否可用(合并默认值后完整),决定「AI 自动打标」「生成表描述」复选框默认勾选;首次打开扫描对话框时拉取并缓存
-const aiAvailable = ref(false)
-let aiConfigFetched = false
-async function fetchAiAvailable() {
-  if (aiConfigFetched) return
-  aiConfigFetched = true
-  try {
-    const cfg = await request.get('/ai-config')
-    aiAvailable.value = !!cfg.available
-    scanForm.autoTag = aiAvailable.value
-    scanForm.genDoc = aiAvailable.value
-  } catch {
-    // 拉取失败按不可用处理,复选框默认不勾
   }
 }
 
@@ -642,14 +648,14 @@ function goTableDetail(row) {
 
 function openScanDialog() {
   singleTable.value = ''
-  scanForm.forceFull = false
+  scanForm.forceFull = true
   scanForm.nullRules = []
   scanForm.maxSizeValue = null
   scanForm.maxSizeUnit = 'GB'
-  scanForm.autoTag = aiAvailable.value
-  scanForm.genDoc = aiAvailable.value
-  scanForm.workers = null
-  fetchAiAvailable()
+  // AI 相关默认勾选:未配置大模型时后端自动跳过
+  scanForm.autoTag = true
+  scanForm.genDoc = true
+  scanForm.workers = defaultWorkers.value
   fetchScanDefaults()
   scanDialogVisible.value = true
 }
