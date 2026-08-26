@@ -10,14 +10,17 @@ import com.example.dq.config.StartupLog;
 import com.example.dq.config.StartupStage;
 import com.example.dq.config.TrayManager;
 import com.example.dq.controller.AiConfigController;
+import com.example.dq.controller.AiUsageController;
 import com.example.dq.controller.AnnotationController;
 import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.LicenseController;
+import com.example.dq.controller.ListExportController;
 import com.example.dq.controller.MetadataController;
 import com.example.dq.controller.PreviewController;
 import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.LogController;
 import com.example.dq.controller.ScanController;
+import com.example.dq.controller.ScanTransferController;
 import com.example.dq.controller.SystemSettingsController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
@@ -41,6 +44,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.module.kotlin.KotlinModule;
 
 import java.io.InputStream;
+import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -80,14 +84,17 @@ public class WebServer {
     private final AtomicReference<LicenseService> licenseServiceRef = new AtomicReference<>();
     private final AtomicReference<DataSourceController> dataSourceCtrl = new AtomicReference<>();
     private final AtomicReference<ScanController> scanCtrl = new AtomicReference<>();
+    private final AtomicReference<ScanTransferController> scanTransferCtrl = new AtomicReference<>();
     private final AtomicReference<MetadataController> metaCtrl = new AtomicReference<>();
     private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
     private final AtomicReference<AiConfigController> aiCtrl = new AtomicReference<>();
+    private final AtomicReference<AiUsageController> aiUsageCtrl = new AtomicReference<>();
     private final AtomicReference<SystemSettingsController> settingsCtrl = new AtomicReference<>();
     private final AtomicReference<LicenseController> licenseCtrl = new AtomicReference<>();
     private final AtomicReference<PreviewController> previewCtrl = new AtomicReference<>();
     private final AtomicReference<AnnotationController> annotationCtrl = new AtomicReference<>();
+    private final AtomicReference<ListExportController> listExportCtrl = new AtomicReference<>();
 
     public WebServer(ConfigLoader.AppConfig config) throws Exception {
         this.config = config;
@@ -120,32 +127,41 @@ public class WebServer {
 
         this.app = Javalin.create(cfg -> {
             cfg.jsonMapper(new JavalinJackson3(objectMapper, false));
-            // 指纹资源(文件名带内容 hash,内容变则文件名变):长缓存 immutable;须先注册,优先于根目录条目命中
-            cfg.staticFiles.add(files -> {
-                files.hostedPath = "/assets";
-                files.directory = "/static/assets";
-                files.location = Location.CLASSPATH;
-                files.headers = Map.of("Cache-Control", "public, max-age=31536000, immutable");
-            });
-            // 入口 index.html 等:每次重校验。不缓存是硬要求——否则升级后浏览器仍用旧 index.html,
-            // 引用已不存在的旧 hash 资源,模块脚本拿到 SPA 回退的 text/html 报 MIME 错误白屏
-            cfg.staticFiles.add(files -> {
-                files.hostedPath = "/";
-                files.directory = "/static";
-                files.location = Location.CLASSPATH;
-                files.headers = Map.of("Cache-Control", "no-cache");
-            });
+            // dev 模式(make dev / dev-headless)不构建前端,classpath 上没有 /static;
+            // Javalin 对不存在的静态目录直接抛异常,故按资源存在与否条件注册。
+            // release 包由 buildWebForRelease 保证 web/dist 内嵌,此处一定注册成功
+            boolean hasStatic = WebServer.class.getResource("/static") != null;
+            if (hasStatic) {
+                // 指纹资源(文件名带内容 hash,内容变则文件名变):长缓存 immutable;须先注册,优先于根目录条目命中
+                cfg.staticFiles.add(files -> {
+                    files.hostedPath = "/assets";
+                    files.directory = "/static/assets";
+                    files.location = Location.CLASSPATH;
+                    files.headers = Map.of("Cache-Control", "public, max-age=31536000, immutable");
+                });
+                // 入口 index.html 等:每次重校验。不缓存是硬要求——否则升级后浏览器仍用旧 index.html,
+                // 引用已不存在的旧 hash 资源,模块脚本拿到 SPA 回退的 text/html 报 MIME 错误白屏
+                cfg.staticFiles.add(files -> {
+                    files.hostedPath = "/";
+                    files.directory = "/static";
+                    files.location = Location.CLASSPATH;
+                    files.headers = Map.of("Cache-Control", "no-cache");
+                });
+            } else {
+                StartupLog.log("  classpath 无 /static(前端未构建),跳过静态资源注册(dev 模式正常)");
+            }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
-                    dataSourceCtrl, scanCtrl, metaCtrl, reportCtrl, tagCtrl, aiCtrl, settingsCtrl, licenseCtrl,
-                    previewCtrl, annotationCtrl, new LogController(logStreamAppender), sessionRef);
+                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, tagCtrl, aiCtrl, aiUsageCtrl,
+                    settingsCtrl, licenseCtrl, previewCtrl, annotationCtrl, listExportCtrl,
+                    new LogController(logStreamAppender), sessionRef);
         });
 
         // ---- 桌面生命周期(原 Spring 事件/调度挂载点,改显式装配;退出动作统一走 AppShutdown) ----
         // 连接池由共享内核懒构建,退出时按需取(内核未构建完就退出时跳过关池)
         AppShutdown shutdown = new AppShutdown(app, () -> env == null ? null : env.getDataSource());
         this.session = new DesktopSession(props, shutdown);
-        this.browserOpener = new BrowserOpener(session);
+        this.browserOpener = new BrowserOpener(session, Path.of(config.dataDir(), "browser-app.txt"));
         this.trayManager = new TrayManager(browserOpener, session, shutdown);
         sessionRef.set(session);
         this.session.start();
@@ -155,14 +171,17 @@ public class WebServer {
     private void registerRoutes(RoutesConfig routes, AtomicReference<LicenseService> licenseServiceRef,
                                 AtomicReference<DataSourceController> dataSourceCtrl,
                                 AtomicReference<ScanController> scanCtrl,
+                                AtomicReference<ScanTransferController> scanTransferCtrl,
                                 AtomicReference<MetadataController> metaCtrl,
                                 AtomicReference<ReportExportController> reportCtrl,
                                 AtomicReference<TagController> tagCtrl,
                                 AtomicReference<AiConfigController> aiCtrl,
+                                AtomicReference<AiUsageController> aiUsageCtrl,
                                 AtomicReference<SystemSettingsController> settingsCtrl,
                                 AtomicReference<LicenseController> licenseCtrl,
                                 AtomicReference<PreviewController> previewCtrl,
                                 AtomicReference<AnnotationController> annotationCtrl,
+                                AtomicReference<ListExportController> listExportCtrl,
                                 LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
@@ -245,6 +264,10 @@ public class WebServer {
 
         // ---- 扫描作业 ----
         routes.get("/api/scans/defaults", ctx -> scanCtrl.get().defaults(ctx));
+        // 扫描记录导出/导入(跨机器迁移):静态段须先于 {jobId} 注册,避免被路径参数路由截获
+        routes.get("/api/scans/transfer/export", ctx -> scanTransferCtrl.get().export(ctx));
+        routes.post("/api/scans/transfer/preview", ctx -> scanTransferCtrl.get().preview(ctx));
+        routes.post("/api/scans/transfer/import", ctx -> scanTransferCtrl.get().importJson(ctx));
         routes.post("/api/scans", ctx -> scanCtrl.get().create(ctx));
         routes.get("/api/scans", ctx -> scanCtrl.get().list(ctx));
         routes.get("/api/scans/{jobId}", ctx -> scanCtrl.get().get(ctx));
@@ -253,6 +276,7 @@ public class WebServer {
         routes.delete("/api/scans/{jobId}", ctx -> scanCtrl.get().delete(ctx));
         routes.get("/api/scans/{jobId}/tables/{tableName}/columns", ctx -> scanCtrl.get().columns(ctx));
         routes.get("/api/scans/{jobId}/export", ctx -> scanCtrl.get().export(ctx));
+        routes.get("/api/scans/{jobId}/export-word", ctx -> scanCtrl.get().exportWord(ctx));
 
         // ---- 元数据/浏览(/api/datasources/{dsId} 下) ----
         routes.get("/api/datasources/{dsId}/databases", ctx -> metaCtrl.get().listDatabases(ctx));
@@ -292,13 +316,22 @@ public class WebServer {
         routes.post("/api/annotations/import/preview", ctx -> annotationCtrl.get().previewImport(ctx));
         routes.post("/api/annotations/import", ctx -> annotationCtrl.get().importAnnotations(ctx));
 
+        // ---- 通用列表导出(前端提交所见表格数据,渲染 xlsx 一次性下载) ----
+        routes.post("/api/list-exports", ctx -> listExportCtrl.get().stage(ctx));
+        routes.get("/api/list-exports/{token}", ctx -> listExportCtrl.get().download(ctx));
+
         // ---- AI 配置 / 系统设置 / 授权 / 心跳 ----
         routes.get("/api/ai-config", ctx -> aiCtrl.get().get(ctx));
         routes.put("/api/ai-config", ctx -> aiCtrl.get().save(ctx));
         routes.post("/api/ai-config/test", ctx -> aiCtrl.get().test(ctx));
+        // AI 调用 Token/费用统计
+        routes.get("/api/ai-usage/stats", ctx -> aiUsageCtrl.get().stats(ctx));
+        routes.get("/api/ai-usage/logs", ctx -> aiUsageCtrl.get().logs(ctx));
         routes.get("/api/system-settings/scan", ctx -> settingsCtrl.get().scanGet(ctx));
         routes.put("/api/system-settings/scan", ctx -> settingsCtrl.get().scanSave(ctx));
         routes.delete("/api/system-settings/scan", ctx -> settingsCtrl.get().scanReset(ctx));
+        routes.get("/api/system-settings/browser", ctx -> settingsCtrl.get().browserGet(ctx));
+        routes.put("/api/system-settings/browser", ctx -> settingsCtrl.get().browserSave(ctx));
         routes.get("/api/license/status", ctx -> licenseCtrl.get().status(ctx));
         routes.post("/api/license/activate", ctx -> licenseCtrl.get().activate(ctx));
         // 授权码管理(仅配置了签发私钥的管理员实例;在 /api/license 前缀下,不被激活拦截)
@@ -395,6 +428,7 @@ public class WebServer {
         }
         ready.set(true);
         StartupLog.log("  共享内核初始化完成,服务就绪");
+        syncBrowserSetting();
     }
 
     /**
@@ -417,6 +451,21 @@ public class WebServer {
         }
         ready.set(true);
         StartupLog.log("  共享内核初始化完成,服务就绪");
+        syncBrowserSetting();
+    }
+
+    /**
+     * 以 DB 为准回填浏览器选择:启动早期开窗时 H2 尚未就绪,BrowserOpener 只能用镜像文件里的值;
+     * 内核就绪后同步一次(DB 为唯一事实来源),并顺带刷新镜像文件。失败不阻断启动。
+     */
+    private void syncBrowserSetting() {
+        try {
+            if (env != null) {
+                browserOpener.setConfiguredBrowser(env.getSystemSettingsService().browserApp());
+            }
+        } catch (Exception e) {
+            log.warn("回填浏览器选择失败,沿用启动早期镜像值: {}", e.getMessage());
+        }
     }
 
     /** 注入内核服务对象图到路由引用骨架,并把内核挂到本实例(stop/AppShutdown 用) */
@@ -424,15 +473,18 @@ public class WebServer {
         this.env = env;
         licenseServiceRef.set(env.getLicenseService());
         dataSourceCtrl.set(new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService()));
-        scanCtrl.set(new ScanController(env.getScanService(), env.getExportService()));
+        scanCtrl.set(new ScanController(env.getScanService(), env.getExportService(), env.getScanWordExportService()));
+        scanTransferCtrl.set(new ScanTransferController(env.getScanTransferService()));
         metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService()));
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));
-        settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService()));
+        aiUsageCtrl.set(new AiUsageController(env.getAiUsageService()));
+        settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener));
         licenseCtrl.set(new LicenseController(env.getLicenseService()));
         previewCtrl.set(new PreviewController(env.getPreviewService()));
         annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
+        listExportCtrl.set(new ListExportController(env.getListExportService()));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

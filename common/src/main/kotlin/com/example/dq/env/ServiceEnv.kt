@@ -3,6 +3,7 @@ package com.example.dq.env
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.repository.AiConfigRepository
+import com.example.dq.repository.AiUsageRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
@@ -21,16 +22,20 @@ import com.example.dq.scan.InterruptRecovery
 import com.example.dq.scan.ScanExecutor
 import com.example.dq.service.AiConfigService
 import com.example.dq.service.AiService
+import com.example.dq.service.AiUsageService
 import com.example.dq.service.AnnotationTransferService
 import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
 import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
+import com.example.dq.service.ListExportService
 import com.example.dq.service.MetadataService
 import com.example.dq.service.PreviewService
 import com.example.dq.service.ScanDocService
 import com.example.dq.service.ScanService
+import com.example.dq.service.ScanTransferService
+import com.example.dq.service.ScanWordExportService
 import com.example.dq.service.SshTunnelService
 import com.example.dq.service.SystemSettingsService
 import com.example.dq.service.TableDocService
@@ -68,6 +73,7 @@ class ServiceEnv(val config: AppConfig) {
     val tableDocRepo = TableDocRepository(jdbc)
     val tagRepo = TagRepository(jdbc)
     val aiConfigRepo = AiConfigRepository(jdbc)
+    val aiUsageRepo = AiUsageRepository(jdbc)
     val systemSettingsRepo = SystemSettingsRepository(jdbc)
     val licenseRepo = LicenseRepository(jdbc)
     val licenseRecordRepo = LicenseRecordRepository(jdbc)
@@ -83,7 +89,8 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceService = DataSourceService(dataSourceRepo, crypto, dialectFactory, config, schemaStatRepo, metaCacheRepo, sshTunnelService)
     val dataSourceTransferService = DataSourceTransferService(dataSourceRepo, crypto, dataSourceService)
     val tagService = TagService(tagRepo, dataSourceRepo)
-    val aiService = AiService()
+    val aiUsageService = AiUsageService(aiUsageRepo, aiConfigRepo, config)
+    val aiService = AiService(aiUsageService::record)
     val aiConfigService = AiConfigService(aiConfigRepo, crypto, config, aiService)
     val systemSettingsService = SystemSettingsService(systemSettingsRepo, config)
     val autoTagService = AutoTagService(aiConfigService, aiService, tagService, tagRepo, scanRepo,
@@ -97,7 +104,10 @@ class ServiceEnv(val config: AppConfig) {
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, dataSourceRepo)
+    val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo)
     val exportService = ExportService(scanService, tableDocRepo)
+    val scanWordExportService = ScanWordExportService(scanService, tagRepo, schemaDocRepo)
+    val listExportService = ListExportService()
     val wordReportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
         dialectFactory, tagRepo, tableDocRepo, aiConfigService, aiService)
     val wordReportExportService = WordReportExportService(wordReportService, reportExportRepo, dataSourceRepo, config)

@@ -207,6 +207,34 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 通用列表导出全链路() throws Exception {
+        activateLicense();
+        // stage:提交所见表格数据 → token
+        HttpResponse<String> staged = send("POST", "/api/list-exports",
+                "{\"filename\":\"库列表\",\"sheets\":[{\"name\":\"库列表\",\"headers\":[\"库名\",\"表数量\"],"
+                        + "\"rows\":[[\"dqtest\",\"120\"],[\"app\",\"\"]]}]}");
+        assertEquals(200, staged.statusCode(), staged.body());
+        String token = staged.body().replaceAll(".*\"token\":\"([^\"]+)\".*", "$1");
+
+        // download:xlsx 文件流 + Content-Disposition
+        HttpResponse<byte[]> resp = client.send(HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + server.port() + "/api/list-exports/" + token)).build(),
+                HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(200, resp.statusCode());
+        assertTrue(resp.headers().firstValue("Content-Disposition").orElse("").contains("attachment"),
+                String.valueOf(resp.headers().map()));
+        byte[] body = resp.body();
+        assertTrue(body.length > 4 && body[0] == 'P' && body[1] == 'K', "应为 xlsx(zip) 文件流");
+
+        // 一次性:重复下载 404
+        assertEquals(404, get("/api/list-exports/" + token).statusCode());
+
+        // 参数校验:filename 空走 400 统一映射
+        assertEquals(400, send("POST", "/api/list-exports",
+                "{\"filename\":\"\",\"sheets\":[{\"name\":\"s\",\"headers\":[\"h\"],\"rows\":[]}]}").statusCode());
+    }
+
+    @Test
     void 就绪闸门与健康探针_未就绪503就绪后放行() throws Exception {
         // 另起一个未完成初始化的实例:绑定后、finishInit 前,业务接口应被闸门拦成 503
         DqProperties bootDq = new DqProperties();
@@ -363,6 +391,51 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void AI用量统计端点与AI配置价格回显() throws Exception {
+        activateLicense();
+        // 空数据:汇总为 0、序列 30 天补零、场景与明细为空
+        HttpResponse<String> stats = get("/api/ai-usage/stats?days=30");
+        assertEquals(200, stats.statusCode(), stats.body());
+        assertTrue(stats.body().contains("\"calls\":0"), stats.body());
+        assertTrue(stats.body().contains("\"series\""), stats.body());
+        assertTrue(stats.body().contains("\"scenes\":[]"), stats.body());
+        HttpResponse<String> logs = get("/api/ai-usage/logs");
+        assertEquals(200, logs.statusCode(), logs.body());
+        assertTrue(logs.body().contains("\"items\":[]"), logs.body());
+
+        // AI 配置回显合并默认值后的计费价格(DeepSeek 默认价,峰谷计价默认开启)
+        HttpResponse<String> cfg = get("/api/ai-config");
+        assertEquals(200, cfg.statusCode(), cfg.body());
+        assertTrue(cfg.body().contains("\"peakValleyEnabled\":true"), cfg.body());
+        assertTrue(cfg.body().contains("\"peakInputPrice\":9.0"), cfg.body());
+        assertTrue(cfg.body().contains("\"peakOutputPrice\":27.0"), cfg.body());
+        assertTrue(cfg.body().contains("\"valleyInputPrice\":4.5"), cfg.body());
+        assertTrue(cfg.body().contains("\"valleyOutputPrice\":13.5"), cfg.body());
+        assertTrue(cfg.body().contains("\"workPeriods\":[\"09:00-12:00\",\"14:00-18:00\"]"), cfg.body());
+        assertTrue(cfg.body().contains("\"weekendValley\":true"), cfg.body());
+
+        // 保存自定义价格后回显更新(含工作时间段多段)
+        HttpResponse<String> saved = send("PUT", "/api/ai-config",
+                "{\"baseUrl\":\"http://localhost:1/v1\",\"apiKey\":\"k\",\"model\":\"m\"," +
+                "\"peakValleyEnabled\":true,\"peakInputPrice\":2.0,\"peakOutputPrice\":8.0," +
+                "\"valleyInputPrice\":1.0,\"valleyOutputPrice\":4.0," +
+                "\"workPeriods\":[\"08:00-11:30\",\"13:00-17:00\"],\"weekendValley\":true}");
+        assertEquals(200, saved.statusCode(), saved.body());
+        HttpResponse<String> cfg2 = get("/api/ai-config");
+        assertTrue(cfg2.body().contains("\"peakInputPrice\":2.0"), cfg2.body());
+        assertTrue(cfg2.body().contains("\"peakOutputPrice\":8.0"), cfg2.body());
+        assertTrue(cfg2.body().contains("\"valleyInputPrice\":1.0"), cfg2.body());
+        assertTrue(cfg2.body().contains("\"workPeriods\":[\"08:00-11:30\",\"13:00-17:00\"]"), cfg2.body());
+
+        // 关闭峰谷计价:回显 peakValleyEnabled=false
+        HttpResponse<String> off = send("PUT", "/api/ai-config",
+                "{\"baseUrl\":\"http://localhost:1/v1\",\"apiKey\":\"k\",\"model\":\"m\",\"peakValleyEnabled\":false}");
+        assertEquals(200, off.statusCode(), off.body());
+        HttpResponse<String> cfg3 = get("/api/ai-config");
+        assertTrue(cfg3.body().contains("\"peakValleyEnabled\":false"), cfg3.body());
+    }
+
+    @Test
     void 库描述编辑与Word报告导出端点() throws Exception {
         activateLicense();
         HttpResponse<String> created = send("POST", "/api/datasources",
@@ -479,6 +552,77 @@ class WebServerSmokeTest {
                 .POST(HttpRequest.BodyPublishers.ofByteArray(bad.toByteArray()))
                 .build();
         assertEquals(400, client.send(badReq, HttpResponse.BodyHandlers.ofString()).statusCode());
+    }
+
+    @Test
+    void 扫描记录导出导入端点() throws Exception {
+        activateLicense();
+        HttpResponse<String> created = send("POST", "/api/datasources",
+                "{\"name\":\"迁移源\",\"jdbcUrl\":\"jdbc:mysql://localhost:3306/db\",\"username\":\"root\",\"password\":\"p\"}");
+        assertEquals(200, created.statusCode(), created.body());
+        long dsId = Long.parseLong(created.body().replaceAll(".*\"id\":(\\d+).*", "$1"));
+
+        // 导出(无 ids = 全部;空库也返回合法文件):静态段路由不被 /api/scans/{jobId} 截获
+        HttpResponse<String> exportResp = get("/api/scans/transfer/export");
+        assertEquals(200, exportResp.statusCode(), exportResp.body());
+        assertTrue(exportResp.body().contains("dq-tool-scans"), exportResp.body());
+        assertTrue(exportResp.headers().firstValue("Content-Disposition").orElse("").contains("dq-scans-"),
+                String.valueOf(exportResp.headers().map()));
+
+        // 导入文件:一条 DONE 任务(含表/分段/字段明细)
+        String importJson = "{\"app\":\"dq-tool-scans\",\"version\":1,\"exportedAt\":\"t\",\"jobs\":["
+                + "{\"datasourceName\":\"迁移源\",\"schemaName\":\"public\",\"status\":\"DONE\","
+                + "\"createdAt\":\"2026-08-01T10:00:00\",\"totalTables\":1,\"doneTables\":1,"
+                + "\"tables\":[{\"tableName\":\"t_user\",\"status\":\"DONE\",\"totalRows\":100,"
+                + "\"chunks\":[{\"seq\":0,\"status\":\"DONE\",\"rowCount\":100}],"
+                + "\"columns\":[{\"columnName\":\"name\",\"columnType\":\"varchar(64)\",\"totalRows\":100,\"nullCount\":5}]}]}]}";
+        String boundary = "----dq-test-boundary";
+
+        // 预检:文件数据源分布 + 同名自动匹配
+        HttpResponse<String> preview = multipartPost("/api/scans/transfer/preview", boundary, importJson, null);
+        assertEquals(200, preview.statusCode(), preview.body());
+        assertTrue(preview.body().contains("\"totalJobs\":1"), preview.body());
+        assertTrue(preview.body().contains("\"matchedDatasourceId\":" + dsId), preview.body());
+
+        // 导入:mapping 映射到本机数据源 → imported=1,列表可见
+        HttpResponse<String> imported = multipartPost("/api/scans/transfer/import", boundary, importJson,
+                "{\"迁移源\":" + dsId + "}");
+        assertEquals(200, imported.statusCode(), imported.body());
+        assertTrue(imported.body().contains("\"imported\":1"), imported.body());
+        HttpResponse<String> list = get("/api/scans?datasourceId=" + dsId);
+        assertTrue(list.body().contains("\"schemaName\":\"public\""), list.body());
+        assertTrue(list.body().contains("2026-08-01"), list.body());
+
+        // 重复导入:按 数据源+db+schema+created_at 去重 → skipped=1,warnings 带判重原因
+        HttpResponse<String> again = multipartPost("/api/scans/transfer/import", boundary, importJson,
+                "{\"迁移源\":" + dsId + "}");
+        assertTrue(again.body().contains("\"skipped\":1"), again.body());
+        assertTrue(again.body().contains("判重跳过"), again.body());
+
+        // 非法文件走 400 统一映射
+        HttpResponse<String> bad = multipartPost("/api/scans/transfer/preview", boundary, "不是 JSON", null);
+        assertEquals(400, bad.statusCode(), bad.body());
+    }
+
+    /** multipart 上传:file 部分为扫描记录 JSON,可选 mapping 表单字段(JSON 字符串) */
+    private HttpResponse<String> multipartPost(String path, String boundary, String fileContent, String mapping)
+            throws Exception {
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"scans.json\"\r\n"
+                + "Content-Type: application/json\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(fileContent.getBytes(StandardCharsets.UTF_8));
+        body.write("\r\n".getBytes(StandardCharsets.UTF_8));
+        if (mapping != null) {
+            body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"mapping\"\r\n\r\n"
+                    + mapping + "\r\n").getBytes(StandardCharsets.UTF_8));
+        }
+        body.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        HttpRequest request = HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + server.port() + path))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+                .build();
+        return client.send(request, HttpResponse.BodyHandlers.ofString());
     }
 
     @Test
