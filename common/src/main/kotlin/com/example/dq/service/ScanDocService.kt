@@ -3,12 +3,14 @@ package com.example.dq.service
 import com.example.dq.model.ScanStatus
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.TableDocRepository
+import com.example.dq.scan.ScanAiTracker
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
  * 扫描后 AI 生成表描述:表 DONE 后由 ChunkRunner 提交,独立守护线程池(2 worker)异步执行,绝不阻塞扫描 worker。
+ * 入队/完成经 ScanAiTracker 计数:全部表终态且 AI 后续清零前,扫描任务保持 RUNNING 不收尾(进度封顶 99%)。
  * 生成逻辑直接复用 TableDocService.generate(实时查元数据 → 大模型 → 落 table_doc);
  * 表已有非空描述、未配置大模型时静默跳过(不浪费 LLM 调用);任务被取消/失败/中断后不再生成;
  * 同一 job 内首次 LLM 调用失败后熔断,该 job 剩余表不再尝试(内存 Set,不持久化)。
@@ -18,9 +20,10 @@ class ScanDocService(
     private val scanRepo: ScanRepository,
     private val tableDocRepo: TableDocRepository,
     tableDocService: TableDocService,
-    /** 描述生成调用点(TableDocService 是 final class,测试经此注入 fake) */
-    private val generate: (Long, String?, String, String) -> Unit =
-        { dsId, db, schema, table -> tableDocService.generate(dsId, db, schema, table) },
+    private val aiTracker: ScanAiTracker,
+    /** 描述生成调用点(TableDocService 是 final class,测试经此注入 fake);末参为扫描任务 id,用于用量统计关联 */
+    private val generate: (Long, String?, String, String, Long?) -> Unit =
+        { dsId, db, schema, table, jobId -> tableDocService.generate(dsId, db, schema, table, jobId) },
 ) {
 
     private val executor = Executors.newFixedThreadPool(DOC_WORKERS) { r ->
@@ -30,13 +33,20 @@ class ScanDocService(
     /** 已熔断的任务(LLM 首次调用失败后,该 job 剩余表直接跳过) */
     private val disabledJobs = ConcurrentHashMap.newKeySet<Long>()
 
-    /** 表 DONE 后由 ChunkRunner 调用;开关关闭或本 job 已熔断时直接忽略 */
+    /** 表 DONE 后由 ChunkRunner 调用;开关关闭或本 job 已熔断时直接忽略(不计数) */
     fun submit(jobId: Long, scanTableId: Long) {
         val job = scanRepo.findJob(jobId) ?: return
         if (!job.genDoc || disabledJobs.contains(jobId)) {
             return
         }
-        executor.execute { runSafely(job, scanTableId) }
+        aiTracker.taskSubmitted(jobId)
+        executor.execute {
+            try {
+                runSafely(job, scanTableId)
+            } finally {
+                aiTracker.taskDone(jobId)
+            }
+        }
     }
 
     /** 队列任务体;internal 以便单测绕过队列同步驱动 */
@@ -74,7 +84,7 @@ class ScanDocService(
             return
         }
         try {
-            generate(job.datasourceId, job.dbName, job.schemaName, tableName)
+            generate(job.datasourceId, job.dbName, job.schemaName, tableName, job.id)
             log.info("扫描后生成表描述 jobId={} table={}", job.id, tableName)
         } catch (e: IllegalArgumentException) {
             // 表级问题(如表已不存在):只跳过本表,不熔断整个任务

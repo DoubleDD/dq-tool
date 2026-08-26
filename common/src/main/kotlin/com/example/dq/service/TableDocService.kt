@@ -21,9 +21,11 @@ class TableDocService(
     fun list(datasourceId: Long, database: String?, schema: String): Map<String, String> =
         repository.findBySchema(datasourceId, normalizeDb(database), schema)
 
-    /** 生成单表说明并落库;库差异只经 dialect,无库特定分支 */
+    /** 生成单表说明并落库;库差异只经 dialect,无库特定分支;扫描触发的生成传 scanJobId 关联用量统计 */
     @Throws(SQLException::class)
-    fun generate(datasourceId: Long, database: String?, schema: String, table: String): TableDocView {
+    @JvmOverloads
+    fun generate(datasourceId: Long, database: String?, schema: String, table: String,
+                 scanJobId: Long? = null): TableDocView {
         val aiConfig = aiConfigService.requireConfig()
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
@@ -37,7 +39,7 @@ class TableDocService(
         }
         val description: String
         try {
-            description = aiService.describeTable(aiConfig, stat, columns)
+            description = aiService.describeTable(aiConfig, stat, columns, scanJobId)
         } catch (e: RuntimeException) {
             if (aiConfig.usingDefault) {
                 // 默认配置不可用时不暴露任何默认接口细节,只引导用户自行配置

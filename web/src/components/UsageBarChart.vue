@@ -58,7 +58,7 @@
           :x="bandX(i) + band / 2"
           :y="height - 8"
           text-anchor="middle"
-        >{{ d.date.slice(5) }}</text>
+        >{{ d.xLabel || d.date.slice(5) }}</text>
       </g>
       <!-- 悬停高亮竖线 -->
       <line v-if="hover >= 0" class="hover-line" :x1="bandX(hover) + band / 2" :y1="padT"
@@ -71,7 +71,7 @@
       class="chart-tooltip"
       :style="{ left: tooltipX + 'px', top: '8px' }"
     >
-      <div class="tip-title">{{ data[hover].date }}</div>
+      <div class="tip-title">{{ data[hover].title || data[hover].date }}</div>
       <div class="tip-row" v-if="metric === 'token'">
         <span class="tip-dot dot-prompt" />输入 {{ formatNumber(data[hover].promptTokens) }}<template v-if="data[hover].promptCost != null"> · {{ formatCost(data[hover].promptCost) }}</template>
       </div>

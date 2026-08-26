@@ -14,6 +14,7 @@ import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.TableDocRepository
+import com.example.dq.scan.ScanAiTracker
 import com.example.dq.util.CryptoUtil
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.BeforeEach
@@ -34,6 +35,7 @@ class ScanDocServiceTest {
     private lateinit var jdbc: Jdbc
     private lateinit var scanRepo: ScanRepository
     private lateinit var tableDocRepo: TableDocRepository
+    private lateinit var aiTracker: ScanAiTracker
     private var dsId: Long = 0
 
     /** fake 生成调用:记录调用的表名,按 genError 抛出 */
@@ -48,6 +50,7 @@ class ScanDocServiceTest {
         jdbc = Jdbc(ds)
         scanRepo = ScanRepository(jdbc)
         tableDocRepo = TableDocRepository(jdbc)
+        aiTracker = ScanAiTracker(scanRepo)
         val dsRepo = DataSourceRepository(jdbc)
         dsId = dsRepo.insert(DataSourceConfig().apply {
             name = "测试库"
@@ -67,7 +70,7 @@ class ScanDocServiceTest {
         val dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
         val aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
         val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, DialectFactory)
-        return ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService) { _, _, _, table ->
+        return ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, aiTracker) { _, _, _, table, _ ->
             genCalls.add(table)
             genError?.let { throw it }
         }
@@ -143,6 +146,35 @@ class ScanDocServiceTest {
 
         awaitTrue { genCalls.isNotEmpty() }
         assertEquals(listOf("t_order"), genCalls)
+    }
+
+    @Test
+    fun `AI后续未走完任务不收尾,清零后才DONE`() {
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val config = AppConfig(dataDir = Files.createTempDirectory("dq-scandoc"), ai = configuredAi)
+        val crypto = CryptoUtil(config)
+        val dsRepo = DataSourceRepository(jdbc)
+        val dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
+        val aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
+        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, DialectFactory)
+        val service = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, aiTracker) { _, _, _, table, _ ->
+            genCalls.add(table)
+            entered.countDown()
+            release.await() // 阻塞在 LLM 调用里,模拟生成耗时
+        }
+        val (jobId, tableId) = newDoneTable("t_order")
+
+        service.submit(jobId, tableId)
+        entered.await()
+        // 表已 DONE 但 AI 后续未清零:任务保持 RUNNING,进度未算完成
+        aiTracker.tryFinishJob(jobId)
+        assertEquals(ScanStatus.RUNNING, scanRepo.findJob(jobId)!!.status)
+        assertEquals(1, aiTracker.pending(jobId))
+
+        release.countDown() // 生成结束销记,任务随之收尾
+        awaitTrue { scanRepo.findJob(jobId)!!.status == ScanStatus.DONE }
+        assertEquals(0, aiTracker.pending(jobId))
     }
 
     @Test

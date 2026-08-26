@@ -136,9 +136,9 @@ class AiServiceTest {
     // ---------- Token 用量上报 ----------
 
     private class UsageCapture {
-        val records = ArrayList<Array<Any>>()
-        val recorder = AiService.UsageRecorder { scene, model, prompt, completion, total, time ->
-            records.add(arrayOf(scene, model, prompt, completion, total, time))
+        val records = ArrayList<Array<Any?>>()
+        val recorder = AiService.UsageRecorder { scene, model, prompt, completion, total, time, jobId, req, resp ->
+            records.add(arrayOf(scene, model, prompt, completion, total, time, jobId, req, resp))
         }
     }
 
@@ -163,6 +163,9 @@ class AiServiceTest {
             assertEquals(34L, r[3])
             assertEquals(154L, r[4])
             assertTrue(r[5] is LocalDateTime)
+            // 请求内容存档([system]+[user])与模型返回正文一并上报
+            assertEquals("[system]\nsys\n\n[user]\nuser", r[7])
+            assertEquals("ok", r[8])
         } finally {
             server.stop(0)
         }

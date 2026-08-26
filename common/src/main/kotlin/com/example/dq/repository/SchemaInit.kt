@@ -10,7 +10,7 @@ import java.util.jar.JarFile
 import javax.sql.DataSource
 
 /**
- * H2 库表迁移(Flyway):迁移脚本在 classpath:db/migration。
+ * H2 库表迁移(Flyway):主库迁移脚本在 classpath:db/migration,AI 用量独立库在 classpath:db/migration-aiusage。
  * 存量老库(有表无 flyway_schema_history)baselineOnMigrate 自动基线到 V1,再执行 V2 补齐
  * license_info 与后加的列;新库从 V1 全量执行。
  * 规则:结构变更一律新增 V{n}__描述.sql,已发布的迁移文件禁止修改,不允许破坏性变更。
@@ -27,22 +27,24 @@ object SchemaInit {
 
     /**
      * 执行库表迁移;库已是最新时跳过。
+     * @param location 迁移脚本目录(classpath 下);主库默认 db/migration,AI 用量独立库用 db/migration-aiusage
      * @return true = 实际执行了 Flyway migrate;false = 已是最新走了快速路径
      */
-    fun run(ds: DataSource): Boolean {
-        val latest = latestScriptVersion()
+    fun run(ds: DataSource, location: String = "db/migration"): Boolean {
+        val latest = latestScriptVersion(location)
         val current = currentVersion(ds)
         if (latest != null && current != null && current >= latest) {
-            log.info("H2 库表已是最新版本 V{},跳过 Flyway 迁移", current)
+            log.info("H2 库表已是最新版本 V{}({}),跳过 Flyway 迁移", current, location)
             return false
         }
         val result = Flyway.configure()
             .dataSource(ds)
+            .locations("classpath:$location")
             .baselineOnMigrate(true)
             .baselineVersion("1")
             .load()
             .migrate()
-        log.info("H2 库表迁移完成:执行 {} 个迁移,当前版本 {}", result.migrationsExecuted, result.targetSchemaVersion)
+        log.info("H2 库表迁移完成({}):执行 {} 个迁移,当前版本 {}", location, result.migrationsExecuted, result.targetSchemaVersion)
         return true
     }
 
@@ -66,9 +68,9 @@ object SchemaInit {
      * 同时兼容 fat jar(jar: 协议)与 exploded classpath(gradle run/测试,file: 协议);
      * 扫描失败返回 null(回落执行 Flyway,宁慢勿错)
      */
-    private fun latestScriptVersion(): Int? = try {
+    private fun latestScriptVersion(location: String): Int? = try {
         val versions = sortedSetOf<Int>()
-        val urls = SchemaInit::class.java.classLoader.getResources("db/migration")
+        val urls = SchemaInit::class.java.classLoader.getResources(location)
         while (urls.hasMoreElements()) {
             val url = urls.nextElement()
             when (url.protocol) {
@@ -83,7 +85,7 @@ object SchemaInit {
                     JarFile(File(jarPath)).use { jar ->
                         jar.entries().asSequence()
                             .map { it.name }
-                            .filter { it.startsWith("db/migration/") }
+                            .filter { it.startsWith("$location/") }
                             .forEach { parseVersion(it.substringAfterLast('/'))?.let(versions::add) }
                     }
                 }

@@ -18,6 +18,12 @@ public class AiUsageController {
         ctx.json(service.stats(days));
     }
 
+    /** 按扫描任务聚合的消耗序列(趋势图「按扫描」维度),days 口径同 stats */
+    public void scanSeries(Context ctx) {
+        int days = clampInt(ctx.queryParam("days"), 30, 1, 365);
+        ctx.json(service.scanSeries(days));
+    }
+
     /** 最近调用明细分页:page 默认 1,size 默认 20(上限 100),返回 items + total */
     public void logs(Context ctx) {
         int page = clampInt(ctx.queryParam("page"), 1, 1, Integer.MAX_VALUE);

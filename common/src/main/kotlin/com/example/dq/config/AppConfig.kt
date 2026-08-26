@@ -51,6 +51,10 @@ data class AppConfig(
     val h2JdbcUrl: String
         get() = "jdbc:h2:file:${dataDir.toAbsolutePath()}/dqconfig;AUTO_SERVER=TRUE"
 
+    /** AI 用量统计独立 H2 文件库(调用流水含请求/响应内容,数据量大,与主库分离) */
+    val h2AiUsageJdbcUrl: String
+        get() = "jdbc:h2:file:${dataDir.toAbsolutePath()}/dqaiusage;AUTO_SERVER=TRUE"
+
     companion object {
         fun load(): AppConfig {
             // 安装版由打包参数注入 -Ddq.data.dir=~/.dq-tool/data;

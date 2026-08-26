@@ -60,3 +60,19 @@ data class AiUsageLogPage(
     val items: List<AiUsageLogView>,
     val total: Long,
 )
+
+/** AI 用量按扫描任务聚合(趋势图「按扫描」维度) */
+data class AiUsageScanStat(
+    val jobId: Long,
+    /** 展示标签:数据源名 库/schema(MM-dd HH:mm);数据源/任务被删时退化为 #jobId */
+    val label: String,
+    /** 短标签:扫描日期 MM-dd(X 轴用) */
+    val date: String,
+    val calls: Long,
+    val promptTokens: Long,
+    val completionTokens: Long,
+    val totalTokens: Long,
+    val cost: Double,
+    val promptCost: Double? = null,
+    val completionCost: Double? = null,
+)

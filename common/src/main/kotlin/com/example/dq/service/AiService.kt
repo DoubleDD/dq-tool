@@ -23,7 +23,8 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
     /** 用量上报回调(AiUsageService 注入);统计落库失败由实现方自行吞掉,不干扰调用主流程 */
     fun interface UsageRecorder {
         fun record(scene: AiScene, model: String, promptTokens: Long, completionTokens: Long,
-                   totalTokens: Long, requestTime: LocalDateTime)
+                   totalTokens: Long, requestTime: LocalDateTime, scanJobId: Long?,
+                   requestContent: String?, responseContent: String?)
     }
 
     private val objectMapper = jacksonObjectMapper()
@@ -32,9 +33,10 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
         .connectTimeout(Duration.ofMillis(10_000))
         .build()
 
-    /** 生成一张表的说明文字(场景:表说明) */
-    fun describeTable(config: AiConfigService.Config, table: TableStat, columns: List<ColumnMeta>): String =
-        chat(config, SYSTEM_PROMPT, buildTablePrompt(table, columns), AiScene.TABLE_DOC)
+    /** 生成一张表的说明文字(场景:表说明);扫描触发的生成传 scanJobId 以关联用量 */
+    fun describeTable(config: AiConfigService.Config, table: TableStat, columns: List<ColumnMeta>,
+                      scanJobId: Long? = null): String =
+        chat(config, SYSTEM_PROMPT, buildTablePrompt(table, columns), AiScene.TABLE_DOC, scanJobId)
 
     /**
      * 连通性测试:发一个最小 chat 请求(max_tokens=1),只校验接口可达与鉴权,不解析返回内容。
@@ -62,7 +64,7 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
                     "大模型接口测试失败:HTTP " + response.statusCode() + " " + abbreviate(response.body())
                 )
             }
-            recordUsage(AiScene.TEST, config.model.orEmpty(), response.body())
+            recordUsage(AiScene.TEST, config.model.orEmpty(), response.body(), null, "ping", null)
         } catch (e: IllegalStateException) {
             throw e
         } catch (e: Exception) {
@@ -71,7 +73,8 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
     }
 
     /** 通用对话调用(表说明与自动打标等共用,scene 标识调用场景用于用量统计);失败统一包装为 IllegalStateException */
-    fun chat(config: AiConfigService.Config, systemPrompt: String, userPrompt: String, scene: AiScene): String {
+    fun chat(config: AiConfigService.Config, systemPrompt: String, userPrompt: String, scene: AiScene,
+             scanJobId: Long? = null): String {
         val body = mapOf(
             "model" to config.model,
             "temperature" to 0.3,
@@ -110,7 +113,7 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
             if (content.isEmpty()) {
                 throw IllegalStateException("大模型返回了空内容")
             }
-            recordUsage(scene, config.model.orEmpty(), bodyText)
+            recordUsage(scene, config.model.orEmpty(), bodyText, scanJobId, buildRequestContent(systemPrompt, userPrompt), content)
             return content
         } catch (e: IllegalStateException) {
             throw e
@@ -120,18 +123,24 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
     }
 
     /** 解析响应里的 usage 并上报统计;响应无 usage(部分兼容接口)或上报失败均静默忽略 */
-    private fun recordUsage(scene: AiScene, model: String, bodyText: String) {
+    private fun recordUsage(scene: AiScene, model: String, bodyText: String, scanJobId: Long?,
+                            requestContent: String?, responseContent: String?) {
         val recorder = usageRecorder ?: return
         try {
             val usage = objectMapper.readValue(bodyText, Map::class.java)["usage"] as? Map<*, *> ?: return
             val prompt = (usage["prompt_tokens"] as? Number)?.toLong() ?: 0L
             val completion = (usage["completion_tokens"] as? Number)?.toLong() ?: 0L
             val total = (usage["total_tokens"] as? Number)?.toLong() ?: (prompt + completion)
-            recorder.record(scene, model, prompt, completion, total, LocalDateTime.now())
+            recorder.record(scene, model, prompt, completion, total, LocalDateTime.now(),
+                scanJobId, requestContent, responseContent)
         } catch (e: Exception) {
             log.warn("AI 用量统计上报失败,忽略: {}", e.message)
         }
     }
+
+    /** 拼请求内容存档:[system] + [user] 两段,供 prompt 调优时回看完整输入 */
+    private fun buildRequestContent(systemPrompt: String, userPrompt: String): String =
+        "[system]\n$systemPrompt\n\n[user]\n$userPrompt"
 
     companion object {
         private val log = LoggerFactory.getLogger(AiService::class.java)

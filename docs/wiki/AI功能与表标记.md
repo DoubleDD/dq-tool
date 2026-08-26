@@ -8,7 +8,7 @@
 
 ## AI 自动打标
 
-扫描时可选(auto_tag 随 scan_job 持久化,断点续扫仍生效);每张表 DONE 后由 `AutoTagService` 独立守护线程池(2 worker)异步执行(与扫描并行,不占扫描 worker)——以表注释/字段注释/AI 表描述为上下文(三者全空且表非空时抽样前 20 列 100 行业务数据,单元格截断 100 字符),连同全局 USER 标记列表(带各标记的描述,帮助模型理解标记含义、精准选择;无描述只列名字)发给大模型选一个标记自动打上(幂等 ensureTableTag,只增不删;表已有 USER 标记跳过不覆盖);未配置大模型/无候选标记静默跳过,同 job 首次 LLM 失败后熔断剩余表;前端扫描对话框与库列表整库扫描确认框均有复选(默认勾选 = `GET /api/ai-config` 的 available,即合并默认配置后有效配置完整)。
+扫描时可选(auto_tag 随 scan_job 持久化,断点续扫仍生效);每张表 DONE 后由 `AutoTagService` 独立守护线程池(2 worker)异步执行(与扫描并行,不占扫描 worker)——以表注释/字段注释/AI 表描述为上下文(三者全空且表非空时抽样前 20 列 100 行业务数据,单元格截断 100 字符),连同全局 USER 标记列表(带各标记的描述,帮助模型理解标记含义、精准选择;无描述只列名字)发给大模型选一个标记自动打上(幂等 ensureTableTag,只增不删;表已有 USER 标记跳过不覆盖);未配置大模型/无候选标记静默跳过,同 job 首次 LLM 失败后熔断剩余表;前端扫描对话框与库列表整库扫描确认框均有复选(默认勾选 = `GET /api/ai-config` 的 available,即合并默认配置后有效配置完整)。打标与「生成表描述」同属扫描的 AI 收尾阶段:经 `ScanAiTracker` 计数,全部表终态且 AI 清零前任务不收尾(详见 [扫描与Excel导出](扫描与Excel导出.md))。
 
 ## 表标记
 
@@ -22,7 +22,8 @@
 
 > 需求:所有 AI 调用统一记 token 用量与费用,价格可配置(默认 DeepSeek 官方价),支持峰谷价(工作时间/非工作时间两档),统计页柱状图可在金额/token 间切换。
 
-- **记录口径**:`AiService.chat/describeTable/test` 每次调用成功后解析响应 `usage`(prompt/completion/total token)回调 `AiUsageService.record` 落库 `ai_usage_log` 一行(scene/model/输入输出 total/cost/时段 PEAK|VALLEY/时间);响应无 usage(部分兼容接口)或统计落库失败均静默忽略,不影响调用主流程。场景:表说明 TABLE_DOC、自动打标 AUTO_TAG、报告分析 WORD_REPORT、连通测试 TEST(表说明与连通测试在 `AiService` 内部打点,自动打标/报告分析经各自服务注入的 chat lambda 默认实现传入场景)。
+- **记录口径**:`AiService.chat/describeTable/test` 每次调用成功后解析响应 `usage`(prompt/completion/total token)回调 `AiUsageService.record` 落库 `ai_usage_log` 一行(scene/model/输入输出 total/cost/时段 PEAK|VALLEY/时间 + 请求内容 `[system]+[user]` 与模型返回正文,落库截断 5 万字符,供 prompt 调优回溯);响应无 usage(部分兼容接口)或统计落库失败均静默忽略,不影响调用主流程。场景:表说明 TABLE_DOC、自动打标 AUTO_TAG、报告分析 WORD_REPORT、连通测试 TEST(表说明与连通测试在 `AiService` 内部打点,自动打标/报告分析经各自服务注入的 chat lambda 默认实现传入场景)。
+- **独立库存储**:用量流水存独立 H2 文件库 `data/dqaiusage.mv.db`(调用量大且含请求/响应内容,与主库 dqconfig 分离;独立 Flyway 脚本目录 `db/migration-aiusage`);扫描触发的调用在记录时快照 `scan_job_id` + 标签(数据源名 库/schema + 任务创建时间,冗余存储不跨库 join,任务/数据源删除不影响统计);老版本主库 `ai_usage_log` 数据启动时一次性搬迁(`migrateLegacyIfEmpty`,新库非空即跳过,主库老表保留不再写入)。
 - **计费价格配置**(随「AI 配置」保存,ai_config 扩展列 V17 迁移):**峰谷计价开关**(默认开,关闭则只用单一输入/输出价,不区分时段);开启时字段=工作时间(高峰)输入价/输出价 + 非工作时间(谷价)输入价/输出价(元/百万 token)+ **工作时间段**(可多段,`HH:mm-HH:mm,...`,如 `09:00-12:00,14:00-18:00`)+ 周末按谷价开关;任一字段未设回落到配置默认值。**默认 = DeepSeek 官方价**(2026-08 起,旗舰 V4-Pro):工作时间输入 9 元/输出 27 元,非工作时间输入 4.5 元/输出 13.5 元(每百万 token);换用其他模型请在页面按实际修改。config.properties 可用 `ai.peak-valley-enabled` / `ai.peak-input-price` / `ai.work-periods` 等键覆盖默认。
 - **计费规则**(`PriceConfig` 纯函数,同 DeepSeek 官方峰谷规则):峰谷计价关闭时按单一输入/输出价计费,时段记 FLAT;开启时处于工作时间段(工作日)按高峰价,其余时间与周末按谷价(非工作时间),时段记 PEAK/VALLEY;工作时间段可多段,起止相同视为停用,`weekendValley=false` 时周末也按工作时间段走高峰价。单次费用 = (输入 token × 对应时段输入价 + 输出 token × 对应时段输出价)/ 100 万。
-- **统计页**(`/ai-usage` 侧边栏「AI 统计」):指标卡(调用次数/输入/输出/总 Token/总费用)+ 消耗柱状图(纯 SVG 自绘 `UsageBarChart`,金额=单柱、Token=输入/输出堆叠柱,悬停显示明细;时间范围 7/30/90 天,金额/Token 可切换)+ 场景分布表 + 最近调用明细分页(带峰/谷时段标记,页大小 20/50/100)。接口 `GET /api/ai-usage/stats?days=`(汇总+每日序列缺日补零+场景分布)与 `GET /api/ai-usage/logs?page=&size=`(明细倒序分页,返回 items+total)。
+- **统计页**(`/ai-usage` 侧边栏「AI 统计」):指标卡(调用次数/输入/输出/总 Token/总费用)+ 消耗柱状图(纯 SVG 自绘 `UsageBarChart`,金额=单柱、Token=输入/输出堆叠柱,悬停显示明细;时间范围 7/30/90 天,金额/Token 可切换;维度可按天/按扫描切换——按扫描=按扫描任务聚合,扫描后表描述与自动打标的调用经 `ai_usage_log.scan_job_id` 关联,悬停显示数据源/库/schema+时间标签,手动生成/连通测试等无任务关联的调用不计入该维度)+ 场景分布表 + 最近调用明细分页(带峰/谷时段标记,页大小 20/50/100)。接口 `GET /api/ai-usage/stats?days=`(汇总+每日序列缺日补零+场景分布)、`GET /api/ai-usage/scan-series?days=`(按扫描任务聚合序列)与 `GET /api/ai-usage/logs?page=&size=`(明细倒序分页,返回 items+total)。

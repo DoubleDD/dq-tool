@@ -6,12 +6,14 @@ import com.example.dq.model.TagKind
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
+import com.example.dq.scan.ScanAiTracker
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
  * 扫描后 AI 自动打标:表 DONE 后由 ChunkRunner 提交,独立守护线程池(2 worker)异步执行,绝不阻塞扫描 worker。
+ * 入队/完成经 ScanAiTracker 计数:全部表终态且 AI 后续清零前,扫描任务保持 RUNNING 不收尾(进度封顶 99%)。
  * 上下文:表注释 / 字段注释 / AI 表描述;三者全空且表非空时,抽样业务数据(前 20 列、100 行、
  * 单元格截断 100 字符)一并发给大模型 —— 注意这超出了「只发元数据」的口径,复选框默认勾选即授权。
  * 只增不删(幂等 ensureTableTag);表已有任一 USER 标记、未配置大模型、无候选标记时静默跳过;
@@ -26,9 +28,10 @@ class AutoTagService(
     private val tableDocRepo: TableDocRepository,
     private val dataSourceService: DataSourceService,
     private val dialectFactory: DialectFactory,
-    /** LLM 调用点(AiService 是 final class,测试经此注入 fake);场景固定为自动打标 */
-    private val chat: (AiConfigService.Config, String, String) -> String =
-        { c, s, u -> aiService.chat(c, s, u, com.example.dq.model.AiScene.AUTO_TAG) },
+    private val aiTracker: ScanAiTracker,
+    /** LLM 调用点(AiService 是 final class,测试经此注入 fake);场景固定为自动打标,末参为扫描任务 id(用量统计关联) */
+    private val chat: (AiConfigService.Config, String, String, Long?) -> String =
+        { c, s, u, jobId -> aiService.chat(c, s, u, com.example.dq.model.AiScene.AUTO_TAG, jobId) },
 ) {
 
     private val executor = Executors.newFixedThreadPool(TAG_WORKERS) { r ->
@@ -38,13 +41,20 @@ class AutoTagService(
     /** 已熔断的任务(LLM 首次调用失败后,该 job 剩余表直接跳过) */
     private val disabledJobs = ConcurrentHashMap.newKeySet<Long>()
 
-    /** 表 DONE 后由 ChunkRunner 调用;开关关闭或本 job 已熔断时直接忽略 */
+    /** 表 DONE 后由 ChunkRunner 调用;开关关闭或本 job 已熔断时直接忽略(不计数) */
     fun submit(jobId: Long, scanTableId: Long) {
         val job = scanRepo.findJob(jobId) ?: return
         if (!job.autoTag || disabledJobs.contains(jobId)) {
             return
         }
-        executor.execute { runSafely(job, scanTableId) }
+        aiTracker.taskSubmitted(jobId)
+        executor.execute {
+            try {
+                runSafely(job, scanTableId)
+            } finally {
+                aiTracker.taskDone(jobId)
+            }
+        }
     }
 
     /** 队列任务体;internal 以便单测绕过队列同步驱动 */
@@ -98,7 +108,7 @@ class AutoTagService(
         val answer: String
         try {
             answer = chat(config, SYSTEM_PROMPT, buildClassifyPrompt(
-                candidates.map { it.name to it.description }, tableName, table.comment, doc, columns, sampleRows))
+                candidates.map { it.name to it.description }, tableName, table.comment, doc, columns, sampleRows), job.id)
         } catch (e: Exception) {
             disabledJobs.add(job.id)
             log.warn("AI 自动打标调用大模型失败,本任务剩余表跳过 jobId={} table={}: {}", job.id, tableName, e.message)

@@ -403,6 +403,9 @@ class WebServerSmokeTest {
         assertEquals(200, logs.statusCode(), logs.body());
         assertTrue(logs.body().contains("\"items\":[]"), logs.body());
         assertTrue(logs.body().contains("\"total\":0"), logs.body());
+        HttpResponse<String> scanSeries = get("/api/ai-usage/scan-series?days=30");
+        assertEquals(200, scanSeries.statusCode(), scanSeries.body());
+        assertEquals("[]", scanSeries.body());
 
         // AI 配置回显合并默认值后的计费价格(DeepSeek 默认价,峰谷计价默认开启)
         HttpResponse<String> cfg = get("/api/ai-config");

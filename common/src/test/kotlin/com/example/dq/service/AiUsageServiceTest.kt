@@ -27,6 +27,7 @@ import java.time.LocalTime
 class AiUsageServiceTest {
 
     private lateinit var jdbc: Jdbc
+    private lateinit var usageJdbc: Jdbc
     private lateinit var repo: AiUsageRepository
     private lateinit var aiConfigRepo: AiConfigRepository
     private lateinit var service: AiUsageService
@@ -39,14 +40,26 @@ class AiUsageServiceTest {
 
     @BeforeEach
     fun setUp() {
+        // 主库(ai_config 等)+ AI 用量独立库,与生产双库结构一致
         val ds = JdbcDataSource()
-        ds.setURL("jdbc:h2:mem:ai_usage_${System.nanoTime()};DB_CLOSE_DELAY=-1")
+        ds.setURL("jdbc:h2:mem:ai_usage_main_${System.nanoTime()};DB_CLOSE_DELAY=-1")
         ds.user = "sa"
         SchemaInit.run(ds)
+        val usageDs = JdbcDataSource()
+        usageDs.setURL("jdbc:h2:mem:ai_usage_${System.nanoTime()};DB_CLOSE_DELAY=-1")
+        usageDs.user = "sa"
+        SchemaInit.run(usageDs, "db/migration-aiusage")
         jdbc = Jdbc(ds)
-        repo = AiUsageRepository(jdbc)
+        usageJdbc = Jdbc(usageDs)
+        repo = AiUsageRepository(usageJdbc)
         aiConfigRepo = AiConfigRepository(jdbc)
-        service = AiUsageService(repo, aiConfigRepo, config)
+        service = AiUsageService(repo, aiConfigRepo, config) { jobId ->
+            when (jobId) {
+                1L -> AiUsageRepository.ScanJobLabel("生产库 db1 s1", LocalDateTime.of(2026, 8, 25, 9, 30))
+                2L -> AiUsageRepository.ScanJobLabel("生产库 s2", LocalDateTime.of(2026, 8, 25, 10, 30))
+                else -> null
+            }
+        }
         aiConfigService = AiConfigService(aiConfigRepo, CryptoUtil(config), config, AiService())
     }
 
@@ -237,4 +250,80 @@ class AiUsageServiceTest {
         service.record(AiScene.TEST, "m1", 0, 0, 0, LocalDateTime.of(2026, 8, 24, 10, 0))
         assertEquals(0, service.stats(30).summary.calls)
     }
+
+    @Test
+    fun `scanSeries按扫描任务聚合并带记录时快照标签`() {
+        // job1 有两次调用,job2 一次;标签由记录时快照(resolver)写入,不依赖主库 join
+        val now = LocalDateTime.now()
+        service.record(AiScene.TABLE_DOC, "m1", 100, 10, 110, now, 1L)
+        service.record(AiScene.AUTO_TAG, "m1", 200, 20, 220, now, 1L)
+        service.record(AiScene.AUTO_TAG, "m1", 400, 40, 440, now, 2L)
+        // 非扫描调用(手动表说明/连通测试)不计入按扫描维度
+        service.record(AiScene.TEST, "m1", 1, 1, 2, now)
+
+        val rows = service.scanSeries(30)
+        assertEquals(2, rows.size)
+        val j1 = rows[0]
+        assertEquals(1L, j1.jobId)
+        assertEquals(2, j1.calls)
+        assertEquals(300, j1.promptTokens)
+        assertEquals(330, j1.totalTokens)
+        assertTrue(j1.label.startsWith("生产库 db1 s1"), j1.label)
+        assertEquals("2026-08-25", j1.date)
+        val j2 = rows[1]
+        assertEquals(2L, j2.jobId)
+        assertEquals(1, j2.calls)
+        assertEquals(440, j2.totalTokens)
+        assertTrue(j2.label.startsWith("生产库 s2"), j2.label)
+    }
+
+    @Test
+    fun `record保存请求响应内容且超长截断`() {
+        val now = LocalDateTime.now()
+        service.record(AiScene.TABLE_DOC, "m1", 100, 10, 110, now, null, "请求内容X", "响应内容Y")
+        val long = "a".repeat(60_000)
+        service.record(AiScene.TABLE_DOC, "m1", 100, 10, 110, now, null, long, null)
+        val contents = jdbc2Content()
+        assertEquals(2, contents.size)
+        assertEquals("请求内容X" to "响应内容Y", contents[0])
+        assertTrue(contents[1].first!!.endsWith("...(截断)"), contents[1].first!!.takeLast(20))
+        assertTrue(contents[1].first!!.length < 60_000)
+        assertEquals(null, contents[1].second)
+    }
+
+    @Test
+    fun `老库用量流水一次性搬迁到独立库`() {
+        // 主库老表(V16/V20/V21 结构,无内容列)插两行,一行带 scan_job_id
+        val now = LocalDateTime.now()
+        jdbc.update(
+            """INSERT INTO ai_usage_log(scene, model, prompt_tokens, completion_tokens, total_tokens, cost, prompt_cost, completion_cost, period, created_at, scan_job_id)
+               VALUES ('TABLE_DOC','m1',100,10,110,0.5,0.3,0.2,'PEAK',?,1)""", now)
+        jdbc.update(
+            """INSERT INTO ai_usage_log(scene, model, prompt_tokens, completion_tokens, total_tokens, cost, period, created_at)
+               VALUES ('TEST','m1',1,1,2,0.001,'VALLEY',?)""", now)
+
+        val moved = repo.migrateLegacyIfEmpty(jdbc) { jobId ->
+            if (jobId == 1L) AiUsageRepository.ScanJobLabel("生产库 db1 s1", LocalDateTime.of(2026, 8, 25, 9, 30)) else null
+        }
+        assertEquals(2, moved)
+        assertEquals(2, repo.countAll())
+        // 保留原时间/费用/时段,分项费用可空语义保留,扫描标签快照
+        val page = service.recentPage(1, 10)
+        assertEquals(2, page.total)
+        val scans = service.scanSeries(30)
+        assertEquals(1, scans.size)
+        assertTrue(scans[0].label.startsWith("生产库 db1 s1"), scans[0].label)
+        assertEquals("2026-08-25", scans[0].date)
+        // 老表无内容列,搬迁后内容为 NULL
+        assertEquals(listOf(null to null, null to null), jdbc2Content())
+        // 幂等:新库非空不再搬迁
+        assertEquals(0, repo.migrateLegacyIfEmpty(jdbc) { null })
+        assertEquals(2, repo.countAll())
+    }
+
+    /** 直查独立库 request/response 内容列 */
+    private fun jdbc2Content(): List<Pair<String?, String?>> =
+        usageJdbc.query("SELECT request_content, response_content FROM ai_usage_log ORDER BY id") { rs ->
+            rs.getString("request_content") to rs.getString("response_content")
+        }
 }

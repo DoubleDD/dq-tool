@@ -103,18 +103,19 @@ class ScanFlowTest {
         dataSourceService = DataSourceService(dsRepo, crypto, dialectFactory, config, schemaStatRepo, metaCacheRepo)
         val executor = ScanExecutor(config)
         val tagRepo = TagRepository(jdbc)
+        val aiTracker = ScanAiTracker(scanRepo)
         val autoTagService = AutoTagService(
             AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService()), AiService(),
             TagService(tagRepo, dsRepo), tagRepo, scanRepo, TableDocRepository(jdbc),
-            dataSourceService, dialectFactory)
+            dataSourceService, dialectFactory, aiTracker)
         val aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
         val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, dialectFactory)
-        val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService)
+        val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, aiTracker)
         val systemSettingsService = SystemSettingsService(SystemSettingsRepository(jdbc), config)
         val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
-            TagService(tagRepo, dsRepo), autoTagService, scanDocService)
+            TagService(tagRepo, dsRepo), autoTagService, scanDocService, aiTracker)
         scanService = ScanService(scanRepo, dsRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
-            dialectFactory, systemSettingsService, executor, chunkRunner)
+            dialectFactory, systemSettingsService, executor, chunkRunner, autoTagService, scanDocService, aiTracker)
         exportService = ExportService(scanService, tableDocRepo)
         metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, SchemaDocRepository(jdbc),
             metaCacheRepo)

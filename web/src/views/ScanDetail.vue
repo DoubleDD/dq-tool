@@ -12,7 +12,9 @@
 
       <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
         <el-descriptions-item label="数据源">{{ job.datasourceName }}</el-descriptions-item>
-        <el-descriptions-item label="库">{{ job.dbName ? job.dbName + '.' + job.schemaName : job.schemaName }}</el-descriptions-item>
+        <el-descriptions-item label="库">
+          <el-link type="primary" @click="goTables">{{ job.dbName ? job.dbName + '.' + job.schemaName : job.schemaName }}</el-link>
+        </el-descriptions-item>
         <el-descriptions-item label="状态">
           <el-tag :type="statusTagType(job.status)" size="small">{{ statusText(job.status) }}</el-tag>
         </el-descriptions-item>
@@ -189,6 +191,14 @@ async function onResume() {
   } finally {
     acting.value = false
   }
+}
+
+/** 库名点击跳转对应表列表页:/datasources/:id/schemas/:schema/tables?db= */
+function goTables() {
+  const { datasourceId, schemaName, dbName } = job.value || {}
+  if (!datasourceId || !schemaName) return
+  const q = dbName ? `?db=${encodeURIComponent(dbName)}` : ''
+  router.push(`/datasources/${datasourceId}/schemas/${encodeURIComponent(schemaName)}/tables${q}`)
 }
 
 /** 统一进入字段明细页(带 jobId 展示该任务扫描统计):/datasources/:id/schemas/:schema/tables/:tableName?jobId= */

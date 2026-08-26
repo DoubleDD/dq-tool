@@ -30,11 +30,12 @@ class ChunkRunner(
     private val tagService: TagService,
     private val autoTagService: AutoTagService,
     private val scanDocService: ScanDocService,
+    private val aiTracker: ScanAiTracker,
 ) {
 
     private val objectMapper = jacksonObjectMapper()
 
-    /** scanTableId / jobId 的完成判定需要串行化 */
+    /** scanTableId 的完成判定需要串行化;job 级收尾互斥在 ScanAiTracker.withJobLock */
     private val locks = ConcurrentHashMap<Long, Any>()
 
     fun run(chunkId: Long) {
@@ -186,10 +187,13 @@ class ChunkRunner(
                     m?.keyLabel() ?: "",
                     finalTotal, v[0], v[1], v[2]))
             }
-            repo.finishTable(table.id, ScanStatus.DONE, totalRows, null)
+            // 「表置 DONE + AI 后续入队计数」在 job 锁内完成,与 ScanAiTracker 收尾判定互斥
+            aiTracker.withJobLock(job.id) {
+                repo.finishTable(table.id, ScanStatus.DONE, totalRows, null)
+                autoTag(job, table)
+                genDoc(job, table)
+            }
             syncEmptyTag(job, table.tableName, totalRows)
-            autoTag(job, table)
-            genDoc(job, table)
             checkJobCompletion(table.jobId)
         } catch (e: Exception) {
             log.error("表结果聚合失败 scanTableId={}", table.id, e)
@@ -207,7 +211,7 @@ class ChunkRunner(
         }
     }
 
-    /** AI 自动打标:表 DONE 后异步入队(LLM 调用慢,不占扫描 worker);失败只记日志,不影响扫描结果 */
+    /** AI 自动打标:表 DONE 后异步入队(LLM 调用慢,不占扫描 worker);入队/完成经 ScanAiTracker 计数,清零前任务不收尾 */
     private fun autoTag(job: ScanRepository.JobRow, table: ScanTableView) {
         try {
             autoTagService.submit(job.id, table.id)
@@ -216,7 +220,7 @@ class ChunkRunner(
         }
     }
 
-    /** 扫描后生成表描述:表 DONE 后异步入队(LLM 调用慢,不占扫描 worker);失败只记日志,不影响扫描结果 */
+    /** 扫描后生成表描述:表 DONE 后异步入队(LLM 调用慢,不占扫描 worker);入队/完成经 ScanAiTracker 计数,清零前任务不收尾 */
     private fun genDoc(job: ScanRepository.JobRow, table: ScanTableView) {
         try {
             scanDocService.submit(job.id, table.id)
@@ -237,21 +241,10 @@ class ChunkRunner(
         }
     }
 
+    /** 表到达终态后推进任务级完成计数;是否收尾由 ScanAiTracker 判定(还需等 AI 后续清零) */
     private fun checkJobCompletion(jobId: Long) {
-        synchronized(lock(-jobId - 1)) {
-            val doneTables = repo.incrementJobDoneTables(jobId)
-            val job = repo.findJob(jobId)
-            if (job == null || doneTables < job.totalTables) {
-                return
-            }
-            val tables = repo.listScanTables(jobId)
-            val failed = tables.count { it.status == ScanStatus.FAILED }
-            if (failed > 0) {
-                repo.finishJob(jobId, ScanStatus.FAILED, "$failed 张表统计失败")
-            } else {
-                repo.finishJob(jobId, ScanStatus.DONE, null)
-            }
-        }
+        repo.incrementJobDoneTables(jobId)
+        aiTracker.tryFinishJob(jobId)
     }
 
     private fun lock(id: Long): Any = locks.computeIfAbsent(id) { Any() }

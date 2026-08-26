@@ -326,6 +326,7 @@ public class WebServer {
         routes.post("/api/ai-config/test", ctx -> aiCtrl.get().test(ctx));
         // AI 调用 Token/费用统计
         routes.get("/api/ai-usage/stats", ctx -> aiUsageCtrl.get().stats(ctx));
+        routes.get("/api/ai-usage/scan-series", ctx -> aiUsageCtrl.get().scanSeries(ctx));
         routes.get("/api/ai-usage/logs", ctx -> aiUsageCtrl.get().logs(ctx));
         routes.get("/api/system-settings/scan", ctx -> settingsCtrl.get().scanGet(ctx));
         routes.put("/api/system-settings/scan", ctx -> settingsCtrl.get().scanSave(ctx));

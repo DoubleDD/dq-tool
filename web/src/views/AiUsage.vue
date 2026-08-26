@@ -32,10 +32,14 @@
         <div class="chart-toolbar">
           <span class="chart-title">消耗趋势</span>
           <div class="chart-controls">
-            <el-radio-group v-model="days" size="small" @change="loadStats">
+            <el-radio-group v-model="days" size="small" @change="onDaysChange">
               <el-radio-button :value="7">7 天</el-radio-button>
               <el-radio-button :value="30">30 天</el-radio-button>
               <el-radio-button :value="90">90 天</el-radio-button>
+            </el-radio-group>
+            <el-radio-group v-model="dim" size="small" class="metric-switch" @change="onDimChange">
+              <el-radio-button value="day">按天</el-radio-button>
+              <el-radio-button value="scan">按扫描</el-radio-button>
             </el-radio-group>
             <el-radio-group v-model="metric" size="small" class="metric-switch">
               <el-radio-button value="cost">金额</el-radio-button>
@@ -43,9 +47,9 @@
             </el-radio-group>
           </div>
         </div>
-        <el-empty v-if="summary.calls === 0" description="暂无 AI 调用记录" :image-size="80" />
+        <el-empty v-if="chartEmpty" :description="dim === 'day' ? '暂无 AI 调用记录' : '时间范围内暂无扫描关联的 AI 调用'" :image-size="80" />
         <template v-else>
-          <UsageBarChart :data="series" :metric="metric" />
+          <UsageBarChart :data="chartData" :metric="metric" />
           <div v-if="metric === 'token'" class="chart-legend">
             <span class="legend-item"><span class="legend-dot dot-prompt" />输入 Token</span>
             <span class="legend-item"><span class="legend-dot dot-completion" />输出 Token</span>
@@ -125,7 +129,7 @@
  * 指标卡 + 金额/Token 可切换的消耗柱状图(时间范围 7/30/90 天)+ 场景分布 + 最近调用明细。
  * 数据来自 GET /api/ai-usage/stats(汇总+每日序列+场景)与 /api/ai-usage/logs(明细)。
  */
-import { onActivated, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import request from '../api'
 import { formatDateTime, formatNumber } from '../utils/format'
 import UsageBarChart from '../components/UsageBarChart.vue'
@@ -133,13 +137,19 @@ import UsageBarChart from '../components/UsageBarChart.vue'
 const loading = ref(false)
 const days = ref(30)
 const metric = ref('cost') // 'cost' 金额 | 'token' Token
+const dim = ref('day') // 'day' 按天 | 'scan' 按扫描
 const summary = ref({ calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, cost: 0 })
 const series = ref([])
+const scanSeries = ref([])
 const scenes = ref([])
 const logs = ref([])
 const logPage = ref(1)
 const logSize = ref(20)
 const logTotal = ref(0)
+
+/** 趋势图数据:按天=每日序列,按扫描=扫描任务聚合序列(title 供悬停显示完整标签) */
+const chartData = computed(() => (dim.value === 'day' ? series.value : scanSeries.value))
+const chartEmpty = computed(() => (dim.value === 'day' ? summary.value.calls === 0 : scanSeries.value.length === 0))
 
 async function loadStats() {
   loading.value = true
@@ -150,6 +160,27 @@ async function loadStats() {
     scenes.value = stats.scenes || []
   } finally {
     loading.value = false
+  }
+}
+
+/** 按扫描维度的聚合序列(与按天共用 days 时间范围) */
+async function loadScanSeries() {
+  try {
+    const res = await request.get('/ai-usage/scan-series', { params: { days: days.value } })
+    scanSeries.value = (res || []).map((it) => ({ ...it, title: it.label }))
+  } catch { /* 拦截器已提示 */ }
+}
+
+function onDaysChange() {
+  loadStats()
+  if (dim.value === 'scan') {
+    loadScanSeries()
+  }
+}
+
+function onDimChange() {
+  if (dim.value === 'scan') {
+    loadScanSeries()
   }
 }
 

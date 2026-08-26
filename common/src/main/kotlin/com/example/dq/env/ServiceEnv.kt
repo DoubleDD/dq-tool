@@ -19,6 +19,7 @@ import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
 import com.example.dq.scan.ChunkRunner
 import com.example.dq.scan.InterruptRecovery
+import com.example.dq.scan.ScanAiTracker
 import com.example.dq.scan.ScanExecutor
 import com.example.dq.service.AiConfigService
 import com.example.dq.service.AiService
@@ -62,7 +63,16 @@ class ServiceEnv(val config: AppConfig) {
         maximumPoolSize = 4
     })
 
+    /** AI 用量统计独立 H2 库(调用流水含请求/响应内容,数据量大,与主库分离) */
+    val aiUsageDataSource: HikariDataSource = HikariDataSource(HikariConfig().apply {
+        jdbcUrl = config.h2AiUsageJdbcUrl
+        username = "sa"
+        password = ""
+        maximumPoolSize = 2
+    })
+
     private val jdbc = Jdbc(dataSource)
+    private val aiUsageJdbc = Jdbc(aiUsageDataSource)
 
     // 仓储
     val dataSourceRepo = DataSourceRepository(jdbc)
@@ -73,7 +83,7 @@ class ServiceEnv(val config: AppConfig) {
     val tableDocRepo = TableDocRepository(jdbc)
     val tagRepo = TagRepository(jdbc)
     val aiConfigRepo = AiConfigRepository(jdbc)
-    val aiUsageRepo = AiUsageRepository(jdbc)
+    val aiUsageRepo = AiUsageRepository(aiUsageJdbc)
     val systemSettingsRepo = SystemSettingsRepository(jdbc)
     val licenseRepo = LicenseRepository(jdbc)
     val licenseRecordRepo = LicenseRecordRepository(jdbc)
@@ -89,18 +99,27 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceService = DataSourceService(dataSourceRepo, crypto, dialectFactory, config, schemaStatRepo, metaCacheRepo, sshTunnelService)
     val dataSourceTransferService = DataSourceTransferService(dataSourceRepo, crypto, dataSourceService)
     val tagService = TagService(tagRepo, dataSourceRepo)
-    val aiUsageService = AiUsageService(aiUsageRepo, aiConfigRepo, config)
+    /** 扫描标签解析:记录用量时快照数据源名/库/schema(主库查询,任务被删返回 null 兜底) */
+    private val scanLabelResolver: (Long) -> AiUsageRepository.ScanJobLabel? = { jobId ->
+        scanRepo.findJob(jobId)?.let { job ->
+            val dsName = dataSourceRepo.findById(job.datasourceId)?.name
+            AiUsageRepository.ScanJobLabel(
+                listOfNotNull(dsName, job.dbName, job.schemaName).joinToString(" "), job.createdAt)
+        }
+    }
+    val aiUsageService = AiUsageService(aiUsageRepo, aiConfigRepo, config, scanLabelResolver)
     val aiService = AiService(aiUsageService::record)
     val aiConfigService = AiConfigService(aiConfigRepo, crypto, config, aiService)
     val systemSettingsService = SystemSettingsService(systemSettingsRepo, config)
+    val scanAiTracker = ScanAiTracker(scanRepo)
     val autoTagService = AutoTagService(aiConfigService, aiService, tagService, tagRepo, scanRepo,
-        tableDocRepo, dataSourceService, dialectFactory)
+        tableDocRepo, dataSourceService, dialectFactory, scanAiTracker)
     val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, dataSourceService, dialectFactory)
-    val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService)
+    val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, scanAiTracker)
     private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
-        tagService, autoTagService, scanDocService)
+        tagService, autoTagService, scanDocService, scanAiTracker)
     val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
-        dialectFactory, systemSettingsService, executor, chunkRunner)
+        dialectFactory, systemSettingsService, executor, chunkRunner, autoTagService, scanDocService, scanAiTracker)
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, dataSourceRepo)
@@ -121,11 +140,15 @@ class ServiceEnv(val config: AppConfig) {
      */
     fun initDatabase() {
         SchemaInit.run(dataSource)
+        SchemaInit.run(aiUsageDataSource, "db/migration-aiusage")
+        // 老版本 AI 用量流水在主库,一次性搬迁到独立库(新库非空即跳过)
+        aiUsageRepo.migrateLegacyIfEmpty(jdbc, scanLabelResolver)
         InterruptRecovery(scanService).recover()
         wordReportExportService.recoverUnfinished()
     }
 
     fun shutdown() {
+        aiUsageDataSource.close()
         dataSource.close()
     }
 }

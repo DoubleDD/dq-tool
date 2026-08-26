@@ -16,6 +16,7 @@ import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
+import com.example.dq.scan.ScanAiTracker
 import com.example.dq.util.CryptoUtil
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.BeforeEach
@@ -76,8 +77,8 @@ class AutoTagServiceTest {
         return AutoTagService(
             AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService()),
             AiService(), tagService, tagRepo, scanRepo, TableDocRepository(jdbc),
-            dataSourceService, DialectFactory
-        ) { _, _, prompt ->
+            dataSourceService, DialectFactory, ScanAiTracker(scanRepo)
+        ) { _, _, prompt, _ ->
             chatCalls.add(prompt)
             chatError?.let { throw it }
             chatAnswer

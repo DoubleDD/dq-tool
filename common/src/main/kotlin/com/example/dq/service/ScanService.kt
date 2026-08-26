@@ -16,6 +16,7 @@ import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.scan.ChunkRunner
+import com.example.dq.scan.ScanAiTracker
 import com.example.dq.scan.ScanExecutor
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -32,6 +33,9 @@ class ScanService(
     private val systemSettings: SystemSettingsService,
     private val executor: ScanExecutor,
     private val chunkRunner: ChunkRunner,
+    private val autoTagService: AutoTagService,
+    private val scanDocService: ScanDocService,
+    private val aiTracker: ScanAiTracker,
 ) {
 
     private val objectMapper = jacksonObjectMapper()
@@ -252,7 +256,9 @@ class ScanService(
             sumWeight += weight
             sumDone += weight * fraction
         }
-        return if (sumWeight > 0) sumDone * 100.0 / sumWeight else 0.0
+        val raw = if (sumWeight > 0) sumDone * 100.0 / sumWeight else 0.0
+        // AI 后续(自动打标/表描述)串行收尾期间任务仍为 RUNNING:表级进度已满是 100,但任务未完成,封顶 99
+        return if (j.status == ScanStatus.RUNNING && raw >= 100.0) 99.0 else raw
     }
 
     // ---------- 取消 / 断点续扫 ----------
@@ -303,6 +309,10 @@ class ScanService(
         repo.markJobRunning(jobId)
         for (t in repo.listScanTables(jobId)) {
             if (t.status == ScanStatus.DONE) {
+                // DONE 表不重跑统计,但补齐 AI 后续:中断/取消会丢队列中的 AI 任务;
+                // 已打标/已有描述/开关关闭/已熔断的表由服务内部幂等跳过(不计数)
+                autoTagService.submit(jobId, t.id)
+                scanDocService.submit(jobId, t.id)
                 continue
             }
             try {
@@ -343,10 +353,10 @@ class ScanService(
             }
         }
 
-        // 极端情况:上次中断发生在最后一张表完成之后、任务收尾之前
+        // 极端情况:上次中断发生在最后一张表完成之后、任务收尾之前;有 AI 后续时等其清零后收尾
         val after = repo.listScanTables(jobId)
         if (after.all { it.status == ScanStatus.DONE }) {
-            repo.finishJob(jobId, ScanStatus.DONE, null)
+            aiTracker.tryFinishJob(jobId)
         }
     }
 
