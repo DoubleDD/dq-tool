@@ -110,6 +110,8 @@ fn main() {
     let child_on_exit = Arc::clone(&child);
     let child_on_update = Arc::clone(&child);
     let child_on_tray = Arc::clone(&child);
+    // 后端实际端口(含避让回填)托管为状态,供 save_download_as 命令拼本地 URL
+    let port_state = Arc::clone(&actual_port);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -118,8 +120,9 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
-        // 自定义命令:导出任务「另存为」(webview 经 __TAURI_INTERNALS__.invoke 调用)
-        .invoke_handler(tauri::generate_handler![save_report_as])
+        // 自定义命令:导出任务「另存为」/通用下载「另存为」(webview 经 __TAURI_INTERNALS__.invoke 调用)
+        .manage(port_state)
+        .invoke_handler(tauri::generate_handler![save_report_as, save_download_as])
         .setup(move |app| {
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -387,6 +390,110 @@ async fn save_report_as(app: tauri::AppHandle, name: String, source_name: String
     std::fs::copy(&src, &target).map_err(|e| format!("保存失败:{e}"))?;
     eprintln!("[dq-tool-tauri] 报告另存为:{} -> {}", src.display(), target.display());
     Ok(true)
+}
+
+/// 通用下载「另存为」:GET 本地后端流式导出接口 + 原生保存对话框 + 流式写盘。
+/// Excel/JSON 导出接口产物不落盘(直接写 response 流),Rust 侧只能自己发 HTTP GET
+/// 拿内容——就绪探针用裸 TcpStream 手写够用,流式下载手写不可靠,故引入 ureq(阻塞式)。
+/// 文件名以后端 Content-Disposition(filename*=UTF-8'')为准,不在任何一侧重复猜命名。
+/// path 为前端传入的完整路径(含 query),如 /api/scans/123/export?tableCols=&cols=。
+/// 返回 Ok(None) 表示用户取消;Ok(Some(目标路径)) 保存成功。
+#[tauri::command]
+async fn save_download_as(
+    app: tauri::AppHandle,
+    port: tauri::State<'_, Arc<Mutex<u16>>>,
+    path: String,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let port = *port.lock().map_err(|e| e.to_string())?;
+    let url = format!("http://127.0.0.1:{port}{path}");
+    // 阻塞式 HTTP 放线程池,不占 async runtime worker;http_status_as_error(false)
+    // 以便读出非 2xx 的错误体给前端 toast
+    let mut resp = tauri::async_runtime::spawn_blocking(move || {
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build();
+        ureq::Agent::new_with_config(config)
+            .get(&url)
+            .call()
+            .map_err(|e| format!("请求后端失败:{e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    if resp.status() != 200 {
+        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        return Err(format!("下载失败:HTTP {} {}", resp.status(), body.trim()));
+    }
+    let name = resp
+        .headers()
+        .get("Content-Disposition")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_cd_filename)
+        .unwrap_or_else(|| "download".to_string());
+
+    // 对话框回调在 UI 线程,recv 阻塞放线程池(同 save_report_as)
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.dialog()
+        .file()
+        .set_file_name(&name)
+        .save_file(move |target| {
+            let _ = tx.send(target);
+        });
+    let target = tauri::async_runtime::spawn_blocking(move || rx.recv())
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let target = target.into_path().map_err(|e| e.to_string())?;
+
+    let display = target.display().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut file = std::fs::File::create(&target).map_err(|e| format!("创建文件失败:{e}"))?;
+        // 流式读写:大 Excel 不经内存,也不走 IPC 字节传输
+        std::io::copy(&mut resp.body_mut().as_reader(), &mut file)
+            .map_err(|e| format!("写入文件失败:{e}"))?;
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    eprintln!("[dq-tool-tauri] 下载另存为:{path} -> {display}");
+    Ok(Some(display))
+}
+
+/// 从 Content-Disposition 解析文件名:后端统一 `attachment; filename*=UTF-8''<percent-encoded>`
+fn parse_cd_filename(header: &str) -> Option<String> {
+    let marker = "filename*=UTF-8''";
+    let idx = header.find(marker)?;
+    let encoded = header[idx + marker.len()..].trim().trim_matches('"');
+    percent_decode(encoded)
+}
+
+/// 最小 percent 解码(UTF-8,'+' 按 form 编码还原为空格),避免为此单引一个 crate
+fn percent_decode(s: &str) -> Option<String> {
+    fn hex(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            out.push(hex(b[i + 1])? * 16 + hex(b[i + 2])?);
+            i += 3;
+        } else {
+            out.push(if b[i] == b'+' { b' ' } else { b[i] });
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// 定位 server fat jar:DQ_SERVER_JAR 环境变量 > 开发默认 server/build/libs/dq-tool-*.jar

@@ -1,0 +1,5 @@
+# save_download_as 命令的应用层权限(ACL 强制校验的原因见 report.toml 头注)。
+[[permission]]
+identifier = "allow-save-download-as"
+description = "允许调用 save_download_as 命令(通用下载「另存为」:GET 本地后端流式导出接口 + 原生保存对话框)"
+commands.allow = ["save_download_as"]

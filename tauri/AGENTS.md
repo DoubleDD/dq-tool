@@ -56,7 +56,8 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   竞态被抢注时 DqApplication 向后避让,Rust 读线程解析 stdout 的「端口 N 被占用,避让到 M」回填实际端口
   (**改 DqApplication 该输出格式时请同步 main.rs 的解析**)
 - **就绪探针**:轮询 `GET /api/license/status` 直到 200(该端点不受授权拦截),超时 60 秒;
-  子进程提前退出立即报错。探针用裸 TcpStream 手写 HTTP/1.0,不引 HTTP client 依赖
+  子进程提前退出立即报错。探针用裸 TcpStream 手写 HTTP/1.0(响应小且格式固定,够用;
+  流式下载场景不可靠,`save_download_as` 已引 ureq,见「自定义 IPC 命令」)
 - **窗口**:后端子进程拉起后立即创建 webview 加载本地启动页 `ui/index.html`(frontendDist 内容,
   不再是占位),后台线程就绪轮询通过后 `window.navigate` 到 `http://127.0.0.1:<port>` ——
   消除「双击后数秒无窗口」的等待;就绪失败仍 fatal 退出
@@ -87,6 +88,12 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   猜文件名**——后端产物命名是「数据源名-数据调研报告-任务id.docx」,2026-08 曾因猜错名字导致
   Windows 另存为必报「报告文件不存在或已被移动」;不引 HTTP client / fs 插件;前端检测
   `__TAURI_INTERNALS__` 存在才显示「另存为」,浏览器环境显示「下载」
+  `save_download_as(path)` —— 通用下载「另存为」(数据源/标记 JSON、扫描 Excel 等流式导出接口):
+  产物不落盘,Rust 侧自己 `ureq` GET `http://127.0.0.1:<port><path>`(端口从托管状态读,含避让回填),
+  原生保存对话框默认文件名取后端 `Content-Disposition`(filename*=UTF-8'',不猜命名),
+  `std::io::copy` 流式写盘(大文件不经内存/IPC);返回保存路径供前端 toast,取消返回 null。
+  **ureq 是唯一 HTTP client**(阻塞式,不引 async runtime),仅为本命令引入;
+  前端统一封装在 web `utils/download.js` 的 `downloadFile(apiPath)`,非 tauri 环境回退 `window.open`
 - **Windows 不弹终端**:crate 根 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
   使 release exe 为 GUI 子系统(双击不出控制台;debug 保留控制台看日志),拉起 java.exe 子进程时
   再加 `CREATE_NO_WINDOW`(0x08000000)—— 控制台子系统的子进程被 GUI 父进程拉起时会新分配控制台窗口

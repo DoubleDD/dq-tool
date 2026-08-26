@@ -17,6 +17,9 @@ tauri-plugin-dialog = "2"
 # generate_context! 宏在 tauri.conf.json 带 plugins 段时需要本 crate 直接依赖 serde_json
 serde_json = "1"
 tauri-plugin-single-instance = "2"
+# 通用下载「另存为」:Rust 侧 GET 本地后端流式导出接口(产物不落盘,只能自己发请求);
+# 阻塞式 API,不引 async runtime
+ureq = "3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
