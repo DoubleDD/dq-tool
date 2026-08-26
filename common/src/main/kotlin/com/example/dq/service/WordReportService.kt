@@ -42,9 +42,9 @@ class WordReportService(
     private val tableDocRepo: TableDocRepository,
     private val aiConfigService: AiConfigService,
     aiService: AiService,
-    /** LLM 调用点(AiService 是 final class,测试经此注入 fake) */
+    /** LLM 调用点(AiService 是 final class,测试经此注入 fake);场景固定为报告分析 */
     private val chat: (AiConfigService.Config, String, String) -> String =
-        { c, s, u -> aiService.chat(c, s, u) },
+        { c, s, u -> aiService.chat(c, s, u, com.example.dq.model.AiScene.WORD_REPORT) },
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)

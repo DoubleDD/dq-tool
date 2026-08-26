@@ -3,7 +3,9 @@ package com.example.dq.service
 import com.example.dq.config.AppConfig
 import com.example.dq.model.AiConfigRequest
 import com.example.dq.model.AiConfigView
+import com.example.dq.model.PriceConfig
 import com.example.dq.repository.AiConfigRepository
+import com.example.dq.repository.AiConfigRepository.AiConfigRow
 import com.example.dq.util.CryptoUtil
 
 /**
@@ -25,19 +27,56 @@ class AiConfigService(
     data class Config(val baseUrl: String?, val apiKey: String?, val model: String?, val usingDefault: Boolean)
 
     /** 只回显用户自己的配置(H2),默认配置不回显、不暴露;available 表示合并默认值后的有效配置是否完整 */
-    fun get(): AiConfigView =
-        repository.get()
-            ?.let { r -> AiConfigView(r.baseUrl, r.model, !r.apiKeyEnc.isNullOrEmpty(), findConfig() != null) }
-            ?: AiConfigView(null, null, false, findConfig() != null)
+    fun get(): AiConfigView {
+        val row = repository.get()
+        val price = effectivePrice(row)
+        return AiConfigView(
+            baseUrl = row?.baseUrl,
+            model = row?.model,
+            hasKey = !row?.apiKeyEnc.isNullOrEmpty(),
+            available = findConfig() != null,
+            peakValleyEnabled = price.peakValleyEnabled,
+            peakInputPrice = price.peakInputPrice,
+            peakOutputPrice = price.peakOutputPrice,
+            valleyInputPrice = price.valleyInputPrice,
+            valleyOutputPrice = price.valleyOutputPrice,
+            workPeriods = PriceConfig.encodePeriods(price.workPeriods).split(',').filter { it.isNotBlank() },
+            weekendValley = price.weekendValley,
+        )
+    }
 
-    /** apiKey 为空串/null 时保留已存 key */
+    /** apiKey 为空串/null 时保留已存 key;价格字段为 null 时保留已存值(未存过回落默认价) */
     fun save(req: AiConfigRequest) {
         var apiKeyEnc = repository.get()?.apiKeyEnc
         if (!req.apiKey.isNullOrBlank()) {
             apiKeyEnc = crypto.encrypt(req.apiKey.trim())
         }
         // 仓储层参数为非空 String,空值统一落空串;读取侧按 isNullOrBlank 判定,与 Java 版的 null 语义等价
-        repository.upsert(trim(req.baseUrl) ?: "", apiKeyEnc ?: "", trim(req.model) ?: "")
+        // 工作时间段:把 "HH:mm-HH:mm" 列表规整为字符串存库;空列表按未设置(回落默认)处理
+        val periodsRaw = req.workPeriods
+            ?.map { it.trim() }
+            ?.filter { it.isNotBlank() }
+            ?.filter { PriceConfig.parsePeriods(it).isNotEmpty() }
+            ?.let { if (it.isEmpty()) null else it.joinToString(",") }
+        repository.upsert(
+            trim(req.baseUrl) ?: "", apiKeyEnc ?: "", trim(req.model) ?: "",
+            req.peakValleyEnabled, req.peakInputPrice, req.peakOutputPrice, req.valleyInputPrice, req.valleyOutputPrice,
+            periodsRaw, req.weekendValley,
+        )
+    }
+
+    /** 有效价格配置:已存值优先,空字段回落到 AppConfig 的 ai.* 默认值(与 get 回显口径一致) */
+    private fun effectivePrice(row: AiConfigRow?): PriceConfig {
+        val d = config.ai
+        return PriceConfig(
+            peakValleyEnabled = row?.peakValleyEnabled ?: d.peakValleyEnabled,
+            peakInputPrice = row?.peakInputPrice ?: d.peakInputPrice,
+            peakOutputPrice = row?.peakOutputPrice ?: d.peakOutputPrice,
+            valleyInputPrice = row?.valleyInputPrice ?: d.valleyInputPrice,
+            valleyOutputPrice = row?.valleyOutputPrice ?: d.valleyOutputPrice,
+            workPeriods = PriceConfig.parsePeriods(row?.workPeriods ?: d.workPeriods),
+            weekendValley = row?.weekendValley ?: d.weekendValley,
+        )
     }
 
     /** 取合并默认配置后的可用配置;合并后仍不完整时抛异常,不泄露默认值 */

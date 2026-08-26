@@ -17,3 +17,12 @@
 ## 标记与描述数据导出/导入
 
 换机迁移用:`AnnotationTransferService` 把 USER 标记定义(name/color/description,不含 id)、USER 标记的表-标记关联、全部表描述(table_doc)打包成 JSON(`app=dq-tool-annotations, version=1`),表级数据导出为 数据源名+db+schema+table(不导内部 id)。导入按 name 合并标记(不存在创建、已存在覆盖 color/description;系统空表标记不动);表级行的数据源对应走**显式映射**——不同机器上同一数据源命名可能不同,导入前先 `POST /api/annotations/import/preview` 解析文件里的数据源分布,前端弹窗让用户把每个文件数据源映射到本机数据源(同名自动预填,可选「不导入」=映射值 0),`POST /api/annotations/import` 带 mapping JSON 执行;未给映射时回退按数据源名匹配(兼容无映射直接导入),匹配不到的行跳过并计数。表标记 ensure 幂等插入、表描述 upsert 覆盖(model 记 `import`)。接口 `GET /api/annotations/export`(附件下载)、`POST /api/annotations/import`(multipart,返回 新建/更新标记、新增/跳过表标记、覆盖/跳过描述 六项摘要);入口在系统设置页「标记与描述数据」卡片。
+
+## AI Token 与费用统计
+
+> 需求:所有 AI 调用统一记 token 用量与费用,价格可配置(默认 DeepSeek 官方价),支持峰谷价(工作时间/非工作时间两档),统计页柱状图可在金额/token 间切换。
+
+- **记录口径**:`AiService.chat/describeTable/test` 每次调用成功后解析响应 `usage`(prompt/completion/total token)回调 `AiUsageService.record` 落库 `ai_usage_log` 一行(scene/model/输入输出 total/cost/时段 PEAK|VALLEY/时间);响应无 usage(部分兼容接口)或统计落库失败均静默忽略,不影响调用主流程。场景:表说明 TABLE_DOC、自动打标 AUTO_TAG、报告分析 WORD_REPORT、连通测试 TEST(表说明与连通测试在 `AiService` 内部打点,自动打标/报告分析经各自服务注入的 chat lambda 默认实现传入场景)。
+- **计费价格配置**(随「AI 配置」保存,ai_config 扩展列 V17 迁移):**峰谷计价开关**(默认开,关闭则只用单一输入/输出价,不区分时段);开启时字段=工作时间(高峰)输入价/输出价 + 非工作时间(谷价)输入价/输出价(元/百万 token)+ **工作时间段**(可多段,`HH:mm-HH:mm,...`,如 `09:00-12:00,14:00-18:00`)+ 周末按谷价开关;任一字段未设回落到配置默认值。**默认 = DeepSeek 官方价**(2026-08 起,旗舰 V4-Pro):工作时间输入 9 元/输出 27 元,非工作时间输入 4.5 元/输出 13.5 元(每百万 token);换用其他模型请在页面按实际修改。config.properties 可用 `ai.peak-valley-enabled` / `ai.peak-input-price` / `ai.work-periods` 等键覆盖默认。
+- **计费规则**(`PriceConfig` 纯函数,同 DeepSeek 官方峰谷规则):峰谷计价关闭时按单一输入/输出价计费,时段记 FLAT;开启时处于工作时间段(工作日)按高峰价,其余时间与周末按谷价(非工作时间),时段记 PEAK/VALLEY;工作时间段可多段,起止相同视为停用,`weekendValley=false` 时周末也按工作时间段走高峰价。单次费用 = (输入 token × 对应时段输入价 + 输出 token × 对应时段输出价)/ 100 万。
+- **统计页**(`/ai-usage` 侧边栏「AI 统计」):指标卡(调用次数/输入/输出/总 Token/总费用)+ 消耗柱状图(纯 SVG 自绘 `UsageBarChart`,金额=单柱、Token=输入/输出堆叠柱,悬停显示明细;时间范围 7/30/90 天,金额/Token 可切换)+ 场景分布表 + 最近 50 条调用明细(带峰/谷时段标记)。接口 `GET /api/ai-usage/stats?days=`(汇总+每日序列缺日补零+场景分布)与 `GET /api/ai-usage/logs?limit=`(明细倒序)。

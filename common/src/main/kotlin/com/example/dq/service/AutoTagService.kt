@@ -26,9 +26,9 @@ class AutoTagService(
     private val tableDocRepo: TableDocRepository,
     private val dataSourceService: DataSourceService,
     private val dialectFactory: DialectFactory,
-    /** LLM 调用点(AiService 是 final class,测试经此注入 fake) */
+    /** LLM 调用点(AiService 是 final class,测试经此注入 fake);场景固定为自动打标 */
     private val chat: (AiConfigService.Config, String, String) -> String =
-        { c, s, u -> aiService.chat(c, s, u) },
+        { c, s, u -> aiService.chat(c, s, u, com.example.dq.model.AiScene.AUTO_TAG) },
 ) {
 
     private val executor = Executors.newFixedThreadPool(TAG_WORKERS) { r ->

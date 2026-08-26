@@ -26,7 +26,14 @@ public final class KernelConfigAdapter {
         AiDefaults aiDefaults = new AiDefaults(
                 nullToEmpty(ai.getApiKey()),
                 nullToEmpty(ai.getBaseUrl()),
-                nullToEmpty(ai.getModel()));
+                nullToEmpty(ai.getModel()),
+                ai.isPeakValleyEnabled(),
+                ai.getPeakInputPrice(),
+                ai.getPeakOutputPrice(),
+                ai.getValleyInputPrice(),
+                ai.getValleyOutputPrice(),
+                ai.getWorkPeriods() == null ? "" : ai.getWorkPeriods(),
+                ai.isWeekendValley());
 
         Path dataDir = Path.of(config.dataDir());
         try {

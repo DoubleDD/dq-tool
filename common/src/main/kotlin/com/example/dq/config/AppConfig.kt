@@ -20,6 +20,15 @@ data class AiDefaults(
     val apiKey: String = "",
     val baseUrl: String = "",
     val model: String = "",
+    /** 计费价格默认值 = DeepSeek 官方价(2026-08 起,旗舰 V4-Pro;默认峰谷计价开启:工作时间段按高峰价,其余/周末按谷价) */
+    val peakValleyEnabled: Boolean = true,  // 是否启用峰谷计价
+    val peakInputPrice: Double = 9.0,       // 工作时间(高峰)输入价 / 单一输入价(元/百万 token)
+    val peakOutputPrice: Double = 27.0,     // 工作时间(高峰)输出价(元/百万 token)
+    val valleyInputPrice: Double = 4.5,     // 非工作时间(谷价)输入价(元/百万 token)
+    val valleyOutputPrice: Double = 13.5,   // 非工作时间(谷价)输出价(元/百万 token)
+    /** 工作时间段(高峰),可多段;"HH:mm-HH:mm,..." */
+    val workPeriods: String = "09:00-12:00,14:00-18:00",
+    val weekendValley: Boolean = true,      // 周末全天按谷价
 )
 
 /**
@@ -90,6 +99,13 @@ data class AppConfig(
                     apiKey = str("ai.api-key") ?: "",
                     baseUrl = str("ai.base-url") ?: "",
                     model = str("ai.model") ?: "",
+                    peakValleyEnabled = str("ai.peak-valley-enabled")?.toBooleanStrictOrNull() ?: true,
+                    peakInputPrice = str("ai.peak-input-price")?.toDoubleOrNull() ?: 9.0,
+                    peakOutputPrice = str("ai.peak-output-price")?.toDoubleOrNull() ?: 27.0,
+                    valleyInputPrice = str("ai.valley-input-price")?.toDoubleOrNull() ?: 4.5,
+                    valleyOutputPrice = str("ai.valley-output-price")?.toDoubleOrNull() ?: 13.5,
+                    workPeriods = str("ai.work-periods") ?: "09:00-12:00,14:00-18:00",
+                    weekendValley = str("ai.weekend-valley")?.toBooleanStrictOrNull() ?: true,
                 ),
             )
         }

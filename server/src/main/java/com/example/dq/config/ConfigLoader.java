@@ -63,6 +63,13 @@ public final class ConfigLoader {
         ai.setBaseUrl(getString(yaml, "ai.base-url", null));
         ai.setApiKey(getString(yaml, "ai.api-key", null));
         ai.setModel(getString(yaml, "ai.model", null));
+        ai.setPeakValleyEnabled(getBoolean(yaml, "ai.peak-valley-enabled", ai.isPeakValleyEnabled()));
+        ai.setPeakInputPrice(getDouble(yaml, "ai.peak-input-price", ai.getPeakInputPrice()));
+        ai.setPeakOutputPrice(getDouble(yaml, "ai.peak-output-price", ai.getPeakOutputPrice()));
+        ai.setValleyInputPrice(getDouble(yaml, "ai.valley-input-price", ai.getValleyInputPrice()));
+        ai.setValleyOutputPrice(getDouble(yaml, "ai.valley-output-price", ai.getValleyOutputPrice()));
+        ai.setWorkPeriods(getString(yaml, "ai.work-periods", ai.getWorkPeriods()));
+        ai.setWeekendValley(getBoolean(yaml, "ai.weekend-valley", ai.isWeekendValley()));
 
         int serverPort = getInt(yaml, "server.port", 10000);
         String dataDir = firstNonBlank(
@@ -145,6 +152,22 @@ public final class ConfigLoader {
             return fallback;
         }
         return value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString().trim());
+    }
+
+    private static double getDouble(Map<String, Object> root, String path, double fallback) {
+        Object value = get(root, path);
+        if (value == null) {
+            return fallback;
+        }
+        return value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString().trim());
+    }
+
+    private static boolean getBoolean(Map<String, Object> root, String path, boolean fallback) {
+        Object value = get(root, path);
+        if (value == null) {
+            return fallback;
+        }
+        return value instanceof Boolean b ? b : Boolean.parseBoolean(value.toString().trim());
     }
 
     private static long getLong(Map<String, Object> root, String path, long fallback) {

@@ -1,5 +1,6 @@
 package com.example.dq.service
 
+import com.example.dq.model.AiScene
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.TableStat
 import com.sun.net.httpserver.HttpServer
@@ -7,8 +8,10 @@ import org.junit.jupiter.api.Test
 
 import java.net.InetSocketAddress
 import java.sql.Types
+import java.time.LocalDateTime
 import java.util.concurrent.atomic.AtomicReference
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -128,5 +131,96 @@ class AiServiceTest {
             AiService().test(configFor(freePort))
         }
         assertTrue(e.message!!.contains("测试失败"), e.message)
+    }
+
+    // ---------- Token 用量上报 ----------
+
+    private class UsageCapture {
+        val records = ArrayList<Array<Any>>()
+        val recorder = AiService.UsageRecorder { scene, model, prompt, completion, total, time ->
+            records.add(arrayOf(scene, model, prompt, completion, total, time))
+        }
+    }
+
+    @Test
+    fun `chat解析usage并按场景回调用量上报`() {
+        val capture = UsageCapture()
+        val service = AiService(capture.recorder)
+        val (server, _) = startServer { ex ->
+            val body = ("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]," +
+                    "\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":34,\"total_tokens\":154}}").toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        try {
+            val content = service.chat(configFor(server.address.port), "sys", "user", AiScene.TABLE_DOC)
+            assertEquals("ok", content)
+            assertEquals(1, capture.records.size)
+            val r = capture.records[0]
+            assertEquals(AiScene.TABLE_DOC, r[0])
+            assertEquals("test-model", r[1])
+            assertEquals(120L, r[2])
+            assertEquals(34L, r[3])
+            assertEquals(154L, r[4])
+            assertTrue(r[5] is LocalDateTime)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `响应无usage时不上报`() {
+        val capture = UsageCapture()
+        val service = AiService(capture.recorder)
+        val (server, _) = startServer { ex ->
+            val body = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}".toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        try {
+            service.chat(configFor(server.address.port), "sys", "user", AiScene.AUTO_TAG)
+            assertTrue(capture.records.isEmpty())
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `测试连接成功且响应带usage时计入统计`() {
+        val capture = UsageCapture()
+        val service = AiService(capture.recorder)
+        val (server, _) = startServer { ex ->
+            val body = ("{\"choices\":[{\"message\":{\"content\":\"p\"}}]," +
+                    "\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":1,\"total_tokens\":8}}").toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        try {
+            service.test(configFor(server.address.port))
+            assertEquals(1, capture.records.size)
+            assertEquals(AiScene.TEST, capture.records[0][0])
+            assertEquals(8L, capture.records[0][4])
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `usage字段缺失时按输入加输出兜底total`() {
+        val capture = UsageCapture()
+        val service = AiService(capture.recorder)
+        val (server, _) = startServer { ex ->
+            val body = ("{\"choices\":[{\"message\":{\"content\":\"ok\"}}]," +
+                    "\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":25}}").toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        try {
+            service.chat(configFor(server.address.port), "sys", "user", AiScene.WORD_REPORT)
+            assertEquals(1, capture.records.size)
+            assertEquals(125L, capture.records[0][4])
+        } finally {
+            server.stop(0)
+        }
     }
 }

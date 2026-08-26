@@ -78,6 +78,7 @@ function schemaLabel(route) {
 const PAGE_TABS = {
   '/dashboard': '扫描记录',
   '/tags': '标记统计',
+  '/ai-usage': '模型用量统计',
   '/report-exports': '报告列表',
   '/settings': '系统设置',
   '/logs': '运行日志',

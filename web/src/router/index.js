@@ -5,6 +5,7 @@ const routes = [
   { path: '/activate', component: () => import('../views/Activate.vue') },
   { path: '/dashboard', component: () => import('../views/Dashboard.vue') },
   { path: '/tags', component: () => import('../views/TagStats.vue') },
+  { path: '/ai-usage', component: () => import('../views/AiUsage.vue') },
   { path: '/report-exports', component: () => import('../views/ReportExports.vue') },
   { path: '/settings', component: () => import('../views/Settings.vue') },
   { path: '/logs', component: () => import('../views/Logs.vue') },
