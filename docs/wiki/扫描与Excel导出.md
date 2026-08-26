@@ -33,7 +33,7 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 ## 通用列表导出(各列表页「导出 Excel」)
 
-数据源菜单下所有列表页(数据源卡片、库列表、表列表、字段明细/索引结构/数据预览三个 tab、扫描记录)都有「导出 Excel」按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同)。
+数据源菜单下除数据源卡片页外的列表页(库列表、表列表、字段明细/索引结构/数据预览三个 tab、扫描记录)都有「导出 Excel」按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同)。
 
 - **机制**(`ListExportService` common + `ListExportController` server):前端把当前表格的表头与行(展示口径字符串,空单元格传空串)POST `/api/list-exports` → 后端 POI 渲染 xlsx 内存暂存并返回一次性 token → 前端 `utils/listExport.js` 的 `exportListToExcel` 拿 token 后走既有 `downloadFile` GET `/api/list-exports/{token}` 下载(桌面端 Tauri 原生保存对话框零改动);token 取走即删,5 分钟过期
 - **与扫描结果导出的分工**:扫描结果 Excel(`ExportService`)是含业务查询的多 sheet 定制结构;通用列表导出不含任何业务查询,数据完全由前端按展示口径组装,因此各列表页可直接复用

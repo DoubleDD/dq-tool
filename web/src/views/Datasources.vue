@@ -13,7 +13,6 @@
         </el-select>
       </div>
       <div class="toolbar-right">
-        <el-button :disabled="!filteredList.length" @click="exportExcel">导出 Excel</el-button>
         <el-button @click="openExportDialog()">导出配置(JSON)</el-button>
         <el-button @click="openImportDialog()">导入配置</el-button>
         <el-button type="primary" @click="openDialog()">新增数据源</el-button>
@@ -365,7 +364,6 @@ import { tabState } from '../stores/tabs'
 import { loadDsFavorites, saveDsFavorites, sortDsByFavorite } from '../utils/dsFavorites'
 import { notifyDsListChanged } from '../utils/dsListChanged'
 import { downloadFile } from '../utils/download'
-import { cellText, exportListToExcel } from '../utils/listExport'
 
 const router = useRouter()
 const list = ref([])
@@ -836,21 +834,6 @@ function goSchemas(row) {
 function dbHost(jdbcUrl) {
   const m = (jdbcUrl || '').match(/(?:@\/\/|:\/\/)([^/:;?]+)/)
   return m ? m[1] : ''
-}
-
-// ---------- 列表导出 Excel(导出当前搜索过滤后的卡片列表) ----------
-function exportExcel() {
-  const headers = ['名称', '分组', '数据库类型', '主机', '用户名', 'JDBC URL', '库过滤']
-  const rows = filteredList.value.map((r) => [
-    cellText(r.name),
-    cellText(r.groupName || ''),
-    cellText(r.dbType),
-    cellText(dbHost(r.jdbcUrl)),
-    cellText(r.username),
-    cellText(r.jdbcUrl),
-    r.schemaFilter?.length ? r.schemaFilter.join(', ') : '全部'
-  ])
-  exportListToExcel('数据源列表', headers, rows, '数据源列表')
 }
 
 // ---------- 导出 ----------
