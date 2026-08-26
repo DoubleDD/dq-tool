@@ -21,8 +21,9 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 桌面安装包(jpackage)双击启动后自动打开首页:
- * 优先探测 Chrome / Edge 并以 --app= 应用模式拉起(独立窗口,无地址栏/标签页),
- * 探测不到再回落到系统默认浏览器。
+ * 以 Chromium 系浏览器的 --app= 应用模式拉起(独立窗口,无地址栏/标签页),
+ * 浏览器选择支持用户在「系统设置 → 浏览器」指定(DB 持久化 + data/browser-app.txt 镜像供冷启动读取),
+ * 未指定时自动按系统优先级(Windows 优先 Edge,macOS/Linux 优先 Chrome),探测不到再回落到系统默认浏览器。
  * headless 的服务器部署(java -jar、容器)自动跳过。
  * 打开窗口的逻辑同时供托盘菜单(TrayManager)「打开窗口」复用。
  * 应用模式使用独立的 --user-data-dir(~/.dq-tool/browser-profile):若与用户日常浏览器共用配置,
@@ -36,12 +37,53 @@ public class BrowserOpener {
 
     private static final Logger log = LoggerFactory.getLogger(BrowserOpener.class);
 
+    /** 本机探测到的 Chromium 系浏览器(应用模式 --app= 仅 Chromium 系支持) */
+    public record BrowserInfo(String id, String name, String path) {
+    }
+
     private final DesktopSession session;
+    /** 用户选择的浏览器 id 镜像文件:启动开窗早于 H2 就绪,DB 里的选择经此文件供冷启动读取 */
+    private final Path mirrorFile;
+    /** 用户配置的首选浏览器 id(null=自动按系统优先级选择) */
+    private volatile String configuredBrowserId;
     /** 最近一次拉起的 --app 浏览器实例主进程(独立 user-data-dir,句柄一直有效) */
     private volatile Process lastAppProcess;
 
-    public BrowserOpener(DesktopSession session) {
+    public BrowserOpener(DesktopSession session, Path mirrorFile) {
         this.session = session;
+        this.mirrorFile = mirrorFile;
+        this.configuredBrowserId = readMirror(mirrorFile);
+    }
+
+    /**
+     * 设置首选浏览器 id(null/空白=恢复自动),并写入镜像文件供下次冷启动读取。
+     * 写文件失败不阻断:本次运行仍生效,只是下次启动回到自动。
+     */
+    public void setConfiguredBrowser(String id) {
+        String normalized = (id == null || id.isBlank()) ? null : id.trim();
+        this.configuredBrowserId = normalized;
+        try {
+            if (normalized == null) {
+                Files.deleteIfExists(mirrorFile);
+            } else {
+                Files.createDirectories(mirrorFile.getParent());
+                Files.writeString(mirrorFile, normalized);
+            }
+        } catch (IOException e) {
+            log.warn("写入浏览器选择镜像文件失败(本次运行仍生效): {}", e.getMessage());
+        }
+    }
+
+    private static String readMirror(Path mirrorFile) {
+        try {
+            if (Files.isRegularFile(mirrorFile)) {
+                String id = Files.readString(mirrorFile).trim();
+                return id.isEmpty() ? null : id;
+            }
+        } catch (IOException e) {
+            log.warn("读取浏览器选择镜像文件失败,按自动选择处理: {}", e.getMessage());
+        }
+        return null;
     }
 
     /**
@@ -73,8 +115,9 @@ public class BrowserOpener {
      * 窗口仍归已有实例的托盘「退出」统一关闭,管理关系不破坏。
      */
     public static void reopenExisting(String url) {
-        String browser = findChromiumBrowser();
-        if (browser != null) {
+        List<BrowserInfo> detected = detectBrowsers();
+        if (!detected.isEmpty()) {
+            String browser = detected.get(0).path();
             try {
                 new ProcessBuilder(browser, "--user-data-dir=" + browserProfileDir(),
                         "--no-first-run", "--no-default-browser-check", "--hide-crash-restore-bubble",
@@ -121,9 +164,9 @@ public class BrowserOpener {
      * 新进程同样会交接后立即退出,先杀旧实例才能保证 lastAppProcess 始终是活的主进程。
      */
     private boolean openInAppMode(String url) {
-        String browser = findChromiumBrowser();
+        String browser = resolveBrowser();
         if (browser == null) {
-            StartupLog.log("未探测到 Chrome/Edge,回落到系统默认浏览器打开 " + url);
+            StartupLog.log("未探测到 Chromium 系浏览器(Chrome/Edge 等),回落到系统默认浏览器打开 " + url);
             return false;
         }
         closeWindow();
@@ -181,8 +224,9 @@ public class BrowserOpener {
      * 当前内嵌前端的标识 hash:取 /static/index.html 内容的 SHA-256。
      * vite 产物文件名带内容 hash,index.html 里引用的资源名随每次前端构建变化,其内容 hash 即前端版本指纹。
      * 无内嵌前端(纯 API 测试环境)返回 null,跳过校验。
+     * public:DqApplication(父包)单实例分支比对运行中实例与本机构建是否一致时复用
      */
-    private static String frontendHash() {
+    public static String frontendHash() {
         try (InputStream in = BrowserOpener.class.getResourceAsStream("/static/index.html")) {
             if (in == null) {
                 return null;
@@ -233,35 +277,99 @@ public class BrowserOpener {
     }
 
     /**
-     * 按平台常见安装位置探测 Chromium 系浏览器可执行文件,找不到返回 null。
-     * Windows 优先 Edge(系统自带),macOS/Linux 优先 Chrome。
+     * 解析本次应用模式应使用的浏览器可执行文件:用户配置优先(已卸载/未探测到则回落自动),
+     * 未配置按系统优先级取探测清单第一个;一个都探测不到返回 null。
      */
-    private static String findChromiumBrowser() {
+    private String resolveBrowser() {
+        return pickBrowser(configuredBrowserId, detectBrowsers());
+    }
+
+    /** 选择逻辑(独立静态方法以便单测):配置 id 命中探测清单则用其路径,否则回落清单第一个 */
+    static String pickBrowser(String configuredId, List<BrowserInfo> detected) {
+        if (configuredId != null) {
+            for (BrowserInfo b : detected) {
+                if (b.id().equals(configuredId)) {
+                    return b.path();
+                }
+            }
+            log.warn("配置的浏览器 {} 未在本机探测到(可能已卸载),回落自动选择", configuredId);
+        }
+        return detected.isEmpty() ? null : detected.get(0).path();
+    }
+
+    /**
+     * 枚举本机已安装的 Chromium 系浏览器,按平台常见安装位置探测,找不到返回空清单。
+     * 清单顺序即「自动」选择的优先级:Windows 优先 Edge(系统自带),macOS/Linux 优先 Chrome。
+     */
+    public static List<BrowserInfo> detectBrowsers() {
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        List<String> candidates = new ArrayList<>();
+        List<BrowserInfo> found = new ArrayList<>();
         if (os.contains("win")) {
             String pf = System.getenv("ProgramFiles");
             String pf86 = System.getenv("ProgramFiles(x86)");
             String local = System.getenv("LOCALAPPDATA");
-            addCandidate(candidates, pf86, "Microsoft\\Edge\\Application\\msedge.exe");
-            addCandidate(candidates, pf, "Microsoft\\Edge\\Application\\msedge.exe");
-            addCandidate(candidates, pf, "Google\\Chrome\\Application\\chrome.exe");
-            addCandidate(candidates, pf86, "Google\\Chrome\\Application\\chrome.exe");
-            addCandidate(candidates, local, "Google\\Chrome\\Application\\chrome.exe");
+            addIfExists(found, "edge", "Microsoft Edge",
+                    winPath(pf86, "Microsoft\\Edge\\Application\\msedge.exe"),
+                    winPath(pf, "Microsoft\\Edge\\Application\\msedge.exe"));
+            addIfExists(found, "chrome", "Google Chrome",
+                    winPath(pf, "Google\\Chrome\\Application\\chrome.exe"),
+                    winPath(pf86, "Google\\Chrome\\Application\\chrome.exe"),
+                    winPath(local, "Google\\Chrome\\Application\\chrome.exe"));
+            addIfExists(found, "brave", "Brave",
+                    winPath(local, "BraveSoftware\\Brave-Browser\\Application\\brave.exe"),
+                    winPath(pf, "BraveSoftware\\Brave-Browser\\Application\\brave.exe"));
+            addIfExists(found, "chromium", "Chromium",
+                    winPath(local, "Chromium\\Application\\chrome.exe"));
+            addIfExists(found, "vivaldi", "Vivaldi",
+                    winPath(local, "Vivaldi\\Application\\vivaldi.exe"));
+            addIfExists(found, "opera", "Opera",
+                    winPath(local, "Programs\\Opera\\opera.exe"));
         } else if (os.contains("mac")) {
-            candidates.add("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
-            candidates.add("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge");
-            candidates.add("/Applications/Chromium.app/Contents/MacOS/Chromium");
+            String userApps = System.getProperty("user.home") + "/Applications/";
+            addIfExists(found, "chrome", "Google Chrome",
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    userApps + "Google Chrome.app/Contents/MacOS/Google Chrome");
+            addIfExists(found, "edge", "Microsoft Edge",
+                    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+                    userApps + "Microsoft Edge.app/Contents/MacOS/Microsoft Edge");
+            addIfExists(found, "brave", "Brave",
+                    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                    userApps + "Brave Browser.app/Contents/MacOS/Brave Browser");
+            addIfExists(found, "arc", "Arc",
+                    "/Applications/Arc.app/Contents/MacOS/Arc",
+                    userApps + "Arc.app/Contents/MacOS/Arc");
+            addIfExists(found, "chromium", "Chromium",
+                    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                    userApps + "Chromium.app/Contents/MacOS/Chromium");
+            addIfExists(found, "vivaldi", "Vivaldi",
+                    "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+                    userApps + "Vivaldi.app/Contents/MacOS/Vivaldi");
+            addIfExists(found, "opera", "Opera",
+                    "/Applications/Opera.app/Contents/MacOS/Opera",
+                    userApps + "Opera.app/Contents/MacOS/Opera");
         } else {
             // Linux: 在 PATH 里找
-            return findOnPath("google-chrome", "microsoft-edge", "chromium", "chromium-browser");
+            addIfExists(found, "chrome", "Google Chrome", findOnPath("google-chrome", "google-chrome-stable"));
+            addIfExists(found, "edge", "Microsoft Edge", findOnPath("microsoft-edge", "microsoft-edge-stable"));
+            addIfExists(found, "brave", "Brave", findOnPath("brave-browser", "brave"));
+            addIfExists(found, "chromium", "Chromium", findOnPath("chromium", "chromium-browser"));
+            addIfExists(found, "vivaldi", "Vivaldi", findOnPath("vivaldi", "vivaldi-stable"));
+            addIfExists(found, "opera", "Opera", findOnPath("opera"));
         }
-        return candidates.stream().filter(p -> Files.isExecutable(Path.of(p))).findFirst().orElse(null);
+        return found;
     }
 
-    private static void addCandidate(List<String> candidates, String base, String relative) {
-        if (base != null && !base.isBlank()) {
-            candidates.add(base + "\\" + relative);
+    private static String winPath(String base, String relative) {
+        return (base == null || base.isBlank()) ? null : base + "\\" + relative;
+    }
+
+    /** 候选路径中第一个存在且可执行的加入清单;全部不存在则该浏览器视为未安装 */
+    private static void addIfExists(List<BrowserInfo> found, String id, String name, String... candidates) {
+        for (String p : candidates) {
+            if (p != null && Files.isExecutable(Path.of(p))) {
+                found.add(new BrowserInfo(id, name, p));
+                return;
+            }
         }
     }
 

@@ -49,12 +49,31 @@
       </div>
     </el-card>
 
+    <!-- 浏览器:桌面安装版应用模式首选浏览器 -->
+    <el-card class="settings-card" shadow="never">
+      <template #header>
+        <span>浏览器</span>
+      </template>
+      <div class="settings-desc">
+        桌面安装版启动或从托盘「打开窗口」时,用所选浏览器的应用模式(独立窗口,无地址栏/标签页)打开界面,选择对下次打开窗口生效。
+        「自动」按系统优先级选择(Windows 优先 Edge,macOS/Linux 优先 Chrome);服务器部署(headless)不打开浏览器,本项无作用。
+      </div>
+      <el-form label-width="200px" v-loading="browserLoading">
+        <el-form-item label="应用模式浏览器">
+          <el-select v-model="browserSelected" style="width: 280px" @change="saveBrowser">
+            <el-option value="auto" label="自动(按系统优先级)" />
+            <el-option v-for="b in browserOptions" :key="b.id" :value="b.id" :label="b.name" />
+          </el-select>
+          <span v-if="!browserOptions.length" class="field-hint">未检测到 Chromium 系浏览器,打开时将使用系统默认浏览器</span>
+        </el-form-item>
+      </el-form>
+    </el-card>
+
     <!-- AI 配置:大模型接口 -->
     <el-card class="settings-card" shadow="never">
       <template #header>
         <span>AI 配置</span>
-      </template>
-      <div class="settings-desc">
+      </template><div class="settings-desc">
         用于生成「表说明」「AI 自动打标」的大模型接口,任意 OpenAI 兼容服务均可(DeepSeek / 通义 / 本地 vLLM 等)。
         生成表说明时只发送表结构元数据(表名、字段、注释),不发送业务数据;未填写的字段使用配置文件默认值。
       </div>
@@ -126,6 +145,7 @@
 import { reactive, ref, computed, onActivated } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../api'
+import { downloadFile } from '../utils/download'
 import AiConfigForm from '../components/AiConfigForm.vue'
 import { themeState, setThemeMode } from '../stores/theme'
 
@@ -200,6 +220,33 @@ async function resetScanSettings() {
   }
 }
 
+// ---------- 浏览器设置 ----------
+// 应用模式首选浏览器:选择即保存,对下次打开窗口生效(冷启动经 data/browser-app.txt 镜像读取)
+const browserLoading = ref(false)
+const browserSelected = ref('auto')
+const browserOptions = ref([])
+
+async function loadBrowserSettings() {
+  browserLoading.value = true
+  try {
+    const v = await request.get('/system-settings/browser')
+    browserOptions.value = v.browsers || []
+    browserSelected.value = v.browser || 'auto'
+  } finally {
+    browserLoading.value = false
+  }
+}
+
+async function saveBrowser(id) {
+  try {
+    await request.put('/system-settings/browser', { browser: id === 'auto' ? null : id })
+    ElMessage.success('浏览器选择已保存,下次打开窗口时生效')
+  } catch {
+    // 保存失败(如所选浏览器已被卸载):错误提示由拦截器统一弹出,重新加载回滚显示
+    await loadBrowserSettings()
+  }
+}
+
 // ---------- AI 配置 ----------
 const aiFormRef = ref(null)
 
@@ -208,9 +255,9 @@ async function saveAiConfig() {
 }
 
 // ---------- 标记与描述数据 ----------
-// 导出:后端直接返回文件下载,用 window.open 绕开 axios 的 JSON 拦截器(与数据源导出一致)
+// 导出:桌面端弹原生保存对话框自选目录,浏览器走默认下载(见 utils/download.js)
 function exportAnnotations() {
-  window.open('/api/annotations/export', '_blank')
+  downloadFile('/api/annotations/export')
 }
 
 // 导入:选文件先预检(解析文件里的数据源分布),弹窗让用户把文件数据源映射到本机数据源后再执行;
@@ -285,6 +332,7 @@ const themeMode = computed({
 // 页面在 keep-alive 内:每次激活(含首次挂载)刷新,避免别的入口改了配置这里还显示旧值
 onActivated(() => {
   loadScanSettings()
+  loadBrowserSettings()
   aiFormRef.value?.load()
 })
 </script>

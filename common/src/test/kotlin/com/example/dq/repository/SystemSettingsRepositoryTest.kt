@@ -65,4 +65,18 @@ class SystemSettingsRepositoryTest {
         repo.delete()
         assertNull(repo.get())
     }
+
+    @Test
+    fun `browserApp 列往返,resetScan 只清扫描列保留浏览器选择`() {
+        repo.upsert(row().copy(browserApp = "chrome"))
+        assertEquals("chrome", repo.get()!!.browserApp)
+
+        repo.resetScan()
+        val after = repo.get()!!
+        // 扫描列全部清空,浏览器选择保留;customized 只看扫描列
+        assertNull(after.workers)
+        assertNull(after.statementTimeoutSeconds)
+        assertEquals("chrome", after.browserApp)
+        assertFalse(after.customized)
+    }
 }

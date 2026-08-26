@@ -52,4 +52,22 @@ class InstanceLockTest {
         Files.writeString(dataDir.resolve("dqconfig.lock.db"), "");
         assertThat(InstanceLock.acquire(dataDir)).isEqualTo(InstanceLock.Status.ACQUIRED);
     }
+
+    @Test
+    void netstat输出解析监听端口PID() {
+        // Windows netstat -ano 行格式(含 IPv4/IPv6/非监听/其他端口干扰行)
+        String output = """
+                活动连接
+
+                  协议  本地地址          外部地址        状态           PID
+                  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1234
+                  TCP    127.0.0.1:10000         0.0.0.0:0              LISTENING       5678
+                  TCP    127.0.0.1:10000         127.0.0.1:52331        ESTABLISHED     5678
+                  TCP    127.0.0.1:100000        0.0.0.0:0              LISTENING       9999
+                  TCP    [::1]:10000             [::]:0                 LISTENING       5678
+                """;
+        // 只取本地地址端口精确匹配且 LISTENING 的行;100000 不能误匹配 10000
+        assertThat(InstanceLock.parseNetstatListeningPids(output, 10000))
+                .containsExactlyInAnyOrder(5678L);
+    }
 }

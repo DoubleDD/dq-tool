@@ -56,12 +56,32 @@ class SystemSettingsService(
                 sizeThresholdBytes = req.sizeThresholdBytes?.coerceAtLeast(0) ?: prev?.sizeThresholdBytes,
                 sampleRows = req.sampleRows?.coerceAtLeast(1) ?: prev?.sampleRows,
                 statementTimeoutSeconds = req.statementTimeoutSeconds?.coerceAtLeast(1) ?: prev?.statementTimeoutSeconds,
+                browserApp = prev?.browserApp,
             )
         )
     }
 
-    /** 恢复默认:删除自定义行,全部回落到配置文件默认值 */
+    /** 恢复默认:清空扫描参数列,全部回落到配置文件默认值(保留浏览器等其他设置) */
     fun resetScanSettings() {
-        repo.delete()
+        repo.resetScan()
+    }
+
+    /** 应用模式首选浏览器 id(null=自动按系统优先级选择);浏览器清单由 server 壳层探测,内核只持久化选择 */
+    fun browserApp(): String? = repo.get()?.browserApp
+
+    /** 保存应用模式首选浏览器(null=恢复自动);id 合法性由 server 壳层按本机探测结果校验 */
+    fun saveBrowserApp(browserId: String?) {
+        val prev = repo.get()
+        if (prev != null) {
+            repo.upsert(prev.copy(browserApp = browserId))
+        } else {
+            repo.upsert(
+                SystemSettingsRepository.SystemSettingsRow(
+                    workers = null, chunksPerTable = null, rowThreshold = null,
+                    sizeThresholdBytes = null, sampleRows = null, statementTimeoutSeconds = null,
+                    browserApp = browserId,
+                )
+            )
+        }
     }
 }

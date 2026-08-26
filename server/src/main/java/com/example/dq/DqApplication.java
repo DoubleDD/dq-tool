@@ -63,16 +63,47 @@ public class DqApplication {
             int configuredPort = resolveConfiguredPort(args, config.serverPort());
             int port = configuredPort;
             // 单实例保护:同数据目录已有实例在跑时,经 H2 AUTO_SERVER 连上旧实例内嵌的 H2 server,
-            // 跨版本类不兼容直接启动失败(2026-08 实测);第二个实例改为带出已有实例窗口并退出
+            // 跨版本类不兼容直接启动失败(2026-08 实测);第二个实例按构建是否一致分流(见下方分支)
             if (InstanceLock.acquire(java.nio.file.Path.of(config.dataDir()))
                     == InstanceLock.Status.ALREADY_RUNNING) {
                 StartupLog.log("检测到同数据目录已有 dq-tool 实例在运行(数据目录 " + config.dataDir() + ")");
                 if (desktop) {
                     int runningPort = configuredPort == 0 ? -1 : InstanceLock.findRunningInstancePort(configuredPort);
-                    String url = "http://localhost:" + (runningPort > 0 ? runningPort : configuredPort);
-                    StartupLog.log("打开已有实例窗口 " + url + " ,本进程退出");
-                    BrowserOpener.reopenExisting(url);
-                    System.exit(0);
+                    // 只有同一构建(前端指纹一致)才是误双击:带出已有实例窗口并退出。
+                    // 构建不同(升级换包,哪怕版本号相同但重新构建过)时旧实例给不了新包的接口与
+                    // 前端资源,带窗口会出现「新页面配旧后端」资源 404 卡死(2026-08 免安装版实测)——
+                    // 按端口反查 PID 直接结束旧实例,等实例锁/H2 锁释放后继续本次启动;
+                    // 只有找不到 PID(实例无响应)或结束失败时才弹窗请用户手动处理。
+                    boolean sameBuild = runningPort > 0 && java.util.Objects.equals(
+                            InstanceLock.fetchRemoteFrontendHash(runningPort), BrowserOpener.frontendHash());
+                    if (sameBuild) {
+                        String url = "http://localhost:" + runningPort;
+                        StartupLog.log("已有实例与本机为同一构建,打开已有实例窗口 " + url + " ,本进程退出");
+                        BrowserOpener.reopenExisting(url);
+                        System.exit(0);
+                    }
+                    boolean takenOver = false;
+                    if (runningPort > 0) {
+                        StartupLog.log("已有实例与本机构建不同(升级换包),结束旧实例后继续启动新版本...");
+                        takenOver = InstanceLock.killProcessListeningOn(runningPort)
+                                && InstanceLock.waitAcquire(java.nio.file.Path.of(config.dataDir()),
+                                        java.time.Duration.ofSeconds(15));
+                        StartupLog.log(takenOver ? "旧实例已退出,实例锁已获得,继续启动"
+                                : "自动结束旧实例失败(runningPort=" + runningPort + ")");
+                    }
+                    if (!takenOver) {
+                        StartupLog.log("无法自动接管,提示用户手动结束旧实例,本进程退出");
+                        // 原生启动画面还罩在屏幕上且置顶,先关掉再弹提示,否则对话框可能被遮住
+                        DesktopSplash.close();
+                        String message = runningPort > 0
+                                ? "检测到另一个版本的 dq-tool 正在运行,且无法自动关闭。\n"
+                                        + "请在任务管理器中结束 dq-tool 进程后,再重新打开。"
+                                : "检测到 dq-tool 已有实例在运行但服务无响应。\n"
+                                        + "请在任务管理器中结束 dq-tool 进程后,再重新打开。";
+                        javax.swing.JOptionPane.showMessageDialog(
+                                null, message, "dq-tool 已在运行", javax.swing.JOptionPane.INFORMATION_MESSAGE);
+                        System.exit(0);
+                    }
                 } else {
                     StartupLog.log("headless 模式不打开窗口,本进程退出(如需多实例请使用不同数据目录与端口)");
                     System.err.println("[dq-tool] 同数据目录已有实例在运行,本进程退出: " + config.dataDir());

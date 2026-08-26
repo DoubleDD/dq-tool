@@ -9,6 +9,7 @@ import com.example.dq.repository.SystemSettingsRepository
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -81,5 +82,25 @@ class SystemSettingsServiceTest {
         assertFalse(reset.customized)
         assertEquals(8, reset.workers)           // 回到配置文件默认
         assertEquals(100, reset.chunksPerTable)
+    }
+
+    @Test
+    fun `浏览器设置保存读取,扫描设置的保存与恢复默认不影响浏览器选择`() {
+        assertNull(service.browserApp())
+
+        service.saveBrowserApp("edge")
+        assertEquals("edge", service.browserApp())
+
+        // 保存扫描参数(整行 upsert)不清掉浏览器选择
+        service.saveScanSettings(ScanSettingsRequest(workers = 16))
+        assertEquals("edge", service.browserApp())
+
+        // 扫描设置恢复默认只清扫描列
+        service.resetScanSettings()
+        assertEquals("edge", service.browserApp())
+
+        // null 恢复自动
+        service.saveBrowserApp(null)
+        assertNull(service.browserApp())
     }
 }
