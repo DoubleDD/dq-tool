@@ -1,5 +1,6 @@
 package com.example.dq.service
 
+import com.example.dq.model.AnnotationTagItem
 import com.example.dq.model.ScanColumnExport
 import com.example.dq.model.ScanEventExport
 import com.example.dq.model.ScanExportFile
@@ -9,8 +10,11 @@ import com.example.dq.model.ScanPreviewDs
 import com.example.dq.model.ScanPreviewLocalDs
 import com.example.dq.model.ScanTableExport
 import com.example.dq.model.ScanTransferPreview
+import com.example.dq.model.TagKind
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.ScanRepository
+import com.example.dq.repository.TableDocRepository
+import com.example.dq.repository.TagRepository
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
 import java.io.InputStream
@@ -22,6 +26,9 @@ import java.time.format.DateTimeFormatter
 /**
  * 扫描记录导出/导入:把扫描任务连同事件/表/分段/字段明细打包成 JSON,在另一台机器的部署导入,
  * 扫描记录列表即可看到导入的历史记录(详情/字段统计照常可查)。
+ * 随任务携带花钱生成的标注数据:每张表的 USER 表标记(名字引用,定义收在文件级 tagDefs)与表描述,
+ * 导入成功一个任务后随即合并进本机全局标记/描述(标记按 name 建/更新、ensure 幂等打标、描述 upsert 覆盖),
+ * 避免换机后重新打标与重新生成描述;标注合并失败只记 warning,不影响已导入的扫描记录。
  * 跨实例对齐:数据源按名预检,导入时显式映射(文件数据源名 → 本机数据源 id,0 或缺失=跳过该数据源的全部任务);
  * 不导出任何内部 id,导入时全部重新生成。任务级幂等去重:同数据源 + db(可空等值)+ schema + 创建时间
  * 已存在则跳过,重复导入同一文件不产生重复记录。单任务导入失败计入 failed 并记 warning,不中断整批;
@@ -30,6 +37,8 @@ import java.time.format.DateTimeFormatter
 class ScanTransferService(
     private val scanRepo: ScanRepository,
     private val dataSourceRepo: DataSourceRepository,
+    private val tagRepo: TagRepository,
+    private val tableDocRepo: TableDocRepository,
 ) {
 
     private val objectMapper = jacksonObjectMapper()
@@ -42,11 +51,14 @@ class ScanTransferService(
         } else {
             jobIds.mapNotNull { scanRepo.findJob(it) }
         }
+        // 文件级 USER 标记定义:导出过程中按名收集,导入时据此合并颜色/描述
+        val tagDefs = LinkedHashMap<String, AnnotationTagItem>()
         val file = ScanExportFile(
             app = APP_MARKER,
             version = VERSION,
             exportedAt = OffsetDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-            jobs = jobs.map { toExport(it, dsNames) },
+            jobs = jobs.map { toExport(it, dsNames, tagDefs) },
+            tagDefs = tagDefs.values.toList(),
         )
         objectMapper.writerWithDefaultPrettyPrinter().writeValue(out, file)
     }
@@ -104,6 +116,7 @@ class ScanTransferService(
                 }
                 scanRepo.insertImportedCascade(dsId, job)
                 result.imported++
+                importAnnotations(dsId, job, file.tagDefs, label, result)
             } catch (e: Exception) {
                 result.failed++
                 result.warnings.add("任务 $label 导入失败: ${e.message}")
@@ -112,18 +125,67 @@ class ScanTransferService(
         return result
     }
 
+    /**
+     * 导入单任务携带的表标记与表描述(花钱生成的标注数据):标记定义按 name 合并(不存在则创建、
+     * 已存在的 USER 标记用文件里的 color/description 覆盖,系统空表标记不动),表标记 ensure 幂等插入,
+     * 表描述 upsert 覆盖(model 记 import 表示来自导入而非大模型生成)。
+     * 整体 try/catch:标注合并失败只记 warning,不影响已导入的扫描记录。
+     */
+    private fun importAnnotations(dsId: Long, job: ScanJobExport, tagDefs: List<AnnotationTagItem>,
+                                  label: String, result: ScanImportResult) {
+        try {
+            val defByName = tagDefs.associateBy { it.name }
+            val dbName = job.dbName ?: ""
+            for (table in job.tables) {
+                for (tagName in table.tags.map { it.trim() }.filter { it.isNotEmpty() }.distinct()) {
+                    val def = defByName[tagName]
+                    val existing = tagRepo.findByName(tagName)
+                    val tag = when {
+                        existing == null -> tagRepo.create(tagName, normalizeColor(def?.color),
+                            def?.description?.trim()?.takeIf { it.isNotEmpty() })
+                        // 与系统空表标记重名:由扫描自动维护,不覆盖;关系也不补(扫描会自行维护)
+                        existing.kind != TagKind.USER -> null
+                        def != null -> {
+                            tagRepo.update(existing.id, tagName, normalizeColor(def.color),
+                                def.description?.trim()?.takeIf { it.isNotEmpty() })
+                            existing
+                        }
+                        else -> existing
+                    } ?: continue
+                    // 幂等:已存在的关系不重复插入(唯一键兜底)
+                    tagRepo.ensureTableTag(tag.id, dsId, dbName, job.schemaName, table.tableName)
+                }
+                val doc = table.doc?.takeIf { it.isNotBlank() }
+                if (doc != null) {
+                    tableDocRepo.upsert(dsId, dbName, job.schemaName, table.tableName, doc, MODEL_IMPORT)
+                }
+            }
+        } catch (e: Exception) {
+            result.warnings.add("任务 $label:表标记/表描述导入失败: ${e.message}")
+        }
+    }
+
     // ---------- 导出组装 ----------
 
-    private fun toExport(job: ScanRepository.JobRow, dsNames: Map<Long, String>): ScanJobExport {
+    private fun toExport(job: ScanRepository.JobRow, dsNames: Map<Long, String>,
+                         tagDefs: LinkedHashMap<String, AnnotationTagItem>): ScanJobExport {
         val events = scanRepo.listJobEvents(job.id).map { ScanEventExport(it.status!!, ts(it.at)) }
+        // 本任务库表范围内的标注数据:USER 表标记(EMPTY 系统标记由扫描自动维护,不导出)与表描述
+        val tagsByTable = tagRepo.tableTagsBySchema(job.datasourceId, job.dbName ?: "", job.schemaName)
+        val docsByTable = tableDocRepo.findBySchema(job.datasourceId, job.dbName ?: "", job.schemaName)
         val tables = scanRepo.listScanTables(job.id).map { t ->
             val columns = scanRepo.listScanColumns(t.id).map { col ->
                 ScanColumnExport(col.columnName ?: "", col.columnType, col.columnComment, col.nullable,
                     col.defaultValue, col.keyLabel, col.totalRows, col.nullCount, col.emptyCount, col.ruleHitCount)
             }
+            val tags = tagsByTable[t.tableName].orEmpty().filter { it.kind == TagKind.USER }
+            for (tag in tags) {
+                tagDefs.putIfAbsent(tag.name, AnnotationTagItem(tag.name, tag.color, tag.description))
+            }
             ScanTableExport(t.tableName, t.status!!, t.sampled, t.sampleRows, t.estRows, t.sizeBytes,
                 t.chunkKey, t.comment, t.storageInfo, t.totalChunks, t.doneChunks, t.scannedRows, t.totalRows,
-                t.error, ts(t.startedAt), ts(t.finishedAt), scanRepo.listChunksForExport(t.id), columns)
+                t.error, ts(t.startedAt), ts(t.finishedAt), scanRepo.listChunksForExport(t.id), columns,
+                tags.map { it.name }, docsByTable[t.tableName])
         }
         return ScanJobExport(dsNames[job.datasourceId] ?: "", job.dbName, job.schemaName, job.status,
             job.forceFull, job.autoTag, job.workers, job.genDoc, job.nullRulesJson, job.totalTables,
@@ -152,5 +214,12 @@ class ScanTransferService(
         const val APP_MARKER = "dq-tool-scans"
         const val VERSION = 1
         val TS_FORMAT: DateTimeFormatter = DateTimeFormatter.ISO_LOCAL_DATE_TIME
+
+        /** 导入落库的 model 标记:区分大模型生成的描述(与 AnnotationTransferService 口径一致) */
+        const val MODEL_IMPORT = "import"
+
+        /** 颜色缺省回落到默认色,与 tag_def.color 默认值一致(同 AnnotationTransferService) */
+        fun normalizeColor(color: String?): String =
+            color?.trim()?.takeIf { it.isNotEmpty() } ?: "#409EFF"
     }
 }

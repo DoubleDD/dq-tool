@@ -11,6 +11,8 @@ import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
+import com.example.dq.repository.TableDocRepository
+import com.example.dq.repository.TagRepository
 import com.example.dq.util.CryptoUtil
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Test
@@ -30,6 +32,8 @@ class ScanTransferServiceTest {
     /** 一套独立内存库环境,模拟一台机器(源/目标各一套即模拟跨实例) */
     private class Env {
         val scanRepo: ScanRepository
+        val tagRepo: TagRepository
+        val tableDocRepo: TableDocRepository
         val service: ScanTransferService
         private val dataSourceService: DataSourceService
 
@@ -40,10 +44,12 @@ class ScanTransferServiceTest {
             val jdbc = Jdbc(ds)
             val dsRepo = DataSourceRepository(jdbc)
             scanRepo = ScanRepository(jdbc)
+            tagRepo = TagRepository(jdbc)
+            tableDocRepo = TableDocRepository(jdbc)
             val config = AppConfig(dataDir = Files.createTempDirectory("scan-transfer-test"))
             dataSourceService = DataSourceService(dsRepo, CryptoUtil(config), DialectFactory, config,
                 SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
-            service = ScanTransferService(scanRepo, dsRepo)
+            service = ScanTransferService(scanRepo, dsRepo, tagRepo, tableDocRepo)
         }
 
         fun createDs(name: String): Long =
@@ -130,6 +136,61 @@ class ScanTransferServiceTest {
         assertEquals(5L, dstCol.nullCount)
         assertEquals(3L, dstCol.emptyCount)
         assertEquals(92L, dstCol.valueCount)
+    }
+
+    @Test
+    fun `导出导入携带表标记与表描述`() {
+        val src = Env()
+        val srcDsId = src.createDs("生产库")
+        val srcJobId = seedDoneJob(src, srcDsId)
+        // 源实例的标注数据:USER 标记定义(含颜色/描述)+ 打标关系 + AI 生成的表描述;空表系统标记不参与导出
+        val tag = src.tagRepo.create("核心表", "#F56C6C", "核心业务表")
+        src.tagRepo.ensureTableTag(tag.id, srcDsId, "", "public", "t_user")
+        src.tagRepo.findEmptyTag()?.let { src.tagRepo.ensureTableTag(it.id, srcDsId, "", "public", "t_user") }
+        src.tableDocRepo.upsert(srcDsId, "", "public", "t_user", "用户主表,存登录账号", "deepseek-chat")
+
+        val out = ByteArrayOutputStream()
+        src.service.export(listOf(srcJobId), out)
+        val json = out.toString(Charsets.UTF_8)
+        assertTrue(json.contains("核心表"), json)
+        assertTrue(json.contains("用户主表,存登录账号"), json)
+
+        val dst = Env()
+        val dstDsId = dst.createDs("生产库")
+        val result = dst.service.importJson(ByteArrayInputStream(out.toByteArray()),
+            mapOf("生产库" to dstDsId))
+        assertEquals(1, result.imported)
+        assertTrue(result.warnings.isEmpty())
+
+        // 标记定义按名创建(颜色/描述透传),打标关系落库;空表系统标记的关系不由导入补
+        val dstTag = dst.tagRepo.findByName("核心表")!!
+        assertEquals("#F56C6C", dstTag.color)
+        assertEquals("核心业务表", dstTag.description)
+        val dstTags = dst.tagRepo.tableTagsBySchema(dstDsId, "", "public")["t_user"]!!
+        assertEquals(listOf("核心表"), dstTags.map { it.name })
+        // 表描述 upsert 落库,model 记 import
+        assertEquals("用户主表,存登录账号", dst.tableDocRepo.findBySchema(dstDsId, "", "public")["t_user"])
+    }
+
+    @Test
+    fun `重复导入不产生重复打标 描述幂等覆盖`() {
+        val src = Env()
+        val srcDsId = src.createDs("生产库")
+        seedDoneJob(src, srcDsId)
+        val tag = src.tagRepo.create("核心表", "#F56C6C", null)
+        src.tagRepo.ensureTableTag(tag.id, srcDsId, "", "public", "t_user")
+        src.tableDocRepo.upsert(srcDsId, "", "public", "t_user", "用户主表", "deepseek-chat")
+        val out = ByteArrayOutputStream()
+        src.service.export(emptyList(), out)
+
+        val dst = Env()
+        val dstDsId = dst.createDs("生产库")
+        dst.service.importJson(ByteArrayInputStream(out.toByteArray()), mapOf("生产库" to dstDsId))
+        // 第二次导入:任务判重跳过,标注数据不重复不报错
+        val second = dst.service.importJson(ByteArrayInputStream(out.toByteArray()), mapOf("生产库" to dstDsId))
+        assertEquals(1, second.skipped)
+        val dstTags = dst.tagRepo.tableTagsBySchema(dstDsId, "", "public")["t_user"]!!
+        assertEquals(listOf("核心表"), dstTags.map { it.name })
     }
 
     @Test

@@ -6,12 +6,17 @@ package com.example.dq.model
  * 跨实例对齐键:数据源按 数据源名(导入时由用户映射到本机数据源),任务去重按
  * 数据源 + db + schema + 创建时间;不导出任何内部 id,导入时全部重新生成。
  * 时间字段统一为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致,直接透传)。
+ * 除扫描明细外,还随任务携带花钱生成的标注数据:表级 USER 标记(名字引用,定义在 tagDefs)与表描述,
+ * 导入时合并进本机全局标记/描述,避免换机后重新打标与重新生成描述。
+ * tagDefs/tags/doc 为 v1 格式内追加字段,旧导出文件无这些字段按缺省(空)导入。
  */
 data class ScanExportFile(
     val app: String,
     val version: Int,
     val exportedAt: String,
     val jobs: List<ScanJobExport> = emptyList(),
+    /** 文件内引用到的 USER 标记定义(名字/颜色/描述);导入时按 name 合并(同 AnnotationTransferService) */
+    val tagDefs: List<AnnotationTagItem> = emptyList(),
 )
 
 /** 单个扫描任务及其全部明细 */
@@ -41,7 +46,7 @@ data class ScanEventExport(
     val createdAt: String? = null,
 )
 
-/** 表级扫描结果及其分段/字段明细 */
+/** 表级扫描结果及其分段/字段明细;tags/doc 为随任务携带的标注数据(USER 标记名列表与表描述) */
 data class ScanTableExport(
     val tableName: String,
     val status: ScanStatus,
@@ -61,6 +66,10 @@ data class ScanTableExport(
     val finishedAt: String? = null,
     val chunks: List<ScanChunkExport> = emptyList(),
     val columns: List<ScanColumnExport> = emptyList(),
+    /** USER 表标记名(EMPTY 系统空表标记由扫描自动维护,不随导出);定义见文件级 tagDefs */
+    val tags: List<String> = emptyList(),
+    /** 表描述(AI 生成或手动编辑);导入时 upsert 覆盖本机现有描述 */
+    val doc: String? = null,
 )
 
 /** 分段扫描结果(col_stats CLOB JSON 原文透传) */

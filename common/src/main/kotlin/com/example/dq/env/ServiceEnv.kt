@@ -104,7 +104,7 @@ class ServiceEnv(val config: AppConfig) {
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, dataSourceRepo)
-    val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo)
+    val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
     val exportService = ExportService(scanService, tableDocRepo)
     val scanWordExportService = ScanWordExportService(scanService, tagRepo, schemaDocRepo)
     val listExportService = ListExportService()

@@ -41,11 +41,12 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 ## 扫描记录导出/导入(跨机器迁移)
 
-把扫描记录(任务 + 事件时间线 + 表级/分段/字段明细)导出为 JSON 文件,在另一台机器的部署一键导入,扫描记录列表即可看到导入的历史记录。实现:`ScanTransferService`(common)+ `ScanTransferController`(server),前端入口在扫描记录页(`Scans.vue`)工具栏「导出记录/导入记录」。
+把扫描记录(任务 + 事件时间线 + 表级/分段/字段明细)导出为 JSON 文件,在另一台机器的部署一键导入,扫描记录列表即可看到导入的历史记录。导出还随任务携带每张表的 USER 表标记与表描述(AI 花钱生成的标注数据),导入成功一个任务后随即合并进本机全局标记/描述,避免换机后重新打标与重新生成描述。实现:`ScanTransferService`(common)+ `ScanTransferController`(server),前端入口在扫描记录页(`Scans.vue`)工具栏「导出记录/导入记录」。
 
-- **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[])`;job 含 events/tables,table 含 chunks/columns;不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响
+- **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[], tagDefs[])`;job 含 events/tables,table 含 chunks/columns + `tags`(USER 标记名列表,EMPTY 系统空表标记由扫描自动维护不导出)+ `doc`(表描述);文件级 `tagDefs` 收引用到的 USER 标记定义(name/color/description);不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响;tagDefs/tags/doc 为 v1 格式内追加字段,旧导出文件按缺省(空)导入
 - **数据源对齐**:与标记导入一致走「预检 + 映射」——预检返回文件内各数据源的 job 数、本机同名数据源 id(前端自动预选)、本机全部数据源;导入 mapping 为「文件数据源名 → 本机数据源 id」,0/缺失/指向不存在的数据源 = 跳过该数据源的全部任务(计入 skipped)
 - **去重幂等**:同数据源 + db_name(可空等值,空白一律落 NULL)+ schema_name + created_at 已存在则跳过,重复导入同一文件不产生重复记录
 - **结果明细**:跳过(未映射/映射目标不存在/判重)与失败均逐条记 `warnings`(任务标签 + 原因),导入完成弹窗在汇总行下方逐行展示
 - **导入事务**:单任务在 `ScanRepository.insertImportedCascade` 同一事务内按 job → event → table → chunk/column 顺序插入,任一失败整体回滚;单任务失败计入 failed 并记 warning,不中断整批
+- **标注数据合并**:任务导入成功后随即合并其携带的表标记/表描述——标记定义按 name 合并(不存在则创建、已存在的 USER 标记用文件里的 color/description 覆盖、与系统空表标记重名不动)、表标记 ensure 幂等插入、表描述 upsert 覆盖(model 记 `import`,同 AnnotationTransferService 口径);标注合并失败只记 warning,不影响已导入的扫描记录
 - **API**:`GET /api/scans/transfer/export?ids=1,2`(ids 可空 = 全部,下载 `dq-scans-yyyyMMdd-HHmmss.json`)、`POST /api/scans/transfer/preview`(multipart file)、`POST /api/scans/transfer/import`(multipart file + formParam `mapping` JSON);三个路由在 WebServer 中先于 `/api/scans/{jobId}` 注册,避免被路径参数截获
