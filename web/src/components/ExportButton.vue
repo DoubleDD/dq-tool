@@ -1,5 +1,5 @@
 <template>
-  <el-button :size="size" @click="open">导出 Excel</el-button>
+  <el-button :size="size" @click="open">{{ label }}</el-button>
   <el-dialog v-model="visible" title="导出 Excel" width="min(1440px, 94vw)" append-to-body>
     <div class="tip">
       导出文件结构预览(示例数据)。「表列表」「字段明细」页签内可勾选要导出的列,下方表格实时预览最终样式;灰色固定列始终导出。
@@ -113,6 +113,7 @@
     <template #footer>
       <el-button @click="reset">重置</el-button>
       <el-button @click="visible = false">取消</el-button>
+      <el-button @click="exportWord">导出 Word</el-button>
       <el-button type="primary" @click="doExport">导出</el-button>
     </template>
   </el-dialog>
@@ -120,6 +121,7 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { downloadFile } from '../utils/download'
 
 // 与后端 ExportService.TABLE_DEFS / COLUMN_DEFS 的 key 一一对应,改动需同步
 const TABLE_COLS = [
@@ -194,7 +196,8 @@ const ALL_FIELDS_SAMPLE = [
 
 const props = defineProps({
   jobId: { type: [Number, String], required: true },
-  size: { type: String, default: undefined }
+  size: { type: String, default: undefined },
+  label: { type: String, default: '导出 Excel' }
 })
 
 const visible = ref(false)
@@ -226,7 +229,14 @@ function doExport() {
   if (tableChecked.value.length < TABLE_COLS.length) params.set('tableCols', tableChecked.value.join(','))
   if (fieldChecked.value.length < FIELD_COLS.length) params.set('cols', fieldChecked.value.join(','))
   const q = params.toString()
-  window.open(`/api/scans/${props.jobId}/export${q ? '?' + q : ''}`, '_blank')
+  // 桌面端弹原生保存对话框自选目录,浏览器走默认下载(见 utils/download.js)
+  downloadFile(`/api/scans/${props.jobId}/export${q ? '?' + q : ''}`)
+  visible.value = false
+}
+
+// Word 版(数据库表结构文档):无列选择,直接下载
+function exportWord() {
+  downloadFile(`/api/scans/${props.jobId}/export-word`)
   visible.value = false
 }
 </script>

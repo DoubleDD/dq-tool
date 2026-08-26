@@ -3,6 +3,7 @@ package com.example.dq.controller;
 import com.example.dq.model.ScanRequest;
 import com.example.dq.service.ExportService;
 import com.example.dq.service.ScanService;
+import com.example.dq.service.ScanWordExportService;
 import com.example.dq.web.Validators;
 import io.javalin.http.Context;
 import jakarta.servlet.http.HttpServletResponse;
@@ -19,10 +20,13 @@ public class ScanController {
 
     private final ScanService scanService;
     private final ExportService exportService;
+    private final ScanWordExportService scanWordExportService;
 
-    public ScanController(ScanService scanService, ExportService exportService) {
+    public ScanController(ScanService scanService, ExportService exportService,
+                          ScanWordExportService scanWordExportService) {
         this.scanService = scanService;
         this.exportService = exportService;
+        this.scanWordExportService = scanWordExportService;
     }
 
     public void create(Context ctx) throws Exception {
@@ -69,6 +73,16 @@ public class ScanController {
         // tableCols/cols:逗号分隔的列 key(表列表/字段明细 sheet),缺省导出全部列;空值表示只留固定首列
         exportService.export(jobId, splitKeys(ctx.queryParam("tableCols")), splitKeys(ctx.queryParam("cols")),
                 response.getOutputStream());
+    }
+
+    /** 扫描结果 Word 版(数据库表结构文档),同步渲染下载 */
+    public void exportWord(Context ctx) throws IOException {
+        long jobId = jobId(ctx);
+        String filename = URLEncoder.encode("dq-scan-" + jobId + "-表结构.docx", StandardCharsets.UTF_8);
+        HttpServletResponse response = ctx.res();
+        response.setContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
+        scanWordExportService.export(jobId, response.getOutputStream());
     }
 
     private static long jobId(Context ctx) {
