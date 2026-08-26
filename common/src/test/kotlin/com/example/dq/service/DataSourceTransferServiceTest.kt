@@ -42,13 +42,14 @@ class DataSourceTransferServiceTest {
         service = DataSourceTransferService(dsRepo, crypto, dataSourceService)
     }
 
-    private fun createDs(name: String, password: String, rowThreshold: Long? = null): Long =
+    private fun createDs(name: String, password: String, rowThreshold: Long? = null, groupName: String? = null): Long =
         dataSourceService.create(
-            DataSourceRequest(name, "jdbc:mysql://localhost:3306/db", "root", password, rowThreshold, null))
+            DataSourceRequest(name, "jdbc:mysql://localhost:3306/db", "root", password, rowThreshold, null,
+                groupName = groupName))
 
     @Test
     fun `导出导入往返保留名称用户名密码与行数阈值`() {
-        val id1 = createDs("生产库", "secret-1", 5_000_000L)
+        val id1 = createDs("生产库", "secret-1", 5_000_000L, groupName = "核心")
         val id2 = createDs("测试库", "secret-2")
 
         val out = ByteArrayOutputStream()
@@ -71,8 +72,11 @@ class DataSourceTransferServiceTest {
         assertEquals("root", prod.username)
         assertEquals(5_000_000L, prod.rowThreshold)
         assertEquals("secret-1", crypto.decrypt(prod.password))
+        // 分组名随导出/导入迁移;未设置的数据源保持未分组
+        assertEquals("核心", prod.groupName)
         val test = all.first { it.name == "测试库" }
         assertEquals("secret-2", crypto.decrypt(test.password))
+        assertEquals(null, test.groupName)
     }
 
     @Test

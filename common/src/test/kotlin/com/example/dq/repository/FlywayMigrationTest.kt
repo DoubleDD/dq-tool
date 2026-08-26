@@ -109,5 +109,10 @@ class FlywayMigrationTest {
             """SELECT COUNT(*) FROM "flyway_schema_history" WHERE "version" = '4' AND "success" = TRUE""",
         ) { it.getLong(1) }
         assertEquals(1L, appliedV4)
+        // V18 补列:老库升级路径同样补齐数据源分组列
+        val groupColBack = ds.connection.use { conn ->
+            conn.metaData.getColumns(null, null, "DATA_SOURCE", "GROUP_NAME").use { it.next() }
+        }
+        assertTrue(groupColBack, "老库缺少 V18 补列: GROUP_NAME")
     }
 }

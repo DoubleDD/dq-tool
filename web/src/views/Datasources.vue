@@ -6,8 +6,14 @@
         <span v-if="list.length" class="toolbar-sub">{{ list.length }} 个连接</span>
         <el-input v-if="list.length" v-model="keyword" placeholder="搜索名称/主机/类型" clearable
           :prefix-icon="Search" style="width: 220px" />
+        <el-select v-if="list.length && groupOptions.length" v-model="groupFilter" placeholder="按分组筛选"
+          clearable style="width: 150px">
+          <el-option label="未分组" value="__ungrouped__" />
+          <el-option v-for="g in groupOptions" :key="g" :label="g" :value="g" />
+        </el-select>
       </div>
       <div class="toolbar-right">
+        <el-button :disabled="!filteredList.length" @click="exportExcel">导出 Excel</el-button>
         <el-button @click="openExportDialog()">导出配置(JSON)</el-button>
         <el-button @click="openImportDialog()">导入配置</el-button>
         <el-button type="primary" @click="openDialog()">新增数据源</el-button>
@@ -62,43 +68,53 @@
       </template>
     </el-alert>
 
-    <div v-if="list.length || loading" class="ds-grid" v-loading="loading">
-      <el-empty v-if="!loading && !filteredList.length" description="没有匹配的数据源" :image-size="80" style="grid-column: 1 / -1" />
-      <el-card v-for="row in filteredList" :key="row.id" shadow="hover" class="ds-card"
-        :class="{ 'ds-no-password': row.hasPassword === false }"
-        :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : row.jdbcUrl"
-        @click="goSchemas(row)">
-        <DbTypeIcon :type="row.dbType" :size="110" class="ds-bg-icon" />
-        <div class="ds-card-header">
-          <span class="ds-name" :title="row.name">
-            <el-tooltip v-if="row.hasPassword === false" content="未设置密码,请先编辑补充密码" placement="top">
-              <el-icon class="ds-error-icon"><WarningFilled /></el-icon>
-            </el-tooltip>
-            {{ row.name }}
-          </span>
-          <span class="ds-card-right">
-            <el-icon class="ds-fav" :class="{ 'ds-fav-on': isFav(row.id) }"
-              :title="isFav(row.id) ? '取消收藏' : '收藏(置顶展示)'"
-              @click.stop="toggleFavorite(row)">
-              <StarFilled v-if="isFav(row.id)" /><Star v-else />
-            </el-icon>
-            <el-tag size="small">{{ row.dbType }}</el-tag>
-          </span>
+    <!-- 分组区块:一个分组一个可折叠区块,未分组排最后;全库无任何分组时退化为平铺网格(不显示区块头) -->
+    <div v-if="list.length || loading" v-loading="loading">
+      <el-empty v-if="!loading && !filteredList.length" description="没有匹配的数据源" :image-size="80" />
+      <div v-for="g in groupedList" :key="g.key" class="ds-group">
+        <div v-if="hasAnyGroup" class="ds-group-header" @click="toggleGroup(g.key)">
+          <el-icon class="ds-group-arrow" :class="{ 'is-collapsed': isGroupCollapsed(g.key) }"><ArrowDown /></el-icon>
+          <span class="ds-group-name">{{ g.name }}</span>
+          <span class="ds-group-count">{{ g.items.length }} 个连接</span>
         </div>
-        <div class="ds-meta">
-          <span class="ds-meta-item"><el-icon><Connection /></el-icon>{{ dbHost(row.jdbcUrl) }}</span>
-          <span class="ds-meta-item" v-if="row.username"><el-icon><User /></el-icon>{{ row.username }}</span>
+        <div v-show="!isGroupCollapsed(g.key)" class="ds-grid">
+          <el-card v-for="row in g.items" :key="row.id" shadow="hover" class="ds-card"
+            :class="{ 'ds-no-password': row.hasPassword === false }"
+            :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : row.jdbcUrl"
+            @click="goSchemas(row)">
+            <DbTypeIcon :type="row.dbType" :size="110" class="ds-bg-icon" />
+            <div class="ds-card-header">
+              <span class="ds-name" :title="row.name">
+                <el-tooltip v-if="row.hasPassword === false" content="未设置密码,请先编辑补充密码" placement="top">
+                  <el-icon class="ds-error-icon"><WarningFilled /></el-icon>
+                </el-tooltip>
+                {{ row.name }}
+              </span>
+              <span class="ds-card-right">
+                <el-icon class="ds-fav" :class="{ 'ds-fav-on': isFav(row.id) }"
+                  :title="isFav(row.id) ? '取消收藏' : '收藏(置顶展示)'"
+                  @click.stop="toggleFavorite(row)">
+                  <StarFilled v-if="isFav(row.id)" /><Star v-else />
+                </el-icon>
+                <el-tag size="small">{{ row.dbType }}</el-tag>
+              </span>
+            </div>
+            <div class="ds-meta">
+              <span class="ds-meta-item"><el-icon><Connection /></el-icon>{{ dbHost(row.jdbcUrl) }}</span>
+              <span class="ds-meta-item" v-if="row.username"><el-icon><User /></el-icon>{{ row.username }}</span>
+            </div>
+            <!-- 左下角编辑 / 右下角删除;浏览库靠点击卡片本体 -->
+            <div class="ds-card-foot">
+              <el-button link class="ds-icon-btn" @click.stop="openDialog(row)">
+                <el-icon><EditPen /></el-icon>
+              </el-button>
+              <el-button link type="danger" class="ds-icon-btn" @click.stop="onDelete(row)">
+                <el-icon><Delete /></el-icon>
+              </el-button>
+            </div>
+          </el-card>
         </div>
-        <!-- 左下角编辑 / 右下角删除;浏览库靠点击卡片本体 -->
-        <div class="ds-card-foot">
-          <el-button link class="ds-icon-btn" @click.stop="openDialog(row)">
-            <el-icon><EditPen /></el-icon>
-          </el-button>
-          <el-button link type="danger" class="ds-icon-btn" @click.stop="onDelete(row)">
-            <el-icon><Delete /></el-icon>
-          </el-button>
-        </div>
-      </el-card>
+      </div>
     </div>
 
     <!-- 新增/编辑数据源:DataGrip 风格 —— 顶部名称+驱动,常规/SSH 隧道/高级分页,测试连接固定在左下 -->
@@ -163,6 +179,12 @@
                 <el-input v-model="form.jdbcUrl" :placeholder="urlPlaceholder" />
               </el-form-item>
             </template>
+            <el-form-item label="分组">
+              <el-select v-model="form.groupName" filterable allow-create default-first-option clearable
+                placeholder="可输入新分组或选择已有分组" style="width: 100%">
+                <el-option v-for="g in groupOptions" :key="g" :label="g" :value="g" />
+              </el-select>
+            </el-form-item>
           </el-form>
         </el-tab-pane>
         <el-tab-pane label="SSH 隧道" name="ssh">
@@ -336,17 +358,61 @@
 import { computed, onActivated, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowRight, Connection, Delete, EditPen, Search, Star, StarFilled, UploadFilled, User, WarningFilled } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Connection, Delete, EditPen, Search, Star, StarFilled, UploadFilled, User, WarningFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
 import { tabState } from '../stores/tabs'
 import { loadDsFavorites, saveDsFavorites, sortDsByFavorite } from '../utils/dsFavorites'
+import { notifyDsListChanged } from '../utils/dsListChanged'
+import { downloadFile } from '../utils/download'
+import { cellText, exportListToExcel } from '../utils/listExport'
 
 const router = useRouter()
 const list = ref([])
 const loading = ref(false)
 // 搜索关键字(匹配名称/主机/用户名/类型)
 const keyword = ref('')
+// 分组筛选:'' 全部,'__ungrouped__' 未分组,其余按分组名精确匹配
+const groupFilter = ref('')
+// 已有分组列表:从数据源聚合去重,供筛选下拉与编辑表单选择
+const groupOptions = computed(() => {
+  const set = new Set()
+  list.value.forEach((r) => { if (r.groupName) set.add(r.groupName) })
+  return [...set].sort()
+})
+// 未分组区块的 key(与筛选下拉的「未分组」选项共用同一哨兵值)
+const UNGROUPED = '__ungrouped__'
+// 全库是否存在任何命名分组:没有时退化为平铺网格,不渲染区块头
+const hasAnyGroup = computed(() => groupOptions.value.length > 0)
+// 被折叠的分组 key 集合;默认全部展开
+const collapsedGroups = ref([])
+
+function isGroupCollapsed(key) {
+  return collapsedGroups.value.includes(key)
+}
+
+function toggleGroup(key) {
+  const i = collapsedGroups.value.indexOf(key)
+  if (i >= 0) collapsedGroups.value.splice(i, 1)
+  else collapsedGroups.value.push(key)
+}
+
+/** 过滤后的数据源按分组成块:命名分组按名称排序,未分组排最后;组内保持收藏置顶顺序 */
+const groupedList = computed(() => {
+  const map = new Map()
+  filteredList.value.forEach((r) => {
+    const key = r.groupName || UNGROUPED
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(r)
+  })
+  return [...map.entries()]
+    .map(([key, items]) => ({ key, name: key === UNGROUPED ? '未分组' : key, items }))
+    .sort((a, b) => {
+      if (a.key === UNGROUPED) return 1
+      if (b.key === UNGROUPED) return -1
+      return a.key.localeCompare(b.key, 'zh')
+    })
+})
 // 收藏:前端本地偏好,按数据源 id 存 localStorage;收藏的卡片排最前,同收藏按收藏时间倒序(与侧边栏共用 dsFavorites 工具)
 const favorites = ref(loadDsFavorites())
 
@@ -361,14 +427,19 @@ function toggleFavorite(row) {
   saveDsFavorites(favorites.value)
 }
 
-/** 搜索过滤 + 收藏置顶(收藏时间倒序) */
+/** 搜索过滤 + 分组筛选 + 收藏置顶(收藏时间倒序) */
 const filteredList = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   let arr = list.value
   if (kw) {
     arr = arr.filter((r) =>
-      [r.name, r.jdbcUrl, r.username, r.dbType].some((v) => (v || '').toLowerCase().includes(kw))
+      [r.name, r.jdbcUrl, r.username, r.dbType, r.groupName].some((v) => (v || '').toLowerCase().includes(kw))
     )
+  }
+  if (groupFilter.value === '__ungrouped__') {
+    arr = arr.filter((r) => !r.groupName)
+  } else if (groupFilter.value) {
+    arr = arr.filter((r) => r.groupName === groupFilter.value)
   }
   return sortDsByFavorite(arr, favorites.value)
 })
@@ -402,6 +473,7 @@ const DEFAULT_PORTS = {
 const emptyForm = () => ({
   id: null,
   name: '',
+  groupName: '',
   dbType: 'MYSQL',
   inputMode: 'fields',
   jdbcUrl: '',
@@ -651,6 +723,7 @@ function openDialog(row) {
   if (row) {
     form.id = row.id
     form.name = row.name
+    form.groupName = row.groupName || ''
     form.dbType = row.dbType || 'MYSQL'
     form.jdbcUrl = row.jdbcUrl
     form.username = row.username
@@ -722,6 +795,7 @@ async function onSave() {
   try {
     const body = {
       name: form.name,
+      groupName: form.groupName?.trim() || null,
       jdbcUrl: form.jdbcUrl,
       username: form.username,
       password: form.password,
@@ -738,6 +812,8 @@ async function onSave() {
     ElMessage.success('保存成功')
     dialogVisible.value = false
     loadList()
+    // 广播列表变更:侧边栏数据源菜单即时刷新(分组/名称可能已变)
+    notifyDsListChanged()
   } finally {
     saving.value = false
   }
@@ -748,6 +824,7 @@ async function onDelete(row) {
   await request.delete(`/datasources/${row.id}`)
   ElMessage.success('删除成功')
   loadList()
+  notifyDsListChanged()
 }
 
 function goSchemas(row) {
@@ -759,6 +836,21 @@ function goSchemas(row) {
 function dbHost(jdbcUrl) {
   const m = (jdbcUrl || '').match(/(?:@\/\/|:\/\/)([^/:;?]+)/)
   return m ? m[1] : ''
+}
+
+// ---------- 列表导出 Excel(导出当前搜索过滤后的卡片列表) ----------
+function exportExcel() {
+  const headers = ['名称', '分组', '数据库类型', '主机', '用户名', 'JDBC URL', '库过滤']
+  const rows = filteredList.value.map((r) => [
+    cellText(r.name),
+    cellText(r.groupName || ''),
+    cellText(r.dbType),
+    cellText(dbHost(r.jdbcUrl)),
+    cellText(r.username),
+    cellText(r.jdbcUrl),
+    r.schemaFilter?.length ? r.schemaFilter.join(', ') : '全部'
+  ])
+  exportListToExcel('数据源列表', headers, rows, '数据源列表')
 }
 
 // ---------- 导出 ----------
@@ -779,8 +871,8 @@ function openExportDialog() {
 }
 
 function doExport() {
-  // 后端直接返回文件下载,用 window.open 绕开 axios 的 JSON 拦截器
-  window.open('/api/datasources/export?ids=' + exportChecked.value.join(','), '_blank')
+  // 桌面端弹原生保存对话框自选目录,浏览器走默认下载(见 utils/download.js)
+  downloadFile('/api/datasources/export?ids=' + exportChecked.value.join(','))
   exportVisible.value = false
 }
 
@@ -849,7 +941,10 @@ async function doImport() {
 
 /** 对话框完全关闭后:有成功导入则刷新列表,并重置状态供下次打开 */
 function onImportClosed() {
-  if ((importResult.value?.imported?.length || 0) > 0) loadList()
+  if ((importResult.value?.imported?.length || 0) > 0) {
+    loadList()
+    notifyDsListChanged()
+  }
   importResult.value = null
   importFile.value = null
   importText.value = ''
@@ -983,6 +1078,39 @@ onActivated(loadList)
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
+}
+/* 分组区块:头部可点击折叠/展开,底色+左侧强调条与卡片网格明显区分 */
+.ds-group {
+  margin-bottom: 20px;
+}
+.ds-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  background-color: var(--el-fill-color);
+  border-left: 3px solid var(--el-color-primary-light-5);
+  border-radius: 6px;
+  transition: background-color 0.2s ease;
+}
+.ds-group-header:hover {
+  background-color: var(--el-fill-color-dark);
+  color: var(--el-color-primary);
+}
+.ds-group-arrow {
+  transition: transform 0.2s ease;
+}
+.ds-group-arrow.is-collapsed {
+  transform: rotate(-90deg);
+}
+.ds-group-count {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  font-weight: 400;
 }
 .ds-card :deep(.el-card__body) {
   position: relative;

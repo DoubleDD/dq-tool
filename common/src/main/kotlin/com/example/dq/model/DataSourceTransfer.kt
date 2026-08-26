@@ -17,6 +17,8 @@ data class DataSourceExportItem(
     val sizeThresholdBytes: Long?,
     /** 库过滤白名单,空/NULL 表示不过滤 */
     val schemaFilter: List<String>? = null,
+    /** 分组名,空/NULL 表示未分组 */
+    val groupName: String? = null,
     // SSH 隧道配置;三个秘密字段与 passwordEnc 一样走 TransferCrypto 固定密钥
     val sshEnabled: Boolean? = null,
     val sshHost: String? = null,

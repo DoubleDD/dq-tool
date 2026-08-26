@@ -47,12 +47,28 @@
             <el-icon><Grid /></el-icon>
             <span>全部数据源</span>
           </el-menu-item>
-          <!-- 数据源列表可能很长:限高滚动,「全部数据源」固定在可视区不随列表滚动 -->
+          <!-- 数据源列表可能很长:限高滚动,「全部数据源」固定在可视区不随列表滚动;
+               命名分组渲染为可折叠子菜单,未分组的数据源平铺在末尾 -->
           <div class="ds-list">
-            <el-menu-item v-for="ds in sortedDatasources" :key="ds.id" :index="`/datasources/${ds.id}/schemas`">
-              <DbTypeIcon :type="ds.dbType" :size="15" />
-              <span class="ds-name">{{ ds.name }}</span>
-            </el-menu-item>
+            <template v-for="g in groupedDatasources" :key="g.key">
+              <el-sub-menu v-if="g.key !== UNGROUPED_GROUP" :index="'ds-group:' + g.key" class="ds-group-sub">
+                <template #title>
+                  <el-icon><Folder /></el-icon>
+                  <span class="ds-name">{{ g.name }}</span>
+                  <span class="ds-group-count">{{ g.items.length }}</span>
+                </template>
+                <el-menu-item v-for="ds in g.items" :key="ds.id" :index="`/datasources/${ds.id}/schemas`">
+                  <DbTypeIcon :type="ds.dbType" :size="15" />
+                  <span class="ds-name">{{ ds.name }}</span>
+                </el-menu-item>
+              </el-sub-menu>
+              <template v-else>
+                <el-menu-item v-for="ds in g.items" :key="ds.id" :index="`/datasources/${ds.id}/schemas`">
+                  <DbTypeIcon :type="ds.dbType" :size="15" />
+                  <span class="ds-name">{{ ds.name }}</span>
+                </el-menu-item>
+              </template>
+            </template>
           </div>
           <el-menu-item v-if="!datasources.length" index="/datasources" class="ds-empty">
             <span>暂无数据源,点 ⋮ 新增</span>
@@ -108,13 +124,14 @@ import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Coin, Document, Download, Expand, Fold, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon } from '@element-plus/icons-vue'
+import { Coin, Document, Download, Expand, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
 import LicenseFooter from './components/LicenseFooter.vue'
 import DbTypeIcon from './components/DbTypeIcon.vue'
 import { loadDsFavorites, sortDsByFavorite, DS_FAVORITES_CHANGED_EVENT } from './utils/dsFavorites'
+import { DS_LIST_CHANGED_EVENT } from './utils/dsListChanged'
 
 // 恢复上次主题(需在挂载早期执行,避免首帧闪烁)
 initTheme()
@@ -132,6 +149,7 @@ const otherNav = computed(() => {
   const navs = [
     { path: '/dashboard', label: '扫描记录', icon: Odometer },
     { path: '/tags', label: '标记统计', icon: PriceTag },
+    { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
     { path: '/report-exports', label: '报告列表', icon: Download },
     { path: '/settings', label: '系统设置', icon: Setting }
   ]
@@ -188,6 +206,24 @@ const datasources = ref([])
 // 收藏 id 数组(localStorage 本地偏好):与主界面同一排序——收藏的在前,同收藏按收藏时间倒序
 const dsFavorites = ref(loadDsFavorites())
 const sortedDatasources = computed(() => sortDsByFavorite(datasources.value, dsFavorites.value))
+// 未分组哨兵 key(与 Datasources.vue 同一约定)
+const UNGROUPED_GROUP = '__ungrouped__'
+/** 侧边栏数据源按分组成组:命名分组按名称排序渲染为可折叠子菜单,未分组平铺在末尾;组内保持收藏置顶顺序 */
+const groupedDatasources = computed(() => {
+  const map = new Map()
+  sortedDatasources.value.forEach((ds) => {
+    const key = ds.groupName || UNGROUPED_GROUP
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(ds)
+  })
+  return [...map.entries()]
+    .map(([key, items]) => ({ key, name: key === UNGROUPED_GROUP ? '未分组' : key, items }))
+    .sort((a, b) => {
+      if (a.key === UNGROUPED_GROUP) return 1
+      if (b.key === UNGROUPED_GROUP) return -1
+      return a.key.localeCompare(b.key, 'zh')
+    })
+})
 async function loadDatasources() {
   dsFavorites.value = loadDsFavorites()
   try {
@@ -200,6 +236,12 @@ window.addEventListener(DS_FAVORITES_CHANGED_EVENT, onDsFavoritesChanged)
 onUnmounted(() => window.removeEventListener(DS_FAVORITES_CHANGED_EVENT, onDsFavoritesChanged))
 function onDsFavoritesChanged() {
   dsFavorites.value = loadDsFavorites()
+}
+// 数据源列表页新增/编辑/删除/导入后即时刷新侧边栏菜单(分组结构可能已变)
+window.addEventListener(DS_LIST_CHANGED_EVENT, onDsListChanged)
+onUnmounted(() => window.removeEventListener(DS_LIST_CHANGED_EVENT, onDsListChanged))
+function onDsListChanged() {
+  loadDatasources()
 }
 
 // 「数据源」子菜单展开状态:默认展开;下钻到数据源时强制展开
@@ -226,6 +268,7 @@ const activeNav = computed(() => {
   if (p === '/scans' || p.startsWith('/scans/')) return '/dashboard'
   if (p === '/dashboard' || p.startsWith('/dashboard/')) return '/dashboard'
   if (p === '/tags' || p.startsWith('/tags/')) return '/tags'
+  if (p === '/ai-usage' || p.startsWith('/ai-usage/')) return '/ai-usage'
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
   if (p === '/settings' || p.startsWith('/settings/')) return '/settings'
   if (p === '/logs' || p.startsWith('/logs/')) return '/logs'
@@ -233,10 +276,19 @@ const activeNav = computed(() => {
   return '/datasources'
 })
 
-// 下钻到数据源时确保「数据源」树展开
+// 下钻到数据源时确保「数据源」树展开;高亮的数据源在某个分组里时同步展开该分组
 watch(activeNav, (v) => {
-  if ((v === '/datasources' || v.startsWith('/datasources/')) && !openeds.value.includes('ds-root')) {
+  if (v !== '/datasources' && !v.startsWith('/datasources/')) return
+  if (!openeds.value.includes('ds-root')) {
     openeds.value = [...openeds.value, 'ds-root']
+  }
+  if (v.startsWith('/datasources/')) {
+    const id = v.split('/')[2]
+    const ds = datasources.value.find((d) => String(d.id) === String(id))
+    const gkey = ds?.groupName ? 'ds-group:' + ds.groupName : null
+    if (gkey && !openeds.value.includes(gkey)) {
+      openeds.value = [...openeds.value, gkey]
+    }
   }
 })
 

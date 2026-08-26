@@ -16,6 +16,8 @@ class DataSourceConfig {
     var dbMode: String? = null
     /** 库过滤白名单:非空时库列表只显示这些库;空/NULL 表示不过滤 */
     var schemaFilter: List<String>? = null
+    /** 分组名(自由文本),空/NULL 表示未分组 */
+    var groupName: String? = null
     /** 是否已设密码,仅列表接口填充(无密码只可能来自导入),不落库 */
     var hasPassword: Boolean? = null
 

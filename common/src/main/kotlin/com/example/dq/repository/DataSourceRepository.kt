@@ -22,6 +22,7 @@ class DataSourceRepository(private val jdbc: Jdbc) {
         c.sizeThresholdBytes = if (rs.wasNull()) null else st
         c.dbMode = rs.getString("db_mode")
         c.schemaFilter = decodeSchemaFilter(rs.getString("schema_filter"))
+        c.groupName = rs.getString("group_name")
         c.sshEnabled = rs.getBoolean("ssh_enabled")
         c.sshHost = rs.getString("ssh_host")
         val sp = rs.getInt("ssh_port")
@@ -36,11 +37,11 @@ class DataSourceRepository(private val jdbc: Jdbc) {
 
     fun insert(c: DataSourceConfig): Long =
         jdbc.insert(
-            "INSERT INTO data_source(name, db_type, jdbc_url, username, password_enc, row_threshold, size_threshold_bytes, db_mode, schema_filter, " +
+            "INSERT INTO data_source(name, db_type, jdbc_url, username, password_enc, row_threshold, size_threshold_bytes, db_mode, schema_filter, group_name, " +
                     "ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method, ssh_password_enc, ssh_private_key_enc, ssh_passphrase_enc) " +
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             c.name, c.dbType!!.name, c.jdbcUrl, c.username, c.password, c.rowThreshold, c.sizeThresholdBytes, c.dbMode,
-            encodeSchemaFilter(c.schemaFilter),
+            encodeSchemaFilter(c.schemaFilter), c.groupName,
             c.sshEnabled == true, c.sshHost, c.sshPort, c.sshUsername, c.sshAuthMethod,
             c.sshPassword, c.sshPrivateKey, c.sshPassphrase)
 
@@ -54,7 +55,7 @@ class DataSourceRepository(private val jdbc: Jdbc) {
         updateSshPrivateKey: Boolean = false,
         updateSshPassphrase: Boolean = false,
     ) {
-        val sql = "UPDATE data_source SET name=?, db_type=?, jdbc_url=?, username=?, row_threshold=?, size_threshold_bytes=?, db_mode=?, schema_filter=?, " +
+        val sql = "UPDATE data_source SET name=?, db_type=?, jdbc_url=?, username=?, row_threshold=?, size_threshold_bytes=?, db_mode=?, schema_filter=?, group_name=?, " +
                 "ssh_enabled=?, ssh_host=?, ssh_port=?, ssh_username=?, ssh_auth_method=?, updated_at=CURRENT_TIMESTAMP" +
                 (if (updatePassword) ", password_enc=?" else "") +
                 (if (updateSshPassword) ", ssh_password_enc=?" else "") +
@@ -72,13 +73,14 @@ class DataSourceRepository(private val jdbc: Jdbc) {
             if (st != null) ps.setLong(6, st) else ps.setNull(6, Types.BIGINT)
             ps.setString(7, c.dbMode)
             ps.setString(8, encodeSchemaFilter(c.schemaFilter))
-            ps.setBoolean(9, c.sshEnabled == true)
-            ps.setString(10, c.sshHost)
+            ps.setString(9, c.groupName)
+            ps.setBoolean(10, c.sshEnabled == true)
+            ps.setString(11, c.sshHost)
             val sp = c.sshPort
-            if (sp != null) ps.setInt(11, sp) else ps.setNull(11, Types.INTEGER)
-            ps.setString(12, c.sshUsername)
-            ps.setString(13, c.sshAuthMethod)
-            var idx = 14
+            if (sp != null) ps.setInt(12, sp) else ps.setNull(12, Types.INTEGER)
+            ps.setString(13, c.sshUsername)
+            ps.setString(14, c.sshAuthMethod)
+            var idx = 15
             if (updatePassword) ps.setString(idx++, c.password)
             if (updateSshPassword) ps.setString(idx++, c.sshPassword)
             if (updateSshPrivateKey) ps.setString(idx++, c.sshPrivateKey)

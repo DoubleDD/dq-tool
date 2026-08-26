@@ -267,6 +267,8 @@ class DataSourceService(
             ?.filter { it.isNotEmpty() }
             ?.distinct()
             ?.takeIf { it.isNotEmpty() }
+        // 分组名:去首尾空白,空串归一为 null(未分组)
+        c.groupName = req.groupName?.trim()?.takeIf { it.isNotEmpty() }
         c.sshEnabled = req.sshEnabled
         c.sshHost = req.sshHost
         c.sshPort = req.sshPort

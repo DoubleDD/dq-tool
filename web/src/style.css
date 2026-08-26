@@ -314,6 +314,18 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   max-height: 40vh;
   overflow-y: auto;
 }
+/* 数据源分组子菜单:标题右侧的数量角标(弱化,给展开箭头留位) */
+.sidebar-menu .ds-group-count {
+  margin-left: auto;
+  margin-right: 24px;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  flex-shrink: 0;
+}
+/* 分组内的数据源项不再额外加底色,避免与嵌套缩进叠加发灰 */
+.sidebar-menu .ds-group-sub .el-menu--inline {
+  background: transparent;
+}
 .sidebar-menu .ds-empty {
   color: var(--el-text-color-placeholder);
   cursor: default;

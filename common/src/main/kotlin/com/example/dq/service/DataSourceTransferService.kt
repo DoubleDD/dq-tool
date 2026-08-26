@@ -40,6 +40,7 @@ class DataSourceTransferService(
                 rowThreshold = c.rowThreshold,
                 sizeThresholdBytes = c.sizeThresholdBytes,
                 schemaFilter = c.schemaFilter,
+                groupName = c.groupName,
                 sshEnabled = c.sshEnabled,
                 sshHost = c.sshHost,
                 sshPort = c.sshPort,
@@ -82,7 +83,7 @@ class DataSourceTransferService(
                 val importedBefore = result.imported.size
                 importOne(item.name, item.jdbcUrl, item.username, plain,
                     item.rowThreshold, item.sizeThresholdBytes, result,
-                    schemaFilter = item.schemaFilter,
+                    schemaFilter = item.schemaFilter, groupName = item.groupName,
                     sshEnabled = item.sshEnabled, sshHost = item.sshHost, sshPort = item.sshPort,
                     sshUsername = item.sshUsername, sshAuthMethod = item.sshAuthMethod,
                     sshPassword = sshPassword, sshPrivateKey = sshPrivateKey, sshPassphrase = sshPassphrase)
@@ -282,6 +283,7 @@ class DataSourceTransferService(
         sizeThresholdBytes: Long?,
         result: ImportResult,
         schemaFilter: List<String>? = null,
+        groupName: String? = null,
         sshEnabled: Boolean? = null,
         sshHost: String? = null,
         sshPort: Int? = null,
@@ -305,7 +307,7 @@ class DataSourceTransferService(
             }
             dataSourceService.create(
                 DataSourceRequest(finalName, jdbcUrl, username, plainPassword, rowThreshold, sizeThresholdBytes,
-                    schemaFilter = schemaFilter,
+                    schemaFilter = schemaFilter, groupName = groupName,
                     sshEnabled = sshEnabled, sshHost = sshHost, sshPort = sshPort, sshUsername = sshUsername,
                     sshAuthMethod = sshAuthMethod, sshPassword = sshPassword,
                     sshPrivateKey = sshPrivateKey, sshPassphrase = sshPassphrase))

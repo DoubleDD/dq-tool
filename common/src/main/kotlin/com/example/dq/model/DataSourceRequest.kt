@@ -16,6 +16,8 @@ data class DataSourceRequest(
     val sizeThresholdBytes: Long?,
     /** 库过滤白名单:非空时库列表只显示这些库;空/NULL 表示不过滤 */
     val schemaFilter: List<String>? = null,
+    /** 分组名(自由文本),空/NULL 表示未分组 */
+    val groupName: String? = null,
     val sshEnabled: Boolean? = null,
     val sshHost: String? = null,
     val sshPort: Int? = null,
