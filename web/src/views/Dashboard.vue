@@ -28,8 +28,10 @@
     <div class="page-card">
       <div class="toolbar">
         <h3 style="margin: 0">近期历史</h3>
+        <ScanTransferButtons :selected-ids="selectedJobs.map((j) => j.id)" @imported="load" />
       </div>
-      <el-table :data="pagedHistoryJobs" v-loading="loading" border style="width: 100%">
+      <el-table :data="pagedHistoryJobs" v-loading="loading" border style="width: 100%" @selection-change="onSelectionChange">
+        <el-table-column type="selection" width="45" />
         <el-table-column type="index" label="序号" width="60" :index="indexMethod" />
         <el-table-column prop="datasourceName" label="数据源" min-width="140" />
         <el-table-column label="库/Schema" min-width="140">
@@ -89,6 +91,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import JobTimeline from '../components/JobTimeline.vue'
+import ScanTransferButtons from '../components/ScanTransferButtons.vue'
 import { formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
 
 const router = useRouter()
@@ -157,6 +160,13 @@ async function remove(row) {
 function goDetail(row) {
   const schema = row.dbName ? `${row.dbName}.${row.schemaName}` : row.schemaName
   router.push(`/scans/${row.id}?schema=${encodeURIComponent(schema)}`)
+}
+
+// 近期历史多选状态,交给 ScanTransferButtons 做导出;导入完成后组件 emit 触发 load 刷新
+const selectedJobs = ref([])
+
+function onSelectionChange(rows) {
+  selectedJobs.value = rows
 }
 
 onActivated(() => {

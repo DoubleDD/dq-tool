@@ -1,8 +1,10 @@
 package com.example.dq.repository
 
 import com.example.dq.model.ChunkRecord
+import com.example.dq.model.ScanChunkExport
 import com.example.dq.model.ScanColumnView
 import com.example.dq.model.ScanJobEvent
+import com.example.dq.model.ScanJobExport
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.ScanTableView
 import java.sql.ResultSet
@@ -248,6 +250,91 @@ class ScanRepository(private val jdbc: Jdbc) {
         }
     }
 
+    // ---------- 扫描记录导入(跨实例迁移,见 ScanTransferService) ----------
+
+    /** 导入去重:同数据源 + db(可空等值)+ schema + 创建时间的任务是否已存在 */
+    fun existsJob(datasourceId: Long, dbName: String?, schemaName: String, createdAt: LocalDateTime?): Boolean {
+        val dbCond = if (dbName.isNullOrBlank()) "db_name IS NULL" else "db_name=?"
+        val tsCond = if (createdAt == null) "created_at IS NULL" else "created_at=?"
+        val args = ArrayList<Any?>()
+        args.add(datasourceId)
+        if (!dbName.isNullOrBlank()) args.add(dbName)
+        args.add(schemaName)
+        if (createdAt != null) args.add(createdAt)
+        val n = jdbc.queryOne(
+            "SELECT COUNT(*) FROM scan_job WHERE datasource_id=? AND " + dbCond + " AND schema_name=? AND " + tsCond,
+            *args.toTypedArray()) { rs -> rs.getInt(1) } ?: 0
+        return n > 0
+    }
+
+    /**
+     * 导入单个任务及其事件/表/分段/字段明细:同一事务内按 job → event → table → chunk/column 顺序插入,
+     * 内部 id 全部重新生成;时间字段为 ISO_LOCAL_DATE_TIME 字符串,解析失败抛异常整体回滚。
+     * db_name 空白一律落 NULL(与 insertJob / latestJobsBySchema 的口径一致)。
+     */
+    fun insertImportedCascade(datasourceId: Long, job: ScanJobExport): Long =
+        jdbc.tx { conn ->
+            val jobId = insertReturningId(conn,
+                "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, " +
+                        "total_tables, done_tables, error, auto_tag, workers, gen_doc, created_at, started_at, finished_at) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                datasourceId, job.dbName?.takeIf { it.isNotBlank() }, job.schemaName, job.status.name, job.forceFull,
+                job.nullRules, job.totalTables, job.doneTables, job.error, job.autoTag, job.workers, job.genDoc,
+                parseTs(job.createdAt), parseTs(job.startedAt), parseTs(job.finishedAt))
+            for (event in job.events) {
+                updateOn(conn, "INSERT INTO scan_job_event(job_id, status, created_at) VALUES (?,?,?)",
+                    jobId, event.status.name, parseTs(event.createdAt))
+            }
+            for (table in job.tables) {
+                val tableId = insertReturningId(conn,
+                    "INSERT INTO scan_table(job_id, table_name, status, sampled, sample_rows, est_rows, size_bytes, " +
+                            "chunk_key, comment, storage_info, total_chunks, done_chunks, scanned_rows, total_rows, error, " +
+                            "started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    jobId, table.tableName, table.status.name, table.sampled, table.sampleRows, table.estRows,
+                    table.sizeBytes, table.chunkKey, table.comment, table.storageInfo, table.totalChunks,
+                    table.doneChunks, table.scannedRows, table.totalRows, table.error,
+                    parseTs(table.startedAt), parseTs(table.finishedAt))
+                for (chunk in table.chunks) {
+                    updateOn(conn, "INSERT INTO scan_chunk(scan_table_id, seq, range_start, range_end, null_chunk, " +
+                            "status, row_count, col_stats, attempts, error) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        tableId, chunk.seq, chunk.rangeStart, chunk.rangeEnd, chunk.nullChunk, chunk.status.name,
+                        chunk.rowCount, chunk.colStats, chunk.attempts, chunk.error)
+                }
+                for (col in table.columns) {
+                    updateOn(conn, "INSERT INTO scan_column(scan_table_id, column_name, column_type, column_comment, " +
+                            "nullable, default_value, key_label, total_rows, null_count, empty_count, rule_hit_count) " +
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        tableId, col.columnName, col.columnType, col.columnComment, col.nullable, col.defaultValue,
+                        col.keyLabel, col.totalRows ?: 0L, col.nullCount ?: 0L, col.emptyCount ?: 0L,
+                        col.ruleHitCount ?: 0L)
+                }
+            }
+            jobId
+        }
+
+    /** tx 内插入并取自增主键 */
+    private fun insertReturningId(conn: java.sql.Connection, sql: String, vararg args: Any?): Long =
+        conn.prepareStatement(sql, java.sql.Statement.RETURN_GENERATED_KEYS).use { ps ->
+            args.forEachIndexed { i, arg -> ps.setObject(i + 1, arg) }
+            ps.executeUpdate()
+            ps.generatedKeys.use { rs ->
+                check(rs.next()) { "插入未返回自增主键" }
+                rs.getLong(1)
+            }
+        }
+
+    /** tx 内执行 DML */
+    private fun updateOn(conn: java.sql.Connection, sql: String, vararg args: Any?) {
+        conn.prepareStatement(sql).use { ps ->
+            args.forEachIndexed { i, arg -> ps.setObject(i + 1, arg) }
+            ps.executeUpdate()
+        }
+    }
+
+    /** 导入文件时间字段:ISO_LOCAL_DATE_TIME 字符串 → LocalDateTime;空白视为 NULL */
+    private fun parseTs(value: String?): LocalDateTime? =
+        value?.takeIf { it.isNotBlank() }?.let { LocalDateTime.parse(it) }
+
     /**
      * 每张表最近一次表级 DONE 的 scan_table 整行(含 id,供取字段明细),
      * Word 报告第三章按打标表取快照用;job_id 升序遍历、后者覆盖前者,dbName 口径与 latestJobsBySchema 一致。
@@ -354,6 +441,14 @@ class ScanRepository(private val jdbc: Jdbc) {
 
     fun listChunks(scanTableId: Long): List<ChunkRecord> =
         jdbc.query("SELECT * FROM scan_chunk WHERE scan_table_id=? ORDER BY seq", scanTableId, mapper = chunkMapper)
+
+    /** 导出用:分段整行含 error 列(ChunkRecord 视图不带 error,导入模型需要) */
+    fun listChunksForExport(scanTableId: Long): List<ScanChunkExport> =
+        jdbc.query("SELECT * FROM scan_chunk WHERE scan_table_id=? ORDER BY seq", scanTableId) { rs ->
+            ScanChunkExport(rs.getInt("seq"), rs.getString("range_start"), rs.getString("range_end"),
+                rs.getBoolean("null_chunk"), ScanStatus.valueOf(rs.getString("status")),
+                rs.getLong("row_count"), rs.getString("col_stats"), rs.getInt("attempts"), rs.getString("error"))
+        }
 
     fun listDoneChunks(scanTableId: Long): List<ChunkRecord> =
         jdbc.query("SELECT * FROM scan_chunk WHERE scan_table_id=? AND status='DONE' ORDER BY seq",

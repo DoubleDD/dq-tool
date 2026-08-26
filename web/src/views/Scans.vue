@@ -3,10 +3,13 @@
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
       <div>
+        <ScanTransferButtons :selected-ids="selectedJobs.map((j) => j.id)" @imported="load" />
+        <el-button :disabled="!jobs.length" style="margin-left: 12px" @click="exportExcel">导出 Excel</el-button>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
       </div>
     </div>
-    <el-table :data="jobs" v-loading="loading" border style="width: 100%">
+    <el-table :data="jobs" v-loading="loading" border style="width: 100%" @selection-change="onSelectionChange">
+      <el-table-column type="selection" width="45" />
       <el-table-column type="index" label="序号" width="60" />
       <el-table-column prop="id" label="任务ID" width="90" />
       <el-table-column v-if="!schema" prop="datasourceName" label="数据源" min-width="140" />
@@ -63,8 +66,10 @@ import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import JobTimeline from '../components/JobTimeline.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
+import ScanTransferButtons from '../components/ScanTransferButtons.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
+import { cellText, exportListToExcel } from '../utils/listExport'
 const route = useRoute()
 const router = useRouter()
 // 从库列表下钻进来时带上数据源/库过滤条件
@@ -116,6 +121,34 @@ async function remove(row) {
 function goDetail(row) {
   const schema = row.dbName ? `${row.dbName}.${row.schemaName}` : row.schemaName
   router.push(`/scans/${row.id}?schema=${encodeURIComponent(schema)}`)
+}
+
+// ---------- 扫描记录导出/导入 ----------
+// 多选状态交给 ScanTransferButtons(导出勾选项 + 导入弹窗逻辑均在组件内)
+const selectedJobs = ref([])
+
+function onSelectionChange(rows) {
+  selectedJobs.value = rows
+}
+
+/** 导出任务列表 Excel(列与页面一致;从库列表下钻进来时不带数据源/库列) */
+function exportExcel() {
+  const headers = ['任务ID', ...(schema ? [] : ['数据源', '库/Schema']), '进度%', '表(完成/总数)', '状态', '创建时间', '开始时间', '完成时间', '耗时']
+  const rows = jobs.value.map((j) => [
+    String(j.id),
+    ...(schema ? [] : [
+      cellText(j.datasourceName),
+      j.dbName ? j.dbName + '.' + j.schemaName : cellText(j.schemaName)
+    ]),
+    Math.round(j.progressPercent) + '%',
+    `${j.doneTables}/${j.totalTables}`,
+    statusText(j.status),
+    formatDateTime(j.createdAt),
+    formatDateTime(j.startedAt),
+    formatDateTime(j.finishedAt),
+    formatDuration(j.startedAt, j.finishedAt)
+  ])
+  exportListToExcel(schema ? `扫描记录-${schemaLabel.value}` : '扫描记录', headers, rows, '扫描记录')
 }
 
 onActivated(() => {
