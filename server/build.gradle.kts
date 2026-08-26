@@ -125,13 +125,15 @@ val buildWebForRelease by tasks.registering {
 }
 
 tasks.processResources {
-    // dev 模式与测试不再强依赖前端构建:dist 存在则拷入 static,缺失则跳过(API-only 调试)
-    val distDir = rootProject.layout.projectDirectory.dir("web/dist").asFile
-    if (distDir.isDirectory) {
-        from(distDir) {
-            into("static")
-        }
+    // dev 模式与测试不再强依赖前端构建:dist 存在则拷入 static,缺失时 from 空目录静默跳过(API-only 调试)。
+    // 注意不能用 if(distDir.isDirectory) 在配置期判断:buildWeb 同轮新建的 dist 会赶上 processResources
+    // 已被 up-to-date 跳过,static 永远拷不进去(WebServerSmokeTest 404);必须无条件 from + 声明可选输入,
+    // 让 dist 的出现/变化参与 up-to-date 判定,任务才会在 dist 就绪后重新执行
+    val distDir = rootProject.layout.projectDirectory.dir("web/dist")
+    from(distDir) {
+        into("static")
     }
+    inputs.dir(distDir).withPropertyName("webDist").optional(true)
     // 当 buildWeb 在任务图中(release 打包 / 测试)时,确保先构建、后拷贝,拷入的始终是最新产物
     mustRunAfter(buildWeb)
     // 软件版本号构建期注入 app-version.txt:去 0. 前缀(如 0.1.7 -> 1.7),与打包脚本 PKG_VERSION 口径一致;版本号源头为根目录 VERSION 文件
