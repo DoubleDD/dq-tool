@@ -4,6 +4,7 @@ import com.example.dq.service.DataSourceService;
 import com.example.dq.service.DataSourceTransferService;
 import com.example.dq.model.DataSourceConfig;
 import com.example.dq.model.DataSourceRequest;
+import com.example.dq.model.DbType;
 import com.example.dq.model.SchemaFilterRequest;
 import com.example.dq.model.TestConnectionRequest;
 import com.example.dq.web.Validators;
@@ -66,8 +67,10 @@ public class DataSourceController {
 
     public void test(Context ctx) {
         TestConnectionRequest req = Validators.validate(ctx.bodyAsClass(TestConnectionRequest.class));
+        // 编辑对话框点测试:密码/SSH 秘密字段留空表示沿用已存值(id 非空时回落),与「留空不改」规则一致
+        TestConnectionRequest merged = mergeStoredCredentials(req);
         try {
-            String dbMode = service.testConnection(req);
+            String dbMode = service.testConnection(merged);
             Map<String, Object> ok = new HashMap<>();
             ok.put("success", true);
             if (dbMode != null) {
@@ -75,7 +78,7 @@ public class DataSourceController {
             }
             ctx.json(ok);
         } catch (SQLException e) {
-            log.warn("测试连接失败 {}: {}", req.getJdbcUrl(), e.getMessage(), e);
+            log.warn("测试连接失败 {}: {}", merged.getJdbcUrl(), e.getMessage(), e);
             ctx.json(Map.of("success", false, "message", e.getMessage()));
         }
     }
@@ -95,7 +98,13 @@ public class DataSourceController {
         }
     }
 
-    /** 编辑态拉库列表:表单里密码/SSH 秘密字段留空表示沿用已存值,与 update 的「留空不改」规则一致 */
+    /** 库过滤页签/弹窗:按数据库类型返回系统库/schema 名(默认不勾选),纯静态方言信息 */
+    public void systemSchemas(Context ctx) {
+        DbType type = DbType.valueOf(ctx.pathParam("dbType").toUpperCase(Locale.ROOT));
+        ctx.json(service.systemSchemas(type));
+    }
+
+    /** 编辑态测试连接/拉库列表:表单里密码/SSH 秘密字段留空表示沿用已存值,与 update 的「留空不改」规则一致 */
     private TestConnectionRequest mergeStoredCredentials(TestConnectionRequest req) {
         if (req.getId() == null) {
             return req;

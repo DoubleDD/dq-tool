@@ -48,8 +48,7 @@ class ScanService(
         val dialect = dialectFactory.get(ds.dbType!!)
 
         var all: List<TableStat> = emptyList()
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, req.database))
+        dataSourceService.getConnection(datasourceId, req.database).use { conn ->
             all = dialect.listTables(conn, schema)
         }
         // 顺带刷新库列表缓存:all 是该 schema 的全量表清单,聚合计数与体积即可,零额外查询
@@ -114,11 +113,16 @@ class ScanService(
             val settings = systemSettings.scanSettings()
             val tableName = table.tableName!!
             var ranges: List<Range> = emptyList()
-            dataSourceService.getConnection(job.datasourceId).use { conn ->
-                dialect.useDatabase(conn, dataSourceService.resolveDatabase(job.datasourceId, job.dbName))
+            dataSourceService.getConnection(job.datasourceId, job.dbName).use { conn ->
                 val cols = dialect.listColumns(conn, job.schemaName, tableName)
                 if (cols.isEmpty()) {
-                    chunkRunner.failTable(scanTableId, "表不存在或没有字段")
+                    // 空表/无字段表不算失败:打上无字段标记(强制刷新表结构时随缓存覆盖自动还原),按结果全 0 置 DONE 跳过
+                    try {
+                        metaCacheRepo.setNoColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName, true)
+                    } catch (e: Exception) {
+                        log.debug("扫描时写无字段标记失败(不影响扫描): {}", e.message)
+                    }
+                    chunkRunner.completeEmptyTable(scanTableId)
                     return
                 }
                 // 同步刷新字段/索引结构缓存(扫描已拿到最新结构;失败不影响扫描)
@@ -127,6 +131,8 @@ class ScanService(
                         cols.mapIndexed { i, c -> MetaCacheRepository.CachedColumn(
                             i, c.name, c.typeName, c.displayType, c.jdbcType, c.nullable,
                             c.defaultValue, c.comment, c.primaryKey, c.pkSeq, c.uniqueIndexFirst) })
+                    // 表有字段:清除可能残留的无字段标记(表被重建等场景)
+                    metaCacheRepo.setNoColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName, false)
                     val idx = dialect.listIndexes(conn, job.schemaName, tableName)
                     metaCacheRepo.replaceIndexes(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName,
                         idx.flatMap { ix -> ix.columns.mapIndexed { i, col ->
@@ -315,12 +321,14 @@ class ScanService(
                 scanDocService.submit(jobId, t.id)
                 continue
             }
+            // 表不存在或没有字段(如 Oracle IOT 溢出段):打无字段标记并按空表跳过,不再让整个任务失败
+            var noColumns = false
             try {
-                dataSourceService.getConnection(job.datasourceId).use { conn ->
-                    dialect.useDatabase(conn, dataSourceService.resolveDatabase(job.datasourceId, job.dbName))
+                dataSourceService.getConnection(job.datasourceId, job.dbName).use { conn ->
                     val cols = dialect.listColumns(conn, job.schemaName, t.tableName!!)
                     if (cols.isEmpty()) {
-                        throw IllegalStateException("表 " + t.tableName + " 已不存在,无法续扫,请重新发起扫描")
+                        noColumns = true
+                        return@use
                     }
                     val chunkKey = dialect.pickChunkKey(cols)
                     val newKey = chunkKey?.name
@@ -336,6 +344,15 @@ class ScanService(
             } catch (e: Exception) {
                 repo.finishJob(jobId, ScanStatus.FAILED, e.message)
                 throw IllegalStateException("续扫校验失败: " + e.message, e)
+            }
+            if (noColumns) {
+                try {
+                    metaCacheRepo.setNoColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, t.tableName!!, true)
+                } catch (e: Exception) {
+                    log.debug("续扫时写无字段标记失败(不影响续扫): {}", e.message)
+                }
+                chunkRunner.completeEmptyTable(t.id)
+                continue
             }
 
             if (t.totalChunks == 0) {

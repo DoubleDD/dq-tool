@@ -13,6 +13,7 @@ import com.example.dq.controller.AiConfigController;
 import com.example.dq.controller.AiUsageController;
 import com.example.dq.controller.AnnotationController;
 import com.example.dq.controller.DataSourceController;
+import com.example.dq.controller.DiagnosticsController;
 import com.example.dq.controller.LicenseController;
 import com.example.dq.controller.ListExportController;
 import com.example.dq.controller.MetadataController;
@@ -52,7 +53,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Web 层装配与路由(去 Spring 后替代容器装配 + DispatcherServlet):
- * 构造对象图(repository → service → handler,全部构造注入),注册 61 个端点、
+ * 构造对象图(repository → service → handler,全部构造注入),注册 63 个端点、
  * 授权前置校验(替代 LicenseInterceptor)、统一异常映射(响应体 {"message": ...},
  * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)、
  * 就绪闸门与 /api/health 就绪探针(共享内核未就绪前业务接口统一 503,前端轮询到 200 再加载数据)。
@@ -95,6 +96,9 @@ public class WebServer {
     private final AtomicReference<PreviewController> previewCtrl = new AtomicReference<>();
     private final AtomicReference<AnnotationController> annotationCtrl = new AtomicReference<>();
     private final AtomicReference<ListExportController> listExportCtrl = new AtomicReference<>();
+    private final AtomicReference<DiagnosticsController> diagnosticsCtrl = new AtomicReference<>();
+    /** 实时日志 Appender 引用:LogController(SSE)与 DiagnosticsController(错误日志摘录)共用同一实例 */
+    private LogStreamAppender logStreamAppender;
 
     public WebServer(ConfigLoader.AppConfig config) throws Exception {
         this.config = config;
@@ -115,6 +119,7 @@ public class WebServer {
         // 不在 logback.xml 声明(避免反射实例化导致无法获取引用);此处直接创建实例,
         // 供 LogController 的 SSE 端点订阅。挂载到 root logger 后,所有日志事件都会被捕获。
         LogStreamAppender logStreamAppender = new LogStreamAppender();
+        this.logStreamAppender = logStreamAppender;
         LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
         logStreamAppender.setContext(loggerContext);
         logStreamAppender.start();
@@ -153,7 +158,7 @@ public class WebServer {
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
                     dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, tagCtrl, aiCtrl, aiUsageCtrl,
-                    settingsCtrl, licenseCtrl, previewCtrl, annotationCtrl, listExportCtrl,
+                    settingsCtrl, licenseCtrl, previewCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
 
@@ -182,6 +187,7 @@ public class WebServer {
                                 AtomicReference<PreviewController> previewCtrl,
                                 AtomicReference<AnnotationController> annotationCtrl,
                                 AtomicReference<ListExportController> listExportCtrl,
+                                AtomicReference<DiagnosticsController> diagnosticsCtrl,
                                 LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
@@ -201,7 +207,7 @@ public class WebServer {
                 licenseService.checkFeature(LicenseFeature.LICENSE_ADMIN, false);
                 return;
             }
-            if (path.startsWith("/api/license") || path.equals("/api/heartbeat")) {
+            if (path.startsWith("/api/license") || path.startsWith("/api/diagnostics") || path.equals("/api/heartbeat")) {
                 return;
             }
             licenseService.checkActive();
@@ -259,6 +265,7 @@ public class WebServer {
         routes.delete("/api/datasources/{id}", ctx -> dataSourceCtrl.get().delete(ctx));
         routes.post("/api/datasources/test", ctx -> dataSourceCtrl.get().test(ctx));
         routes.post("/api/datasources/preview-databases", ctx -> dataSourceCtrl.get().previewDatabases(ctx));
+        routes.get("/api/db-types/{dbType}/system-schemas", ctx -> dataSourceCtrl.get().systemSchemas(ctx));
         routes.get("/api/datasources/export", ctx -> dataSourceCtrl.get().export(ctx));
         routes.post("/api/datasources/import", ctx -> dataSourceCtrl.get().importDs(ctx));
 
@@ -282,6 +289,7 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/databases", ctx -> metaCtrl.get().listDatabases(ctx));
         routes.get("/api/datasources/{dsId}/schemas", ctx -> metaCtrl.get().listSchemas(ctx));
         routes.get("/api/datasources/{dsId}/schema-stats", ctx -> metaCtrl.get().listSchemaStats(ctx));
+        routes.get("/api/datasources/{dsId}/export-dbstruct-word", ctx -> metaCtrl.get().exportDbStructWord(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables", ctx -> metaCtrl.get().listTables(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns", ctx -> metaCtrl.get().tableColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", ctx -> metaCtrl.get().tableIndexes(ctx));
@@ -361,6 +369,10 @@ public class WebServer {
 
         // ---- 实时日志流(SSE) ----
         routes.sse("/api/logs/stream", logCtrl::stream);
+
+        // ---- 系统诊断(排错中心):概览聚合 + 数据源连通实测;放行激活检查(未激活恰是最需要诊断的场景) ----
+        routes.get("/api/diagnostics", ctx -> diagnosticsCtrl.get().overview(ctx));
+        routes.post("/api/diagnostics/check-datasources", ctx -> diagnosticsCtrl.get().checkDatasources(ctx));
 
         // SPA 回退(替代 SpaWebConfig):静态资源未命中且非 /api/** 的 GET 一律回退 index.html 交给前端路由;
         // 但路径末段带扩展名(如 /assets/xxx.js)说明是静态文件缺失,必须真实 404——
@@ -476,7 +488,8 @@ public class WebServer {
         dataSourceCtrl.set(new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService()));
         scanCtrl.set(new ScanController(env.getScanService(), env.getExportService(), env.getScanWordExportService()));
         scanTransferCtrl.set(new ScanTransferController(env.getScanTransferService()));
-        metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService()));
+        metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService(),
+                env.getDbStructExportService(), env.getDataSourceService()));
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));
@@ -486,6 +499,7 @@ public class WebServer {
         previewCtrl.set(new PreviewController(env.getPreviewService()));
         annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
         listExportCtrl.set(new ListExportController(env.getListExportService()));
+        diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), env.getLicenseService(), logStreamAppender));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

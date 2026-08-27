@@ -10,7 +10,7 @@
   </div>
 
   <!-- 导入扫描记录弹窗:文件里的数据源 → 本机数据源 -->
-  <el-dialog v-model="importDialogVisible" title="导入扫描记录" width="640px" :close-on-click-modal="false">
+  <el-dialog v-model="importDialogVisible" title="导入扫描记录" width="640px" :close-on-click-modal="false" :close-on-press-escape="false">
     <div style="color: var(--el-text-color-secondary); font-size: 13px; margin-bottom: 12px">
       文件包含 {{ importPreview.totalJobs }} 条扫描记录,来自以下数据源,请逐个选择对应的本机数据源:
     </div>
@@ -39,6 +39,7 @@ import { Download } from '@element-plus/icons-vue'
 import { ElMessageBox } from 'element-plus'
 import api from '../api'
 import { downloadFile } from '../utils/download'
+import { confirmImportFile } from '../utils/importFileIdentify'
 
 // selectedIds:外部表格当前勾选的扫描任务 id,导出用;imported:导入完成后通知父组件刷新列表
 const props = defineProps({
@@ -52,7 +53,8 @@ function exportSelected() {
 }
 
 // ---------- 扫描记录导入 ----------
-// 选文件先预检(解析文件里的数据源分布),弹窗让用户把文件数据源映射到本机数据源后再执行;
+// 选文件先做内容识别(三种导出都是 .json,靠 app 字段区分)并弹窗确认归属,
+// 防止拿错文件;确认后预检(解析文件里的数据源分布),弹窗让用户把文件数据源映射到本机数据源后再执行;
 // 同名自动预填,对不上默认不导入(由用户手动选择);失败消息由拦截器统一弹出
 const importing = ref(false)
 const importDialogVisible = ref(false)
@@ -65,6 +67,8 @@ async function onImportFile(file) {
   // 拿到 raw 后立刻清空内部 fileList:不清的话 limit=1 会让第二次选择只触发 on-exceed,on-change 不再回调
   uploadRef.value?.clearFiles()
   if (importing.value || !file?.raw) return
+  // 先识别文件种类并弹窗确认;无法识别/不属于本功能/用户取消时直接结束
+  if (!await confirmImportFile(file.raw, 'scans')) return
   importing.value = true
   try {
     importFileRaw = file.raw
@@ -104,7 +108,7 @@ async function confirmImport() {
     if (r.warnings?.length) {
       text += '\n' + r.warnings.join('\n')
     }
-    ElMessageBox.alert(text, '导入完成', { confirmButtonText: '知道了' })
+    ElMessageBox.alert(text, '导入完成', { confirmButtonText: '知道了', closeOnPressEscape: false })
     emit('imported')
   } catch {
     // 错误提示由响应拦截器统一弹出

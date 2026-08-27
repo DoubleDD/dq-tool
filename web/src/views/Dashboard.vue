@@ -143,14 +143,14 @@ async function resume(row) {
 }
 
 async function cancel(row) {
-  await ElMessageBox.confirm('确定取消该扫描任务吗?', '取消确认', { type: 'warning' })
+  await ElMessageBox.confirm('确定取消该扫描任务吗?', '取消确认', { type: 'warning', closeOnPressEscape: false })
   await api.post(`/scans/${row.id}/cancel`)
   ElMessage.success('已取消')
   load()
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定删除任务 #${row.id} 的扫描记录吗?`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确定删除任务 #${row.id} 的扫描记录吗?`, '删除确认', { type: 'warning', closeOnPressEscape: false })
   await api.delete(`/scans/${row.id}`)
   ElMessage.success('删除成功')
   load()

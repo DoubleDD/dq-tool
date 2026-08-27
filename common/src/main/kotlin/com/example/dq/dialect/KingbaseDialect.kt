@@ -16,6 +16,11 @@ class KingbaseDialect : PostgresDialect() {
         return "com.kingbase8.Driver"
     }
 
+    /** 在 PG 系统 schema 之外,金仓常见内置账号 schema(system/sao/sso 三员等) */
+    override fun systemSchemas(): Set<String> {
+        return super.systemSchemas() + setOf("sys", "sao", "sso")
+    }
+
     /** 建库时选定的兼容模式:pg / oracle / mysql */
     @Throws(SQLException::class)
     override fun detectDbMode(conn: Connection): String? {

@@ -98,7 +98,22 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
             )
         }
 
-    /** 整粒度覆盖某 schema 的表缓存(首次拉取或手动/扫描刷新) */
+    /** 无字段标记:表不存在或没有字段时置 TRUE,扫描/续扫按空表跳过;表不存在于缓存时无操作 */
+    fun setNoColumns(datasourceId: Long, dbName: String, schema: String, table: String, noColumns: Boolean) {
+        jdbc.update(
+            "UPDATE meta_table SET no_columns=? WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?",
+            noColumns, datasourceId, dbName, schema, table
+        )
+    }
+
+    /** 表是否带无字段标记(缓存里没有该表时视为 false) */
+    fun isNoColumns(datasourceId: Long, dbName: String, schema: String, table: String): Boolean =
+        jdbc.queryOne(
+            "SELECT no_columns FROM meta_table WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?",
+            datasourceId, dbName, schema, table
+        ) { it.getBoolean(1) } ?: false
+
+    /** 整粒度覆盖某 schema 的表缓存(首次拉取或手动/扫描刷新);覆盖后无字段标记随旧行清除(重新同步后字段有无未知) */
     fun replaceTables(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) {
         jdbc.tx { conn ->
             conn.prepareStatement("DELETE FROM meta_table WHERE datasource_id=? AND db_name=? AND schema_name=?")

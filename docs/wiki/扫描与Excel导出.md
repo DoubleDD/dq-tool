@@ -13,9 +13,13 @@
 - 非数值分段键(如 varchar 主键)的边界规划用 seek(keyset)+固定步进:每段从上一段边界之后按步进取边界,避免 OFFSET 深分页每次从索引头扫 N 行(O(N²),大表 varchar 键会把 MySQL 服务器 IO 打满导致新连接握手超时)
 - 业务库执行的 SQL 全部打日志(独立 logger `com.example.dq.sql`,默认 INFO):`DataSourceService` 连接出口统一 JDK 代理包装(`SqlLogConnection`),拦截 Statement/PreparedStatement 的 execute 类调用打印完整 SQL 与绑定参数;排查慢 SQL/深分页等场景用,日志文件按天滚动可回溯。本地 H2(repository 包)不走该出口,不打日志;不需要时把 logback 中 `com.example.dq.sql` 调为 WARN/OFF。代理反射调用会拆包 `InvocationTargetException` 原样透出底层 `SQLException`(否则被包成 `UndeclaredThrowableException`,方言层 catch(SQLException) 的降级逻辑会失效)
 - 扫描的调度单元是"分段(chunk)",不是表:分段状态持久化在 `scan_chunk` 表,断点续扫只重跑未完成分段
+- 规划阶段(`planTable`)发现表不存在或没有字段(`listColumns` 为空)不算失败:直接按空表置 DONE、结果全 0(`ChunkRunner.completeEmptyTable`),联动「空表」标记但不触发 AI 后续(无字段无可分析);续扫(`resume`)同样按此跳过——旧行为是抛错让整个任务 FAILED,现已改为只跳过该表(FAILED 表翻转为 DONE 时不重复计入完成数)
+- 无字段标记(`meta_table.no_columns`,V22):扫描规划/续扫或字段明细页访问发现表没有字段(如 Oracle IOT 溢出段 SYS_IOT_OVER_%)时置 TRUE,供识别「可跳过」的表;表有字段时清除。强制刷新表结构(`replaceTables` 整粒度覆盖)后标记随旧行自动还原——重新同步后字段有无未知,待下次访问字段列表或扫描时按实测重新标定
 - 大表默认采样估算(行数 > 100 万或体积 > 10GB,阈值可在数据源级别覆盖);MySQL/达梦/OB 的采样是 LIMIT 顺序采样,结果有偏,UI 需标注"估算值"
 - Oracle 把空字符串存为 NULL,空串统计恒为 0,这是数据库本身行为,不是 bug
 - Oracle 表体积统计依赖段视图:23ai 起 ALL_SEGMENTS 被移除(DBA_SEGMENTS 仍在);受限账号看不到段视图时(无权限对象 Oracle 也报 ORA-00942)按 ALL_SEGMENTS → DBA_SEGMENTS → USER_SEGMENTS(仅当前用户)→ 不统计 逐级降级(23ai 链从 DBA_SEGMENTS 起),记 warn 日志;探测结果按「用户名@JDBC URL」内存缓存(OracleDialect.segViewCache,换账号/换服务器自动重探,进程重启重置),非首选落点超过 1 小时(SEG_VIEW_REPROBE_MS)从链头重探一次以捕获权限变更
+- SQL Server 行数/体积统计用目录视图 sys.partitions + sys.allocation_units(行数口径 index_id 0/1 堆/聚集索引,体积为全部分区 used_pages × 8KB),不用 DMV sys.dm_db_partition_stats——后者要求 VIEW DATABASE STATE 权限,受限账号在库列表页整页报错;目录视图只受元数据可见性约束,普通账号即可
+- SQL Server 空串统计的去空白表达式用 LTRIM/RTRIM 而非 TRIM(`SqlServerDialect.trimExpr`):TRIM 是 2017 才引入的内置函数,2016 及以下报「'TRIM' 不是可以识别的内置函数名称」;LTRIM/RTRIM 全版本可用且语义同为去两端空格
 
 ## Excel 导出
 
@@ -31,6 +35,16 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 - **四章逐表小节**用 `TableStructsPolicy` 深拷贝模板里的原型小节(H3 标题段 + 字段表)生成——标题编号(numId=7 ilvl=2,自动编 4.1.x)、表头蓝底/边框随克隆保留;渲染后删除原型与 `{{tableStructs}}` 锚点段;三章表清单走 LoopRow(`{{tables}}` 锚点在表头首格,循环行 `[name]` 等),与数据调研报告 1.2 同一写法
 - **目录**:模板已置 `w:updateFields`,Word/WPS 打开时自动刷新目录条目与页码
 - 渲染与策略有单测 `ScanWordExportTemplateTest`(标签残留/原型删除/行列数/零字段表/无表兜底)
+
+## 数据源整库表结构 Word 导出
+
+库列表页(`Schemas.vue`)「更多 → 导出表结构文档」导出**数据源下所有库(白名单过滤后)**的表结构文档:`GET /api/datasources/{dsId}/export-dbstruct-word` 同步渲染下载(`{数据源名}-数据库表结构.docx`,文件名特殊字符转 `_`),无需勾选、不要求先扫描。
+
+- **数据口径**:与扫描结果 Word 导出(快照)不同,本功能走 `MetadataService` 实时元数据——meta_cache 缓存优先,未缓存回源业务库并落缓存;行数/体积为元数据估算值(`TableStat.estRows/sizeBytes`,null 按 0);表标签取全局表标记(table_tag),库描述取 schema_doc
+- **多库两级循环**:多库方言(SQL Server)先 `listDatabases`(已过滤)再逐库展开 schema;单库方言每个 schema 自成一节(H2「数据库:X」= schema 名,与扫描结果导出 dbName 口径一致)。白名单过滤后无任何库 → `IllegalArgumentException`(400)
+- **渲染**:内核 `DbStructExportService` + poi-tl 模板 `templates/db-structure-full.docx`(由 `scripts/make-word-template-fulldb.py` 改造,封面保持模板原样不替换数据源名,原型小节文本统一为 `PROTO_*` 标记便于单测断言删除);二章数据库清单走 LoopRow(`{{dbs}}`,每 库+模式 一行),三章表清单/四章表结构分别由 `TableListSectionsPolicy`/`StructSectionsPolicy` 按两级循环克隆模板原型(H2/H3 标题段 + 表格)生成;空 schema 表清单只留表头,无表 schema 四章输出「(无数据表)」;`TableStructsPolicy` 的 setParagraphText/fillRows/setCellText 已提为文件级 internal 函数共用
+- **目录**:渲染后由 `rewriteTocEntries` 直接重写 sdt 缓存条目(编号与多级列表一致:N./N.M./N.M.K.),不刷域的查看器也能看到正确条目;TOC 域结构与 dirty/updateFields 标记保留,页码与跳转链接仍由 Word/WPS 刷新域时重建(页码只有排版引擎能算)
+- 单测 `DbStructExportTemplateTest`(两库三模式:标签/PROTO 残留、标题样式、行列数、零字段表、无表 schema、空数据源兜底)
 
 ## 通用列表导出(各列表页「导出 Excel」)
 

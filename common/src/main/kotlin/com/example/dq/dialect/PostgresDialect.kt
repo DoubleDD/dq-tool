@@ -17,6 +17,11 @@ open class PostgresDialect : AbstractDialect() {
         return "org.postgresql.Driver"
     }
 
+    /** listSchemas 已排除 pg_ 前缀与 information_schema,此处仅为库过滤标注兜底 */
+    override fun systemSchemas(): Set<String> {
+        return setOf("pg_catalog", "information_schema", "pg_toast")
+    }
+
     override fun quote(identifier: String): String {
         return "\"" + identifier.replace("\"", "\"\"") + "\""
     }

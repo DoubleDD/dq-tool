@@ -125,6 +125,19 @@ class OracleDialect : AbstractDialect() {
         return "oracle.jdbc.OracleDriver"
     }
 
+    /**
+     * Oracle 维护的系统 schema(all_users 会一并返回,用户名返回大写,此处存小写)。
+     * 覆盖 11g~23ai 常见内置账号;随版本/组件安装还可能出现其他(如 APEX_*),不逐一枚举
+     */
+    override fun systemSchemas(): Set<String> {
+        return setOf(
+                "sys", "system", "outln", "dbsnmp", "sysman",
+                "ctxsys", "mdsys", "ordsys", "orddata", "ordplugins", "xdb", "wmsys", "olapsys",
+                "lbacsys", "dvsys", "dvf", "gsmadmin_internal", "gsmuser", "ggsys",
+                "appqossys", "audsys", "ojvmsys", "si_informtn_schema", "remote_scheduler_agent",
+                "sys\$umf", "sysbackup", "sysdg", "syskm", "sysrac", "xs\$null", "dip", "oracle_ocm")
+    }
+
     override fun quote(identifier: String): String {
         return "\"" + identifier.replace("\"", "\"\"") + "\""
     }

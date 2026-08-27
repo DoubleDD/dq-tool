@@ -38,6 +38,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [AI 功能与表标记](docs/wiki/AI功能与表标记.md) — AI 表说明、AI 自动打标(AutoTagService)、全局表标记与标记统计页
 - [Word 报告导出](docs/wiki/Word报告导出.md) — poi-tl 数据调研报告:封面+四章正文、DONE 快照口径、409 前置校验、模板改造脚本
 - [数据源](docs/wiki/数据源.md) — 连接信息加密存储、SSH 隧道、库过滤白名单、JSON/Navicat/DataGrip 导入导出
+- [系统诊断](docs/wiki/系统诊断.md) — 排错中心:环境/授权/AI/数据源连通实测/失败记录/错误日志聚合,Markdown 诊断报告导出
 - [授权码](docs/wiki/授权码.md) — 离线 Ed25519 授权码、签发工具、管理员实例授权码管理
 
 ### 架构与开发

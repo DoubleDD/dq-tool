@@ -41,6 +41,12 @@ interface DbDialect {
     @Throws(SQLException::class)
     fun listSchemas(conn: Connection): List<String>
 
+    /**
+     * 系统库/schema 名(小写,比对时大小写不敏感):库过滤界面默认不勾选,
+     * 业务扫描一般不应包含;多库方言(SQL Server)作用于数据库层级,其余作用于 schema 层级
+     */
+    fun systemSchemas(): Set<String> = emptySet()
+
     /** 各库/schema 的表数量(schema 名 → 表数);用于库列表页展示,单条聚合 SQL */
     @Throws(SQLException::class)
     fun countTablesBySchema(conn: Connection): Map<String, Int> = emptyMap()

@@ -38,8 +38,7 @@ class PreviewService(
         val o = stripKeyword(orderBy, "order by")
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
             val columns = dialect.listColumns(conn, schema, table)
                 .map { PreviewColumn(it.name, it.displayType) }
             conn.createStatement().use { stmt ->

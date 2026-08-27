@@ -9,6 +9,7 @@ const routes = [
   { path: '/report-exports', component: () => import('../views/ReportExports.vue') },
   { path: '/settings', component: () => import('../views/Settings.vue') },
   { path: '/logs', component: () => import('../views/Logs.vue') },
+  { path: '/diagnostics', component: () => import('../views/Diagnostics.vue') },
   { path: '/datasources', component: () => import('../views/Datasources.vue') },
   { path: '/datasources/:id/schemas', component: () => import('../views/Schemas.vue') },
   { path: '/datasources/:id/schemas/:schema/tables', component: () => import('../views/Tables.vue') },
@@ -57,6 +58,8 @@ export function markActivated(newStatus) {
 
 router.beforeEach(async (to) => {
   if (to.path === '/activate') return true
+  // 系统诊断页:未激活/过期也放行(排错场景常是授权问题本身;敏感操作仍由后端逐项校验)
+  if (to.path === '/diagnostics') return true
   const status = await fetchLicenseStatus()
   const features = status.features || []
   // 授权码管理页:仅管理员实例 + 授权码包含 license_admin 功能(未激活的管理员实例也放行);否则跳回首页

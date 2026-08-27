@@ -10,7 +10,7 @@
     </span>
     <el-button v-if="status.activated" link type="primary" size="small" @click="openDialog">更换授权码</el-button>
 
-    <el-dialog v-model="dialogVisible" title="更换授权码" width="520px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" title="更换授权码" width="520px" destroy-on-close :close-on-press-escape="false">
       <el-input v-model="code" type="textarea" :rows="4" placeholder="粘贴新授权码(DQ1. 开头)" />
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>

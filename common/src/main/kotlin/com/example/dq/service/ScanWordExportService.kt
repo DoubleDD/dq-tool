@@ -161,33 +161,33 @@ class TableStructsPolicy : RenderPolicy {
         val idxA = all.indexOfFirst { it is XWPFParagraph && (it === anchor || it.ctp === anchor.ctp) }
         listOf(idxT, idxP, idxA).sortedDescending().forEach { if (it >= 0) doc.removeBodyElement(it) }
     }
+}
 
-    /** 段落文本替换:保留首个 run(含字符格式),重写其 w:t */
-    private fun setParagraphText(p: CTP, text: String) {
-        while (p.sizeOfRArray() > 1) p.removeR(1)
-        val r = if (p.sizeOfRArray() > 0) p.getRArray(0) else p.addNewR()
-        while (r.sizeOfTArray() > 0) r.removeT(0)
-        r.addNewT().setStringValue(text)
-    }
+/** 段落文本替换:保留首个 run(含字符格式),重写其 w:t(表结构文档各 policy 共用) */
+internal fun setParagraphText(p: CTP, text: String) {
+    while (p.sizeOfRArray() > 1) p.removeR(1)
+    val r = if (p.sizeOfRArray() > 0) p.getRArray(0) else p.addNewR()
+    while (r.sizeOfTArray() > 0) r.removeT(0)
+    r.addNewT().setStringValue(text)
+}
 
-    /** 字段表填充:原型 = 表头 + 一行数据原型;按字段数克隆数据行后逐格重写 */
-    private fun fillRows(tbl: CTTbl, columns: List<List<String>>) {
-        if (columns.isEmpty()) {
-            if (tbl.sizeOfTrArray() > 1) tbl.removeTr(1)
-            return
-        }
-        val protoRow = tbl.getTrArray(1).copy()
-        for (i in 2..columns.size) {
-            tbl.insertNewTr(i).set(protoRow.copy())
-        }
-        columns.forEachIndexed { r, row ->
-            val tcs = tbl.getTrArray(r + 1).getTcArray()
-            row.forEachIndexed { c, text -> setCellText(tcs[c], text) }
-        }
+/** 数据表填充:原型 = 表头 + 一行数据原型;按数据行数克隆该行后逐格重写(表清单/字段表通用) */
+internal fun fillRows(tbl: CTTbl, columns: List<List<String>>) {
+    if (columns.isEmpty()) {
+        if (tbl.sizeOfTrArray() > 1) tbl.removeTr(1)
+        return
     }
+    val protoRow = tbl.getTrArray(1).copy()
+    for (i in 2..columns.size) {
+        tbl.insertNewTr(i).set(protoRow.copy())
+    }
+    columns.forEachIndexed { r, row ->
+        val tcs = tbl.getTrArray(r + 1).getTcArray()
+        row.forEachIndexed { c, text -> setCellText(tcs[c], text) }
+    }
+}
 
-    private fun setCellText(tc: CTTc, text: String) {
-        while (tc.sizeOfPArray() > 1) tc.removeP(1)
-        setParagraphText(tc.getPArray(0), text)
-    }
+internal fun setCellText(tc: CTTc, text: String) {
+    while (tc.sizeOfPArray() > 1) tc.removeP(1)
+    setParagraphText(tc.getPArray(0), text)
 }

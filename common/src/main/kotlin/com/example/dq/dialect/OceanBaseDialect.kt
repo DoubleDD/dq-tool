@@ -12,4 +12,9 @@ class OceanBaseDialect : MySqlDialect() {
     override fun driverClassName(): String {
         return "com.oceanbase.jdbc.Driver"
     }
+
+    /** 在 MySQL 系统库之外,oceanbase 库存放集群/租户元数据 */
+    override fun systemSchemas(): Set<String> {
+        return super.systemSchemas() + "oceanbase"
+    }
 }

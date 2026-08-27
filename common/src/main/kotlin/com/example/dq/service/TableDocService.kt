@@ -29,8 +29,7 @@ class TableDocService(
         val aiConfig = aiConfigService.requireConfig()
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
-        val (stat, columns) = dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        val (stat, columns) = dataSourceService.getConnection(datasourceId, database).use { conn ->
             val s: TableStat = dialect.listTables(conn, schema)
                 .firstOrNull { it.name == table }
                 ?: throw IllegalArgumentException("表不存在:$table")

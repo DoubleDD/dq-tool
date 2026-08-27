@@ -95,14 +95,17 @@
         </el-table-column>
         <el-table-column label="失败原因" min-width="140">
           <template #default="{ row }">
-            <el-tooltip v-if="row.error" :content="row.error" placement="top" :show-after="200">
-              <span class="error-text">{{ row.error }}</span>
-            </el-tooltip>
+            <span v-if="row.error" class="error-text clickable" @click="showDetail(`失败原因:${row.tableName}`, row.error)">{{ row.error }}</span>
             <span v-else>-</span>
           </template>
         </el-table-column>
       </el-table>
     </template>
+
+    <!-- 失败原因详情弹窗:表格里截断的错误文本,点击查看完整内容(与系统诊断页同一交互) -->
+    <el-dialog v-model="detail.visible" :title="detail.title" width="640px">
+      <pre class="detail-content">{{ detail.content }}</pre>
+    </el-dialog>
   </div>
 </template>
 
@@ -123,6 +126,13 @@ const jobId = route.params.jobId
 const job = ref(null)
 const loading = ref(false)
 const acting = ref(false)
+
+/** 失败原因详情弹窗状态 */
+const detail = ref({ visible: false, title: '', content: '' })
+
+function showDetail(title, content) {
+  detail.value = { visible: true, title, content }
+}
 
 const TERMINAL = ['DONE', 'FAILED', 'CANCELED', 'INTERRUPTED']
 let timer = null
@@ -170,7 +180,7 @@ function durationMs(row) {
 }
 
 async function onCancel() {
-  await ElMessageBox.confirm('确定取消该扫描任务吗?', '取消确认', { type: 'warning' })
+  await ElMessageBox.confirm('确定取消该扫描任务吗?', '取消确认', { type: 'warning', closeOnPressEscape: false })
   acting.value = true
   try {
     await request.post(`/scans/${jobId}/cancel`)
@@ -250,6 +260,18 @@ onUnmounted(stopPolling)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: default;
+}
+/* 可点击查看完整错误:点状下划线提示可点(与系统诊断页一致) */
+.clickable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.detail-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 13px;
+  max-height: 50vh;
+  overflow: auto;
 }
 </style>

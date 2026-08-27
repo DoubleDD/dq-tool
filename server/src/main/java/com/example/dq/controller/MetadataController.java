@@ -2,10 +2,16 @@ package com.example.dq.controller;
 
 import com.example.dq.model.SchemaDocUpdateRequest;
 import com.example.dq.model.TableDocUpdateRequest;
+import com.example.dq.service.DataSourceService;
+import com.example.dq.service.DbStructExportService;
 import com.example.dq.service.MetadataService;
 import com.example.dq.service.TableDocService;
 import io.javalin.http.Context;
+import jakarta.servlet.http.HttpServletResponse;
 
+import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.util.Map;
 
@@ -14,10 +20,15 @@ public class MetadataController {
 
     private final MetadataService service;
     private final TableDocService tableDocService;
+    private final DbStructExportService dbStructExportService;
+    private final DataSourceService dataSourceService;
 
-    public MetadataController(MetadataService service, TableDocService tableDocService) {
+    public MetadataController(MetadataService service, TableDocService tableDocService,
+                              DbStructExportService dbStructExportService, DataSourceService dataSourceService) {
         this.service = service;
         this.tableDocService = tableDocService;
+        this.dbStructExportService = dbStructExportService;
+        this.dataSourceService = dataSourceService;
     }
 
     public void listDatabases(Context ctx) throws SQLException {
@@ -90,6 +101,23 @@ public class MetadataController {
         service.updateSchemaDescription(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"),
                 req.getDescription());
         ctx.json(Map.of("ok", true));
+    }
+
+    /** 数据源整库表结构 Word 导出(所有白名单过滤后的库),同步渲染下载 */
+    public void exportDbStructWord(Context ctx) throws IOException, SQLException {
+        long dsId = dsId(ctx);
+        String dsName = dataSourceService.get(dsId).getName();
+        String filename = URLEncoder.encode(sanitize(dsName) + "-数据库表结构.docx", StandardCharsets.UTF_8);
+        HttpServletResponse response = ctx.res();
+        response.setContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+        response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
+        dbStructExportService.export(dsId, response.getOutputStream());
+    }
+
+    /** 文件名特殊字符转下划线(与 Word 报告产物命名口径一致) */
+    private static String sanitize(String name) {
+        if (name == null || name.isBlank()) return "datasource";
+        return name.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
     private static long dsId(Context ctx) {

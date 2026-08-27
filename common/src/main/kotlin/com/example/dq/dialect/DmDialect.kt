@@ -34,6 +34,11 @@ class DmDialect : AbstractDialect() {
         return "dm.jdbc.driver.DmDriver"
     }
 
+    /** DM8 系统账号(schema 与用户一一对应):SYS/SYSDBA/SYSAUDITOR/SYSSSO/SYSMAINT */
+    override fun systemSchemas(): Set<String> {
+        return setOf("sys", "sysdba", "sysauditor", "syssso", "sysmaint")
+    }
+
     override fun quote(identifier: String): String {
         return "\"" + identifier.replace("\"", "\"\"") + "\""
     }

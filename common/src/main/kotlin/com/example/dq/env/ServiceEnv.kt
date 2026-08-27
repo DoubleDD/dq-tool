@@ -28,6 +28,8 @@ import com.example.dq.service.AnnotationTransferService
 import com.example.dq.service.AutoTagService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
+import com.example.dq.service.DbStructExportService
+import com.example.dq.service.DiagnosticsService
 import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
@@ -126,12 +128,15 @@ class ServiceEnv(val config: AppConfig) {
     val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
     val exportService = ExportService(scanService, tableDocRepo)
     val scanWordExportService = ScanWordExportService(scanService, tagRepo, schemaDocRepo)
+    val dbStructExportService = DbStructExportService(metadataService, dataSourceService, dialectFactory, tagRepo)
     val listExportService = ListExportService()
     val wordReportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
         dialectFactory, tagRepo, tableDocRepo, aiConfigService, aiService)
     val wordReportExportService = WordReportExportService(wordReportService, reportExportRepo, dataSourceRepo, config)
     val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey,
         licenseRecordRepo, config.licensePrivateKey, config.appVersion)
+    val diagnosticsService = DiagnosticsService(config, dataSourceService, dataSourceRepo, licenseService,
+        aiConfigService, scanRepo, reportExportRepo)
 
     /**
      * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的

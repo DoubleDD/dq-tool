@@ -13,25 +13,22 @@
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="export" :loading="exporting">导出报告</el-dropdown-item>
+              <el-dropdown-item command="exportDbStruct">导出表结构文档</el-dropdown-item>
               <el-dropdown-item command="filter">库过滤</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
       </div>
     </div>
-    <div v-if="databases.length" style="margin-bottom: 12px">
-      <span style="margin-right: 8px; color: var(--el-text-color-regular)">数据库</span>
-      <el-select v-model="currentDb" style="width: 240px" @change="loadSchemas">
-        <el-option v-for="d in databases" :key="d" :label="d" :value="d" />
-      </el-select>
-    </div>
-    <el-input v-model="keyword" placeholder="按库名搜索" clearable style="width: 280px; margin-bottom: 12px" />
-    <el-table :data="filteredSchemas" v-loading="loading" border row-key="name" @selection-change="onSelectionChange">
+    <!-- SQL Server 跨库列表:搜索框同时匹配数据库名与架构名 -->
+    <el-input v-model="keyword" :placeholder="isMultiDb ? '按数据库/架构名搜索' : '按库名搜索'" clearable style="width: 280px; margin-bottom: 12px" />
+    <el-table :data="filteredSchemas" v-loading="loading" border :row-key="(row) => rowKeyOf(row.database, row.name)" @selection-change="onSelectionChange">
       <el-table-column type="selection" width="45" reserve-selection />
       <el-table-column type="index" label="序号" width="60" />
-      <el-table-column prop="name" label="库名(Schema)" min-width="200" sortable>
+      <el-table-column v-if="isMultiDb" prop="database" label="数据库" min-width="140" sortable />
+      <el-table-column prop="name" :label="isMultiDb ? '架构(Schema)' : '库名(Schema)'" min-width="200" sortable>
         <template #default="{ row }">
-          <el-link type="primary" @click="goTables(row.name)">{{ row.name }}</el-link>
+          <el-link type="primary" @click="goTables(row)">{{ row.name }}</el-link>
         </template>
       </el-table-column>
       <el-table-column label="描述" min-width="160">
@@ -105,16 +102,16 @@
       <el-table-column label="操作" width="180">
         <template #default="{ row }">
           <el-button link type="primary" :disabled="isScanning(row)" @click="scanOne(row)">扫描</el-button>
-          <el-button link type="primary" :disabled="statsLoaded && !row.lastScanStatus" @click="goScans(row.name)">扫描记录</el-button>
+          <el-button link type="primary" :disabled="statsLoaded && !row.lastScanStatus" @click="goScans(row)">扫描记录</el-button>
         </template>
       </el-table-column>
     </el-table>
 
     <!-- 开始扫描:与表列表页扫描弹窗保持一致(扫描范围为整库) -->
-    <el-dialog v-model="scanDialogVisible" title="开始扫描" width="640px" destroy-on-close>
+    <el-dialog v-model="scanDialogVisible" title="开始扫描" width="640px" destroy-on-close :close-on-press-escape="false">
       <el-form label-width="110px">
         <el-form-item label="扫描范围">
-          <span v-if="scanTargets.length === 1">将对库「{{ scanTargets[0].name }}」发起全库扫描</span>
+          <span v-if="scanTargets.length === 1">将对库「{{ displayName(scanTargets[0]) }}」发起全库扫描</span>
           <span v-else>将对 {{ scanTargets.length }} 个库发起全库扫描</span>
         </el-form-item>
         <el-form-item label="强制全量">
@@ -178,9 +175,9 @@
     </el-dialog>
 
     <!-- 库描述编辑:用于 Word 报告「实例描述」列,空白保存即清除 -->
-    <el-dialog v-model="descVisible" title="编辑库描述" width="480px" destroy-on-close>
+    <el-dialog v-model="descVisible" title="编辑库描述" width="480px" destroy-on-close :close-on-press-escape="false">
       <div style="margin-bottom: 8px; color: var(--el-text-color-secondary); font-size: 12px">
-        库「{{ descRow?.name }}」的描述,将用于 Word 报告的「实例描述」列;留空保存即清除。
+        库「{{ descRow ? displayName(descRow) : '' }}」的描述,将用于 Word 报告的「实例描述」列;留空保存即清除。
       </div>
       <el-input v-model="descText" type="textarea" :rows="3" maxlength="512" show-word-limit
                 placeholder="如:地下水监测库" />
@@ -191,16 +188,18 @@
     </el-dialog>
 
     <!-- 库过滤:勾选需要显示的库,保存为数据源级白名单(与编辑数据源对话框的「库过滤」页签同一份配置) -->
-    <el-dialog v-model="filterVisible" title="库过滤" width="560px" destroy-on-close>
+    <el-dialog v-model="filterVisible" title="库过滤" width="560px" destroy-on-close :close-on-press-escape="false">
       <div v-loading="filterLoading">
-        <div class="filter-tip">勾选需要显示的库;全部勾选(或全不勾)表示不过滤。数据库自身的系统库可不勾。</div>
+        <div class="filter-tip">勾选需要显示的库;全部勾选(或全不勾)表示不过滤。系统库已默认不勾选,可按需勾回。</div>
         <template v-if="filterList.length">
           <div class="filter-all">
             <el-checkbox :model-value="filterCheckAll" :indeterminate="filterIndeterminate" @change="onFilterCheckAll">全部</el-checkbox>
             <span class="filter-count">已选 {{ filterChecked.length }} / {{ filterList.length }}</span>
           </div>
           <el-checkbox-group v-model="filterChecked" class="filter-list filter-grid">
-            <el-checkbox v-for="db in filterList" :key="db" :value="db">{{ db }}</el-checkbox>
+            <el-checkbox v-for="db in filterList" :key="db" :value="db">
+              {{ db }}<span v-if="isSystemSchema(db)" class="filter-sys-tag">系统</span>
+            </el-checkbox>
           </el-checkbox-group>
         </template>
         <el-empty v-else-if="!filterLoading" description="没有可选择的库" :image-size="60" />
@@ -221,6 +220,7 @@ import { ArrowDown, QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import { setDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber, statusTagType, statusText } from '../utils/format'
+import { downloadFile } from '../utils/download'
 import { cellText, exportListToExcel } from '../utils/listExport'
 import Breadcrumb from '../components/Breadcrumb.vue'
 const route = useRoute()
@@ -230,7 +230,6 @@ const schemas = ref([])
 const dsName = ref('')
 const dsRow = ref(null)
 const databases = ref([])
-const currentDb = ref('')
 const loading = ref(false)
 const statsLoaded = ref(false)
 const refreshing = ref(false)
@@ -245,10 +244,29 @@ const breadcrumbItems = computed(() => [
   { label: dsName.value || `数据源 ${dsId}` }
 ])
 
+// SQL Server 等多库方言:数据库只是筛选条件,库列表按「数据库 + 架构」两列展示
+const isMultiDb = computed(() => dsRow.value?.dbType === 'SQLSERVER')
+
+/** 行唯一键:跨库模式下同名 schema 可能分属不同数据库 */
+function rowKeyOf(db, name) {
+  return `${db || ''}${name}`
+}
+
+/** 行展示名:多库方言带数据库前缀(db.schema),单库方言只显示 schema 名 */
+function displayName(row) {
+  return isMultiDb.value && row.database ? `${row.database}.${row.name}` : row.name
+}
+
 // ---------- "更多"下拉 ----------
 function onMoreCommand(cmd) {
   if (cmd === 'export') exportReport()
+  else if (cmd === 'exportDbStruct') exportDbStruct()
   else if (cmd === 'filter') openFilter()
+}
+
+// ---------- 整库表结构 Word 导出(所有白名单过滤后的库,实时元数据,同步下载;无需勾选) ----------
+function exportDbStruct() {
+  downloadFile(`/api/datasources/${dsId}/export-dbstruct-word`)
 }
 
 // ---------- 库描述编辑(Word 报告「实例描述」列) ----------
@@ -266,7 +284,8 @@ function openDesc(row) {
 async function saveDesc() {
   descSaving.value = true
   try {
-    const q = currentDb.value ? `?db=${encodeURIComponent(currentDb.value)}` : ''
+    const db = descRow.value.database || ''
+    const q = db ? `?db=${encodeURIComponent(db)}` : ''
     await request.put(`/datasources/${dsId}/schemas/${encodeURIComponent(descRow.value.name)}/description${q}`,
       { description: descText.value })
     descRow.value.description = descText.value.trim() || null
@@ -289,18 +308,18 @@ function isFullyScanned(row) {
 /** 导出 Word 报告:勾选了库则导出勾选的;未勾选默认导出全部已完成全表扫描的库(弹窗提示确认)。
  *  异步任务:提交后到「报告列表」页查看进度与下载 */
 async function exportReport() {
-  let names = selected.value.map((row) => row.name)
-  if (!names.length) {
-    names = schemas.value.filter(isFullyScanned).map((s) => s.name)
-    if (!names.length) {
+  let rows = selected.value
+  if (!rows.length) {
+    rows = schemas.value.filter(isFullyScanned)
+    if (!rows.length) {
       ElMessage.warning('没有已完成全表扫描的库,请先扫描')
       return
     }
     try {
       await ElMessageBox.confirm(
-        `未勾选库,将默认导出全部 ${names.length} 个已完成全表扫描的库(${names.join('、')}),是否继续?`,
+        `未勾选库,将默认导出全部 ${rows.length} 个已完成全表扫描的库(${rows.map(displayName).join('、')}),是否继续?`,
         '导出报告',
-        { confirmButtonText: '导出', cancelButtonText: '取消' }
+        { confirmButtonText: '导出', cancelButtonText: '取消', closeOnPressEscape: false }
       )
     } catch {
       return // 取消
@@ -308,10 +327,20 @@ async function exportReport() {
   }
   exporting.value = true
   try {
-    await submitReportExport(dsId, currentDb.value, names)
+    // 跨库模式下勾选的库可能分属不同数据库:按数据库分组,逐库各提交一个导出任务
+    const groups = new Map()
+    for (const row of rows) {
+      const db = row.database || ''
+      if (!groups.has(db)) groups.set(db, [])
+      groups.get(db).push(row.name)
+    }
+    for (const [db, names] of groups) {
+      await submitReportExport(dsId, db, names)
+    }
     ElMessageBox.confirm('导出任务已提交,生成可能需要几分钟。是否前往「报告列表」查看进度?', '导出报告', {
       confirmButtonText: '前往查看',
-      cancelButtonText: '留在此页'
+      cancelButtonText: '留在此页',
+      closeOnPressEscape: false
     }).then(() => router.push('/report-exports')).catch(() => {})
   } catch {
     // 提交失败由响应拦截器弹窗
@@ -326,6 +355,13 @@ const filterLoading = ref(false)
 const filterSaving = ref(false)
 const filterList = ref([])
 const filterChecked = ref([])
+// 系统库/schema 名(后端按 dbType 返回,小写),库过滤默认不勾选并打「系统」标注
+const systemSchemas = ref([])
+
+/** 大小写不敏感判断库名是否为系统库 */
+function isSystemSchema(name) {
+  return systemSchemas.value.includes(String(name).toLowerCase())
+}
 
 const filterCheckAll = computed(() => filterList.value.length > 0 && filterChecked.value.length === filterList.value.length)
 const filterIndeterminate = computed(() => filterChecked.value.length > 0 && filterChecked.value.length < filterList.value.length)
@@ -334,25 +370,27 @@ function onFilterCheckAll(val) {
   filterChecked.value = val ? [...filterList.value] : []
 }
 
-/** 打开弹窗并拉全量库列表(all=true 旁路白名单),按已存白名单回填勾选 */
+/** 打开弹窗并拉全量库列表(all=true 旁路白名单),按已存白名单回填勾选;未配置白名单时系统库默认不勾 */
 async function openFilter() {
   filterVisible.value = true
   filterLoading.value = true
   filterList.value = []
   try {
+    // 系统库清单与库列表并行拉取;系统清单失败不阻塞(退化为全勾)
+    const sysPromise = request.get(`/db-types/${dsRow.value?.dbType}/system-schemas`).catch(() => [])
     let all
     if (dsRow.value?.dbType === 'SQLSERVER') {
       // 多库方言:白名单作用于数据库层级
       all = await request.get(`/datasources/${dsId}/databases?all=true`)
     } else {
-      const q = currentDb.value ? `?db=${encodeURIComponent(currentDb.value)}&all=true` : '?all=true'
-      all = await request.get(`/datasources/${dsId}/schemas${q}`)
+      all = await request.get(`/datasources/${dsId}/schemas?all=true`)
     }
     filterList.value = all || []
+    systemSchemas.value = await sysPromise
     const cur = dsRow.value?.schemaFilter
     filterChecked.value = cur?.length
       ? filterList.value.filter((d) => cur.includes(d))
-      : [...filterList.value]
+      : filterList.value.filter((d) => !isSystemSchema(d))
   } finally {
     filterLoading.value = false
   }
@@ -369,12 +407,9 @@ async function saveFilter() {
     if (dsRow.value) dsRow.value.schemaFilter = schemas
     ElMessage.success('库过滤已更新')
     filterVisible.value = false
-    // SQL Server 的数据库下拉同样受白名单约束:当前选中库被过滤掉时回退到第一个
+    // SQL Server 跨库枚举用的数据库清单同样受白名单约束,保存后刷新
     if (dsRow.value?.dbType === 'SQLSERVER') {
       databases.value = await request.get(`/datasources/${dsId}/databases`).catch(() => [])
-      if (!databases.value.includes(currentDb.value)) {
-        currentDb.value = databases.value[0] || ''
-      }
     }
     await loadSchemas()
   } finally {
@@ -388,34 +423,40 @@ const TAG_VISIBLE_COUNT = 3
 const filteredSchemas = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   if (!kw) return schemas.value
-  return schemas.value.filter((s) => s.name.toLowerCase().includes(kw))
+  // 跨库模式下数据库名同样参与搜索
+  return schemas.value.filter((s) =>
+    s.name.toLowerCase().includes(kw) || (s.database || '').toLowerCase().includes(kw))
 })
-
-/** 从 jdbcUrl 解析默认库(databaseName=/database=) */
-function parseDefaultDb(jdbcUrl) {
-  const m = /[;?&]database(?:Name)?=([^;?&]+)/i.exec(jdbcUrl || '')
-  return m ? decodeURIComponent(m[1]) : ''
-}
 
 /** 先渲染库名列表,再异步补表数量/最近扫描/标记统计(失败不影响列表) */
 async function loadSchemaStats(refresh = false) {
-  const params = new URLSearchParams()
-  if (currentDb.value) params.set('db', currentDb.value)
-  if (refresh) params.set('refresh', 'true')
-  const q = params.toString() ? `?${params.toString()}` : ''
+  // 跨库模式(SQL Server)逐库拉取统计后按 数据库+架构 键合并;其余情况只拉一次
+  const dbs = isMultiDb.value && databases.value.length ? databases.value : ['']
+  const buildQ = (db) => {
+    const params = new URLSearchParams()
+    if (db) params.set('db', db)
+    if (refresh) params.set('refresh', 'true')
+    const s = params.toString()
+    return s ? `?${s}` : ''
+  }
   try {
     // 标记统计与库统计并行拉取;标记接口失败时返回 null,保留行内已有标记数据(轮询不刷丢)
-    const [stats, tagStats] = await Promise.all([
-      request.get(`/datasources/${dsId}/schema-stats${q}`),
-      request.get(`/datasources/${dsId}/schema-tag-stats${q}`).catch(() => null)
+    const [statsLists, tagLists] = await Promise.all([
+      Promise.all(dbs.map((db) => request.get(`/datasources/${dsId}/schema-stats${buildQ(db)}`))),
+      Promise.all(dbs.map((db) => request.get(`/datasources/${dsId}/schema-tag-stats${buildQ(db)}`).catch(() => null)))
     ])
-    const byName = new Map((stats || []).map((s) => [s.name, s]))
-    const tagsByName = tagStats ? new Map(tagStats.map((s) => [s.schemaName, s.tags])) : null
+    const byKey = new Map()
+    statsLists.forEach((list, i) => (list || []).forEach((s) => byKey.set(rowKeyOf(dbs[i], s.name), s)))
+    // 所有库的标记接口都失败才保留行内已有标记;只要有一个成功就按成功结果重建(失败的库标记置空)
+    const tagsByKey = tagLists.some((t) => t) ? new Map() : null
+    if (tagsByKey) {
+      tagLists.forEach((list, i) => (list || []).forEach((s) => tagsByKey.set(rowKeyOf(dbs[i], s.schemaName), s.tags)))
+    }
     schemas.value = schemas.value.map((s) => ({
       ...s,
-      ...byName.get(s.name),
+      ...byKey.get(rowKeyOf(s.database, s.name)),
       // 接口只返回有标记表的库;无标记的库置 null,列内显示「—」
-      ...(tagsByName ? { tags: tagsByName.get(s.name) || null } : {})
+      ...(tagsByKey ? { tags: tagsByKey.get(rowKeyOf(s.database, s.name)) || null } : {})
     }))
   } catch (e) {
     // 统计查询失败(如连接超时)时保留纯名称列表,扫描记录入口不置灰
@@ -439,9 +480,17 @@ async function refreshStats() {
 
 async function loadSchemas() {
   statsLoaded.value = false
-  const q = currentDb.value ? `?db=${encodeURIComponent(currentDb.value)}` : ''
-  const schemaList = await request.get(`/datasources/${dsId}/schemas${q}`)
-  schemas.value = (schemaList || []).map((name) => ({ name }))
+  if (isMultiDb.value && databases.value.length) {
+    // 跨库模式:逐库拉取 schema 清单合并,行内携带所属数据库
+    const perDb = await Promise.all(databases.value.map(async (db) => {
+      const list = await request.get(`/datasources/${dsId}/schemas?db=${encodeURIComponent(db)}`).catch(() => [])
+      return (list || []).map((name) => ({ name, database: db }))
+    }))
+    schemas.value = perDb.flat()
+  } else {
+    const schemaList = await request.get(`/datasources/${dsId}/schemas`)
+    schemas.value = (schemaList || []).map((name) => ({ name, database: '' }))
+  }
   loadSchemaStats()
 }
 
@@ -458,9 +507,8 @@ async function load() {
       syncTab(route)
     }
     if (ds && ds.dbType === 'SQLSERVER') {
+      // 跨库枚举:拉取数据库清单(受白名单约束),用于逐库拉 schema/统计
       databases.value = await request.get(`/datasources/${dsId}/databases`).catch(() => [])
-      const fromUrl = parseDefaultDb(ds.jdbcUrl)
-      currentDb.value = databases.value.includes(fromUrl) ? fromUrl : (databases.value[0] || '')
     }
     await loadSchemas()
   } finally {
@@ -468,14 +516,14 @@ async function load() {
   }
 }
 
-function goTables(schema) {
-  const q = currentDb.value ? `?db=${encodeURIComponent(currentDb.value)}` : ''
-  router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/tables${q}`)
+function goTables(row) {
+  const q = row.database ? `?db=${encodeURIComponent(row.database)}` : ''
+  router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(row.name)}/tables${q}`)
 }
 
-function goScans(schema) {
-  const q = currentDb.value ? `?db=${encodeURIComponent(currentDb.value)}` : ''
-  router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${q}`)
+function goScans(row) {
+  const q = row.database ? `?db=${encodeURIComponent(row.database)}` : ''
+  router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(row.name)}/scans${q}`)
 }
 
 /** 点击标记块:跳表列表的只读筛选模式(该库 + 该标记) */
@@ -483,7 +531,7 @@ function goTagTables(row, tag) {
   router.push({
     path: `/datasources/${dsId}/schemas/${encodeURIComponent(row.name)}/tables`,
     query: {
-      ...(currentDb.value ? { db: currentDb.value } : {}),
+      ...(row.database ? { db: row.database } : {}),
       tagId: tag.tagId,
       tagName: tag.tagName
     }
@@ -496,8 +544,13 @@ function onSelectionChange(rows) {
 
 // ---------- 列表导出 Excel(导出当前搜索过滤后的库列表,列与页面一致) ----------
 function exportExcel() {
-  const headers = ['库名(Schema)', '描述', '表数量', '占用空间', '标记', '最近扫描状态', '最近扫描时间']
+  const headers = [
+    ...(isMultiDb.value ? ['数据库'] : []),
+    isMultiDb.value ? '架构(Schema)' : '库名(Schema)',
+    '描述', '表数量', '占用空间', '标记', '最近扫描状态', '最近扫描时间'
+  ]
   const rows = filteredSchemas.value.map((s) => [
+    ...(isMultiDb.value ? [cellText(s.database)] : []),
     cellText(s.name),
     cellText(s.description),
     formatNumber(s.tableCount ?? 0),
@@ -598,7 +651,7 @@ async function submitScans() {
       request.post('/scans', {
         datasourceId: /^\d+$/.test(String(dsId)) ? Number(dsId) : dsId,
         schema: row.name,
-        database: currentDb.value || null,
+        database: row.database || null,
         tables: null,
         forceFull: scanForm.forceFull,
         nullRules,
@@ -664,6 +717,16 @@ onUnmounted(stopPolling)
 .filter-count {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+/* 库过滤系统库标注:小号灰底标签 */
+.filter-sys-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 3px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color);
 }
 .filter-list {
   display: flex;

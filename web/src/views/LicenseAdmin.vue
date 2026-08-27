@@ -53,7 +53,7 @@
     </el-table>
 
     <!-- 生成授权码:客户名必填;有效期永久/日期二选一;扩展字段选填 -->
-    <el-dialog v-model="generateVisible" title="生成授权码" width="520px" destroy-on-close>
+    <el-dialog v-model="generateVisible" title="生成授权码" width="520px" destroy-on-close :close-on-press-escape="false">
       <el-form label-width="90px">
         <el-form-item label="客户名称" required>
           <el-input v-model="form.customer" placeholder="如:某某公司" />
@@ -92,7 +92,7 @@
     </el-dialog>
 
     <!-- 查看/新生成的授权码:完整展示 + 复制 -->
-    <el-dialog v-model="codeVisible" :title="codeTitle" width="560px" destroy-on-close>
+    <el-dialog v-model="codeVisible" :title="codeTitle" width="560px" destroy-on-close :close-on-press-escape="false">
       <el-input :model-value="currentCode" type="textarea" :rows="4" readonly />
       <template #footer>
         <el-button type="primary" @click="copyCode">复制</el-button>
@@ -198,7 +198,7 @@ async function onDelete(row) {
   await ElMessageBox.confirm(
     `删除「${row.customer}」的签发记录?仅删除留档,已分发的授权码不受影响(离线验签无法吊销)。`,
     '删除确认',
-    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消', closeOnPressEscape: false }
   )
   await request.delete(`/license/admin/codes/${row.id}`)
   ElMessage.success('已删除')

@@ -1,6 +1,6 @@
 <template>
   <el-button :size="size" @click="open">{{ label }}</el-button>
-  <el-dialog v-model="visible" title="导出 Excel" width="min(1440px, 94vw)" append-to-body>
+  <el-dialog v-model="visible" title="导出 Excel" width="min(1440px, 94vw)" append-to-body :close-on-press-escape="false">
     <div class="tip">
       导出文件结构预览(示例数据)。「表列表」「字段明细」页签内可勾选要导出的列,下方表格实时预览最终样式;灰色固定列始终导出。
     </div>

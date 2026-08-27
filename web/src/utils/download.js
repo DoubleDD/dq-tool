@@ -22,3 +22,19 @@ export async function downloadFile(apiPath) {
     ElMessage.error(String(e))
   }
 }
+
+/**
+ * 文本下载(诊断报告等前端组装的内容):Blob + a[download],浏览器与 Tauri webview 均可用。
+ * @param {string} filename 下载文件名
+ * @param {string} text 文本内容
+ * @param {string} [mime] MIME 类型,默认 text/markdown
+ */
+export function downloadText(filename, text, mime = 'text/markdown') {
+  const blob = new Blob([text], { type: `${mime};charset=utf-8` })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}

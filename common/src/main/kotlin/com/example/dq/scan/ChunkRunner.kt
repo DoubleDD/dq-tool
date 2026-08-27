@@ -58,8 +58,7 @@ class ChunkRunner(
         val settings = systemSettings.scanSettings()
         repo.markChunkRunning(chunkId)
         try {
-            dataSourceService.getConnection(job.datasourceId).use { conn ->
-                dialect.useDatabase(conn, dataSourceService.resolveDatabase(job.datasourceId, job.dbName))
+            dataSourceService.getConnection(job.datasourceId, job.dbName).use { conn ->
                 val cols = dialect.listColumns(conn, job.schemaName, table.tableName)
                 val chunkKey = if (table.chunkKey == null) null
                 else cols.firstOrNull { it.name == table.chunkKey }
@@ -226,6 +225,28 @@ class ChunkRunner(
             scanDocService.submit(job.id, table.id)
         } catch (e: Exception) {
             log.warn("生成表描述提交失败 jobId={} table={}: {}", job.id, table.tableName, e.message)
+        }
+    }
+
+    /**
+     * 表不存在或没有字段:按空表跳过,直接置 DONE(结果全 0),不算失败;不触发 AI 后续(无字段无可分析)。
+     * 续扫时允许把 FAILED 表翻转为 DONE:FAILED 已被 failTable 计入完成数,翻转时不得重复计数。
+     */
+    fun completeEmptyTable(scanTableId: Long) {
+        synchronized(lock(scanTableId)) {
+            val table = repo.findScanTable(scanTableId)
+            if (table == null || table.status == ScanStatus.DONE) {
+                return
+            }
+            val alreadyCounted = table.status == ScanStatus.FAILED
+            val job = repo.findJob(table.jobId)
+            repo.finishTable(scanTableId, ScanStatus.DONE, 0L, null)
+            if (job != null) {
+                syncEmptyTag(job, table.tableName ?: "", 0L)
+            }
+            if (!alreadyCounted) {
+                checkJobCompletion(table.jobId)
+            }
         }
     }
 

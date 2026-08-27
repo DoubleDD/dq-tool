@@ -47,6 +47,7 @@ import java.nio.file.Files
 import java.sql.DriverManager
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 
@@ -87,6 +88,7 @@ class ScanFlowTest {
     private val metadataService: MetadataService
     private val metaCacheRepo: MetaCacheRepository
     private val tableDocRepo: TableDocRepository
+    private val scanRepo: ScanRepository
 
     init {
         val ds = JdbcDataSource()
@@ -94,6 +96,7 @@ class ScanFlowTest {
         SchemaInit.run(ds)
         val jdbc = Jdbc(ds)
         val scanRepo = ScanRepository(jdbc)
+        this.scanRepo = scanRepo
         val dsRepo = DataSourceRepository(jdbc)
         val schemaStatRepo = SchemaStatRepository(jdbc)
         metaCacheRepo = MetaCacheRepository(jdbc)
@@ -372,6 +375,57 @@ class ScanFlowTest {
         assertEquals(1, dbo.tableCount)
         assertNotNull(dbo.sizeBytes)
         assertEquals("DONE", dbo.lastScanStatus)
+    }
+
+    @Test
+    fun `mysql续扫时不存在表按空表跳过`() {
+        seed(MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, "mysql")
+        val dsId = dataSourceService.create(DataSourceRequest(
+            "it-mysql-resume", MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, null, null))
+
+        fun dropVictim() = DriverManager.getConnection(MYSQL.jdbcUrl, MYSQL.username, MYSQL.password).use { conn ->
+            conn.createStatement().use { st -> st.execute("DROP TABLE IF EXISTS victim") }
+        }
+        fun createVictim() = DriverManager.getConnection(MYSQL.jdbcUrl, MYSQL.username, MYSQL.password).use { conn ->
+            conn.createStatement().use { st ->
+                st.execute("CREATE TABLE victim(id BIGINT PRIMARY KEY)")
+                st.execute("INSERT INTO victim VALUES(1)")
+            }
+        }
+
+        // 表结构缓存落库(含 victim),随后删表模拟「本地缓存里有、业务库已不存在」
+        createVictim()
+        assertTrue(metadataService.listTables(dsId, null, "dqtest").any { it.name == "victim" })
+        dropVictim()
+
+        // 访问字段列表发现没有字段:打无字段标记;重建后有字段:标记清除
+        assertTrue(metadataService.listTableColumns(dsId, null, "dqtest", "victim", true).isEmpty())
+        assertTrue(metaCacheRepo.isNoColumns(dsId, "", "dqtest", "victim"))
+        createVictim()
+        assertEquals(1, metadataService.listTableColumns(dsId, null, "dqtest", "victim", true).size)
+        assertFalse(metaCacheRepo.isNoColumns(dsId, "", "dqtest", "victim"))
+        dropVictim()
+
+        // 构造失败任务:victim 规划失败(FAILED,已计入完成数),users 未规划(totalChunks=0)
+        val jobId = scanRepo.insertJob(dsId, null, "dqtest", true, null, 2)
+        val victimId = scanRepo.insertScanTable(jobId, "victim", 1L, null, null, null)
+        scanRepo.insertScanTable(jobId, "users", ROWS.toLong(), null, null, null)
+        scanRepo.finishTable(victimId, ScanStatus.FAILED, null, "规划失败: 表不存在")
+        scanRepo.incrementJobDoneTables(jobId)
+        scanRepo.finishJob(jobId, ScanStatus.FAILED, "1 张表统计失败")
+
+        // 续扫:victim 已不存在,按空表置 DONE(0) 跳过,不再让整个任务失败;users 重新规划扫完
+        scanService.resume(jobId)
+        val job = awaitDone(jobId)
+        assertEquals(ScanStatus.DONE, job.status) { "任务失败: " + job.error }
+        val victim = job.tables!!.first { it.tableName == "victim" }
+        assertEquals(ScanStatus.DONE, victim.status)
+        assertEquals(0L, victim.totalRows)
+        // FAILED→DONE 翻转不得重复计数
+        assertEquals(2, job.doneTables)
+        assertEquals(ROWS.toLong(), job.tables!!.first { it.tableName == "users" }.totalRows)
+        // 续扫探测到 victim 无字段,无字段标记重新打上
+        assertTrue(metaCacheRepo.isNoColumns(dsId, "", "dqtest", "victim"))
     }
 
     /** 造数:name 每 10 行 NULL、每 7 行空串;status 每 10 行 NULL、每 20 行 0、每 20 行错开 -1;remark 每 20 行 'N/A' */

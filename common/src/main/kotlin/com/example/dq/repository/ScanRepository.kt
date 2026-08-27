@@ -67,6 +67,10 @@ class ScanRepository(private val jdbc: Jdbc) {
         return jdbc.query(sql.toString(), *args.toTypedArray(), mapper = jobMapper)
     }
 
+    /** 最近失败的任务(诊断页用):新的在前 */
+    fun listRecentFailedJobs(limit: Int): List<JobRow> =
+        jdbc.query("SELECT * FROM scan_job WHERE status='FAILED' ORDER BY id DESC LIMIT ?", limit, mapper = jobMapper)
+
     /**
      * 每个 schema 最近一次扫描任务(按 id 最大),供库列表页展示"最近扫描"。
      * dbName 为空时只匹配 db_name 为 NULL 的任务(与 ScanRequest.database 的落库口径一致)。

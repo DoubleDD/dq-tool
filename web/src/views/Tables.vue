@@ -54,8 +54,8 @@
       </span>
     </el-alert>
 
-    <el-table :data="filteredTables" v-loading="loading" border @selection-change="onSelectionChange">
-      <el-table-column v-if="!filterTagId" type="selection" width="45" />
+    <el-table :data="filteredTables" v-loading="loading" border row-key="name" @selection-change="onSelectionChange">
+      <el-table-column v-if="!filterTagId" type="selection" width="45" reserve-selection />
       <el-table-column type="index" label="序号" width="60" />
       <el-table-column prop="name" label="表名" min-width="180" sortable show-overflow-tooltip>
         <template #default="{ row }">
@@ -172,7 +172,7 @@
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="scanDialogVisible" title="开始扫描" width="640px" destroy-on-close>
+    <el-dialog v-model="scanDialogVisible" title="开始扫描" width="640px" destroy-on-close :close-on-press-escape="false">
       <el-form label-width="110px">
         <el-form-item label="扫描范围">
           <span v-if="singleTable">仅扫描表:{{ singleTable }}</span>
@@ -243,7 +243,7 @@
     </el-dialog>
 
     <!-- 手动编辑表描述 -->
-    <el-dialog v-model="docEditVisible" :title="`编辑描述 - ${docEditTable}`" width="560px" append-to-body>
+    <el-dialog v-model="docEditVisible" :title="`编辑描述 - ${docEditTable}`" width="560px" append-to-body :close-on-press-escape="false">
       <el-input v-model="docEditText" type="textarea" :rows="5" maxlength="2000" show-word-limit
                 placeholder="输入该表的用途描述" />
       <template #footer>

@@ -4,6 +4,7 @@
     :title="`打标 - ${tableName}`"
     width="620px"
     append-to-body
+    :close-on-press-escape="false"
     @update:model-value="$emit('update:modelValue', $event)"
     @open="onOpen"
   >
@@ -182,7 +183,7 @@ async function removeTag(tag) {
   await ElMessageBox.confirm(
     `确定删除标记「${tag.name}」吗?已打该标记的 ${tag.tableCount} 张表会自动解除。`,
     '删除确认',
-    { type: 'warning', confirmButtonText: '删除' }
+    { type: 'warning', confirmButtonText: '删除', closeOnPressEscape: false }
   )
   operating.value = true
   try {

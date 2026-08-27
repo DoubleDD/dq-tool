@@ -284,6 +284,9 @@ abstract class AbstractDialect : DbDialect {
         return ranges
     }
 
+    /** 统计字符列空串用的去两端空白表达式;SQL Server 2016- 无 TRIM,方言可覆盖 */
+    protected open fun trimExpr(quotedCol: String): String = "TRIM($quotedCol)"
+
     override fun selectorLayout(cols: List<ColumnMeta>, rules: List<NullRule>?): List<BooleanArray> {
         val layout = ArrayList<BooleanArray>(cols.size)
         for (c in cols) {
@@ -302,7 +305,7 @@ abstract class AbstractDialect : DbDialect {
             val q = quote(c.name)
             select.append(", SUM(CASE WHEN ").append(q).append(" IS NULL THEN 1 ELSE 0 END) AS c").append(i).append("_null")
             if (c.isCharacter()) {
-                select.append(", SUM(CASE WHEN TRIM(").append(q).append(") = '' THEN 1 ELSE 0 END) AS c").append(i).append("_empty")
+                select.append(", SUM(CASE WHEN ").append(trimExpr(q)).append(" = '' THEN 1 ELSE 0 END) AS c").append(i).append("_empty")
             }
             if (rules != null) {
                 val values = rules.filter { it.matches(c.name) }

@@ -125,8 +125,7 @@ class AutoTagService(
         val ds = dataSourceService.get(job.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
         val rows = ArrayList<List<String>>()
-        dataSourceService.getConnection(job.datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(job.datasourceId, job.dbName))
+        dataSourceService.getConnection(job.datasourceId, job.dbName).use { conn ->
             conn.createStatement().use { stmt ->
                 stmt.executeQuery(
                     dialect.sampleRowsSql(job.schemaName, tableName,

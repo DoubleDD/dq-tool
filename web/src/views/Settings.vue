@@ -103,7 +103,7 @@
     </el-card>
 
     <!-- 导入数据源映射弹窗:文件里的数据源 → 本机数据源 -->
-    <el-dialog v-model="importDialogVisible" title="导入标记与描述数据" width="680px" :close-on-click-modal="false">
+    <el-dialog v-model="importDialogVisible" title="导入标记与描述数据" width="680px" :close-on-click-modal="false" :close-on-press-escape="false">
       <div class="settings-desc" style="margin-bottom: 12px">
         文件包含 {{ importPreview.tags }} 个标记(按名称合并导入)。表级数据来自以下数据源,请逐个选择对应的本机数据源:
       </div>
@@ -146,6 +146,7 @@ import { reactive, ref, computed, onActivated } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../api'
 import { downloadFile } from '../utils/download'
+import { confirmImportFile } from '../utils/importFileIdentify'
 import AiConfigForm from '../components/AiConfigForm.vue'
 import { themeState, setThemeMode } from '../stores/theme'
 
@@ -260,7 +261,8 @@ function exportAnnotations() {
   downloadFile('/api/annotations/export')
 }
 
-// 导入:选文件先预检(解析文件里的数据源分布),弹窗让用户把文件数据源映射到本机数据源后再执行;
+// 导入:选文件先做内容识别(三种导出都是 .json,靠 app 字段区分)并弹窗确认归属,防止拿错文件;
+// 确认后预检(解析文件里的数据源分布),弹窗让用户把文件数据源映射到本机数据源后再执行;
 // 文件只有标记没有表级数据时跳过映射直接导入;失败消息由拦截器统一弹出
 const annotationImporting = ref(false)
 const importDialogVisible = ref(false)
@@ -271,6 +273,8 @@ let importFileRaw = null            // 暂存待导入的文件,确认时随映�
 
 async function onAnnotationFile(file) {
   if (annotationImporting.value || !file?.raw) return
+  // 先识别文件种类并弹窗确认;无法识别/不属于本功能/用户取消时直接结束
+  if (!await confirmImportFile(file.raw, 'annotations')) return
   annotationImporting.value = true
   try {
     importFileRaw = file.raw
@@ -313,7 +317,7 @@ async function confirmImport() {
       `新增表标记 ${r.tableTagsAdded} 条,跳过 ${r.tableTagsSkipped} 条;` +
       `导入表描述 ${r.docsUpserted} 条,跳过 ${r.docsSkipped} 条。`,
       '导入完成',
-      { confirmButtonText: '知道了' }
+      { confirmButtonText: '知道了', closeOnPressEscape: false }
     )
   } catch {
     // 错误提示由响应拦截器统一弹出

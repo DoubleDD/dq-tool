@@ -117,7 +117,7 @@
     </div>
 
     <!-- 新增/编辑数据源:DataGrip 风格 —— 顶部名称+驱动,常规/SSH 隧道/高级分页,测试连接固定在左下 -->
-    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑数据源' : '新增数据源'" width="640px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" :title="form.id ? '编辑数据源' : '新增数据源'" width="640px" destroy-on-close :close-on-press-escape="false">
       <div class="dg-head">
         <el-input v-model="form.name" placeholder="名称" class="dg-name" />
         <el-select v-model="form.dbType" placeholder="数据库类型" class="dg-driver" @change="onDbTypeChange">
@@ -231,7 +231,7 @@
         <el-tab-pane label="库过滤" name="schemas">
           <div class="sf-head">
             <el-button :loading="schemaLoading" @click="loadSchemaList">加载库列表</el-button>
-            <span class="ssh-tip">勾选需要显示的库;全部勾选(或不加载)表示不过滤。数据库自身的系统库可不勾。</span>
+            <span class="ssh-tip">勾选需要显示的库;全部勾选(或不加载)表示不过滤。系统库已默认不勾选,可按需勾回。</span>
           </div>
           <template v-if="schemaFetched">
             <div class="sf-all">
@@ -239,7 +239,9 @@
               <span class="sf-count">已选 {{ schemaChecked.length }} / {{ schemaList.length }}</span>
             </div>
             <el-checkbox-group v-model="schemaChecked" class="sf-list sf-grid">
-              <el-checkbox v-for="db in schemaList" :key="db" :value="db">{{ db }}</el-checkbox>
+              <el-checkbox v-for="db in schemaList" :key="db" :value="db">
+                {{ db }}<span v-if="isSystemSchema(db)" class="sf-sys-tag">系统</span>
+              </el-checkbox>
             </el-checkbox-group>
           </template>
           <div v-else-if="form.schemaFilter?.length" class="ssh-tip sf-current">
@@ -249,6 +251,30 @@
         </el-tab-pane>
         <el-tab-pane label="高级" name="advanced">
           <el-form :model="form" label-width="120px" autocomplete="off">
+            <template v-if="form.dbType === 'SQLSERVER'">
+              <el-form-item label="加密(encrypt)">
+                <el-select v-model="form.mssqlEncrypt" style="width: 100%">
+                  <el-option label="true(加密连接)" value="true" />
+                  <el-option label="false(不加密)" value="false" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="信任服务器证书">
+                <el-select v-model="form.mssqlTrustServerCertificate" style="width: 100%">
+                  <el-option label="true(自签名证书也接受)" value="true" />
+                  <el-option label="false(严格校验证书)" value="false" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="TLS 协议版本">
+                <el-select v-model="form.mssqlSslProtocol" style="width: 100%">
+                  <el-option label="TLSv1.1(兼容老版本 SQL Server)" value="TLSv1.1" />
+                  <el-option label="TLSv1" value="TLSv1" />
+                  <el-option label="TLSv1.2" value="TLSv1.2" />
+                  <el-option label="TLSv1.3" value="TLSv1.3" />
+                  <el-option label="TLS(驱动默认,自动协商)" value="TLS" />
+                </el-select>
+              </el-form-item>
+              <div class="ssh-tip">SQL Server 连接参数,保存/测试连接时自动拼入 JDBC URL。老版本 SQL Server(2014 及更早,未打 TLS 1.2 补丁)选 TLSv1.1;连不上时再尝试其他版本。</div>
+            </template>
             <el-form-item label="行数阈值">
               <el-input-number v-model="form.rowThreshold" :min="0" :step="100000" style="width: 100%" />
             </el-form-item>
@@ -271,7 +297,7 @@
     </el-dialog>
 
     <!-- 导出数据源:勾选后通过 window.open 直接下载 JSON 文件 -->
-    <el-dialog v-model="exportVisible" title="导出数据源" width="560px" destroy-on-close>
+    <el-dialog v-model="exportVisible" title="导出数据源" width="560px" destroy-on-close :close-on-press-escape="false">
       <template v-if="list.length">
         <div class="export-head">
           <el-checkbox :model-value="exportCheckAll" :indeterminate="exportIndeterminate" @change="onExportCheckAll">全选</el-checkbox>
@@ -296,7 +322,7 @@
     </el-dialog>
 
     <!-- 导入数据源:文件上传或粘贴文本,成功后对话框内展示结果明细 -->
-    <el-dialog v-model="importVisible" title="导入数据源" width="560px" destroy-on-close @closed="onImportClosed">
+    <el-dialog v-model="importVisible" title="导入数据源" width="560px" destroy-on-close :close-on-press-escape="false" @closed="onImportClosed">
       <template v-if="!importResult">
         <el-radio-group v-model="importMode" class="import-mode">
           <el-radio-button value="file">文件导入</el-radio-button>
@@ -364,6 +390,7 @@ import { tabState } from '../stores/tabs'
 import { loadDsFavorites, saveDsFavorites, sortDsByFavorite } from '../utils/dsFavorites'
 import { notifyDsListChanged } from '../utils/dsListChanged'
 import { downloadFile } from '../utils/download'
+import { confirmImportFile } from '../utils/importFileIdentify'
 
 const router = useRouter()
 const list = ref([])
@@ -490,7 +517,12 @@ const emptyForm = () => ({
   sshPassphrase: '',
   schemaFilter: null,
   rowThreshold: null,
-  sizeThresholdBytes: null
+  sizeThresholdBytes: null,
+  // SQL Server 连接参数(「高级」页签,仅 SQLSERVER 生效;保存/测试时拼入 JDBC URL,
+  // 默认组合兼容未打 TLS 1.2 补丁的老版本 SQL Server)
+  mssqlEncrypt: 'true',
+  mssqlTrustServerCertificate: 'true',
+  mssqlSslProtocol: 'TLSv1.1'
 })
 const form = reactive(emptyForm())
 
@@ -500,6 +532,13 @@ const schemaList = ref([])
 const schemaChecked = ref([])
 const schemaFetched = ref(false)
 const schemaLoading = ref(false)
+// 系统库/schema 名(后端按 dbType 返回,小写),库过滤默认不勾选并打「系统」标注
+const systemSchemas = ref([])
+
+/** 大小写不敏感判断库名是否为系统库 */
+function isSystemSchema(name) {
+  return systemSchemas.value.includes(String(name).toLowerCase())
+}
 // 打开编辑对话框时的连接信息快照,用于判断用户是否改过连接参数
 let connSnapshot = null
 
@@ -515,7 +554,8 @@ function connDirty() {
   if (!form.id || !connSnapshot) return true
   // 秘密字段非空即视为要换新值
   if (form.password || form.sshPassword || form.sshPrivateKey || form.sshPassphrase) return true
-  const strKeys = ['host', 'database', 'jdbcUrl', 'username', 'sshHost', 'sshUsername', 'sshAuthMethod']
+  const strKeys = ['host', 'database', 'jdbcUrl', 'username', 'sshHost', 'sshUsername', 'sshAuthMethod',
+    'mssqlEncrypt', 'mssqlTrustServerCertificate', 'mssqlSslProtocol']
   if (strKeys.some((k) => (form[k] ?? '') !== (connSnapshot[k] ?? ''))) return true
   if ((form.sshEnabled ?? false) !== (connSnapshot.sshEnabled ?? false)) return true
   if ((form.port ?? null) !== (connSnapshot.port ?? null)) return true
@@ -527,7 +567,8 @@ function connDirty() {
 watch(
   () => [form.host, form.port, form.database, form.jdbcUrl, form.username, form.password,
     form.sshEnabled, form.sshHost, form.sshPort, form.sshUsername, form.sshAuthMethod,
-    form.sshPassword, form.sshPrivateKey, form.sshPassphrase, form.inputMode],
+    form.sshPassword, form.sshPrivateKey, form.sshPassphrase, form.inputMode,
+    form.mssqlEncrypt, form.mssqlTrustServerCertificate, form.mssqlSslProtocol],
   () => { schemaFetched.value = false }
 )
 
@@ -539,6 +580,8 @@ async function loadSchemaList() {
   if (schemaLoading.value) return
   schemaLoading.value = true
   try {
+    // 系统库清单与库列表并行拉取;系统清单失败不阻塞(退化为全勾)
+    const sysPromise = request.get(`/db-types/${form.dbType}/system-schemas`).catch(() => [])
     let dbs
     if (form.id && !connDirty()) {
       dbs = await request.get(`/datasources/${form.id}/databases?all=true`)
@@ -547,14 +590,15 @@ async function loadSchemaList() {
       }
     } else {
       if (!syncJdbcUrl()) return
-      if (!form.jdbcUrl || !form.username) {
+      const jdbcUrl = composeJdbcUrl()
+      if (!jdbcUrl || !form.username) {
         activeTab.value = 'general'
         ElMessage.warning('请先填写 JDBC 地址和用户名')
         return
       }
       if (!validateSsh()) return
       const res = await request.post('/datasources/preview-databases', {
-        jdbcUrl: form.jdbcUrl,
+        jdbcUrl,
         username: form.username,
         password: form.password,
         ...buildSshBody(),
@@ -567,10 +611,11 @@ async function loadSchemaList() {
       dbs = res.databases || []
     }
     schemaList.value = dbs || []
-    // 已配置白名单时回填勾选(只勾仍存在于目标库中的),未配置则全勾(=不过滤)
+    systemSchemas.value = await sysPromise
+    // 已配置白名单时回填勾选(只勾仍存在于目标库中的);未配置时默认勾选业务库、系统库不勾
     schemaChecked.value = form.schemaFilter?.length
       ? schemaList.value.filter((db) => form.schemaFilter.includes(db))
-      : [...schemaList.value]
+      : schemaList.value.filter((db) => !isSystemSchema(db))
     schemaFetched.value = true
     if (!schemaList.value.length) ElMessage.info('目标库没有可选择的库')
   } finally {
@@ -651,6 +696,37 @@ function buildJdbcUrl() {
   }
 }
 
+// SQL Server 连接参数键(「高级」页签管理,从 URL 中剥离后不再出现在 URL 输入框里)
+const MSSQL_URL_PARAM_KEYS = ['encrypt', 'trustServerCertificate', 'sslProtocol']
+
+/** 从 SQL Server JDBC URL 中剥离高级页签管理的连接参数;返回 { url, params } */
+function extractMssqlParams(url) {
+  const params = {}
+  const parts = (url || '').split(';')
+  const kept = [parts[0]]
+  for (const seg of parts.slice(1)) {
+    const key = seg.split('=')[0].trim().toLowerCase()
+    const hit = MSSQL_URL_PARAM_KEYS.find((k) => k.toLowerCase() === key)
+    if (hit) {
+      params[hit] = seg.slice(seg.indexOf('=') + 1).trim()
+    } else {
+      kept.push(seg)
+    }
+  }
+  return { url: kept.join(';'), params }
+}
+
+/**
+ * 组装最终 JDBC URL:SQLSERVER 时把「高级」页签的连接参数拼回 URL。
+ * 先剥后拼,用户在 URL 里手写过这些参数也不会重复。
+ */
+function composeJdbcUrl() {
+  let url = (form.jdbcUrl || '').trim()
+  if (form.dbType !== 'SQLSERVER' || !url.startsWith('jdbc:sqlserver:')) return url
+  url = extractMssqlParams(url).url
+  return `${url};encrypt=${form.mssqlEncrypt};trustServerCertificate=${form.mssqlTrustServerCertificate};sslProtocol=${form.mssqlSslProtocol}`
+}
+
 /** 拆分填写模式下校验字段并把拼好的 URL 写回 form.jdbcUrl */
 function syncJdbcUrl() {
   if (form.inputMode !== 'fields') return true
@@ -724,6 +800,14 @@ function openDialog(row) {
     form.groupName = row.groupName || ''
     form.dbType = row.dbType || 'MYSQL'
     form.jdbcUrl = row.jdbcUrl
+    // SQL Server:连接参数从 URL 剥离到「高级」页签字段,缺的回落默认值
+    if (form.dbType === 'SQLSERVER') {
+      const extracted = extractMssqlParams(row.jdbcUrl)
+      form.jdbcUrl = extracted.url
+      if (extracted.params.encrypt) form.mssqlEncrypt = extracted.params.encrypt
+      if (extracted.params.trustServerCertificate) form.mssqlTrustServerCertificate = extracted.params.trustServerCertificate
+      if (extracted.params.sslProtocol) form.mssqlSslProtocol = extracted.params.sslProtocol
+    }
     form.username = row.username
     form.password = ''
     form.schemaFilter = row.schemaFilter ?? null
@@ -743,7 +827,9 @@ function openDialog(row) {
     ? {
         host: form.host, port: form.port, database: form.database, jdbcUrl: form.jdbcUrl,
         username: form.username, sshEnabled: form.sshEnabled, sshHost: form.sshHost,
-        sshPort: form.sshPort, sshUsername: form.sshUsername, sshAuthMethod: form.sshAuthMethod
+        sshPort: form.sshPort, sshUsername: form.sshUsername, sshAuthMethod: form.sshAuthMethod,
+        mssqlEncrypt: form.mssqlEncrypt, mssqlTrustServerCertificate: form.mssqlTrustServerCertificate,
+        mssqlSslProtocol: form.mssqlSslProtocol
       }
     : null
   dialogVisible.value = true
@@ -751,7 +837,8 @@ function openDialog(row) {
 
 async function onTest() {
   if (!syncJdbcUrl()) return
-  if (!form.jdbcUrl || !form.username) {
+  const jdbcUrl = composeJdbcUrl()
+  if (!jdbcUrl || !form.username) {
     activeTab.value = 'general'
     ElMessage.warning('请先填写 JDBC 地址和用户名')
     return
@@ -761,10 +848,12 @@ async function onTest() {
   try {
     const res = await request.post('/datasources/test', {
       name: form.name,
-      jdbcUrl: form.jdbcUrl,
+      jdbcUrl,
       username: form.username,
       password: form.password,
-      ...buildSshBody()
+      ...buildSshBody(),
+      // 编辑态:密码/SSH 秘密留空时由服务端回落已存值
+      id: form.id ?? undefined
     })
     if (res.success) {
       ElMessage.success('连接成功')
@@ -778,7 +867,8 @@ async function onTest() {
 
 async function onSave() {
   if (!syncJdbcUrl()) return
-  if (!form.name || !form.jdbcUrl || !form.username) {
+  const jdbcUrl = composeJdbcUrl()
+  if (!form.name || !jdbcUrl || !form.username) {
     activeTab.value = 'general'
     ElMessage.warning('请填写名称、JDBC 地址和用户名')
     return
@@ -794,7 +884,7 @@ async function onSave() {
     const body = {
       name: form.name,
       groupName: form.groupName?.trim() || null,
-      jdbcUrl: form.jdbcUrl,
+      jdbcUrl,
       username: form.username,
       password: form.password,
       ...buildSshBody(),
@@ -818,7 +908,7 @@ async function onSave() {
 }
 
 async function onDelete(row) {
-  await ElMessageBox.confirm(`确定删除数据源「${row.name}」吗?`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确定删除数据源「${row.name}」吗?`, '删除确认', { type: 'warning', closeOnPressEscape: false })
   await request.delete(`/datasources/${row.id}`)
   ElMessage.success('删除成功')
   loadList()
@@ -884,7 +974,7 @@ function openImportDialog() {
   importVisible.value = true
 }
 
-function onImportFileChange(file) {
+async function onImportFileChange(file) {
   // accept 属性只管文件选择器,拖拽进来的文件需要手动校验扩展名
   const name = (file.name || '').toLowerCase()
   if (!name.endsWith('.json') && !name.endsWith('.ncx')) {
@@ -893,7 +983,15 @@ function onImportFileChange(file) {
     importFile.value = null
     return
   }
-  importFile.value = file.raw || null
+  if (!file.raw) return
+  // 识别文件种类并弹窗确认:确认后直接开始导入;无法识别/不属于本功能/用户取消时清空选择
+  if (!await confirmImportFile(file.raw, 'datasource')) {
+    uploadRef.value?.clearFiles()
+    importFile.value = null
+    return
+  }
+  importFile.value = file.raw
+  doImport()
 }
 
 /** 超出 limit 时替换为最新选择的文件(handleStart 会再次触发 on-change) */
@@ -1268,6 +1366,16 @@ onActivated(loadList)
 .sf-count {
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+/* 库过滤系统库标注:小号灰底标签 */
+.sf-sys-tag {
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  border-radius: 3px;
+  color: var(--el-text-color-secondary);
+  background: var(--el-fill-color);
 }
 .sf-list {
   display: flex;

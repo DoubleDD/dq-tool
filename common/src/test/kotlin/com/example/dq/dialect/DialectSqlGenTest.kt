@@ -43,6 +43,26 @@ class DialectSqlGenTest {
     }
 
     @Test
+    fun `sqlserver 版本标签按主版本号映射营销版本`() {
+        assertEquals("2014 (12.0.5000.0)", SqlServerDialect.versionLabel("12.0.5000.0"))
+        assertEquals("2016 (13.0.1601.5)", SqlServerDialect.versionLabel("13.0.1601.5"))
+        assertEquals("2022 (16.0.1000.6)", SqlServerDialect.versionLabel("16.0.1000.6"))
+        assertEquals("2008 (10.0.1600.22)", SqlServerDialect.versionLabel("10.0.1600.22"))
+        assertEquals("2008 R2 (10.50.1600.1)", SqlServerDialect.versionLabel("10.50.1600.1"))
+        // 未识别的主版本/非版本字符串原样返回,不丢信息
+        assertEquals("17.0.1000.7", SqlServerDialect.versionLabel("17.0.1000.7"))
+        assertEquals("unknown", SqlServerDialect.versionLabel("unknown"))
+    }
+
+    @Test
+    fun `sqlserver 空串统计用 LTRIM RTRIM 兼容 2016 及以下`() {
+        val sql = SqlServerDialect().buildColumnStatsSql("dbo", "t",
+            listOf(col("name", Types.VARCHAR)), null, null, listOf(), false, 0L, null)
+        assertTrue(sql.contains("SUM(CASE WHEN LTRIM(RTRIM([name])) = '' THEN 1 ELSE 0 END) AS c0_empty"))
+        assertFalse(sql.contains("WHEN TRIM(")) // TRIM 是 SQL Server 2017+ 才有,不能出现在生成 SQL 里
+    }
+
+    @Test
     fun `分段谓词 数值键不加引号`() {
         val cols = listOf(col("name", Types.VARCHAR))
         val key = pk("id", Types.BIGINT)
@@ -185,6 +205,32 @@ class DialectSqlGenTest {
     fun `分段键选择 无键可用返回null`() {
         val blob = ColumnMeta("data", "BLOB", Types.BLOB, false, 0, false)
         assertNull(mysql.pickChunkKey(listOf(blob)))
+    }
+
+    @Test
+    fun `系统库清单 各方言均给出小写集合`() {
+        val dialects = listOf(MySqlDialect(), PostgresDialect(), SqlServerDialect(),
+                OracleDialect(), DmDialect(), KingbaseDialect(), OceanBaseDialect())
+        for (d in dialects) {
+            val names = d.systemSchemas()
+            assertTrue(names.isNotEmpty(), d.type().name + " 应有系统库清单")
+            assertEquals(names.map { it }, names.map { it.lowercase() },
+                    d.type().name + " 系统库名须全小写,供前端大小写不敏感比对")
+        }
+    }
+
+    @Test
+    fun `系统库清单 覆盖各库已知系统库`() {
+        assertTrue(MySqlDialect().systemSchemas().containsAll(
+                listOf("information_schema", "mysql", "sys", "performance_schema")))
+        assertTrue(OceanBaseDialect().systemSchemas().contains("oceanbase"))
+        assertTrue(PostgresDialect().systemSchemas().containsAll(
+                listOf("pg_catalog", "information_schema", "pg_toast")))
+        assertTrue(SqlServerDialect().systemSchemas().containsAll(
+                listOf("master", "model", "msdb", "tempdb", "reportserver", "reportservertempdb")))
+        assertTrue(OracleDialect().systemSchemas().containsAll(listOf("sys", "system")))
+        assertTrue(DmDialect().systemSchemas().containsAll(listOf("sys", "sysdba")))
+        assertTrue(KingbaseDialect().systemSchemas().contains("pg_catalog"))
     }
 
     @Test

@@ -10,12 +10,21 @@ import java.sql.SQLException
 /** MySQL 方言 */
 open class MySqlDialect : AbstractDialect() {
 
+    companion object {
+        /** MySQL 系统库:information_schema/mysql/sys/performance_schema */
+        internal val SYSTEM_SCHEMAS = setOf("information_schema", "mysql", "sys", "performance_schema")
+    }
+
     override fun type(): DbType {
         return DbType.MYSQL
     }
 
     override fun driverClassName(): String {
         return "com.mysql.cj.jdbc.Driver"
+    }
+
+    override fun systemSchemas(): Set<String> {
+        return SYSTEM_SCHEMAS
     }
 
     override fun quote(identifier: String): String {

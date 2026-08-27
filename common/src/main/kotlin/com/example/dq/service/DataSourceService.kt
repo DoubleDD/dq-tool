@@ -30,7 +30,12 @@ class DataSourceService(
     private val sshTunnelService: SshTunnelService = SshTunnelService(),
 ) {
 
-    private val pools = ConcurrentHashMap<Long, HikariDataSource>()
+    /**
+     * 连接池:key 为 "数据源id|库名"。多库方言(目前仅 SQL Server)按库分池——
+     * 同一物理连接固定一个库,绝不跨库复用:mssql-jdbc 的 DatabaseMetaData 缓存语句
+     * 持有服务端句柄,USE 切库后句柄失效且不可恢复(错误 586/8179,默认不重试)
+     */
+    private val pools = ConcurrentHashMap<String, HikariDataSource>()
 
     /** 各数据源的默认库(建池时首个连接的 catalog);多库方言在 database 为空时回落到这里 */
     private val defaultCatalogs = ConcurrentHashMap<Long, String>()
@@ -156,6 +161,11 @@ class DataSourceService(
         }
     }
 
+    /** 各类型数据库的系统库/schema 名(库过滤默认不勾选);纯静态方言信息,不连业务库 */
+    fun systemSchemas(dbType: DbType): Set<String> {
+        return dialectFactory.get(dbType).systemSchemas()
+    }
+
     /** 探测数据库兼容模式(如 Kingbase 的 database_mode);失败返回 null,不影响保存 */
     private fun detectDbMode(
         req: DataSourceRequest,
@@ -198,18 +208,28 @@ class DataSourceService(
         }
     }
 
+    /**
+     * 借出业务库连接。多库方言(SQL Server)按解析后的目标库分池并在借出时切好 catalog,
+     * 调用方无需再自行 useDatabase;非多库方言 database 参数忽略
+     */
     @Throws(SQLException::class)
-    fun getConnection(datasourceId: Long): Connection {
-        val raw = pools.computeIfAbsent(datasourceId) { createPool(it) }.connection
+    fun getConnection(datasourceId: Long, database: String? = null): Connection {
+        val dialect = dialectFactory.get(get(datasourceId).dbType!!)
+        val db = if (dialect.supportsMultiDatabase()) resolveDatabase(datasourceId, database) else null
+        val raw = pools.computeIfAbsent("$datasourceId|${db ?: ""}") { createPool(datasourceId, db) }.connection
         // 出口统一包 SQL 日志代理:业务库全部 execute 打日志(独立 logger com.example.dq.sql)
-        return SqlLogConnection.wrap(raw)
+        val conn = SqlLogConnection.wrap(raw)
+        if (db != null) {
+            dialect.useDatabase(conn, db)
+        }
+        return conn
     }
 
-    private fun createPool(datasourceId: Long): HikariDataSource {
+    private fun createPool(datasourceId: Long, database: String?): HikariDataSource {
         val c = get(datasourceId)
         val dialect = dialectFactory.get(c.dbType!!)
         val hc = HikariConfig()
-        hc.poolName = "ds-$datasourceId"
+        hc.poolName = if (database.isNullOrBlank()) "ds-$datasourceId" else "ds-$datasourceId-$database"
         // 启用 SSH 隧道时经长驻隧道连接:URL 改写为本地转发端口,隧道随 evictPool 关闭
         hc.jdbcUrl = if (c.sshEnabled == true) {
             val localPort = sshTunnelService.ensureTunnel(datasourceId, c)
@@ -246,10 +266,11 @@ class DataSourceService(
     fun resolveDatabase(datasourceId: Long, database: String?): String? =
         if (!database.isNullOrBlank()) database else defaultCatalogs[datasourceId]
 
+    /** 回收数据源的全部连接池(多库方言按库分池,一个数据源可能对应多个池) */
     private fun evictPool(id: Long) {
-        val ds = pools.remove(id)
+        val prefix = "$id|"
+        pools.keys.filter { it.startsWith(prefix) }.forEach { pools.remove(it)?.close() }
         defaultCatalogs.remove(id)
-        ds?.close()
         sshTunnelService.close(id)
     }
 

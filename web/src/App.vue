@@ -124,7 +124,7 @@ import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Coin, Document, Download, Expand, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
+import { Coin, Document, Download, Expand, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
@@ -151,7 +151,8 @@ const otherNav = computed(() => {
     { path: '/tags', label: '标记统计', icon: PriceTag },
     { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
     { path: '/report-exports', label: '报告列表', icon: Download },
-    { path: '/settings', label: '系统设置', icon: Setting }
+    { path: '/settings', label: '系统设置', icon: Setting },
+    { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit }
   ]
   if (hasFeature('logs')) {
     navs.push({ path: '/logs', label: '运行日志', icon: Document, dev: true })
@@ -272,6 +273,7 @@ const activeNav = computed(() => {
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
   if (p === '/settings' || p.startsWith('/settings/')) return '/settings'
   if (p === '/logs' || p.startsWith('/logs/')) return '/logs'
+  if (p === '/diagnostics' || p.startsWith('/diagnostics/')) return '/diagnostics'
   if (p.startsWith('/license-admin')) return '/license-admin'
   return '/datasources'
 })

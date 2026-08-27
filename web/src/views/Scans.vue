@@ -111,7 +111,7 @@ async function resume(row) {
 }
 
 async function remove(row) {
-  await ElMessageBox.confirm(`确定删除任务 #${row.id} 的扫描记录吗?`, '删除确认', { type: 'warning' })
+  await ElMessageBox.confirm(`确定删除任务 #${row.id} 的扫描记录吗?`, '删除确认', { type: 'warning', closeOnPressEscape: false })
   await api.delete(`/scans/${row.id}`)
   ElMessage.success('删除成功')
   load()

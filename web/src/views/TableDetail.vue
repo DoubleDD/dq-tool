@@ -40,7 +40,6 @@
         <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
           <el-input v-model="keyword" placeholder="按字段名或注释搜索" clearable style="width: 280px" />
           <el-checkbox v-if="hasJob" v-model="onlyEmpty">只看空字段(有值数为 0)</el-checkbox>
-          <span>字段数量: {{ columns.length }}</span>
         </div>
 
         <!-- 字段列表:基础结构列 + (已扫描时)统计列 -->
@@ -103,10 +102,6 @@
       </el-tab-pane>
 
       <el-tab-pane label="索引结构" name="indexes">
-        <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px">
-          <h4 style="margin: 0">索引结构</h4>
-          <span style="color: var(--el-text-color-secondary)">共 {{ indexes.length }} 个</span>
-        </div>
         <el-table :data="indexes" v-loading="indexesLoading" border size="small">
           <el-table-column type="index" label="序号" width="60" />
           <el-table-column prop="name" label="索引名" min-width="180" show-overflow-tooltip />
@@ -125,10 +120,6 @@
       </el-tab-pane>
 
       <el-tab-pane label="数据预览" name="preview">
-        <div style="display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px">
-          <h4 style="margin: 0">数据预览</h4>
-          <span style="color: var(--el-text-color-secondary)">共 {{ previewTotal }} 行,每页 {{ previewSize }} 条</span>
-        </div>
         <div style="display: flex; gap: 8px; margin-bottom: 12px">
           <SqlInput v-model="previewWhere" label="WHERE" :columns="completionColumns"
                     placeholder="过滤条件,如 status = 'A' AND age > 18(回车应用)"
@@ -154,11 +145,12 @@
         </el-table>
         <el-empty v-if="!previewLoading && !previewError && previewLoaded && !previewRows.length"
                   description="表无数据" :image-size="60" />
-        <el-pagination v-if="previewLoaded && previewTotal > 0" v-model:current-page="previewPage"
-                       :page-size="previewSize" :total="previewTotal"
-                       layout="total, prev, pager, next, jumper" small background
-                       style="margin-top: 12px; justify-content: flex-end"
-                       @current-change="loadPreview" />
+        <div v-if="previewLoaded && previewTotal > 0" class="pagination-wrapper">
+          <el-pagination v-model:current-page="previewPage" v-model:page-size="previewSize"
+                         :page-sizes="[15, 30, 50, 100]" :total="previewTotal"
+                         layout="total, sizes, prev, pager, next" background
+                         @current-change="loadPreview" @size-change="onPreviewSizeChange" />
+        </div>
       </el-tab-pane>
     </el-tabs>
   </div>
@@ -199,7 +191,7 @@ const previewRows = ref([])       // 预览行(原始数组,元素为字符串/n
 const previewLoading = ref(false)
 const previewLoaded = ref(false)  // 预览是否已加载(懒加载)
 const previewError = ref('')      // 预览加载失败的内联错误提示
-const previewSize = 20            // 预览每页行数(服务端分页,固定 20 条)
+const previewSize = ref(15)       // 预览每页行数(服务端分页,与全局分页组件一致可选)
 const previewPage = ref(1)        // 预览当前页码
 const previewTotal = ref(0)       // 预览全表总行数(COUNT(*) 实时)
 const previewWhere = ref('')      // 预览过滤条件输入(WHERE,DataGrip 风格原文)
@@ -323,7 +315,7 @@ async function loadPreview(page = previewPage.value || 1) {
     if (appliedWhere.value) params.set('where', appliedWhere.value)
     if (appliedOrderBy.value) params.set('orderBy', appliedOrderBy.value)
     params.set('page', String(page))
-    params.set('size', String(previewSize))
+    params.set('size', String(previewSize.value))
     const url = `${base}/tables/${encodeURIComponent(tableName)}/preview?${params.toString()}`
     const data = await request.get(url)
     previewColumns.value = (data.columns || []).map((c, i) => ({ key: 'c' + i, name: c.name, type: c.type }))
@@ -337,6 +329,11 @@ async function loadPreview(page = previewPage.value || 1) {
   } finally {
     previewLoading.value = false
   }
+}
+
+/** 切换每页条数:回到第 1 页重新查询 */
+function onPreviewSizeChange() {
+  loadPreview(1)
 }
 
 /** 应用过滤/排序:同步到已应用变量并回到第 1 页重新查询 */
@@ -437,3 +434,11 @@ onMounted(async () => {
   if (dsId.value) ensureDsName(dsId.value).then(() => syncTab(route))
 })
 </script>
+
+<style scoped>
+.pagination-wrapper {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+</style>

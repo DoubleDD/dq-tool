@@ -104,6 +104,7 @@
       v-model="tagDialogVisible"
       :title="tagDialogMode === 'create' ? '新建标记' : '编辑标记'"
       width="420px"
+      :close-on-press-escape="false"
       @closed="resetTagForm"
     >
       <el-form label-width="64px" @submit.prevent>
@@ -246,7 +247,7 @@ async function removeTag(tag) {
   await ElMessageBox.confirm(
     `确定删除标记「${tag.name}」吗?已打该标记的 ${tag.tableCount ?? 0} 张表会自动解除。`,
     '删除确认',
-    { type: 'warning', confirmButtonText: '删除' }
+    { type: 'warning', confirmButtonText: '删除', closeOnPressEscape: false }
   )
   operating.value = true
   try {

@@ -391,6 +391,23 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 系统库清单端点按数据库类型返回() throws Exception {
+        activateLicense();
+        HttpResponse<String> mssql = get("/api/db-types/SQLSERVER/system-schemas");
+        assertEquals(200, mssql.statusCode(), mssql.body());
+        assertTrue(mssql.body().contains("master"), mssql.body());
+        assertTrue(mssql.body().contains("reportservertempdb"), mssql.body());
+
+        HttpResponse<String> mysql = get("/api/db-types/MYSQL/system-schemas");
+        assertEquals(200, mysql.statusCode(), mysql.body());
+        assertTrue(mysql.body().contains("performance_schema"), mysql.body());
+
+        // 类型名大小写不敏感;未知类型走统一 400/500 语义
+        HttpResponse<String> lower = get("/api/db-types/mysql/system-schemas");
+        assertEquals(200, lower.statusCode(), lower.body());
+    }
+
+    @Test
     void AI用量统计端点与AI配置价格回显() throws Exception {
         activateLicense();
         // 空数据:汇总为 0、序列 30 天补零、场景与明细为空

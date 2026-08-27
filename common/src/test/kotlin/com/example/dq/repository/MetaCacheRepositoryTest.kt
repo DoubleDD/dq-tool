@@ -94,6 +94,26 @@ class MetaCacheRepositoryTest {
         assertTrue(rows["uk_c"]!!.first().unique)
     }
 
+    // ---------- 无字段标记 ----------
+
+    @Test
+    fun `无字段标记 默认 false 覆盖刷新后还原`() {
+        repo.replaceTables(1, "", "db1", listOf(table("t1"), table("t2")))
+        assertFalse(repo.isNoColumns(1, "", "db1", "t1"))
+        repo.setNoColumns(1, "", "db1", "t1", true)
+        assertTrue(repo.isNoColumns(1, "", "db1", "t1"))
+        assertFalse(repo.isNoColumns(1, "", "db1", "t2"))
+        // 强制刷新表结构(整粒度覆盖)后标记随旧行清除,还原为 false
+        repo.replaceTables(1, "", "db1", listOf(table("t1"), table("t2")))
+        assertFalse(repo.isNoColumns(1, "", "db1", "t1"))
+    }
+
+    @Test
+    fun `无字段标记 缓存中不存在的表写入无操作`() {
+        repo.setNoColumns(1, "", "db1", "ghost", true)
+        assertFalse(repo.isNoColumns(1, "", "db1", "ghost"))
+    }
+
     // ---------- 级联清理 ----------
 
     @Test

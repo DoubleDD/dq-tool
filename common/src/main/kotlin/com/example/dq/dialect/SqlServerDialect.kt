@@ -23,6 +23,22 @@ class SqlServerDialect : AbstractDialect() {
         internal fun sqlServerMajor(conn: Connection): Int {
             return conn.metaData.databaseMajorVersion
         }
+
+        /** ProductVersion(如 12.0.5000.0) → 展示标签(如 "2014 (12.0.5000.0)");未识别的主版本原样返回 */
+        internal fun versionLabel(productVersion: String): String {
+            val major = productVersion.substringBefore('.').toIntOrNull() ?: return productVersion
+            val name = when (major) {
+                16 -> "2022"
+                15 -> "2019"
+                14 -> "2017"
+                13 -> "2016"
+                12 -> "2014"
+                11 -> "2012"
+                10 -> if (productVersion.startsWith("10.5")) "2008 R2" else "2008"
+                else -> return productVersion
+            }
+            return "$name ($productVersion)"
+        }
     }
 
     override fun type(): DbType {
@@ -37,8 +53,28 @@ class SqlServerDialect : AbstractDialect() {
         return "[" + identifier.replace("]", "]]") + "]"
     }
 
+    /**
+     * 探测 SQL Server 版本(复用 detectDbMode 通道,连通性实测/数据源保存时展示,
+     * 如 "2014 (12.0.5000.0)");方言行为的版本分支仍以 sqlServerMajor 实时探测为准
+     */
+    @Throws(SQLException::class)
+    override fun detectDbMode(conn: Connection): String? {
+        conn.createStatement().use { st ->
+            st.executeQuery("SELECT CAST(SERVERPROPERTY('ProductVersion') AS NVARCHAR(128))").use { rs ->
+                if (!rs.next()) return null
+                val productVersion = rs.getString(1) ?: return null
+                return versionLabel(productVersion)
+            }
+        }
+    }
+
     /** SQL Server 先选库再选 schema,库过滤白名单只作用于 listDatabases 层级 */
     override fun supportsMultiDatabase(): Boolean = true
+
+    /** 系统库(含 SSRS 组件库 ReportServer/ReportServerTempDB):库过滤默认不勾选 */
+    override fun systemSchemas(): Set<String> {
+        return setOf("master", "model", "msdb", "tempdb", "reportserver", "reportservertempdb")
+    }
 
     /** 在线且有访问权限的数据库(保留 master,用户表可能建在里面) */
     @Throws(SQLException::class)
@@ -56,7 +92,12 @@ class SqlServerDialect : AbstractDialect() {
         return databases
     }
 
-    /** 切换当前库;连接池不重置 catalog,每条使用路径都要在借出后显式调用 */
+    /**
+     * 切换当前库;jdbcUrl 中的 databaseName 仅作默认库。
+     * 多库连接按库分池(DataSourceService.getConnection 借出时已切好 catalog),
+     * 同一物理连接固定一个库:mssql-jdbc 的 DatabaseMetaData 缓存语句持有服务端句柄,
+     * USE 跨库后句柄失效不可恢复(错误 586/8179),分池后不再发生
+     */
     @Throws(SQLException::class)
     override fun useDatabase(conn: Connection, database: String?) {
         if (!database.isNullOrBlank()) {
@@ -88,23 +129,31 @@ class SqlServerDialect : AbstractDialect() {
                         "JOIN sys.schemas s ON s.schema_id = t.schema_id GROUP BY s.name")
     }
 
-    /** 与 listTables 同口径:全部(含索引)分区的已用页 × 8KB */
+    /**
+     * 与 listTables 同口径:全部(含索引)分区的已用页 × 8KB。
+     * 用目录视图 sys.partitions/sys.allocation_units 而非 DMV sys.dm_db_partition_stats:
+     * DMV 需要 VIEW DATABASE STATE 权限,受限账号会整页报错;目录视图只受元数据可见性约束
+     */
     @Throws(SQLException::class)
     override fun sumSizeBySchema(conn: Connection): Map<String, Long> {
         return queryLongByGroup(conn,
-                "SELECT s.name, SUM(d.used_page_count) * 8192 FROM sys.dm_db_partition_stats d " +
-                        "JOIN sys.tables t ON t.object_id = d.object_id " +
-                        "JOIN sys.schemas s ON s.schema_id = t.schema_id GROUP BY s.name")
+                "SELECT s.name, SUM(a.used_pages) * 8192 FROM sys.tables t " +
+                        "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+                        "JOIN sys.partitions p ON p.object_id = t.object_id " +
+                        "JOIN sys.allocation_units a ON a.container_id = p.partition_id " +
+                        "GROUP BY s.name")
     }
 
     @Throws(SQLException::class)
     override fun listTables(conn: Connection, schema: String): List<TableStat> {
         val tables = ArrayList<TableStat>()
+        // 行数/体积走目录视图 sys.partitions + sys.allocation_units,原因同 sumSizeBySchema
         val sql = "SELECT t.name, " +
-                "(SELECT SUM(d.row_count) FROM sys.dm_db_partition_stats d " +
-                "  WHERE d.object_id = t.object_id AND d.index_id IN (0,1)), " +
-                "(SELECT SUM(d.used_page_count) * 8192 FROM sys.dm_db_partition_stats d " +
-                "  WHERE d.object_id = t.object_id), " +
+                "(SELECT SUM(p.rows) FROM sys.partitions p " +
+                "  WHERE p.object_id = t.object_id AND p.index_id IN (0,1)), " +
+                "(SELECT SUM(a.used_pages) * 8192 FROM sys.partitions p " +
+                "  JOIN sys.allocation_units a ON a.container_id = p.partition_id " +
+                "  WHERE p.object_id = t.object_id), " +
                 "CAST((SELECT ep.value FROM sys.extended_properties ep " +
                 "  WHERE ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description') AS NVARCHAR(4000)) " +
                 "FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id " +
@@ -155,6 +204,11 @@ class SqlServerDialect : AbstractDialect() {
             }
         }
         return ArrayList(base.values)
+    }
+
+    /** SQL Server 2017 才引入 TRIM;LTRIM/RTRIM 全版本可用,语义同为去两端空格 */
+    override fun trimExpr(quotedCol: String): String {
+        return "LTRIM(RTRIM($quotedCol))"
     }
 
     override fun limitClause(n: Long): String {

@@ -90,20 +90,29 @@ class WordReportService(
         // 全表扫描校验:快照存在、无失败表、且覆盖当前全部表(表数以 schema_stat 缓存为准,未知时跳过该项)
         val docs = schemaDocRepo.findByDatasource(datasourceId, database ?: "")
         val jobTables = ArrayList<Pair<String, List<ScanTableView>>>(schemas.size)
+        // 未通过校验的库逐库给出具体原因,用户能直接知道下一步做什么(而不是只有库名)
         val incomplete = ArrayList<String>()
         for (s in schemas) {
             val name = s.name!!
             val job = latestDone[name]
             val tables = job?.let { scanRepository.listScanTables(it.id) }.orEmpty()
-            if (job == null || tables.any { it.status != ScanStatus.DONE } ||
-                (s.tableCount != null && tables.size < s.tableCount!!)) {
-                incomplete.add(name)
+            val reason = when {
+                job == null -> "从未扫描"
+                tables.any { it.status != ScanStatus.DONE } ->
+                    "有 " + tables.count { it.status != ScanStatus.DONE } + " 张表未成功扫描"
+                s.tableCount != null && tables.size < s.tableCount!! ->
+                    "扫描覆盖不全(已扫 " + tables.size + "/" + s.tableCount + " 张表)"
+                else -> null
+            }
+            if (reason != null) {
+                incomplete.add("$name($reason)")
             } else {
                 jobTables.add(name to tables)
             }
         }
         if (incomplete.isNotEmpty()) {
-            throw IllegalStateException("以下库未完成全表扫描,请先扫描再导出报告: " + incomplete.joinToString("、"))
+            throw IllegalStateException(
+                "以下库不满足导出条件,请先在数据源页对这些库完成全表扫描再导出报告: " + incomplete.joinToString("、"))
         }
 
         // 进度总步数:逐库聚合 N + 标记节 LLM S + 固定分析段 8 + 渲染 1
@@ -245,8 +254,7 @@ class WordReportService(
     private fun liveSchemaSize(datasourceId: Long, database: String?, ds: DataSourceConfig, schema: String): Long? {
         return try {
             val dialect = dialectFactory.get(ds.dbType!!)
-            dataSourceService.getConnection(datasourceId).use { conn ->
-                dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+            dataSourceService.getConnection(datasourceId, database).use { conn ->
                 dialect.sumSizeBySchema(conn)[schema]
             }
         } catch (e: Exception) {

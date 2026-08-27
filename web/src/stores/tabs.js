@@ -82,6 +82,7 @@ const PAGE_TABS = {
   '/report-exports': '报告列表',
   '/settings': '系统设置',
   '/logs': '运行日志',
+  '/diagnostics': '系统诊断',
   '/license-admin': '授权管理'
 }
 

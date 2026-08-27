@@ -49,8 +49,7 @@ class MetadataService(
     fun listSchemas(datasourceId: Long, database: String?, unfiltered: Boolean = false): List<String> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
             // 多库方言(SQL Server)的 schema(dbo 等)不属于白名单语义,只过滤单库方言的 schema(即用户眼中的「库」)
             val schemas = dialect.listSchemas(conn)
             if (unfiltered || dialect.supportsMultiDatabase()) return schemas
@@ -75,8 +74,7 @@ class MetadataService(
     private fun fetchTables(datasourceId: Long, database: String?, schema: String): List<TableStat> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
             return dialect.listTables(conn, schema)
         }
     }
@@ -86,8 +84,7 @@ class MetadataService(
     fun countColumns(datasourceId: Long, database: String?, schema: String): Long {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
             return dialect.countColumns(conn, schema)
         }
     }
@@ -101,6 +98,9 @@ class MetadataService(
         }
         val fresh = fetchColumns(datasourceId, database, schema, table)
         metaCacheRepo.replaceColumns(datasourceId, db, schema, table, fresh.mapIndexed { i, c -> c.toCached(i) })
+        // 无字段标记联动:访问到没有字段的表(不存在/IOT 溢出段等)打标记供扫描跳过;
+        // 有字段则清除残留标记。强制刷新表结构(replaceTables 覆盖)也会还原标记,此处按实测结果重新标定
+        metaCacheRepo.setNoColumns(datasourceId, db, schema, table, fresh.isEmpty())
         return fresh
     }
 
@@ -109,8 +109,7 @@ class MetadataService(
     private fun fetchColumns(datasourceId: Long, database: String?, schema: String, table: String): List<ColumnMeta> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
             return dialect.listColumns(conn, schema, table)
         }
     }
@@ -136,8 +135,7 @@ class MetadataService(
     private fun fetchIndexes(datasourceId: Long, database: String?, schema: String, table: String): List<IndexMeta> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
             return dialect.listIndexes(conn, schema, table)
         }
     }
@@ -229,8 +227,7 @@ class MetadataService(
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
         val stats = ArrayList<SchemaStatRepository.CachedStat>()
-        dataSourceService.getConnection(datasourceId).use { conn ->
-            dialect.useDatabase(conn, dataSourceService.resolveDatabase(datasourceId, database))
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
             val counts = dialect.countTablesBySchema(conn)
             val sizes = dialect.sumSizeBySchema(conn)
             // 库过滤白名单同样作用于概览缓存;多库方言的 schema 层级不过滤
