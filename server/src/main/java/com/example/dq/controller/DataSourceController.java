@@ -5,6 +5,7 @@ import com.example.dq.service.DataSourceTransferService;
 import com.example.dq.model.DataSourceConfig;
 import com.example.dq.model.DataSourceRequest;
 import com.example.dq.model.DbType;
+import com.example.dq.model.GroupUpdateRequest;
 import com.example.dq.model.SchemaFilterRequest;
 import com.example.dq.model.TestConnectionRequest;
 import com.example.dq.web.Validators;
@@ -63,6 +64,13 @@ public class DataSourceController {
         long id = ctx.pathParamAsClass("id", Long.class).get();
         SchemaFilterRequest req = ctx.bodyAsClass(SchemaFilterRequest.class);
         service.updateSchemaFilter(id, req == null ? null : req.getSchemas());
+    }
+
+    /** 数据源管理页卡片拖拽:单独更新分组(groupName 为 null/空白表示移到未分组) */
+    public void updateGroup(Context ctx) {
+        long id = ctx.pathParamAsClass("id", Long.class).get();
+        GroupUpdateRequest req = ctx.bodyAsClass(GroupUpdateRequest.class);
+        service.updateGroup(id, req == null ? null : req.getGroupName());
     }
 
     public void test(Context ctx) {

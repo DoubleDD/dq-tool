@@ -206,9 +206,13 @@ class SqlServerDialect : AbstractDialect() {
         return ArrayList(base.values)
     }
 
-    /** SQL Server 2017 才引入 TRIM;LTRIM/RTRIM 全版本可用,语义同为去两端空格 */
+    /**
+     * SQL Server 2017 才引入 TRIM;LTRIM/RTRIM 全版本可用,语义同为去两端空格。
+     * 先 CAST 为 NVARCHAR(MAX):LTRIM/RTRIM 及 = '' 比较不接受旧 LOB 类型 text/ntext
+     * (报错"参数数据类型 text 对于 rtrim 函数的参数 1 无效"),普通 (n)(var)char 转换后语义不变
+     */
     override fun trimExpr(quotedCol: String): String {
-        return "LTRIM(RTRIM($quotedCol))"
+        return "LTRIM(RTRIM(CAST($quotedCol AS NVARCHAR(MAX))))"
     }
 
     override fun limitClause(n: Long): String {

@@ -52,6 +52,11 @@ public class ScanController {
         scanService.cancel(jobId(ctx));
     }
 
+    /** 手动结束任务:中断扫描并放弃挂起的 AI 后续,直接落终态(进度卡 99% 时兜底) */
+    public void finish(Context ctx) {
+        scanService.finish(jobId(ctx));
+    }
+
     public void resume(Context ctx) {
         scanService.resume(jobId(ctx));
     }
@@ -73,6 +78,19 @@ public class ScanController {
         // tableCols/cols:逗号分隔的列 key(表列表/字段明细 sheet),缺省导出全部列;空值表示只留固定首列
         exportService.export(jobId, splitKeys(ctx.queryParam("tableCols")), splitKeys(ctx.queryParam("cols")),
                 response.getOutputStream());
+    }
+
+    /** 最新扫描结果导出(每表最近一次表级 DONE 快照,跨任务,不依赖指定任务;无 DONE 数据时 409) */
+    public void exportLatest(Context ctx) throws IOException {
+        long dsId = ctx.pathParamAsClass("dsId", Long.class).get();
+        String schema = ctx.pathParam("schema");
+        String filename = URLEncoder.encode("dq-scan-latest-" + schema + ".xlsx", StandardCharsets.UTF_8);
+        HttpServletResponse response = ctx.res();
+        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
+        // tableCols/cols 语义同 export;db 为可选库名(无库概念的方言缺省)
+        exportService.exportLatest(dsId, ctx.queryParam("db"), schema,
+                splitKeys(ctx.queryParam("tableCols")), splitKeys(ctx.queryParam("cols")), response.getOutputStream());
     }
 
     /** 扫描结果 Word 版(数据库表结构文档),同步渲染下载 */

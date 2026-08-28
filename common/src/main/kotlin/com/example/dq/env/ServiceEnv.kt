@@ -10,6 +10,7 @@ import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.LicenseRepository
 import com.example.dq.repository.ReportExportRepository
+import com.example.dq.repository.SampleExportRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
@@ -35,6 +36,7 @@ import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
 import com.example.dq.service.MetadataService
 import com.example.dq.service.PreviewService
+import com.example.dq.service.SampleExportService
 import com.example.dq.service.ScanDocService
 import com.example.dq.service.ScanService
 import com.example.dq.service.ScanTransferService
@@ -90,6 +92,7 @@ class ServiceEnv(val config: AppConfig) {
     val licenseRepo = LicenseRepository(jdbc)
     val licenseRecordRepo = LicenseRecordRepository(jdbc)
     val reportExportRepo = ReportExportRepository(jdbc)
+    val sampleExportRepo = SampleExportRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -133,6 +136,8 @@ class ServiceEnv(val config: AppConfig) {
     val wordReportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
         dialectFactory, tagRepo, tableDocRepo, aiConfigService, aiService)
     val wordReportExportService = WordReportExportService(wordReportService, reportExportRepo, dataSourceRepo, config)
+    val sampleExportService = SampleExportService(sampleExportRepo, dataSourceRepo, dataSourceService,
+        systemSettingsService, dialectFactory, config)
     val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey,
         licenseRecordRepo, config.licensePrivateKey, config.appVersion)
     val diagnosticsService = DiagnosticsService(config, dataSourceService, dataSourceRepo, licenseService,
@@ -150,6 +155,7 @@ class ServiceEnv(val config: AppConfig) {
         aiUsageRepo.migrateLegacyIfEmpty(jdbc, scanLabelResolver)
         InterruptRecovery(scanService).recover()
         wordReportExportService.recoverUnfinished()
+        sampleExportService.recoverUnfinished()
     }
 
     fun shutdown() {

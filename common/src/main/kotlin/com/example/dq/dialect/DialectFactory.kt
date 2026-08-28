@@ -17,6 +17,7 @@ object DialectFactory {
         register(OceanBaseDialect())
         register(SqlServerDialect())
         register(OracleDialect())
+        register(HighGoDialect())
     }
 
     private fun register(dialect: DbDialect) {

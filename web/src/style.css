@@ -308,6 +308,19 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 数据源子菜单项右侧编辑图标:默认隐藏,悬停项时才显示(避免整列图标发乱);
+   点击进数据源列表页开编辑框(见 App.vue onEditDs) */
+.sidebar-menu .ds-edit {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  color: var(--el-color-primary);
+  visibility: hidden;
+}
+.sidebar-menu .el-menu-item:hover .ds-edit {
+  visibility: visible;
+}
 /* 数据源列表限高滚动:条数多时不再把整个侧边栏撑长,
    「全部数据源」与其余一级导航保持在可视区 */
 .sidebar-menu .ds-list {
@@ -461,6 +474,25 @@ html.dark .tab-bar {
   border-bottom-color: var(--dq-page-bg-solid);
   color: var(--el-color-primary);
   font-weight: 500;
+}
+
+/* 关闭图标常显:EP 默认仅 hover/激活时给 14px 宽度,这里所有页签一直占宽;
+   同时钉死所有态(普通/hover/激活)的左右内边距,页签宽度恒定,hover/切换激活零跳动。
+   EP 激活态规则 .el-tabs--card>.el-tabs__header .el-tabs__item.is-active.is-closable
+   与下面的选择器同特异度但后加载,故激活态必须单独再钉一次(特异度 6 类 > EP 的 5 类) */
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-closable,
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active.is-closable {
+  padding-left: 13px;
+  padding-right: 13px;
+}
+
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-closable .is-icon-close {
+  width: 14px;
+}
+
+/* hover 底纹:非激活页签 hover 时微微提亮,与激活态底色保持可区分 */
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item:not(.is-active):hover {
+  background: var(--dq-table-row-hover-bg);
 }
 
 .main {

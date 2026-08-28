@@ -58,7 +58,8 @@ class DialectSqlGenTest {
     fun `sqlserver 空串统计用 LTRIM RTRIM 兼容 2016 及以下`() {
         val sql = SqlServerDialect().buildColumnStatsSql("dbo", "t",
             listOf(col("name", Types.VARCHAR)), null, null, listOf(), false, 0L, null)
-        assertTrue(sql.contains("SUM(CASE WHEN LTRIM(RTRIM([name])) = '' THEN 1 ELSE 0 END) AS c0_empty"))
+        // CAST 为 NVARCHAR(MAX):兼容 text/ntext 旧 LOB 类型(LTRIM/RTRIM 不支持)
+        assertTrue(sql.contains("SUM(CASE WHEN LTRIM(RTRIM(CAST([name] AS NVARCHAR(MAX)))) = '' THEN 1 ELSE 0 END) AS c0_empty"))
         assertFalse(sql.contains("WHEN TRIM(")) // TRIM 是 SQL Server 2017+ 才有,不能出现在生成 SQL 里
     }
 
@@ -210,7 +211,7 @@ class DialectSqlGenTest {
     @Test
     fun `系统库清单 各方言均给出小写集合`() {
         val dialects = listOf(MySqlDialect(), PostgresDialect(), SqlServerDialect(),
-                OracleDialect(), DmDialect(), KingbaseDialect(), OceanBaseDialect())
+                OracleDialect(), DmDialect(), KingbaseDialect(), OceanBaseDialect(), HighGoDialect())
         for (d in dialects) {
             val names = d.systemSchemas()
             assertTrue(names.isNotEmpty(), d.type().name + " 应有系统库清单")
@@ -230,7 +231,9 @@ class DialectSqlGenTest {
                 listOf("master", "model", "msdb", "tempdb", "reportserver", "reportservertempdb")))
         assertTrue(OracleDialect().systemSchemas().containsAll(listOf("sys", "system")))
         assertTrue(DmDialect().systemSchemas().containsAll(listOf("sys", "sysdba")))
-        assertTrue(KingbaseDialect().systemSchemas().contains("pg_catalog"))
+        assertTrue(KingbaseDialect().systemSchemas().containsAll(
+                listOf("kingbase", "test", "security", "template0", "template1")))
+        assertTrue(HighGoDialect().systemSchemas().contains("pg_catalog"))
     }
 
     @Test

@@ -1,5 +1,5 @@
 <template>
-  <el-button :size="size" @click="open">{{ label }}</el-button>
+  <el-button v-if="!hideTrigger" :size="size" :disabled="disabled" @click="open">{{ label }}</el-button>
   <el-dialog v-model="visible" title="导出 Excel" width="min(1440px, 94vw)" append-to-body :close-on-press-escape="false">
     <div class="tip">
       导出文件结构预览(示例数据)。「表列表」「字段明细」页签内可勾选要导出的列,下方表格实时预览最终样式;灰色固定列始终导出。
@@ -7,7 +7,7 @@
 
     <!-- Excel 风格 sheet 页签 -->
     <div class="sheet-tabs">
-      <div v-for="s in SHEETS" :key="s.key" class="sheet-tab" :class="{ active: activeSheet === s.key }"
+      <div v-for="s in sheets" :key="s.key" class="sheet-tab" :class="{ active: activeSheet === s.key }"
            @click="activeSheet = s.key">
         {{ s.name }}
       </div>
@@ -17,7 +17,7 @@
       <!-- 概览:固定 KV,不可配置 -->
       <table v-if="activeSheet === 'overview'" class="preview-table">
         <tbody>
-          <tr v-for="row in OVERVIEW_SAMPLE" :key="row[0]">
+          <tr v-for="row in overviewSample" :key="row[0]">
             <td class="kv-key">{{ row[0] }}</td>
             <td>{{ row[1] }}</td>
           </tr>
@@ -48,7 +48,7 @@
 
       <!-- 字段明细:每张 DONE 的表一个 sheet,结构相同;勾选列 + 实时预览 -->
       <template v-else-if="activeSheet === 'fields'">
-        <div class="sheet-note">每张扫描完成的表生成一个 sheet(sheet 名 = 表名),结构相同,此处以 user_order 为例:</div>
+        <div class="sheet-note">{{ isLatest ? '每张已扫描的表' : '每张扫描完成的表' }}生成一个 sheet(sheet 名 = 表名),结构相同,此处以 user_order 为例:</div>
         <div class="section-title">表头设置</div>
         <el-checkbox-group v-model="fieldChecked" class="col-checks">
           <el-checkbox v-for="c in FIELD_COLS" :key="c.key" :value="c.key" size="small">{{ c.label }}</el-checkbox>
@@ -113,7 +113,7 @@
     <template #footer>
       <el-button @click="reset">重置</el-button>
       <el-button @click="visible = false">取消</el-button>
-      <el-button @click="exportWord">导出 Word</el-button>
+      <el-button v-if="!isLatest" @click="exportWord">导出 Word</el-button>
       <el-button type="primary" @click="doExport">导出</el-button>
     </template>
   </el-dialog>
@@ -177,6 +177,24 @@ const OVERVIEW_SAMPLE = [
   ['总占用空间', '1.3 GB']
 ]
 
+// latest 模式(最新扫描结果导出)的概览示例:口径说明 + 最晚扫描完成时间,统计口径内全是 DONE
+const OVERVIEW_SAMPLE_LATEST = [
+  ['数据源', '生产库 (MySQL)'],
+  ['库/Schema', 'dqtest'],
+  ['数据口径', '各表最近一次已完成扫描的快照,可能来自不同任务'],
+  ['最晚扫描完成时间', '2026-08-04 10:05:30'],
+  ['', ''],
+  ['统计总结', ''],
+  ['统计表数', '120(完成 120,失败 0)'],
+  ['空表数(0 行)', '5'],
+  ['空表率', '4.17%'],
+  ['字段总数', '3,456'],
+  ['空字段数(有值数为 0)', '87'],
+  ['空字段率', '2.52%'],
+  ['总数据行数', '12,500,000(含采样估算)'],
+  ['总占用空间', '1.3 GB']
+]
+
 // 示例行按列 key 存值,保证预览时表头与表体始终对齐
 const TABLE_SAMPLE = [
   { name: 'user_order', comment: '订单表', description: '记录用户下单信息,含订单号、金额与状态', storage: 'InnoDB · 1.2 GB', totalRows: '12,500,000', sampled: '是(估算)', sampleRows: '1,000,000', fillRate: '87.32', status: 'DONE' },
@@ -195,10 +213,22 @@ const ALL_FIELDS_SAMPLE = [
 ]
 
 const props = defineProps({
-  jobId: { type: [Number, String], required: true },
+  // 任务导出模式必填;latest 模式(latestUrl 非空)不需要 jobId
+  jobId: { type: [Number, String], required: false, default: null },
+  // 最新扫描结果导出的完整 URL(可已带 db 查询串);非空即 latest 模式:无「异常表」sheet、无「导出 Word」
+  latestUrl: { type: String, default: '' },
+  disabled: { type: Boolean, default: false },
+  // 隐藏触发按钮(宿主用下拉菜单项唤起时),仅保留弹窗,经 ref.open() 打开
+  hideTrigger: { type: Boolean, default: false },
   size: { type: String, default: undefined },
   label: { type: String, default: '导出 Excel' }
 })
+
+// latest 模式:导出口径为每表最近一次 DONE 快照,不依赖指定任务
+const isLatest = computed(() => !!props.latestUrl)
+// latest 口径全是 DONE,不生成「异常表」sheet
+const sheets = computed(() => (isLatest.value ? SHEETS.filter((s) => s.key !== 'failed') : SHEETS))
+const overviewSample = computed(() => (isLatest.value ? OVERVIEW_SAMPLE_LATEST : OVERVIEW_SAMPLE))
 
 const visible = ref(false)
 // 默认打开「字段明细」页签
@@ -223,14 +253,20 @@ function open() {
   visible.value = true
 }
 
+// hideTrigger 模式下由宿主(如下拉菜单项)经 ref 调 open() 打开弹窗
+defineExpose({ open })
+
 function doExport() {
   // 全选时不带参数(默认行为);一列不选时传空串,表示只留固定列
   const params = new URLSearchParams()
   if (tableChecked.value.length < TABLE_COLS.length) params.set('tableCols', tableChecked.value.join(','))
   if (fieldChecked.value.length < FIELD_COLS.length) params.set('cols', fieldChecked.value.join(','))
   const q = params.toString()
+  // latest 模式的 latestUrl 可能已带 ?db= 查询串,列选择参数接在后面;
   // 桌面端弹原生保存对话框自选目录,浏览器走默认下载(见 utils/download.js)
-  downloadFile(`/api/scans/${props.jobId}/export${q ? '?' + q : ''}`)
+  const base = props.latestUrl || `/api/scans/${props.jobId}/export`
+  const sep = base.includes('?') ? '&' : '?'
+  downloadFile(`${base}${q ? sep + q : ''}`)
   visible.value = false
 }
 

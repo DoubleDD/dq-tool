@@ -39,12 +39,12 @@ class ScanDocService(
         if (!job.genDoc || disabledJobs.contains(jobId)) {
             return
         }
-        aiTracker.taskSubmitted(jobId)
+        aiTracker.taskSubmitted(jobId, ScanAiTracker.AiKind.DOC)
         executor.execute {
             try {
                 runSafely(job, scanTableId)
             } finally {
-                aiTracker.taskDone(jobId)
+                aiTracker.taskDone(jobId, ScanAiTracker.AiKind.DOC)
             }
         }
     }

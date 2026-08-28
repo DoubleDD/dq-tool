@@ -8,7 +8,8 @@ enum class DbType(val label: String) {
     KINGBASE("人大金仓 KingbaseES"),
     OCEANBASE("OceanBase"),
     SQLSERVER("SQL Server"),
-    ORACLE("Oracle");
+    ORACLE("Oracle"),
+    HIGHGO("瀚高 HighGo");
 
     companion object {
 
@@ -25,6 +26,7 @@ enum class DbType(val label: String) {
             if (u.startsWith("jdbc:kingbase8:")) return KINGBASE
             if (u.startsWith("jdbc:sqlserver:")) return SQLSERVER
             if (u.startsWith("jdbc:oracle:")) return ORACLE
+            if (u.startsWith("jdbc:highgo:")) return HIGHGO
             throw IllegalArgumentException("无法识别的 jdbcUrl: $url")
         }
     }

@@ -1,10 +1,10 @@
 <template>
   <!-- 扫描记录导出/导入入口:导出依赖外部表格勾选的 selectedIds;导入先预检再弹映射对话框 -->
   <!-- 必须单根容器:否则 Fragment 子节点会成为父级 flex(space-between)工具栏的直接子项被撑开 -->
-  <div style="display: inline-flex; align-items: center">
+  <div style="display: inline-flex; align-items: center; gap: 12px">
     <el-button :icon="Download" :disabled="!selectedIds.length" @click="exportSelected">导出记录</el-button>
     <el-upload ref="uploadRef" :auto-upload="false" accept=".json" :limit="1" :show-file-list="false"
-               :on-change="onImportFile" style="display: inline-block; margin-left: 12px">
+               :on-change="onImportFile" style="display: inline-block">
       <el-button type="primary" :loading="importing">导入记录</el-button>
     </el-upload>
   </div>

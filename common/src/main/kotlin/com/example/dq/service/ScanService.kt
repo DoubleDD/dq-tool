@@ -216,6 +216,16 @@ class ScanService(
         return repo.listScanColumns(table.id)
     }
 
+    /** 每表最近一次表级 DONE 的扫描快照(跨任务,供最新扫描结果导出) */
+    fun latestDoneTables(datasourceId: Long, dbName: String?, schemaName: String): List<ScanTableView> =
+        repo.latestDoneScanTables(datasourceId, dbName, schemaName).values.toList()
+
+    /** 按 scan_table 快照行 id 取字段结果(供跨任务快照导出,与 getColumns(jobId, tableName) 重载) */
+    fun getColumns(scanTableId: Long): List<ScanColumnView> = repo.listScanColumns(scanTableId)
+
+    /** 数据源名(导出概览 sheet 展示用) */
+    fun datasourceName(datasourceId: Long): String? = dsRepo.findById(datasourceId)?.name
+
     fun getTable(jobId: Long, tableName: String): ScanTableView =
         repo.findScanTableByName(jobId, tableName)
             ?: throw IllegalArgumentException("任务中不存在该表: $tableName")
@@ -235,7 +245,8 @@ class ScanService(
         return ScanJobView(
             j.id, j.datasourceId, dsName, dbType, j.dbName, j.schemaName, j.status,
             j.forceFull, rules, j.totalTables, j.doneTables, progress(j, tables), j.error,
-            j.createdAt, j.startedAt, j.finishedAt, events, tables, j.workers
+            j.createdAt, j.startedAt, j.finishedAt, events, tables, j.workers,
+            j.autoTag, j.genDoc, aiTracker.progress(j.id)
         )
     }
 
@@ -296,6 +307,40 @@ class ScanService(
             }
         }
         repo.finishJob(jobId, ScanStatus.CANCELED, null)
+    }
+
+    /**
+     * 手动结束任务:用于 AI 后续(自动打标/表描述)挂起导致进度卡 99% 等场景,把任务直接落到终态。
+     * 与 cancel 相同地中断仍在执行的扫描部分,但收尾为 DONE(有失败表则 FAILED)而非 CANCELED——
+     * 结束后不可续扫;仍在排队/挂起的 AI 后续被放弃(计数清零,不再等待其销记)
+     */
+    fun finish(jobId: Long) {
+        val job = repo.findJob(jobId)
+            ?: throw IllegalArgumentException("任务不存在: $jobId")
+        if (job.status != ScanStatus.RUNNING && job.status != ScanStatus.PENDING) {
+            return
+        }
+        aiTracker.withJobLock(jobId) {
+            // 先置 CANCELED 挡住运行中分段/迟到的 AI 销记的收尾联动(tryFinishJob 只认 RUNNING),与 cancel 同理
+            repo.updateJobStatus(jobId, ScanStatus.CANCELED)
+            repo.cancelPendingChunksByJob(jobId)
+            for (c in repo.listRunningChunksByJob(jobId)) {
+                executor.cancelStatement(c.id)
+            }
+            for (t in repo.listScanTables(jobId)) {
+                if (t.status == ScanStatus.PENDING || t.status == ScanStatus.RUNNING) {
+                    repo.finishTable(t.id, ScanStatus.CANCELED, null, null)
+                }
+            }
+            // 放弃仍在排队/挂起的 AI 后续:清零计数,不再等它们销记
+            aiTracker.reset(jobId)
+            val failed = repo.listScanTables(jobId).count { it.status == ScanStatus.FAILED }
+            if (failed > 0) {
+                repo.finishJob(jobId, ScanStatus.FAILED, "手动结束,$failed 张表统计失败")
+            } else {
+                repo.finishJob(jobId, ScanStatus.DONE, null)
+            }
+        }
     }
 
     /** 断点续扫:校验结构未变,未完成的段重新入队 */

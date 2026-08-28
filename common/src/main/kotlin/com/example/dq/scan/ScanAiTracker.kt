@@ -1,5 +1,6 @@
 package com.example.dq.scan
 
+import com.example.dq.model.ScanAiProgress
 import com.example.dq.model.ScanStatus
 import com.example.dq.repository.ScanRepository
 import java.util.concurrent.ConcurrentHashMap
@@ -9,27 +10,59 @@ import java.util.concurrent.atomic.AtomicInteger
  * 扫描收尾阶段 AI 后续(自动打标/生成表描述)的完成跟踪,把 AI 后续串入扫描流程:
  * 每个 AI 任务入队前 taskSubmitted 计数、执行结束(无论成功/跳过/失败)由任务体 finally taskDone 销记;
  * 只有「全部表到达终态 + AI 后续清零」才把任务收尾为 DONE/FAILED,在此之前任务保持 RUNNING(进度封顶 99%)。
+ * 打标/表描述按类别分别计数,经 progress() 暴露给扫描任务视图,供前端分段展示三部分进度。
  * 计数在内存、重启清零;中断任务续扫时 ScanService 会为 DONE 表重新补齐 AI 后续,收尾语义不受重启影响。
  */
 class ScanAiTracker(private val repo: ScanRepository) {
 
-    private val pending = ConcurrentHashMap<Long, AtomicInteger>()
+    /** AI 后续类别:打标 / 表描述,分开计数供前端分段展示 */
+    enum class AiKind { TAG, DOC }
+
+    /** 单 job 的 AI 计数:入队数与完成数按类别分开;未清零数 = 入队 - 完成 */
+    private class Counters {
+        val tagSubmitted = AtomicInteger()
+        val tagDone = AtomicInteger()
+        val docSubmitted = AtomicInteger()
+        val docDone = AtomicInteger()
+
+        fun submitted(kind: AiKind) = if (kind == AiKind.TAG) tagSubmitted else docSubmitted
+        fun done(kind: AiKind) = if (kind == AiKind.TAG) tagDone else docDone
+        fun pending() = tagSubmitted.get() - tagDone.get() + docSubmitted.get() - docDone.get()
+    }
+
+    private val counts = ConcurrentHashMap<Long, Counters>()
     private val locks = ConcurrentHashMap<Long, Any>()
 
     /** AI 任务入队前计数;只有真正入队才允许调用(开关关闭/已熔断等提前返回不得计数) */
-    fun taskSubmitted(jobId: Long) {
-        counter(jobId).incrementAndGet()
+    fun taskSubmitted(jobId: Long, kind: AiKind) {
+        counts(jobId).submitted(kind).incrementAndGet()
     }
 
     /** AI 任务结束销记;清零后尝试收尾任务 */
-    fun taskDone(jobId: Long) {
-        if (counter(jobId).decrementAndGet() <= 0) {
+    fun taskDone(jobId: Long, kind: AiKind) {
+        counts(jobId).done(kind).incrementAndGet()
+        if (counts(jobId).pending() <= 0) {
             tryFinishJob(jobId)
         }
     }
 
     /** 当前未清零的 AI 后续数(续扫收尾与测试用) */
-    fun pending(jobId: Long): Int = counter(jobId).get()
+    fun pending(jobId: Long): Int = counts(jobId).pending()
+
+    /**
+     * 手动结束任务时清零并移除该 job 的 AI 计数:放弃仍在排队/挂起的 AI 后续,
+     * 解除因计数残留(taskSubmitted 后 taskDone 永远不来)导致的 99% 卡死。
+     * 此后若有迟到的 taskDone 销记会重建空计数,但任务已落终态,tryFinishJob 不再生效,无实际影响
+     */
+    fun reset(jobId: Long) {
+        counts.remove(jobId)
+    }
+
+    /** AI 后续分类进度(扫描任务视图用;先计数后执行,同一类别入队数恒不小于完成数) */
+    fun progress(jobId: Long): ScanAiProgress {
+        val c = counts(jobId)
+        return ScanAiProgress(c.tagSubmitted.get(), c.tagDone.get(), c.docSubmitted.get(), c.docDone.get())
+    }
 
     /**
      * 收尾判定,幂等:表到达终态(ChunkRunner)与 AI 后续销记(taskDone)两条路径都会调用。
@@ -41,7 +74,7 @@ class ScanAiTracker(private val repo: ScanRepository) {
             if (job.status != ScanStatus.RUNNING) {
                 return@withJobLock
             }
-            if (counter(jobId).get() > 0) {
+            if (counts(jobId).pending() > 0) {
                 return@withJobLock
             }
             val tables = repo.listScanTables(jobId)
@@ -63,6 +96,6 @@ class ScanAiTracker(private val repo: ScanRepository) {
      */
     fun <T> withJobLock(jobId: Long, block: () -> T): T = synchronized(lock(jobId)) { block() }
 
-    private fun counter(jobId: Long) = pending.computeIfAbsent(jobId) { AtomicInteger() }
+    private fun counts(jobId: Long) = counts.computeIfAbsent(jobId) { Counters() }
     private fun lock(jobId: Long) = locks.computeIfAbsent(jobId) { Any() }
 }

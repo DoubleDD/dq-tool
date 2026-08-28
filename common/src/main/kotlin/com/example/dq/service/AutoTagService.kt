@@ -47,12 +47,12 @@ class AutoTagService(
         if (!job.autoTag || disabledJobs.contains(jobId)) {
             return
         }
-        aiTracker.taskSubmitted(jobId)
+        aiTracker.taskSubmitted(jobId, ScanAiTracker.AiKind.TAG)
         executor.execute {
             try {
                 runSafely(job, scanTableId)
             } finally {
-                aiTracker.taskDone(jobId)
+                aiTracker.taskDone(jobId, ScanAiTracker.AiKind.TAG)
             }
         }
     }

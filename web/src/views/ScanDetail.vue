@@ -5,6 +5,7 @@
         <Breadcrumb :items="breadcrumbItems" />
         <div>
           <el-button v-if="job.status === 'RUNNING'" type="danger" :loading="acting" @click="onCancel">取消</el-button>
+          <el-button v-if="job.status === 'RUNNING'" type="warning" :loading="acting" @click="onFinish">结束任务</el-button>
           <el-button v-if="['CANCELED', 'INTERRUPTED', 'FAILED'].includes(job.status)" type="primary" :loading="acting" @click="onResume">继续扫描</el-button>
           <ExportButton :job-id="jobId" />
         </div>
@@ -35,10 +36,7 @@
         </el-descriptions-item>
       </el-descriptions>
 
-      <div style="margin-bottom: 16px">
-        <span style="font-size: 13px; color: var(--el-text-color-regular)">总进度({{ job.doneTables }}/{{ job.totalTables }} 表)</span>
-        <el-progress :percentage="Math.round(job.progressPercent || 0)" :status="job.status === 'FAILED' ? 'exception' : undefined" />
-      </div>
+      <ScanProgressBar :job="job" style="margin-bottom: 16px" />
 
       <el-table :data="job.tables || []" border>
         <el-table-column type="index" label="序号" width="60" />
@@ -117,6 +115,7 @@ import { QuestionFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
+import ScanProgressBar from '../components/ScanProgressBar.vue'
 import { formatDateTime, formatDuration, formatNumber, statusTagType, statusText } from '../utils/format'
 import { setScanSchema, setScanDs, syncTab } from '../stores/tabs'
 const route = useRoute()
@@ -185,6 +184,21 @@ async function onCancel() {
   try {
     await request.post(`/scans/${jobId}/cancel`)
     ElMessage.success('已取消')
+    await fetchJob()
+  } finally {
+    acting.value = false
+  }
+}
+
+/** 手动结束:用于所有表已扫完但 AI 后续挂起导致进度卡 99% 的场景;与取消的区别是落 DONE/FAILED 终态,不可续扫 */
+async function onFinish() {
+  await ElMessageBox.confirm(
+    '确定结束该扫描任务吗?未完成的表将标记为已取消,挂起的 AI 后续(自动打标/表描述)将被放弃,结束后不可续扫。',
+    '结束确认', { type: 'warning', closeOnPressEscape: false })
+  acting.value = true
+  try {
+    await request.post(`/scans/${jobId}/finish`)
+    ElMessage.success('已结束')
     await fetchJob()
   } finally {
     acting.value = false

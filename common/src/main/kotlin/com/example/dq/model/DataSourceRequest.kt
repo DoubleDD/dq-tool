@@ -34,3 +34,8 @@ data class DataSourceRequest(
 data class SchemaFilterRequest(
     val schemas: List<String>? = null,
 )
+
+/** 分组名单独更新(数据源管理页卡片拖拽);groupName 为 null/空白表示移到未分组 */
+data class GroupUpdateRequest(
+    val groupName: String? = null,
+)

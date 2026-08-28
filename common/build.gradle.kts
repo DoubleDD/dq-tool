@@ -37,7 +37,7 @@ dependencies {
     // 日志门面(api 暴露:供 server 壳层统一使用)
     api(libs.slf4j.api)
 
-    // 7 个目标数据库 JDBC 驱动(版本与 server 统一在 gradle/libs.versions.toml 管理)
+    // 8 个目标数据库 JDBC 驱动(版本与 server 统一在 gradle/libs.versions.toml 管理)
     runtimeOnly(libs.jdbc.mysql)
     runtimeOnly(libs.jdbc.postgresql)
     runtimeOnly(libs.jdbc.mssql)
@@ -47,6 +47,7 @@ dependencies {
     runtimeOnly(libs.jdbc.dameng)
     runtimeOnly(libs.jdbc.kingbase)
     runtimeOnly(libs.jdbc.oceanbase)
+    runtimeOnly(libs.jdbc.highgo)
 
     // 测试
     testImplementation(libs.junit.jupiter)

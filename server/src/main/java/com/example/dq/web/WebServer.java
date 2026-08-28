@@ -19,6 +19,7 @@ import com.example.dq.controller.ListExportController;
 import com.example.dq.controller.MetadataController;
 import com.example.dq.controller.PreviewController;
 import com.example.dq.controller.ReportExportController;
+import com.example.dq.controller.SampleExportController;
 import com.example.dq.controller.LogController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.ScanTransferController;
@@ -88,6 +89,7 @@ public class WebServer {
     private final AtomicReference<ScanTransferController> scanTransferCtrl = new AtomicReference<>();
     private final AtomicReference<MetadataController> metaCtrl = new AtomicReference<>();
     private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
+    private final AtomicReference<SampleExportController> sampleExportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
     private final AtomicReference<AiConfigController> aiCtrl = new AtomicReference<>();
     private final AtomicReference<AiUsageController> aiUsageCtrl = new AtomicReference<>();
@@ -157,7 +159,7 @@ public class WebServer {
             }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
-                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, tagCtrl, aiCtrl, aiUsageCtrl,
+                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
@@ -179,6 +181,7 @@ public class WebServer {
                                 AtomicReference<ScanTransferController> scanTransferCtrl,
                                 AtomicReference<MetadataController> metaCtrl,
                                 AtomicReference<ReportExportController> reportCtrl,
+                                AtomicReference<SampleExportController> sampleExportCtrl,
                                 AtomicReference<TagController> tagCtrl,
                                 AtomicReference<AiConfigController> aiCtrl,
                                 AtomicReference<AiUsageController> aiUsageCtrl,
@@ -262,6 +265,8 @@ public class WebServer {
         routes.post("/api/datasources", ctx -> dataSourceCtrl.get().create(ctx));
         routes.put("/api/datasources/{id}", ctx -> dataSourceCtrl.get().update(ctx));
         routes.put("/api/datasources/{id}/schema-filter", ctx -> dataSourceCtrl.get().updateSchemaFilter(ctx));
+        // 数据源管理页卡片拖拽改分组(轻量单列更新,不走全量 PUT 的连库探测)
+        routes.put("/api/datasources/{id}/group", ctx -> dataSourceCtrl.get().updateGroup(ctx));
         routes.delete("/api/datasources/{id}", ctx -> dataSourceCtrl.get().delete(ctx));
         routes.post("/api/datasources/test", ctx -> dataSourceCtrl.get().test(ctx));
         routes.post("/api/datasources/preview-databases", ctx -> dataSourceCtrl.get().previewDatabases(ctx));
@@ -279,6 +284,7 @@ public class WebServer {
         routes.get("/api/scans", ctx -> scanCtrl.get().list(ctx));
         routes.get("/api/scans/{jobId}", ctx -> scanCtrl.get().get(ctx));
         routes.post("/api/scans/{jobId}/cancel", ctx -> scanCtrl.get().cancel(ctx));
+        routes.post("/api/scans/{jobId}/finish", ctx -> scanCtrl.get().finish(ctx));
         routes.post("/api/scans/{jobId}/resume", ctx -> scanCtrl.get().resume(ctx));
         routes.delete("/api/scans/{jobId}", ctx -> scanCtrl.get().delete(ctx));
         routes.get("/api/scans/{jobId}/tables/{tableName}/columns", ctx -> scanCtrl.get().columns(ctx));
@@ -297,6 +303,8 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", ctx -> metaCtrl.get().countColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", ctx -> metaCtrl.get().latestScanJobs(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/running-scans", ctx -> metaCtrl.get().runningScans(ctx));
+        // 最新扫描结果 Excel 导出:每表最近一次表级 DONE 快照,跨任务,不依赖指定任务记录
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/export-latest", ctx -> scanCtrl.get().exportLatest(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/table-docs", ctx -> metaCtrl.get().tableDocs(ctx));
         routes.post("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().generateTableDoc(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().updateTableDoc(ctx));
@@ -308,6 +316,19 @@ public class WebServer {
         routes.get("/api/report-exports/{id}/download", ctx -> reportCtrl.get().download(ctx));
         routes.post("/api/report-exports/{id}/open", ctx -> reportCtrl.get().open(ctx));
         routes.post("/api/report-exports/{id}/reveal", ctx -> reportCtrl.get().reveal(ctx));
+
+        // ---- 表格批量导入数据源 + 抽样导出任务 ----
+        routes.post("/api/sample-exports", ctx -> sampleExportCtrl.get().submit(ctx));
+        routes.get("/api/sample-exports", ctx -> sampleExportCtrl.get().list(ctx));
+        // 注意避开 /api/sample-exports/{id} 同前缀静态段:实测 Javalin 7 会把它路由给 {id} 导致类型转换 400
+        routes.get("/api/sample-export-template", ctx -> sampleExportCtrl.get().template(ctx));
+        routes.get("/api/sample-exports/{id}", ctx -> sampleExportCtrl.get().detail(ctx));
+        routes.get("/api/sample-exports/{id}/download", ctx -> sampleExportCtrl.get().download(ctx));
+        routes.post("/api/sample-exports/{id}/open-dir", ctx -> sampleExportCtrl.get().openDir(ctx));
+        routes.post("/api/sample-exports/{id}/pause", ctx -> sampleExportCtrl.get().pause(ctx));
+        routes.post("/api/sample-exports/{id}/resume", ctx -> sampleExportCtrl.get().resume(ctx));
+        // 批量删除刻意避开 /api/sample-exports/ 前缀注册(同前缀静态段会被 {id} 吃掉报 400,见上方 template 注释)
+        routes.post("/api/sample-exports-delete", ctx -> sampleExportCtrl.get().delete(ctx));
 
         // ---- 表标记与统计 ----
         routes.get("/api/tags", ctx -> tagCtrl.get().list(ctx));
@@ -491,6 +512,7 @@ public class WebServer {
         metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService(),
                 env.getDbStructExportService(), env.getDataSourceService()));
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
+        sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));
         aiUsageCtrl.set(new AiUsageController(env.getAiUsageService()));

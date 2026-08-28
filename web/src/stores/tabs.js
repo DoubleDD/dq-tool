@@ -14,7 +14,9 @@ export const tabState = reactive({
   activeKey: '',
   // 侧边栏「数据源」操作下拉命令(new/import/export):由 App.vue 写入,数据源页消费后清空。
   // 不用路由 query 传递——App.vue 的 keep-alive 以 route.fullPath 为 key,query 变化会导致组件重挂载,弹框状态丢失。
-  pendingDsDialog: ''
+  pendingDsDialog: '',
+  // 侧边栏数据源项右侧编辑图标:App.vue 写入待编辑数据源 id 并跳数据源页,数据源页消费后清空(理由同上)
+  pendingDsEditId: ''
 })
 
 // 路由里拿不到名称时的兜底缓存:数据源 id -> 数据源名,任务 id -> 库名标签,任务 id -> 数据源 id
@@ -80,6 +82,7 @@ const PAGE_TABS = {
   '/tags': '标记统计',
   '/ai-usage': '模型用量统计',
   '/report-exports': '报告列表',
+  '/sample-exports': '抽样导出',
   '/settings': '系统设置',
   '/logs': '运行日志',
   '/diagnostics': '系统诊断',

@@ -18,7 +18,8 @@ const DB_MAP = {
   SQLSERVER: { svg: sqlserver, color: '#CC2927' },
   DM: { letters: 'DM', color: '#D9001B' },
   KINGBASE: { letters: 'KB', color: '#2B5AED' },
-  OCEANBASE: { letters: 'OB', color: '#1E6FFF' }
+  OCEANBASE: { letters: 'OB', color: '#1E6FFF' },
+  HIGHGO: { letters: 'HG', color: '#005BAC' }
 }
 const FALLBACK = { letters: 'DB', color: '#909399' }
 

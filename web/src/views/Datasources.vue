@@ -27,7 +27,7 @@
           <div class="flow-step-no">1</div>
           <div class="flow-step-body">
             <div class="flow-step-name">连接数据源</div>
-            <div class="flow-step-desc">新增数据库连接,支持 7 种数据库</div>
+            <div class="flow-step-desc">新增数据库连接,支持 8 种数据库</div>
           </div>
         </div>
         <el-icon class="flow-arrow"><ArrowRight /></el-icon>
@@ -50,7 +50,7 @@
         <div class="flow-step disabled">
           <div class="flow-step-no">4</div>
           <div class="flow-step-body">
-            <div class="flow-step-name">导出报告</div>
+            <div class="flow-step-name">导出扫描报告</div>
             <div class="flow-step-desc">Excel 明细或 Word 调研报告</div>
           </div>
         </div>
@@ -71,21 +71,45 @@
     <div v-if="list.length || loading" v-loading="loading">
       <el-empty v-if="!loading && !filteredList.length" description="没有匹配的数据源" :image-size="80" />
       <div v-for="g in groupedList" :key="g.key" class="ds-group">
-        <div v-if="hasAnyGroup" class="ds-group-header" @click="toggleGroup(g.key)">
+        <!-- 分组头同时是拖拽放置目标(折叠时也可拖入);is-drop-target 为 dragover 高亮 -->
+        <div v-if="hasAnyGroup" class="ds-group-header"
+          :class="{ 'is-drop-target': dropTargetKey === g.key }"
+          @click="toggleGroup(g.key)"
+          @dragover.prevent="onGroupDragOver($event, g.key)"
+          @dragleave="onGroupDragLeave($event, g.key)"
+          @drop.prevent="onGroupDrop(g.key)">
           <el-icon class="ds-group-arrow" :class="{ 'is-collapsed': isGroupCollapsed(g.key) }"><ArrowDown /></el-icon>
           <span class="ds-group-name">{{ g.name }}</span>
           <span class="ds-group-count">{{ g.items.length }} 个连接</span>
         </div>
-        <div v-show="!isGroupCollapsed(g.key)" class="ds-grid">
+        <div v-show="!isGroupCollapsed(g.key)" class="ds-grid"
+          :class="{ 'is-drop-target': dropTargetKey === g.key }"
+          @dragover.prevent="onGroupDragOver($event, g.key)"
+          @dragleave="onGroupDragLeave($event, g.key)"
+          @drop.prevent="onGroupDrop(g.key)">
           <el-card v-for="row in g.items" :key="row.id" shadow="hover" class="ds-card"
-            :class="{ 'ds-no-password': row.hasPassword === false }"
-            :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : row.jdbcUrl"
+            :class="{ 'ds-no-password': row.hasPassword === false, 'ds-conn-error': row.connStatus === 'ERROR', 'is-dragging': draggingId === row.id }"
+            :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : (row.connStatus === 'ERROR' ? `连接失败:${row.connError || '请检查连接信息'}` : row.jdbcUrl)"
+            draggable="true"
+            @dragstart="onDragStart($event, row)"
+            @dragend="onDragEnd"
             @click="goSchemas(row)">
             <DbTypeIcon :type="row.dbType" :size="110" class="ds-bg-icon" />
             <div class="ds-card-header">
               <span class="ds-name" :title="row.name">
                 <el-tooltip v-if="row.hasPassword === false" content="未设置密码,请先编辑补充密码" placement="top">
                   <el-icon class="ds-error-icon"><WarningFilled /></el-icon>
+                </el-tooltip>
+                <!-- 表格批量导入时连不上的数据源:与未设密码的红框同款警示,两个提示可并存 -->
+                <el-tooltip v-if="row.connStatus === 'ERROR'" placement="top">
+                  <template #content>
+                    <div>{{ row.connError || '连接失败' }}</div>
+                    <div>表格批量导入时无法连接,请检查连接信息</div>
+                  </template>
+                  <span class="ds-conn-error-tag">
+                    <el-icon class="ds-error-icon"><WarningFilled /></el-icon>
+                    <span class="ds-conn-error-text">连接失败</span>
+                  </span>
                 </el-tooltip>
                 {{ row.name }}
               </span>
@@ -438,6 +462,52 @@ const groupedList = computed(() => {
       return a.key.localeCompare(b.key, 'zh')
     })
 })
+
+// ---------- 卡片拖拽改分组(原生 HTML5 drag & drop) ----------
+// 正在拖拽的数据源 id;null 表示无拖拽,用于拖动虚影样式
+const draggingId = ref(null)
+// 当前 dragover 命中的放置目标分组 key(UNGROUPED 哨兵或分组名),驱动目标高亮
+const dropTargetKey = ref(null)
+
+function onDragStart(e, row) {
+  draggingId.value = row.id
+  e.dataTransfer.effectAllowed = 'move'
+  e.dataTransfer.setData('text/plain', String(row.id))
+}
+
+function onDragEnd() {
+  draggingId.value = null
+  dropTargetKey.value = null
+}
+
+function onGroupDragOver(e, key) {
+  e.dataTransfer.dropEffect = 'move'
+  dropTargetKey.value = key
+}
+
+function onGroupDragLeave(e, key) {
+  // 移入子元素也会触发 dragleave,仅真正离开该区块时清除高亮
+  if (!e.currentTarget.contains(e.relatedTarget) && dropTargetKey.value === key) {
+    dropTargetKey.value = null
+  }
+}
+
+/** 放置到目标分组:同组直接忽略;跨组调轻量分组接口后整体重拉(与保存后惯例一致),失败提示由 axios 拦截器统一弹出 */
+async function onGroupDrop(key) {
+  const id = draggingId.value
+  draggingId.value = null
+  dropTargetKey.value = null
+  if (id == null) return
+  const row = list.value.find((r) => r.id === id)
+  if (!row) return
+  // 拖到「未分组」区块传 null;后端空白同样归一为未分组
+  const target = key === UNGROUPED ? null : key
+  if (target === (row.groupName || null)) return
+  await request.put(`/datasources/${id}/group`, { groupName: target })
+  ElMessage.success(target ? `已移动到分组「${target}」` : '已移出分组')
+  loadList()
+  notifyDsListChanged()
+}
 // 收藏:前端本地偏好,按数据源 id 存 localStorage;收藏的卡片排最前,同收藏按收藏时间倒序(与侧边栏共用 dsFavorites 工具)
 const favorites = ref(loadDsFavorites())
 
@@ -474,7 +544,7 @@ const testing = ref(false)
 // 编辑对话框当前页签:general / ssh / advanced
 const activeTab = ref('general')
 
-const DB_TYPES = ['MYSQL', 'POSTGRESQL', 'DM', 'KINGBASE', 'OCEANBASE', 'SQLSERVER', 'ORACLE']
+const DB_TYPES = ['MYSQL', 'POSTGRESQL', 'DM', 'KINGBASE', 'OCEANBASE', 'SQLSERVER', 'ORACLE', 'HIGHGO']
 const URL_PLACEHOLDERS = {
   MYSQL: 'jdbc:mysql://host:3306/',
   POSTGRESQL: 'jdbc:postgresql://host:5432/db',
@@ -482,7 +552,8 @@ const URL_PLACEHOLDERS = {
   KINGBASE: 'jdbc:kingbase8://host:54321/db',
   OCEANBASE: 'jdbc:oceanbase://host:2881/',
   SQLSERVER: 'jdbc:sqlserver://host:1433;databaseName=db',
-  ORACLE: 'jdbc:oracle:thin:@//host:1521/service'
+  ORACLE: 'jdbc:oracle:thin:@//host:1521/service',
+  HIGHGO: 'jdbc:highgo://host:5866/db'
 }
 
 const DEFAULT_PORTS = {
@@ -492,7 +563,8 @@ const DEFAULT_PORTS = {
   KINGBASE: 54321,
   OCEANBASE: 2881,
   SQLSERVER: 1433,
-  ORACLE: 1521
+  ORACLE: 1521,
+  HIGHGO: 5866
 }
 
 const emptyForm = () => ({
@@ -692,6 +764,7 @@ function buildJdbcUrl() {
     case 'OCEANBASE': return `jdbc:oceanbase://${h}:${p}/${db}`
     case 'SQLSERVER': return `jdbc:sqlserver://${h}:${p}${db ? `;databaseName=${db}` : ''}`
     case 'ORACLE': return `jdbc:oracle:thin:@//${h}:${p}/${db}`
+    case 'HIGHGO': return `jdbc:highgo://${h}:${p}/${db}`
     default: return ''
   }
 }
@@ -1046,6 +1119,20 @@ watch(
   { immediate: true }
 )
 
+// 侧边栏数据源项右侧编辑图标(pendingDsEditId = 数据源 id)时自动打开编辑对话框。
+// 与 pendingDsDialog 同理:先等列表加载完成再按 id 找行;消费后立即清空,避免重复弹框。
+watch(
+  () => tabState.pendingDsEditId,
+  async (v) => {
+    if (!v) return
+    tabState.pendingDsEditId = ''
+    await loadList()
+    const row = list.value.find((d) => String(d.id) === String(v))
+    if (row) openDialog(row)
+  },
+  { immediate: true }
+)
+
 // 数据源页切回时刷新(首次挂载也会触发)
 onActivated(loadList)
 </script>
@@ -1193,6 +1280,18 @@ onActivated(loadList)
   font-size: 12px;
   font-weight: 400;
 }
+/* 拖拽改分组:拖动中的卡片半透明虚影 */
+.ds-card.is-dragging {
+  opacity: 0.4;
+}
+/* 拖拽放置目标(分组头/卡片网格)高亮:主色虚线框 + 浅底 */
+.ds-group-header.is-drop-target,
+.ds-grid.is-drop-target {
+  outline: 2px dashed var(--el-color-primary-light-5);
+  outline-offset: 2px;
+  background-color: var(--el-color-primary-light-9);
+  border-radius: 6px;
+}
 .ds-card :deep(.el-card__body) {
   position: relative;
 }
@@ -1223,6 +1322,26 @@ onActivated(loadList)
   color: var(--el-color-danger);
   font-size: 16px;
 }
+/* 连接失败:与未设密码同款浅红警示(不禁用点击,仍可进库列表排查) */
+.ds-conn-error {
+  border-color: var(--el-color-danger-light-5);
+  background-color: var(--el-color-danger-light-9);
+}
+.ds-conn-error:hover {
+  border-color: var(--el-color-danger-light-3);
+  background-color: var(--el-color-danger-light-8);
+}
+/* 连接失败标记:叹号图标 + 红字,与未设密码图标可并存 */
+.ds-conn-error-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  vertical-align: middle;
+}
+.ds-conn-error-text {
+  color: var(--el-color-danger);
+  font-size: 12px;
+}
 .ds-bg-icon {
   position: absolute;
   right: 6px;
@@ -1233,23 +1352,27 @@ onActivated(loadList)
 .ds-card-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 12px;
+  gap: 8px;
 }
 .ds-name {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+  gap: 4px 8px;
   font-size: 15px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  word-break: break-all;
 }
 .ds-card-right {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
 }
 /* 收藏星标:默认灰,收藏后高亮 */
 .ds-fav {

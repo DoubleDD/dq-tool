@@ -85,11 +85,11 @@ class DataSourceSchemaFilterTest {
     }
 
     @Test
-    fun `多库方言能力标志仅 SQL Server 为真`() {
+    fun `多库方言能力标志仅 SQL Server 与 Kingbase 为真`() {
         // 白名单作用层级依赖该标志:多库方言过滤 databases,单库方言过滤 schemas
-        assertEquals(true, com.example.dq.dialect.SqlServerDialect().supportsMultiDatabase())
-        com.example.dq.model.DbType.entries.filter { it != com.example.dq.model.DbType.SQLSERVER }.forEach { type ->
-            assertEquals(false, DialectFactory.get(type).supportsMultiDatabase(), type.name)
+        val multi = setOf(com.example.dq.model.DbType.SQLSERVER, com.example.dq.model.DbType.KINGBASE)
+        com.example.dq.model.DbType.entries.forEach { type ->
+            assertEquals(type in multi, DialectFactory.get(type).supportsMultiDatabase(), type.name)
         }
     }
 

@@ -66,13 +66,26 @@ class ScanAiTrackerTest {
     fun `AI后续未清零时不收尾,清零后收尾`() {
         val (jobId, tables) = newRunningJob(1)
         scanRepo.finishTable(tables[0], ScanStatus.DONE, 100L, null)
-        tracker.taskSubmitted(jobId)
+        tracker.taskSubmitted(jobId, ScanAiTracker.AiKind.TAG)
+        tracker.taskSubmitted(jobId, ScanAiTracker.AiKind.DOC)
 
         tracker.tryFinishJob(jobId) // 表全 DONE 但 AI 未清零:不收尾
         assertEquals(ScanStatus.RUNNING, scanRepo.findJob(jobId)!!.status)
         assertNull(scanRepo.findJob(jobId)!!.finishedAt)
 
-        tracker.taskDone(jobId) // AI 清零,随之收尾
+        // 分类进度:打标/表描述各入队 1、完成 0
+        val p = tracker.progress(jobId)
+        assertEquals(1, p.tagTotal)
+        assertEquals(0, p.tagDone)
+        assertEquals(1, p.docTotal)
+        assertEquals(0, p.docDone)
+
+        tracker.taskDone(jobId, ScanAiTracker.AiKind.TAG) // 打标销记,表描述未清零:仍不收尾
+        assertEquals(ScanStatus.RUNNING, scanRepo.findJob(jobId)!!.status)
+        assertEquals(1, tracker.pending(jobId))
+        assertEquals(1, tracker.progress(jobId).tagDone)
+
+        tracker.taskDone(jobId, ScanAiTracker.AiKind.DOC) // AI 清零,随之收尾
         assertEquals(ScanStatus.DONE, scanRepo.findJob(jobId)!!.status)
         assertEquals(0, tracker.pending(jobId))
     }
@@ -105,10 +118,10 @@ class ScanAiTrackerTest {
     fun `非RUNNING任务不收尾(取消后AI销记不复活任务)`() {
         val (jobId, tables) = newRunningJob(1)
         scanRepo.finishTable(tables[0], ScanStatus.DONE, 100L, null)
-        tracker.taskSubmitted(jobId)
+        tracker.taskSubmitted(jobId, ScanAiTracker.AiKind.TAG)
         scanRepo.updateJobStatus(jobId, ScanStatus.CANCELED)
 
-        tracker.taskDone(jobId)
+        tracker.taskDone(jobId, ScanAiTracker.AiKind.TAG)
 
         assertEquals(ScanStatus.CANCELED, scanRepo.findJob(jobId)!!.status)
     }

@@ -18,6 +18,12 @@ interface DbDialect {
     /** JDBC 驱动类名 */
     fun driverClassName(): String
 
+    /** 新建物理连接的初始化 SQL(Hikari connectionInitSql);默认无 */
+    fun connectionInitSql(): String? = null
+
+    /** 异常是否为「会话打开游标超限」(ORA-01000 类);默认 false,仅有此概念的方言覆盖 */
+    fun isOpenCursorsExceeded(e: Throwable): Boolean = false
+
     /** 标识符引号 */
     fun quote(identifier: String): String
 
@@ -29,13 +35,25 @@ interface DbDialect {
     @Throws(SQLException::class)
     fun listDatabases(conn: Connection): List<String> = emptyList()
 
-    /** 是否多库方言(如 SQL Server 先选库再选 schema);false 时 listSchemas 的 schema 即用户眼中的「库」 */
+    /** 是否多库方言(如 SQL Server/Kingbase 先选库再选 schema);false 时 listSchemas 的 schema 即用户眼中的「库」 */
     fun supportsMultiDatabase(): Boolean = false
 
     /** 切换连接的目标数据库;不支持多库选择的方言忽略 */
     @Throws(SQLException::class)
     fun useDatabase(conn: Connection, database: String?) {
     }
+
+    /**
+     * 按库分池时目标库的 JDBC URL;默认原样返回(靠 useDatabase 在借出时切 catalog)。
+     * PG 协议系(Kingbase)连接绑定建连时的库、无法切换,覆盖为改写 URL 路径段
+     */
+    fun jdbcUrlForDatabase(baseUrl: String, database: String): String = baseUrl
+
+    /**
+     * 连接候选 URL 序列:URL 未指定库时按序回落尝试(首个连通者胜)。
+     * 默认只有自身;PG 协议系驱动在 URL 无库名时按用户名当库名,无同名库即失败,需要维护库候选
+     */
+    fun connectionUrlCandidates(url: String): List<String> = listOf(url)
 
     /** 库/schema 列表 */
     @Throws(SQLException::class)

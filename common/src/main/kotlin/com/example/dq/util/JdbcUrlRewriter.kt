@@ -47,7 +47,10 @@ object JdbcUrlRewriter {
     }
 
     /** 各库默认端口(端口缺省时回落;Oracle 服务名形态缺省也是 1521) */
-    private fun defaultPort(url: String): Int = when (DbType.fromJdbcUrl(url)) {
+    private fun defaultPort(url: String): Int = defaultPort(DbType.fromJdbcUrl(url))
+
+    /** 各库默认端口(表格批量导入等场景按类型直接取) */
+    fun defaultPort(type: DbType): Int = when (type) {
         DbType.MYSQL -> 3306
         DbType.POSTGRESQL -> 5432
         DbType.SQLSERVER -> 1433
@@ -55,5 +58,6 @@ object JdbcUrlRewriter {
         DbType.DM -> 5236
         DbType.KINGBASE -> 54321
         DbType.OCEANBASE -> 2881
+        DbType.HIGHGO -> 5866
     }
 }

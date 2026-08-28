@@ -2,9 +2,8 @@
   <div class="page-card">
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
-      <div>
+      <div style="display: flex; align-items: center; gap: 12px">
         <ScanTransferButtons :selected-ids="selectedJobs.map((j) => j.id)" @imported="load" />
-        <el-button :disabled="!jobs.length" style="margin-left: 12px" @click="exportExcel">导出 Excel</el-button>
         <el-button :icon="Refresh" @click="load">刷新</el-button>
       </div>
     </div>
@@ -16,9 +15,9 @@
       <el-table-column v-if="!schema" label="库/Schema" min-width="140">
         <template #default="{ row }">{{ row.dbName ? row.dbName + '.' + row.schemaName : row.schemaName }}</template>
       </el-table-column>
-      <el-table-column label="进度" width="180">
+      <el-table-column label="进度" width="200">
         <template #default="{ row }">
-          <el-progress :percentage="Math.round(row.progressPercent)" :status="row.status === 'FAILED' ? 'exception' : undefined" />
+          <ScanProgressBar :job="row" compact />
         </template>
       </el-table-column>
       <el-table-column label="表(完成/总数)" width="120">
@@ -65,11 +64,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import JobTimeline from '../components/JobTimeline.vue'
+import ScanProgressBar from '../components/ScanProgressBar.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import ScanTransferButtons from '../components/ScanTransferButtons.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
-import { cellText, exportListToExcel } from '../utils/listExport'
 const route = useRoute()
 const router = useRouter()
 // 从库列表下钻进来时带上数据源/库过滤条件
@@ -129,26 +128,6 @@ const selectedJobs = ref([])
 
 function onSelectionChange(rows) {
   selectedJobs.value = rows
-}
-
-/** 导出任务列表 Excel(列与页面一致;从库列表下钻进来时不带数据源/库列) */
-function exportExcel() {
-  const headers = ['任务ID', ...(schema ? [] : ['数据源', '库/Schema']), '进度%', '表(完成/总数)', '状态', '创建时间', '开始时间', '完成时间', '耗时']
-  const rows = jobs.value.map((j) => [
-    String(j.id),
-    ...(schema ? [] : [
-      cellText(j.datasourceName),
-      j.dbName ? j.dbName + '.' + j.schemaName : cellText(j.schemaName)
-    ]),
-    Math.round(j.progressPercent) + '%',
-    `${j.doneTables}/${j.totalTables}`,
-    statusText(j.status),
-    formatDateTime(j.createdAt),
-    formatDateTime(j.startedAt),
-    formatDateTime(j.finishedAt),
-    formatDuration(j.startedAt, j.finishedAt)
-  ])
-  exportListToExcel(schema ? `扫描记录-${schemaLabel.value}` : '扫描记录', headers, rows, '扫描记录')
 }
 
 onActivated(() => {

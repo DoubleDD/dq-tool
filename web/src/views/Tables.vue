@@ -2,11 +2,21 @@
   <div class="page-card">
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
-      <div>
+      <div class="toolbar-actions">
         <el-button @click="goBack">返回</el-button>
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshTables">刷新</el-button>
-        <el-button :loading="exporting" @click="exportReport">导出报告</el-button>
-        <el-button :disabled="!filteredTables.length" @click="exportExcel">导出 Excel</el-button>
+        <el-dropdown trigger="click" @command="onExportCommand">
+          <el-button>导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="current" :disabled="!filteredTables.length">导出当前列表</el-dropdown-item>
+              <el-dropdown-item command="latest" :disabled="!hasLatestScans">导出扫描结果</el-dropdown-item>
+              <el-dropdown-item command="report" :disabled="exporting">导出扫描报告</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <!-- 最新扫描结果导出弹窗宿主:无触发按钮,由下拉菜单项经 ref 唤起 -->
+        <ExportButton ref="latestExportRef" hide-trigger :latest-url="latestExportUrl" />
         <el-button @click="$router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${dbQuery()}`)">扫描记录</el-button>
         <template v-if="!filterTagId">
           <el-button :disabled="!selectedTables.length" :loading="batchDocLoading" @click="generateDocsBatch">
@@ -270,10 +280,11 @@
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { QuestionFilled, Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import TableTagDialog from '../components/TableTagDialog.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
+import ExportButton from '../components/ExportButton.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
@@ -324,6 +335,17 @@ function exportExcel() {
   })
   exportListToExcel(`表列表-${schemaLabel.value}`, headers, rows, '表列表')
 }
+
+/** 导出下拉:当前列表(页面所见行)/扫描结果(每表最新 DONE 快照,弹窗选列)/扫描报告(Word 调研报告) */
+function onExportCommand(cmd) {
+  if (cmd === 'current') {
+    exportExcel()
+  } else if (cmd === 'latest') {
+    latestExportRef.value?.open()
+  } else if (cmd === 'report') {
+    exportReport()
+  }
+}
 // schema 下所有基表的字段总数(业务库元数据查询,失败时显示 -)
 const columnCount = ref(null)
 const keyword = ref('')
@@ -333,6 +355,13 @@ const selectedTables = ref([])
 // 每张表最近一次 DONE 扫描的信息(表名 -> { jobId, finishedAt, totalRows, sizeBytes, sampled }),
 // 有值的表名渲染为链接;非采样表的 totalRows 为精确行数,优先于元数据估算展示
 const latestScans = ref({})
+// 是否有任一表的最新 DONE 扫描数据:无数据时禁用「导出扫描结果」按钮(后端同样以 409 拦截)
+const hasLatestScans = computed(() => Object.keys(latestScans.value).length > 0)
+// 最新扫描结果导出 URL:每表最近一次表级 DONE 快照,跨任务,不依赖指定任务记录
+const latestExportUrl = computed(
+  () => `/api/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/export-latest${dbQuery()}`)
+// 「导出扫描结果」弹窗组件引用(hideTrigger 模式,由导出下拉菜单项唤起)
+const latestExportRef = ref(null)
 // 运行中任务里每张未完成表的分段进度(表名 -> { jobId, status, doneChunks, totalChunks })
 const runningScans = ref({})
 // AI 生成的表说明(表名 -> 说明文字),本地 H2 查询
@@ -719,6 +748,15 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
+/* 工具栏按钮组:flex + gap 统一间距,并清掉 el-button 相邻默认 margin(el-dropdown 不吃该规则导致间距不一) */
+.toolbar-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.toolbar-actions :deep(.el-button) {
+  margin-left: 0;
+}
 .table-tag {
   margin: 0 4px 2px 0;
 }

@@ -23,4 +23,7 @@ data class ScanJobView(
     val events: List<ScanJobEvent>?,      // 状态变更时间线(创建/开始/继续/完成等)
     val tables: List<ScanTableView>?,     // 仅详情接口填充
     val workers: Int? = null,             // 并发 worker 线程数;null 表示使用配置默认
+    val autoTag: Boolean = false,         // AI 自动打标开关(任务创建时快照)
+    val genDoc: Boolean = false,          // 扫描后生成表描述开关(任务创建时快照)
+    val ai: ScanAiProgress = ScanAiProgress(0, 0, 0, 0),  // AI 后续分类进度(内存计数,重启清零)
 )

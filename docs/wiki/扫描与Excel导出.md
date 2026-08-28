@@ -9,7 +9,8 @@
 - 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫
 - 并发 worker 数可在发起扫描弹窗中设置(1~128,留空用配置默认 `dq.scan.workers`):落库 `scan_job.workers` 供详情展示与续扫恢复;扫描启动时动态调整全局扫描线程池 `ScanExecutor.resize`(每次发起都按本次任务设定调整,避免上次设置残留)
 - 扫描可选「生成表描述」(`gen_doc` 随 scan_job 持久化,默认开):每张表 DONE 后由 `ScanDocService` 独立守护线程池(2 worker)异步调 `TableDocService.generate` 生成 AI 表说明落 table_doc;已有非空描述/未配置大模型/任务取消或失败均跳过,同 job 首次 LLM 失败后熔断剩余表;前端扫描对话框复选默认勾选(AI 配置可用时)
-- **AI 后续(自动打标/生成表描述)是扫描的串行收尾阶段**:入队/完成经 `ScanAiTracker` 按 job 计数,只有「全部表终态 + AI 后续清零」任务才收尾 DONE/FAILED,此前保持 RUNNING、总进度封顶 99%(表级进度已满但 AI 未走完不算完成);计数在内存,重启清零,断点续扫会为 DONE 表重新补齐 AI 后续(已打标/已有描述的表幂等跳过),收尾语义不受重启影响
+- **AI 后续(自动打标/生成表描述)是扫描的串行收尾阶段**:入队/完成经 `ScanAiTracker` 按 job 计数,只有「全部表终态 + AI 后续清零」任务才收尾 DONE/FAILED,此前保持 RUNNING、总进度封顶 99%(表级进度已满但 AI 未走完不算完成);计数在内存,重启清零,断点续扫会为 DONE 表重新补齐 AI 后续(已打标/已有描述的表幂等跳过),收尾语义不受重启影响。打标/表描述按类别分别计数(`ScanAiTracker.AiKind`),经 `ScanJobView.ai`(`tagTotal/tagDone/docTotal/docDone`,连同任务开关快照 `autoTag`/`genDoc`)暴露给前端;扫描与 AI 是并行关系(表 DONE 即触发),前端据此用三段式进度条(`ScanProgressBar.vue`,扫描/AI 打标/AI 表描述 一行三段各自更新)展示,替代旧的单条总进度
+- **手动结束(`POST /api/scans/{jobId}/finish` → `ScanService.finish`)**:AI 后续挂死(taskSubmitted 后 taskDone 永远不来)会让任务永远 RUNNING 卡 99%,此接口是人工兜底——与 cancel 同样中断仍在执行的扫描部分(置 CANCELED 挡收尾联动、取消待执行分段、`Statement.cancel()` 中断执行中 SQL、未完成表置 CANCELED),随后 `ScanAiTracker.reset` 清零放弃挂起的 AI 计数,收尾为 DONE(有失败表则 FAILED)而非 CANCELED,**结束后不可续扫**;详情页 RUNNING 时与「取消」并列显示「结束任务」按钮
 - 非数值分段键(如 varchar 主键)的边界规划用 seek(keyset)+固定步进:每段从上一段边界之后按步进取边界,避免 OFFSET 深分页每次从索引头扫 N 行(O(N²),大表 varchar 键会把 MySQL 服务器 IO 打满导致新连接握手超时)
 - 业务库执行的 SQL 全部打日志(独立 logger `com.example.dq.sql`,默认 INFO):`DataSourceService` 连接出口统一 JDK 代理包装(`SqlLogConnection`),拦截 Statement/PreparedStatement 的 execute 类调用打印完整 SQL 与绑定参数;排查慢 SQL/深分页等场景用,日志文件按天滚动可回溯。本地 H2(repository 包)不走该出口,不打日志;不需要时把 logback 中 `com.example.dq.sql` 调为 WARN/OFF。代理反射调用会拆包 `InvocationTargetException` 原样透出底层 `SQLException`(否则被包成 `UndeclaredThrowableException`,方言层 catch(SQLException) 的降级逻辑会失效)
 - 扫描的调度单元是"分段(chunk)",不是表:分段状态持久化在 `scan_chunk` 表,断点续扫只重跑未完成分段
@@ -17,13 +18,19 @@
 - 无字段标记(`meta_table.no_columns`,V22):扫描规划/续扫或字段明细页访问发现表没有字段(如 Oracle IOT 溢出段 SYS_IOT_OVER_%)时置 TRUE,供识别「可跳过」的表;表有字段时清除。强制刷新表结构(`replaceTables` 整粒度覆盖)后标记随旧行自动还原——重新同步后字段有无未知,待下次访问字段列表或扫描时按实测重新标定
 - 大表默认采样估算(行数 > 100 万或体积 > 10GB,阈值可在数据源级别覆盖);MySQL/达梦/OB 的采样是 LIMIT 顺序采样,结果有偏,UI 需标注"估算值"
 - Oracle 把空字符串存为 NULL,空串统计恒为 0,这是数据库本身行为,不是 bug
+- Oracle ORA-01000(超出打开游标的最大数)防护:扫描 SQL 是一次性字面量文本,连接池长会话上反复硬解析会让会话游标缓存(驻留游标计入 open_cursors)持续累积。工具侧两道防线:① 建池时 `connectionInitSql` 执行 `ALTER SESSION SET session_cached_cursors = 0`(`OracleDialect.connectionInitSql`,方言接口 `DbDialect.connectionInitSql` 默认无),关掉会话游标缓存,语句关闭即真正释放;② `ChunkRunner` 捕获 ORA-01000(异常链上 errorCode=1000,`OracleDialect.isOpenCursorsExceeded`)时调 `DataSourceService.recyclePool` 回收该数据源全部连接池,分段重试自动拿到全新会话;在建连接上的其他分段失败由既有重试逻辑兜底
 - Oracle 表体积统计依赖段视图:23ai 起 ALL_SEGMENTS 被移除(DBA_SEGMENTS 仍在);受限账号看不到段视图时(无权限对象 Oracle 也报 ORA-00942)按 ALL_SEGMENTS → DBA_SEGMENTS → USER_SEGMENTS(仅当前用户)→ 不统计 逐级降级(23ai 链从 DBA_SEGMENTS 起),记 warn 日志;探测结果按「用户名@JDBC URL」内存缓存(OracleDialect.segViewCache,换账号/换服务器自动重探,进程重启重置),非首选落点超过 1 小时(SEG_VIEW_REPROBE_MS)从链头重探一次以捕获权限变更
 - SQL Server 行数/体积统计用目录视图 sys.partitions + sys.allocation_units(行数口径 index_id 0/1 堆/聚集索引,体积为全部分区 used_pages × 8KB),不用 DMV sys.dm_db_partition_stats——后者要求 VIEW DATABASE STATE 权限,受限账号在库列表页整页报错;目录视图只受元数据可见性约束,普通账号即可
-- SQL Server 空串统计的去空白表达式用 LTRIM/RTRIM 而非 TRIM(`SqlServerDialect.trimExpr`):TRIM 是 2017 才引入的内置函数,2016 及以下报「'TRIM' 不是可以识别的内置函数名称」;LTRIM/RTRIM 全版本可用且语义同为去两端空格
+- SQL Server 空串统计的去空白表达式用 LTRIM/RTRIM 而非 TRIM(`SqlServerDialect.trimExpr`):TRIM 是 2017 才引入的内置函数,2016 及以下报「'TRIM' 不是可以识别的内置函数名称」;LTRIM/RTRIM 全版本可用且语义同为去两端空格。表达式内先 `CAST(col AS NVARCHAR(MAX))`:旧 LOB 类型 text/ntext 不支持 LTRIM/RTRIM 与 = '' 比较(报「参数数据类型 text 对于 rtrim 函数的参数 1 无效」),普通 (n)(var)char 转换后语义不变
 
 ## Excel 导出
 
 sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 表字段 / 每表字段明细多 sheet / 异常表,列可选,固定前列的表名列名为「英文表名」、表注释列名为「中文表名」。「表列表」含「表描述」可选列(取 table_doc 中 AI 生成/人工维护的表说明,非表注释,按数据源+库+schema 匹配,未生成则为空)。
+
+两个入口共用同一组 sheet 写入逻辑(`ExportService` 内部把各 sheet 写入解耦为「表列表 + 取字段 lambda + 表描述 map」,任务版按 jobId+表名取字段,最新版按 scan_table 快照行 id 取字段):
+
+- **按任务导出**:`GET /api/scans/{jobId}/export`(前端入口:扫描记录/任务详情的「导出 Excel」弹窗 `ExportButton.vue`),sheet 结构如上,概览含任务状态/强制全量/空值规则/起止时间
+- **最新扫描结果导出**:`GET /api/datasources/{dsId}/schemas/{schema}/export-latest?db=`(前端入口:表列表页「导出」下拉 →「导出扫描结果」,ExportButton hideTrigger 模式经 ref 唤起弹窗),不依赖指定任务记录——每张表跨任务取最近一次表级 DONE 的扫描快照(`ScanRepository.latestDoneScanTables`,与表列表页「点击表名直达最新结果」同口径),字段明细按快照行 id 取(`listScanColumns`);sheet 少「异常表」(口径内全是 DONE,表列表「状态」列恒为 DONE),概览为最新口径文案(数据源/库·Schema/数据口径说明/最晚扫描完成时间 + 统计总结);无任何 DONE 数据时抛 `IllegalStateException`(409),前端同时按 `latestScans` 映射为空禁用按钮;单测 `ExportServiceTest`(跨任务快照取舍/空数据 409/任务导出 sheet 结构回归)
 
 ## 扫描结果 Word 导出(数据库表结构文档)
 
@@ -38,17 +45,17 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 ## 数据源整库表结构 Word 导出
 
-库列表页(`Schemas.vue`)「更多 → 导出表结构文档」导出**数据源下所有库(白名单过滤后)**的表结构文档:`GET /api/datasources/{dsId}/export-dbstruct-word` 同步渲染下载(`{数据源名}-数据库表结构.docx`,文件名特殊字符转 `_`),无需勾选、不要求先扫描。
+库列表页(`Schemas.vue`)「导出 → 导出表结构文档」导出**数据源下所有库(白名单过滤后)**的表结构文档:`GET /api/datasources/{dsId}/export-dbstruct-word` 同步渲染下载(`{数据源名}-数据库表结构.docx`,文件名特殊字符转 `_`),无需勾选、不要求先扫描。
 
 - **数据口径**:与扫描结果 Word 导出(快照)不同,本功能走 `MetadataService` 实时元数据——meta_cache 缓存优先,未缓存回源业务库并落缓存;行数/体积为元数据估算值(`TableStat.estRows/sizeBytes`,null 按 0);表标签取全局表标记(table_tag),库描述取 schema_doc
-- **多库两级循环**:多库方言(SQL Server)先 `listDatabases`(已过滤)再逐库展开 schema;单库方言每个 schema 自成一节(H2「数据库:X」= schema 名,与扫描结果导出 dbName 口径一致)。白名单过滤后无任何库 → `IllegalArgumentException`(400)
+- **多库两级循环**:多库方言(SQL Server/Kingbase)先 `listDatabases`(已过滤)再逐库展开 schema;单库方言每个 schema 自成一节(H2「数据库:X」= schema 名,与扫描结果导出 dbName 口径一致)。白名单过滤后无任何库 → `IllegalArgumentException`(400)
 - **渲染**:内核 `DbStructExportService` + poi-tl 模板 `templates/db-structure-full.docx`(由 `scripts/make-word-template-fulldb.py` 改造,封面保持模板原样不替换数据源名,原型小节文本统一为 `PROTO_*` 标记便于单测断言删除);二章数据库清单走 LoopRow(`{{dbs}}`,每 库+模式 一行),三章表清单/四章表结构分别由 `TableListSectionsPolicy`/`StructSectionsPolicy` 按两级循环克隆模板原型(H2/H3 标题段 + 表格)生成;空 schema 表清单只留表头,无表 schema 四章输出「(无数据表)」;`TableStructsPolicy` 的 setParagraphText/fillRows/setCellText 已提为文件级 internal 函数共用
 - **目录**:渲染后由 `rewriteTocEntries` 直接重写 sdt 缓存条目(编号与多级列表一致:N./N.M./N.M.K.),不刷域的查看器也能看到正确条目;TOC 域结构与 dirty/updateFields 标记保留,页码与跳转链接仍由 Word/WPS 刷新域时重建(页码只有排版引擎能算)
 - 单测 `DbStructExportTemplateTest`(两库三模式:标签/PROTO 残留、标题样式、行列数、零字段表、无表 schema、空数据源兜底)
 
 ## 通用列表导出(各列表页「导出 Excel」)
 
-数据源菜单下除数据源卡片页外的列表页(库列表、表列表、字段明细/索引结构/数据预览三个 tab、扫描记录)都有「导出 Excel」按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同)。
+数据源菜单下除数据源卡片页外的列表页(库列表「导出→导出当前列表」、表列表、字段明细/索引结构/数据预览三个 tab、扫描记录)都有导出按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同)。
 
 - **机制**(`ListExportService` common + `ListExportController` server):前端把当前表格的表头与行(展示口径字符串,空单元格传空串)POST `/api/list-exports` → 后端 POI 渲染 xlsx 内存暂存并返回一次性 token → 前端 `utils/listExport.js` 的 `exportListToExcel` 拿 token 后走既有 `downloadFile` GET `/api/list-exports/{token}` 下载(桌面端 Tauri 原生保存对话框零改动);token 取走即删,5 分钟过期
 - **与扫描结果导出的分工**:扫描结果 Excel(`ExportService`)是含业务查询的多 sheet 定制结构;通用列表导出不含任何业务查询,数据完全由前端按展示口径组装,因此各列表页可直接复用

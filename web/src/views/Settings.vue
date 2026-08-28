@@ -343,7 +343,7 @@ onActivated(() => {
 
 <style scoped>
 .settings-page {
-  max-width: 860px;
+  max-width: 100%;
 }
 
 .settings-sub {

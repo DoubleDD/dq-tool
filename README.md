@@ -13,8 +13,9 @@
 | 达梦 DM8 | `jdbc:dm://host:5236` |
 | 人大金仓 KingbaseES | `jdbc:kingbase8://host:54321/db` |
 | OceanBase(MySQL 模式) | `jdbc:oceanbase://host:2881/` |
+| 瀚高 HighGo | `jdbc:highgo://host:5866/db` |
 
-七个驱动均来自 Maven 中央仓库,无需手动安装。
+八个驱动均来自 Maven 中央仓库,无需手动安装。
 
 说明:
 

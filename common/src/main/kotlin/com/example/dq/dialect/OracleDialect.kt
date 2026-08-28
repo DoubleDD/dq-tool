@@ -31,6 +31,9 @@ class OracleDialect : AbstractDialect() {
         /** ORA-00942:表或视图不存在(Oracle 对无权限访问的对象也报 942) */
         private fun isMissingObject(e: SQLException): Boolean = e.errorCode == 942
 
+        /** ORA-01000:超出打开游标的最大数(会话级游标耗尽) */
+        private const val ORA_MAX_OPEN_CURSORS = 1000
+
         /** 段视图非首选落点的重探间隔:权限可能后被授予/回收,到期从链头重新完整探测 */
         internal const val SEG_VIEW_REPROBE_MS = 3600_000L
 
@@ -123,6 +126,28 @@ class OracleDialect : AbstractDialect() {
 
     override fun driverClassName(): String {
         return "oracle.jdbc.OracleDriver"
+    }
+
+    /**
+     * 关闭会话游标缓存:扫描 SQL 均为一次性字面量文本,缓存无复用收益;
+     * 缓存驻留的游标计入 open_cursors,连接池长会话上反复硬解析会持续累积,最终触发 ORA-01000
+     */
+    override fun connectionInitSql(): String {
+        return "ALTER SESSION SET session_cached_cursors = 0"
+    }
+
+    override fun isOpenCursorsExceeded(e: Throwable): Boolean {
+        var cur: Throwable? = e
+        while (cur != null) {
+            if (cur is SQLException) {
+                if (cur.errorCode == ORA_MAX_OPEN_CURSORS) return true
+                // JDBC 复合异常的错误可能挂在 nextException 链上
+                cur = cur.nextException ?: cur.cause
+            } else {
+                cur = cur.cause
+            }
+        }
+        return false
     }
 
     /**

@@ -112,7 +112,7 @@ class WordReportService(
         }
         if (incomplete.isNotEmpty()) {
             throw IllegalStateException(
-                "以下库不满足导出条件,请先在数据源页对这些库完成全表扫描再导出报告: " + incomplete.joinToString("、"))
+                "以下库不满足导出条件,请先在数据源页对这些库完成全表扫描再导出扫描报告: " + incomplete.joinToString("、"))
         }
 
         // 进度总步数:逐库聚合 N + 标记节 LLM S + 固定分析段 8 + 渲染 1

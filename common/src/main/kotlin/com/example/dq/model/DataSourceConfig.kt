@@ -21,6 +21,12 @@ class DataSourceConfig {
     /** 是否已设密码,仅列表接口填充(无密码只可能来自导入),不落库 */
     var hasPassword: Boolean? = null
 
+    // ---- 连接状态标记(表格批量导入时实测写入;conn_error 修复后保留作历史)----
+    /** NULL/OK/ERROR */
+    var connStatus: String? = null
+    var connError: String? = null
+    var connCheckedAt: java.time.LocalDateTime? = null
+
     // ---- SSH 隧道(经跳板机连接目标库)----
     /** 是否启用 SSH 隧道 */
     var sshEnabled: Boolean? = null

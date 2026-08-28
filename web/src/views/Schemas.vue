@@ -2,9 +2,18 @@
   <div class="page-card">
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
-      <div>
+      <div class="toolbar-actions">
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshStats">刷新</el-button>
-        <el-button :disabled="!filteredSchemas.length" @click="exportExcel">导出</el-button>
+        <el-dropdown trigger="click" @command="onExportCommand">
+          <el-button :disabled="!filteredSchemas.length">导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="exportCurrent">导出当前列表</el-dropdown-item>
+              <el-dropdown-item command="export" :loading="exporting">导出扫描报告</el-dropdown-item>
+              <el-dropdown-item command="exportDbStruct">导出表结构文档</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
         <el-button type="primary" :disabled="!selected.length" :loading="submitting" @click="scanSelected">
           批量扫描{{ selected.length ? `(${selected.length})` : '' }}
         </el-button>
@@ -12,8 +21,6 @@
           <el-button>更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="export" :loading="exporting">导出报告</el-dropdown-item>
-              <el-dropdown-item command="exportDbStruct">导出表结构文档</el-dropdown-item>
               <el-dropdown-item command="filter">库过滤</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -244,8 +251,8 @@ const breadcrumbItems = computed(() => [
   { label: dsName.value || `数据源 ${dsId}` }
 ])
 
-// SQL Server 等多库方言:数据库只是筛选条件,库列表按「数据库 + 架构」两列展示
-const isMultiDb = computed(() => dsRow.value?.dbType === 'SQLSERVER')
+// 多库方言(SQL Server/Kingbase):数据库只是筛选条件,库列表按「数据库 + 架构」两列展示
+const isMultiDb = computed(() => ['SQLSERVER', 'KINGBASE'].includes(dsRow.value?.dbType))
 
 /** 行唯一键:跨库模式下同名 schema 可能分属不同数据库 */
 function rowKeyOf(db, name) {
@@ -257,11 +264,16 @@ function displayName(row) {
   return isMultiDb.value && row.database ? `${row.database}.${row.name}` : row.name
 }
 
+// ---------- "导出"下拉 ----------
+function onExportCommand(cmd) {
+  if (cmd === 'exportCurrent') exportExcel()
+  else if (cmd === 'export') exportReport()
+  else if (cmd === 'exportDbStruct') exportDbStruct()
+}
+
 // ---------- "更多"下拉 ----------
 function onMoreCommand(cmd) {
-  if (cmd === 'export') exportReport()
-  else if (cmd === 'exportDbStruct') exportDbStruct()
-  else if (cmd === 'filter') openFilter()
+  if (cmd === 'filter') openFilter()
 }
 
 // ---------- 整库表结构 Word 导出(所有白名单过滤后的库,实时元数据,同步下载;无需勾选) ----------
@@ -318,7 +330,7 @@ async function exportReport() {
     try {
       await ElMessageBox.confirm(
         `未勾选库,将默认导出全部 ${rows.length} 个已完成全表扫描的库(${rows.map(displayName).join('、')}),是否继续?`,
-        '导出报告',
+        '导出扫描报告',
         { confirmButtonText: '导出', cancelButtonText: '取消', closeOnPressEscape: false }
       )
     } catch {
@@ -337,7 +349,7 @@ async function exportReport() {
     for (const [db, names] of groups) {
       await submitReportExport(dsId, db, names)
     }
-    ElMessageBox.confirm('导出任务已提交,生成可能需要几分钟。是否前往「报告列表」查看进度?', '导出报告', {
+    ElMessageBox.confirm('导出任务已提交,生成可能需要几分钟。是否前往「报告列表」查看进度?', '导出扫描报告', {
       confirmButtonText: '前往查看',
       cancelButtonText: '留在此页',
       closeOnPressEscape: false
@@ -379,7 +391,7 @@ async function openFilter() {
     // 系统库清单与库列表并行拉取;系统清单失败不阻塞(退化为全勾)
     const sysPromise = request.get(`/db-types/${dsRow.value?.dbType}/system-schemas`).catch(() => [])
     let all
-    if (dsRow.value?.dbType === 'SQLSERVER') {
+    if (isMultiDb.value) {
       // 多库方言:白名单作用于数据库层级
       all = await request.get(`/datasources/${dsId}/databases?all=true`)
     } else {
@@ -407,8 +419,8 @@ async function saveFilter() {
     if (dsRow.value) dsRow.value.schemaFilter = schemas
     ElMessage.success('库过滤已更新')
     filterVisible.value = false
-    // SQL Server 跨库枚举用的数据库清单同样受白名单约束,保存后刷新
-    if (dsRow.value?.dbType === 'SQLSERVER') {
+    // 多库方言跨库枚举用的数据库清单同样受白名单约束,保存后刷新
+    if (isMultiDb.value) {
       databases.value = await request.get(`/datasources/${dsId}/databases`).catch(() => [])
     }
     await loadSchemas()
@@ -430,7 +442,7 @@ const filteredSchemas = computed(() => {
 
 /** 先渲染库名列表,再异步补表数量/最近扫描/标记统计(失败不影响列表) */
 async function loadSchemaStats(refresh = false) {
-  // 跨库模式(SQL Server)逐库拉取统计后按 数据库+架构 键合并;其余情况只拉一次
+  // 跨库模式(多库方言)逐库拉取统计后按 数据库+架构 键合并;其余情况只拉一次
   const dbs = isMultiDb.value && databases.value.length ? databases.value : ['']
   const buildQ = (db) => {
     const params = new URLSearchParams()
@@ -506,7 +518,7 @@ async function load() {
       setDsName(dsId, dsName.value)
       syncTab(route)
     }
-    if (ds && ds.dbType === 'SQLSERVER') {
+    if (ds && ['SQLSERVER', 'KINGBASE'].includes(ds.dbType)) {
       // 跨库枚举:拉取数据库清单(受白名单约束),用于逐库拉 schema/统计
       databases.value = await request.get(`/datasources/${dsId}/databases`).catch(() => [])
     }
@@ -699,6 +711,14 @@ onUnmounted(stopPolling)
 </script>
 
 <style scoped>
+/* 工具栏按钮组:flex + gap 统一间距,并清掉 el-button 相邻默认 margin(el-dropdown 不吃该规则导致间距不一) */
+.toolbar-actions {
+  display: flex;
+  gap: 12px;
+}
+.toolbar-actions :deep(.el-button) {
+  margin-left: 0;
+}
 /* 库过滤/导出弹窗:提示行 + 全选行 + 勾选列表(宽松行距) */
 .filter-tip {
   color: var(--el-text-color-secondary);

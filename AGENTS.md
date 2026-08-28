@@ -7,7 +7,7 @@
 
 dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据质量检测(表级行数/体积、字段级空值统计、大表并发分段扫描、Excel/Word 报告导出、AI 表说明与自动打标、表标记)。
 
-支持 7 种数据库:MySQL、PostgreSQL、SQL Server、Oracle、达梦 DM8、人大金仓 KingbaseES、OceanBase(仅 MySQL 模式)。驱动全部来自 Maven 中央仓库。
+支持 8 种数据库:MySQL、PostgreSQL、SQL Server、Oracle、达梦 DM8、人大金仓 KingbaseES、OceanBase(仅 MySQL 模式)、瀚高 HighGo。驱动全部来自 Maven 中央仓库。
 
 无登录/权限控制,**仅适合内网单机部署**;任何能访问端口的人都能操作所有数据源,不要暴露到公网。
 
@@ -38,6 +38,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [AI 功能与表标记](docs/wiki/AI功能与表标记.md) — AI 表说明、AI 自动打标(AutoTagService)、全局表标记与标记统计页
 - [Word 报告导出](docs/wiki/Word报告导出.md) — poi-tl 数据调研报告:封面+四章正文、DONE 快照口径、409 前置校验、模板改造脚本
 - [数据源](docs/wiki/数据源.md) — 连接信息加密存储、SSH 隧道、库过滤白名单、JSON/Navicat/DataGrip 导入导出
+- [表格批量导入与抽样导出](docs/wiki/批量导入与抽样导出.md) — 上传 Excel(每行一张表):数据源去重导入(连不上标记错误待人工处理、修复后清标记留历史)+ 每表抽 50 行按 数据源×类别 出 xlsx、类别目录归档打 zip,异步大任务 + 表明细小进度,1s 轮询
 - [系统诊断](docs/wiki/系统诊断.md) — 排错中心:环境/授权/AI/数据源连通实测/失败记录/错误日志聚合,Markdown 诊断报告导出
 - [授权码](docs/wiki/授权码.md) — 离线 Ed25519 授权码、签发工具、管理员实例授权码管理
 

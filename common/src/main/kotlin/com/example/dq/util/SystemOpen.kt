@@ -54,6 +54,16 @@ object SystemOpen {
         log.info("已打开文件目录: {}", path)
     }
 
+    /** 打开目录本身(导出任务「打开目录」:产物是一个文件夹而非单文件时) */
+    fun openDir(path: Path) {
+        when {
+            os.contains("mac") -> start("open", path.toString())
+            os.contains("win") -> start("explorer", path.toAbsolutePath().toString())
+            else -> start("xdg-open", path.toAbsolutePath().toString())
+        }
+        log.info("已打开目录: {}", path)
+    }
+
     /** MS Word 常见安装路径(Office 2016+ 即点即用版) */
     private fun findWindowsOffice(): Path? {
         val roots = listOfNotNull(System.getenv("ProgramFiles"), System.getenv("ProgramFiles(x86)"))

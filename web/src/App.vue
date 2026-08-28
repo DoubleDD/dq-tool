@@ -60,12 +60,18 @@
                 <el-menu-item v-for="ds in g.items" :key="ds.id" :index="`/datasources/${ds.id}/schemas`">
                   <DbTypeIcon :type="ds.dbType" :size="15" />
                   <span class="ds-name">{{ ds.name }}</span>
+                  <span class="ds-edit" title="编辑数据源" @click.stop="onEditDs(ds)">
+                    <el-icon><EditPen /></el-icon>
+                  </span>
                 </el-menu-item>
               </el-sub-menu>
               <template v-else>
                 <el-menu-item v-for="ds in g.items" :key="ds.id" :index="`/datasources/${ds.id}/schemas`">
                   <DbTypeIcon :type="ds.dbType" :size="15" />
                   <span class="ds-name">{{ ds.name }}</span>
+                  <span class="ds-edit" title="编辑数据源" @click.stop="onEditDs(ds)">
+                    <el-icon><EditPen /></el-icon>
+                  </span>
                 </el-menu-item>
               </template>
             </template>
@@ -124,7 +130,7 @@ import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Coin, Document, Download, Expand, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
+import { Coin, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
@@ -151,6 +157,7 @@ const otherNav = computed(() => {
     { path: '/tags', label: '标记统计', icon: PriceTag },
     { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
     { path: '/report-exports', label: '报告列表', icon: Download },
+    { path: '/sample-exports', label: '抽样导出', icon: Files },
     { path: '/settings', label: '系统设置', icon: Setting },
     { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit }
   ]
@@ -271,6 +278,7 @@ const activeNav = computed(() => {
   if (p === '/tags' || p.startsWith('/tags/')) return '/tags'
   if (p === '/ai-usage' || p.startsWith('/ai-usage/')) return '/ai-usage'
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
+  if (p === '/sample-exports' || p.startsWith('/sample-exports/')) return '/sample-exports'
   if (p === '/settings' || p.startsWith('/settings/')) return '/settings'
   if (p === '/logs' || p.startsWith('/logs/')) return '/logs'
   if (p === '/diagnostics' || p.startsWith('/diagnostics/')) return '/diagnostics'
@@ -309,6 +317,11 @@ const dsMoreVisible = ref(false)
 function onDsCommand(cmd) {
   dsMoreVisible.value = false
   tabState.pendingDsDialog = cmd
+  router.push('/datasources')
+}
+// 菜单项右侧编辑图标:写入待编辑数据源 id 并跳数据源列表页,由 Datasources.vue 消费(pendingDsEditId)
+function onEditDs(ds) {
+  tabState.pendingDsEditId = String(ds.id)
   router.push('/datasources')
 }
 

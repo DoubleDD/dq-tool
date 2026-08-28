@@ -65,7 +65,7 @@
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="还没有报告,在库列表/表列表页点击「导出报告」提交" :image-size="60" />
+        <el-empty description="还没有报告,在库列表/表列表页点击「导出扫描报告」提交" :image-size="60" />
       </template>
     </el-table>
   </div>

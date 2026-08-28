@@ -108,6 +108,11 @@ class ChunkRunner(
                 return
             }
             log.warn("分段执行失败 chunkId={} table={}: {}", chunkId, table.tableName, e.message)
+            // 会话游标耗尽(ORA-01000):池内长会话已被污染的游标缓存占满,回收整个连接池让重试拿到全新会话
+            if (dialect.isOpenCursorsExceeded(e)) {
+                log.warn("会话游标耗尽,回收数据源 {} 的连接池重建会话", job.datasourceId)
+                dataSourceService.recyclePool(job.datasourceId)
+            }
             if (!retried && chunk.attempts < MAX_ATTEMPTS) {
                 repo.markChunkStatus(chunkId, ScanStatus.PENDING, null)
                 run(chunkId, true)

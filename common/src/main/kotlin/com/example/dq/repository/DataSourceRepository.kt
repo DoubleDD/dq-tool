@@ -32,6 +32,9 @@ class DataSourceRepository(private val jdbc: Jdbc) {
         c.sshPassword = rs.getString("ssh_password_enc")
         c.sshPrivateKey = rs.getString("ssh_private_key_enc")
         c.sshPassphrase = rs.getString("ssh_passphrase_enc")
+        c.connStatus = rs.getString("conn_status")
+        c.connError = rs.getString("conn_error")
+        c.connCheckedAt = rs.getTimestamp("conn_checked_at")?.toLocalDateTime()
         c
     }
 
@@ -92,6 +95,21 @@ class DataSourceRepository(private val jdbc: Jdbc) {
 
     fun delete(id: Long) {
         jdbc.update("DELETE FROM data_source WHERE id=?", id)
+    }
+
+    /**
+     * 单独更新连接状态标记(表格批量导入实测后写);只动 conn_status/conn_error/conn_checked_at 三列。
+     * 「修复后保留历史错误」靠调用方把旧 conn_error 原样传回实现
+     */
+    fun updateConnStatus(id: Long, status: String?, error: String?) {
+        jdbc.update("UPDATE data_source SET conn_status=?, conn_error=?, conn_checked_at=CURRENT_TIMESTAMP WHERE id=?",
+            status, error, id)
+    }
+
+    /** 单独更新分组名(数据源卡片拖拽改分组);只动 group_name 一列,null 表示未分组 */
+    fun updateGroup(id: Long, groupName: String?) {
+        jdbc.update("UPDATE data_source SET group_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            groupName, id)
     }
 
     fun findById(id: Long): DataSourceConfig? =

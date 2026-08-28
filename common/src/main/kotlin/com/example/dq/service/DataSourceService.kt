@@ -1,6 +1,7 @@
 package com.example.dq.service
 
 import com.example.dq.config.AppConfig
+import com.example.dq.dialect.DbDialect
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DataSourceRequest
@@ -31,9 +32,10 @@ class DataSourceService(
 ) {
 
     /**
-     * 连接池:key 为 "数据源id|库名"。多库方言(目前仅 SQL Server)按库分池——
+     * 连接池:key 为 "数据源id|库名"。多库方言(SQL Server/Kingbase)按库分池——
      * 同一物理连接固定一个库,绝不跨库复用:mssql-jdbc 的 DatabaseMetaData 缓存语句
-     * 持有服务端句柄,USE 切库后句柄失效且不可恢复(错误 586/8179,默认不重试)
+     * 持有服务端句柄,USE 切库后句柄失效且不可恢复(错误 586/8179,默认不重试);
+     * Kingbase 走 PG 协议,连接绑定建连时的库,分池 URL 由方言改写路径段指向目标库
      */
     private val pools = ConcurrentHashMap<String, HikariDataSource>()
 
@@ -125,6 +127,13 @@ class DataSourceService(
         repo.update(c, updatePassword = false)
     }
 
+    /** 单独更新分组名(数据源管理页卡片拖拽);空白归一为 null(未分组),只动这一列,不影响连接配置 */
+    fun updateGroup(id: Long, groupName: String?) {
+        repo.findById(id)
+            ?: throw IllegalArgumentException("数据源不存在: $id")
+        repo.updateGroup(id, groupName?.trim()?.takeIf { it.isNotEmpty() })
+    }
+
     /** 测试连接(不落库,直接用请求参数);返回探测到的数据库兼容模式,无为 null */
     @Throws(SQLException::class)
     fun testConnection(req: TestConnectionRequest): String? {
@@ -136,7 +145,7 @@ class DataSourceService(
             throw SQLException("JDBC 驱动未加载: " + dialect.driverClassName(), e)
         }
         return withOptionalTunnel(req) { url ->
-            SqlLogConnection.wrap(DriverManager.getConnection(url, req.username, req.password)).use { conn ->
+            withFirstConnectable(dialect, url, req.username, req.password) { conn ->
                 dialect.detectDbMode(conn)
             }
         }
@@ -153,8 +162,8 @@ class DataSourceService(
             throw SQLException("JDBC 驱动未加载: " + dialect.driverClassName(), e)
         }
         return withOptionalTunnel(req) { url ->
-            SqlLogConnection.wrap(DriverManager.getConnection(url, req.username, req.password)).use { conn ->
-                // 只有多库方言(SQL Server)实现 listDatabases;其余方言的「库」就是 schema 列表(MySQL 的 schema 即库)
+            withFirstConnectable(dialect, url, req.username, req.password) { conn ->
+                // 只有多库方言(SQL Server/Kingbase)实现 listDatabases;其余方言的「库」就是 schema 列表(MySQL 的 schema 即库)
                 val databases = dialect.listDatabases(conn)
                 if (databases.isNotEmpty()) databases else dialect.listSchemas(conn)
             }
@@ -183,13 +192,34 @@ class DataSourceService(
                 sshUsername = req.sshUsername, sshAuthMethod = req.sshAuthMethod,
                 sshPassword = sshPassword, sshPrivateKey = sshPrivateKey, sshPassphrase = sshPassphrase)
             withOptionalTunnel(testReq) { url ->
-                SqlLogConnection.wrap(DriverManager.getConnection(url, req.username, password)).use { conn ->
+                withFirstConnectable(dialect, url, req.username, password) { conn ->
                     dialect.detectDbMode(conn)
                 }
             }
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * 按方言候选 URL 序列依次尝试连接(URL 未指定库时的维护库回落,见 DbDialect.connectionUrlCandidates),
+     * 首个连通者执行 block;全部失败抛最后一个异常(比第一个更接近真实可用路径,如权限不足)
+     */
+    @Throws(SQLException::class)
+    private fun <T> withFirstConnectable(
+        dialect: DbDialect, url: String, username: String?, password: String?, block: (Connection) -> T,
+    ): T {
+        var lastError: SQLException? = null
+        for (candidate in dialect.connectionUrlCandidates(url)) {
+            try {
+                SqlLogConnection.wrap(DriverManager.getConnection(candidate, username, password)).use { conn ->
+                    return block(conn)
+                }
+            } catch (e: SQLException) {
+                lastError = e
+            }
+        }
+        throw lastError ?: SQLException("无法连接: $url")
     }
 
     /** 启用 SSH 隧道时建一次性隧道并把 JDBC URL 改写为本地转发端口;未启用直接透传原 URL */
@@ -209,7 +239,7 @@ class DataSourceService(
     }
 
     /**
-     * 借出业务库连接。多库方言(SQL Server)按解析后的目标库分池并在借出时切好 catalog,
+     * 借出业务库连接。多库方言(SQL Server/Kingbase)按解析后的目标库分池并在借出时切好 catalog,
      * 调用方无需再自行 useDatabase;非多库方言 database 参数忽略
      */
     @Throws(SQLException::class)
@@ -231,15 +261,23 @@ class DataSourceService(
         val hc = HikariConfig()
         hc.poolName = if (database.isNullOrBlank()) "ds-$datasourceId" else "ds-$datasourceId-$database"
         // 启用 SSH 隧道时经长驻隧道连接:URL 改写为本地转发端口,隧道随 evictPool 关闭
-        hc.jdbcUrl = if (c.sshEnabled == true) {
+        val baseUrl = if (c.sshEnabled == true) {
             val localPort = sshTunnelService.ensureTunnel(datasourceId, c)
             JdbcUrlRewriter.rewrite(c.jdbcUrl!!, localPort)
         } else {
-            c.jdbcUrl
+            c.jdbcUrl!!
+        }
+        hc.jdbcUrl = if (!database.isNullOrBlank()) {
+            // 多库方言按库分池:SQL Server 原样(借出时切 catalog),Kingbase 改写路径段指向目标库
+            dialect.jdbcUrlForDatabase(baseUrl, database)
+        } else {
+            firstConnectableUrl(dialect, baseUrl, c)
         }
         hc.username = c.username
         hc.password = c.password
         hc.driverClassName = dialect.driverClassName()
+        // 方言级连接初始化(如 Oracle 关闭会话游标缓存防 ORA-01000);初始化 SQL 失败会中止连接创建
+        dialect.connectionInitSql()?.let { hc.connectionInitSql = it }
         hc.maximumPoolSize = config.scan.workers + 2 // worker 占满时给元数据查询留余量
         hc.minimumIdle = 1
         hc.connectionTimeout = 30_000
@@ -262,6 +300,28 @@ class DataSourceService(
         return ds
     }
 
+    /**
+     * 默认池(database 为空)的 URL:方言给出多个候选时(Kingbase 未指定库,驱动按用户名当库名)
+     * 逐一试连取首个连通者;单候选直接返回,避免多余的一次性连接
+     */
+    @Throws(SQLException::class)
+    private fun firstConnectableUrl(dialect: DbDialect, url: String, c: DataSourceConfig): String {
+        val candidates = dialect.connectionUrlCandidates(url)
+        if (candidates.size == 1) {
+            return candidates[0]
+        }
+        Class.forName(dialect.driverClassName())
+        var lastError: SQLException? = null
+        for (candidate in candidates) {
+            try {
+                DriverManager.getConnection(candidate, c.username, c.password).use { return candidate }
+            } catch (e: SQLException) {
+                lastError = e
+            }
+        }
+        throw lastError ?: SQLException("无法连接: $url")
+    }
+
     /** 解析目标库:显式指定优先,否则回落到数据源默认库 */
     fun resolveDatabase(datasourceId: Long, database: String?): String? =
         if (!database.isNullOrBlank()) database else defaultCatalogs[datasourceId]
@@ -272,6 +332,14 @@ class DataSourceService(
         pools.keys.filter { it.startsWith(prefix) }.forEach { pools.remove(it)?.close() }
         defaultCatalogs.remove(id)
         sshTunnelService.close(id)
+    }
+
+    /**
+     * 会话级故障自愈(如 ORA-01000 游标耗尽):回收该数据源全部连接池,
+     * 后续 getConnection 经 computeIfAbsent 重建全新会话;在建连接上的分段失败由 ChunkRunner 重试兜底
+     */
+    fun recyclePool(datasourceId: Long) {
+        evictPool(datasourceId)
     }
 
     /** 复制非秘密字段(秘密字段由 create/update 按「留空不改」规则单独处理) */
