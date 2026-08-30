@@ -4,7 +4,7 @@
       <h3 style="margin: 0">抽样导出</h3>
       <!-- 按钮组统一右侧、gap 统一间距(与表列表页 toolbar-actions 同写法) -->
       <div class="toolbar-actions">
-        <el-button type="primary" @click="uploadDialogVisible = true">导入 Excel 并导出</el-button>
+        <el-button type="primary" @click="uploadDialogVisible = true">导入 Excel</el-button>
         <el-button type="danger" plain :disabled="!selection.length" @click="confirmBatchDelete">批量删除</el-button>
         <el-button :loading="loading" @click="load">刷新</el-button>
       </div>
@@ -44,8 +44,11 @@
       <el-table-column label="创建时间" width="175" prop="createdAt" sortable class-name="nowrap-cell">
         <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="275" fixed="right" class-name="nowrap-cell">
+      <el-table-column label="操作" width="320" fixed="right" class-name="nowrap-cell">
         <template #default="{ row }">
+          <!-- 两步流程:检测完成后由用户决策继续导出(第二步);有错的数据源仍可进行,其下表会记失败 -->
+          <el-button v-if="row.status === 'DETECTED'" link type="primary" @click="continueExport(row)">继续导出</el-button>
+          <el-button v-if="row.status === 'DETECTED' || row.status === 'FAILED'" link type="primary" @click="openReimport(row)">重新导入</el-button>
           <el-button link type="primary" @click="openDetail(row)">明细</el-button>
           <el-button v-if="row.status === 'RUNNING'" link type="warning" @click="pauseTask(row)">暂停</el-button>
           <el-button v-if="row.status === 'PAUSED'" link type="primary" @click="resumeTask(row)">继续</el-button>
@@ -54,15 +57,15 @@
         </template>
       </el-table-column>
       <template #empty>
-        <el-empty description="还没有抽样导出任务,点击「导入 Excel 并导出」提交" :image-size="60" />
+        <el-empty description="还没有抽样导出任务,点击「导入 Excel」提交" :image-size="60" />
       </template>
     </el-table>
 
-    <!-- 导入 Excel 对话框:选文件后点确定上传 -->
-    <el-dialog v-model="uploadDialogVisible" title="导入 Excel 并导出" width="520px" destroy-on-close @closed="onUploadClosed">
+    <!-- 导入 Excel 对话框:选文件后点确定上传,先做第一步数据源检测 -->
+    <el-dialog v-model="uploadDialogVisible" title="导入 Excel 检测数据源" width="520px" destroy-on-close @closed="onUploadClosed">
       <el-alert type="info" :closable="false" style="margin-bottom: 12px">
         <template #title>
-          上传后自动:① 提取并去重数据源加入系统(连不上的标记错误)② 每行一张表抽 50 行数据,按 数据源×类别 生成 Excel,最终按类别目录打 zip
+          上传后先做第一步「数据源检测」:提取并去重数据源加入系统(连不上的标记错误,可在明细里就地编辑修复,或重新导入表格更新)。检测通过后,在任务列表点「继续导出」再做第二步:每行一张表抽 50 行数据,按 数据源×类别 生成 Excel,按类别目录打 zip
         </template>
       </el-alert>
       <el-upload
@@ -83,7 +86,36 @@
       </div>
       <template #footer>
         <el-button @click="uploadDialogVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="!uploadFile" :loading="uploading" @click="doUpload">开始导出</el-button>
+        <el-button type="primary" :disabled="!uploadFile" :loading="uploading" @click="doUpload">开始检测</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 重新导入 Excel 对话框:全量替换明细并重跑数据源检测(修复数据源的第二条路径) -->
+    <el-dialog v-model="reimportVisible" :title="`任务 #${reimportTask?.id ?? ''} 重新导入 Excel`" width="520px" destroy-on-close @closed="onReimportClosed">
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+        <template #title>
+          上传新的 Excel 全量替换本任务的明细并重跑第一步数据源检测(建档/复用/修复逻辑同首次导入,即「用新连接信息更新数据源」),检测完成后任务回到「待导出」状态
+        </template>
+      </el-alert>
+      <el-upload
+        ref="reimportUploadRef"
+        drag
+        :auto-upload="false"
+        :limit="1"
+        accept=".xlsx"
+        :on-change="onReimportFileChange"
+        :on-exceed="onReimportFileExceed"
+        :on-remove="onReimportFileRemove"
+      >
+        <el-icon style="font-size: 40px; color: var(--el-text-color-secondary)"><UploadFilled /></el-icon>
+        <div class="el-upload__text">拖拽文件到此处,或 <em>点击选择</em>(仅 .xlsx)</div>
+      </el-upload>
+      <div style="margin-top: 8px; text-align: right">
+        <el-link type="primary" href="/api/sample-export-template" download="抽样导入模版.xlsx">下载导入模版</el-link>
+      </div>
+      <template #footer>
+        <el-button @click="reimportVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="!reimportFile" :loading="reimporting" @click="doReimport">重新导入并检测</el-button>
       </template>
     </el-dialog>
 
@@ -91,15 +123,27 @@
     <el-drawer v-model="drawerVisible" :title="`任务 #${detailId} 明细`" size="75%" destroy-on-close>
       <div v-loading="detailLoading">
         <template v-if="detail">
+          <!-- 任务级操作与列表操作列同一套处理器,抽屉里不必切回列表;右对齐,间距复用工具栏统一规则 -->
+          <div v-if="detail.task" class="toolbar-actions drawer-actions">
+            <el-button v-if="detail.task.status === 'DETECTED'" type="primary" size="small" @click="continueExport(detail.task)">继续导出</el-button>
+            <el-button v-if="detail.task.status === 'DETECTED' || detail.task.status === 'FAILED'" size="small" @click="openReimport(detail.task)">重新导入</el-button>
+            <el-button v-if="detail.task.status === 'RUNNING'" type="warning" size="small" @click="pauseTask(detail.task)">暂停</el-button>
+            <el-button v-if="detail.task.status === 'PAUSED'" type="primary" size="small" @click="resumeTask(detail.task)">继续</el-button>
+            <el-button v-if="detail.task.status === 'DONE' && detail.task.zipFileName" size="small" @click="download(detail.task)">下载 zip</el-button>
+            <el-button size="small" @click="openDir(detail.task)">打开目录</el-button>
+          </div>
           <el-collapse v-model="collapseActive">
             <el-collapse-item title="数据源导入明细" name="ds">
-              <el-table :data="detail.dsReport || []" border size="small">
+              <el-table :data="sortedDsReport" border size="small">
                 <el-table-column label="名称" min-width="140" prop="name" show-overflow-tooltip>
                   <template #default="{ row }">
                     <!-- 可定位到数据源时点击名称直接弹数据源编辑框 -->
                     <el-link v-if="row.datasourceId" type="primary" @click="goEditDs(row)">{{ row.name }}</el-link>
                     <span v-else>{{ row.name }}</span>
                   </template>
+                </el-table-column>
+                <el-table-column label="类型" width="110">
+                  <template #default="{ row }">{{ row.dbType || '-' }}</template>
                 </el-table-column>
                 <el-table-column label="地址" min-width="150">
                   <template #default="{ row }">{{ row.host }}:{{ row.port }}</template>
@@ -185,17 +229,20 @@
       <div v-if="msgDialog.context" class="msg-context">{{ msgDialog.context }}</div>
       <pre class="msg-content">{{ msgDialog.content }}</pre>
     </el-dialog>
+
+    <!-- 就地编辑数据源(独立组件,不跳数据源页):保存后由 onDsSaved 刷新列表与明细 -->
+    <DatasourceEditDialog v-model="dsEditVisible" :ds="dsEditRow" :groups="[]" @saved="onDsSaved" />
   </div>
 </template>
 
 <script setup>
-import { onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import { formatBytes, formatDateTime } from '../utils/format'
-import { tabState } from '../stores/tabs'
+import DatasourceEditDialog from '../components/DatasourceEditDialog.vue'
 
 const router = useRouter()
 
@@ -217,6 +264,16 @@ const detail = ref(null)
 const detailLoading = ref(false)
 const collapseActive = ref(['ds', 'items'])
 
+/** 数据源导入明细:按类型排序展示(同类型保持报告原顺序;无类型的无效行排最后),不改报告本身 */
+const sortedDsReport = computed(() => {
+  const rows = detail.value?.dsReport || []
+  return [...rows].sort((a, b) => {
+    if (!a.dbType) return 1
+    if (!b.dbType) return -1
+    return a.dbType.localeCompare(b.dbType)
+  })
+})
+
 // 说明/错误全文弹窗(数据源导入明细与表导出明细共用)
 const msgDialog = ref({ visible: false, title: '', context: '', content: '' })
 
@@ -233,12 +290,29 @@ function showMsg(title, row) {
   }
 }
 
-// ---------- 明细行跳转数据源页签(路由落在 /datasources/:id/ 下,页签系统自动激活/创建 ds-{id} 页签) ----------
+// ---------- 明细行就地编辑数据源(独立弹窗组件,不跳数据源页) ----------
 
-/** 点数据源导入明细的名称:与侧边栏编辑图标同一机制——写 pendingDsEditId 并跳数据源页,由数据源页弹编辑框 */
-function goEditDs(row) {
-  tabState.pendingDsEditId = String(row.datasourceId)
-  router.push('/datasources')
+const dsEditVisible = ref(false)
+const dsEditRow = ref(null)
+
+/** 点数据源导入明细的名称:拉全量数据源列表定位到该行,就地弹编辑框修复(连接状态由后端清零,继续导出前会复测) */
+async function goEditDs(row) {
+  try {
+    const list = await request.get('/datasources')
+    const ds = (list || []).find((d) => String(d.id) === String(row.datasourceId))
+    if (!ds) {
+      ElMessage.warning('数据源不存在,可能已被删除')
+      return
+    }
+    dsEditRow.value = ds
+    dsEditVisible.value = true
+  } catch { /* 拦截器已提示 */ }
+}
+
+/** 就地编辑保存后:数据源名称可能已变,刷新任务列表与打开的明细抽屉 */
+async function onDsSaved() {
+  await load()
+  if (drawerVisible.value && detailId.value) await loadDetail()
 }
 
 /** 明细行 → 库列表里的「库名(Schema)」:模式名优先,空则库名兜底(与后端抽样 schema ?: database 同口径) */
@@ -274,16 +348,16 @@ function goTable(row) {
 }
 
 function statusType(s) {
-  return { PENDING: 'info', RUNNING: 'primary', PAUSED: 'warning', DONE: 'success', FAILED: 'danger' }[s] || 'info'
+  return { PENDING: 'info', RUNNING: 'primary', PAUSED: 'warning', DETECTED: 'warning', DONE: 'success', FAILED: 'danger' }[s] || 'info'
 }
 
 function statusText(s) {
-  return { PENDING: '排队中', RUNNING: '运行中', PAUSED: '已暂停', DONE: '完成', FAILED: '失败' }[s] || s
+  return { PENDING: '排队中', RUNNING: '运行中', PAUSED: '已暂停', DETECTED: '待导出', DONE: '完成', FAILED: '失败' }[s] || s
 }
 
-/** 状态排序权重:排队中 < 运行中 < 已暂停 < 完成 < 失败 */
+/** 状态排序权重:排队中 < 运行中 < 已暂停 < 待导出 < 完成 < 失败 */
 function statusOrder(s) {
-  return { PENDING: 0, RUNNING: 1, PAUSED: 2, DONE: 3, FAILED: 4 }[s] ?? 99
+  return { PENDING: 0, RUNNING: 1, PAUSED: 2, DETECTED: 3, DONE: 4, FAILED: 5 }[s] ?? 99
 }
 
 function percent(row) {
@@ -291,14 +365,14 @@ function percent(row) {
   return Math.min(100, Math.round((row.doneItems / row.totalItems) * 100))
 }
 
-/** 数据源导入结果 action → tag 类型 */
+/** 数据源导入结果 action → tag 类型;QUEUING=在测连池队列等待,TESTING=正在校验,RENAMED=已存在按表格改名 */
 function dsActionType(a) {
-  return { ADDED: 'success', ADDED_ERROR: 'warning', SKIPPED: 'info', FIXED: 'primary', STILL_ERROR: 'danger', ROW_SKIPPED: 'warning' }[a] || 'info'
+  return { QUEUING: 'info', TESTING: 'primary', ADDED: 'success', ADDED_ERROR: 'warning', SKIPPED: 'info', RENAMED: 'primary', FIXED: 'primary', STILL_ERROR: 'danger', ROW_SKIPPED: 'warning' }[a] || 'info'
 }
 
 /** 数据源导入结果 action → 中文文案 */
 function dsActionText(a) {
-  return { ADDED: '新增', ADDED_ERROR: '新增(连不上)', SKIPPED: '已跳过', FIXED: '已修复', STILL_ERROR: '仍失败', ROW_SKIPPED: '行跳过' }[a] || a
+  return { QUEUING: '排队中', TESTING: '校验中', ADDED: '新增', ADDED_ERROR: '新增(连不上)', SKIPPED: '已跳过', RENAMED: '已更新', FIXED: '已修复', STILL_ERROR: '仍失败', ROW_SKIPPED: '行跳过' }[a] || a
 }
 
 /** 表导出明细小进度:PENDING 0% / RUNNING 50% 条纹动画 / DONE 100% 成功 / FAILED 100% 异常 */
@@ -318,9 +392,10 @@ function isActive(s) {
   return s === 'PENDING' || s === 'RUNNING'
 }
 
-/** 需要继续轮询:列表里有未终态任务,或抽屉打开且该任务未终态 */
+/** 需要继续轮询:列表里有未终态任务,或抽屉打开且该任务未终态(状态在 detail.task 上) */
 function needPolling() {
-  return tasks.value.some((t) => isActive(t.status)) || (drawerVisible.value && detail.value && isActive(detail.value.status))
+  return tasks.value.some((t) => isActive(t.status)) ||
+    (drawerVisible.value && detail.value && isActive(detail.value.task?.status))
 }
 
 async function load() {
@@ -398,7 +473,7 @@ async function doUpload() {
     const formData = new FormData()
     formData.append('file', uploadFile.value)
     const res = await request.post('/sample-exports', formData)
-    ElMessage.success(`已提交导出任务 #${res.taskId}`)
+    ElMessage.success(`已提交检测任务 #${res.taskId},检测完成后任务停在「待导出」`)
     uploadDialogVisible.value = false
     await load()
   } finally {
@@ -422,6 +497,82 @@ function download(row) {
 async function openDir(row) {
   await request.post(`/sample-exports/${row.id}/open-dir`)
   ElMessage.success('已打开产物目录')
+}
+
+// ---------- 两步流程:继续导出(第二步)与重新导入 ----------
+
+/** 检测完成(DETECTED)后由用户决策继续导出;有错的数据源仍可继续,其下表会记失败,先弹确认提示 */
+async function continueExport(row) {
+  if (row.dsError > 0) {
+    try {
+      await ElMessageBox.confirm(
+        `检测发现 ${row.dsError} 个数据源连接失败,其下的表将导出失败(其余表正常导出,失败的表可修复数据源后重新导入再导)。仍要继续导出吗?`,
+        '继续导出',
+        { type: 'warning', confirmButtonText: '继续导出', cancelButtonText: '再等等' }
+      )
+    } catch { /* 用户取消 */ return }
+  }
+  await request.post(`/sample-exports/${row.id}/export`)
+  ElMessage.success(`任务 #${row.id} 开始导出`)
+  await load()
+}
+
+// 重新导入对话框
+const reimportVisible = ref(false)
+const reimportTask = ref(null)
+const reimportUploadRef = ref()
+const reimportFile = ref(null)
+const reimporting = ref(false)
+
+function openReimport(row) {
+  reimportTask.value = row
+  reimportFile.value = null
+  reimportVisible.value = true
+}
+
+function onReimportFileChange(file) {
+  const name = file.name || ''
+  if (!name.toLowerCase().endsWith('.xlsx')) {
+    ElMessage.warning('仅支持 .xlsx 文件')
+    reimportUploadRef.value?.clearFiles()
+    reimportFile.value = null
+    return
+  }
+  reimportFile.value = file.raw
+}
+
+/** 超出 limit 时替换为最新选择的文件 */
+function onReimportFileExceed(files) {
+  reimportUploadRef.value.clearFiles()
+  reimportUploadRef.value.handleStart(files[0])
+}
+
+function onReimportFileRemove() {
+  reimportFile.value = null
+}
+
+/** 对话框完全关闭后重置状态,供下次打开 */
+function onReimportClosed() {
+  reimportFile.value = null
+  reimportTask.value = null
+}
+
+/** 重新导入:新 Excel 全量替换明细并重跑数据源检测,任务回到「待导出」 */
+async function doReimport() {
+  if (!reimportFile.value || reimporting.value || !reimportTask.value) return
+  reimporting.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', reimportFile.value)
+    await request.post(`/sample-exports/${reimportTask.value.id}/reimport`, formData)
+    ElMessage.success(`任务 #${reimportTask.value.id} 已重新导入,正在重新检测数据源`)
+    reimportVisible.value = false
+    await load()
+    // 明细抽屉打开时立即刷新:后端已同步落「校验中」列表,不必等下一轮轮询
+    if (drawerVisible.value && detailId.value) await loadDetail()
+  } finally {
+    reimporting.value = false
+  }
 }
 
 // ---------- 暂停 / 恢复 / 批量删除 ----------
@@ -482,6 +633,11 @@ onUnmounted(stopPolling)
 }
 .toolbar-actions :deep(.el-button) {
   margin-left: 0;
+}
+/* 明细抽屉顶部操作行:按钮组右对齐;gap 与 el-button 相邻默认 margin 清理复用上方 toolbar-actions 规则 */
+.drawer-actions {
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }
 
 /* 创建时间/操作两列不换行(宽度已按内容留足,这里兜底防挤压换行) */

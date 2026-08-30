@@ -98,7 +98,7 @@ class DataSourceRepository(private val jdbc: Jdbc) {
     }
 
     /**
-     * 单独更新连接状态标记(表格批量导入实测后写);只动 conn_status/conn_error/conn_checked_at 三列。
+     * 单独更新连接状态标记(抽样导出检测/导出前复测后写);只动 conn_status/conn_error/conn_checked_at 三列。
      * 「修复后保留历史错误」靠调用方把旧 conn_error 原样传回实现
      */
     fun updateConnStatus(id: Long, status: String?, error: String?) {
@@ -106,10 +106,23 @@ class DataSourceRepository(private val jdbc: Jdbc) {
             status, error, id)
     }
 
+    /**
+     * 连接信息被编辑(DataSourceService.update)后清除连接状态标记,三列全部回到「未检测」。
+     * 旧错误消息随旧连接信息一并过时,不再保留
+     */
+    fun clearConnStatus(id: Long) {
+        jdbc.update("UPDATE data_source SET conn_status=NULL, conn_error=NULL, conn_checked_at=NULL WHERE id=?", id)
+    }
+
     /** 单独更新分组名(数据源卡片拖拽改分组);只动 group_name 一列,null 表示未分组 */
     fun updateGroup(id: Long, groupName: String?) {
         jdbc.update("UPDATE data_source SET group_name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
             groupName, id)
+    }
+
+    /** 单独更新数据源名(抽样导入「同名数据源以表格名称为主」);只动 name 一列,连接状态标记不动 */
+    fun updateName(id: Long, name: String) {
+        jdbc.update("UPDATE data_source SET name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", name, id)
     }
 
     fun findById(id: Long): DataSourceConfig? =

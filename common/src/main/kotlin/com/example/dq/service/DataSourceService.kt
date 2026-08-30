@@ -68,7 +68,7 @@ class DataSourceService(
     fun create(req: DataSourceRequest): Long {
         val c = DataSourceConfig()
         apply(c, req)
-        c.dbMode = detectDbMode(req, req.password, req.sshPassword, req.sshPrivateKey, req.sshPassphrase)
+        // 保存不做连通性探测(db_mode 仅存档位,不探测;连通性由「测试连接」显式触发)
         c.password = crypto.encrypt(req.password)
         c.sshPassword = crypto.encrypt(req.sshPassword)
         c.sshPrivateKey = crypto.encrypt(req.sshPrivateKey)
@@ -79,17 +79,12 @@ class DataSourceService(
     fun update(id: Long, req: DataSourceRequest) {
         val c = repo.findById(id)
             ?: throw IllegalArgumentException("数据源不存在: $id")
-        // 密码留空表示沿用旧密码;探测需用真实密码连接
-        val plainPassword = if (!req.password.isNullOrEmpty()) req.password else crypto.decrypt(c.password)
         // SSH 三个秘密字段同样「留空沿用旧值」,各自独立的条件位
         val updateSshPassword = !req.sshPassword.isNullOrEmpty()
         val updateSshPrivateKey = !req.sshPrivateKey.isNullOrEmpty()
         val updateSshPassphrase = !req.sshPassphrase.isNullOrEmpty()
-        val plainSshPassword = if (updateSshPassword) req.sshPassword else crypto.decrypt(c.sshPassword)
-        val plainSshPrivateKey = if (updateSshPrivateKey) req.sshPrivateKey else crypto.decrypt(c.sshPrivateKey)
-        val plainSshPassphrase = if (updateSshPassphrase) req.sshPassphrase else crypto.decrypt(c.sshPassphrase)
         apply(c, req)
-        c.dbMode = detectDbMode(req, plainPassword, plainSshPassword, plainSshPrivateKey, plainSshPassphrase)
+        // 保存不做连通性探测(db_mode 仅存档位,不探测;连通性由「测试连接」显式触发)
         c.id = id
         val updatePassword = !req.password.isNullOrEmpty()
         if (updatePassword) {
@@ -106,6 +101,9 @@ class DataSourceService(
         }
         repo.update(c, updatePassword, updateSshPassword, updateSshPrivateKey, updateSshPassphrase)
         evictPool(id)
+        // 连接信息被编辑后,抽样导出留下的连接状态标记即过时:三列清零回到「未检测」,
+        // 下次检测/导出前会重新实测(conn_status 只由抽样导出功能与这里写入,其他 CRUD 路径不动)
+        repo.clearConnStatus(id)
     }
 
     fun delete(id: Long) {
@@ -173,32 +171,6 @@ class DataSourceService(
     /** 各类型数据库的系统库/schema 名(库过滤默认不勾选);纯静态方言信息,不连业务库 */
     fun systemSchemas(dbType: DbType): Set<String> {
         return dialectFactory.get(dbType).systemSchemas()
-    }
-
-    /** 探测数据库兼容模式(如 Kingbase 的 database_mode);失败返回 null,不影响保存 */
-    private fun detectDbMode(
-        req: DataSourceRequest,
-        password: String?,
-        sshPassword: String?,
-        sshPrivateKey: String?,
-        sshPassphrase: String?,
-    ): String? {
-        return try {
-            val dialect = dialectFactory.get(DbType.fromJdbcUrl(req.jdbcUrl))
-            Class.forName(dialect.driverClassName())
-            val testReq = TestConnectionRequest(
-                jdbcUrl = req.jdbcUrl, username = req.username, password = password,
-                sshEnabled = req.sshEnabled, sshHost = req.sshHost, sshPort = req.sshPort,
-                sshUsername = req.sshUsername, sshAuthMethod = req.sshAuthMethod,
-                sshPassword = sshPassword, sshPrivateKey = sshPrivateKey, sshPassphrase = sshPassphrase)
-            withOptionalTunnel(testReq) { url ->
-                withFirstConnectable(dialect, url, req.username, password) { conn ->
-                    dialect.detectDbMode(conn)
-                }
-            }
-        } catch (e: Exception) {
-            null
-        }
     }
 
     /**

@@ -6,7 +6,9 @@ import java.sql.Types
 import java.time.LocalDateTime
 
 /**
- * 表格批量导入数据源 + 抽样导出任务(V24);任务状态机 PENDING → RUNNING → DONE/FAILED,
+ * 表格批量导入数据源 + 抽样导出任务(V24);两步流程:上传后先跑数据源检测
+ * (PENDING → RUNNING → DETECTED,停在 DETECTED 等用户决策是否导出),
+ * 用户点「继续导出」再跑导出(DETECTED → RUNNING → DONE/FAILED);
  * 运行中可暂停为 PAUSED(恢复回到 RUNNING);服务重启时未完成(PENDING/RUNNING/PAUSED)
  * 任务与明细统一置 FAILED(与 report_export 同思路)
  */
@@ -111,6 +113,14 @@ class SampleExportRepository(private val jdbc: Jdbc) {
     fun markResumed(id: Long): Int =
         jdbc.update("UPDATE sample_export SET status='RUNNING' WHERE id=? AND status='PAUSED'", id)
 
+    /** 数据源检测完成:RUNNING → DETECTED(待用户决策是否继续导出),返回更新行数 */
+    fun markDetected(id: Long): Int =
+        jdbc.update("UPDATE sample_export SET status='DETECTED', stage='检测完成,待导出' WHERE id=? AND status='RUNNING'", id)
+
+    /** 用户决策继续导出:DETECTED → RUNNING(进入导出阶段),返回更新行数 */
+    fun markExporting(id: Long): Int =
+        jdbc.update("UPDATE sample_export SET status='RUNNING', stage='导出表数据' WHERE id=? AND status='DETECTED'", id)
+
     /** 删除任务(sample_export_item 经 task_id 外键级联删除) */
     fun deleteTask(id: Long) {
         jdbc.update("DELETE FROM sample_export WHERE id=?", id)
@@ -160,6 +170,29 @@ class SampleExportRepository(private val jdbc: Jdbc) {
 
     fun listItems(taskId: Long): List<ItemRow> =
         jdbc.query("SELECT * FROM sample_export_item WHERE task_id=? ORDER BY seq", taskId, mapper = itemMapper)
+
+    /**
+     * 重新导入 Excel:全量替换明细(先删旧行),文件名/总数同步更新,统计/报告/产物路径/错误一并清零。
+     * 状态与 started_at 由调用方随后重置(markRunning)。单事务
+     */
+    fun replaceItems(id: Long, fileName: String, totalItems: Int) {
+        jdbc.tx { conn ->
+            conn.prepareStatement("DELETE FROM sample_export_item WHERE task_id=?").use { ps ->
+                ps.setLong(1, id)
+                ps.executeUpdate()
+            }
+            conn.prepareStatement(
+                "UPDATE sample_export SET file_name=?, total_items=?, done_items=0, ds_total=0, ds_added=0, " +
+                    "ds_skipped=0, ds_fixed=0, ds_error=0, ds_report=NULL, zip_path=NULL, zip_size=NULL, " +
+                    "error=NULL, stage=NULL, started_at=NULL, finished_at=NULL WHERE id=?")
+                .use { ps ->
+                    ps.setString(1, fileName)
+                    ps.setInt(2, totalItems)
+                    ps.setLong(3, id)
+                    ps.executeUpdate()
+                }
+        }
+    }
 
     /** 数据源导入完成后回绑匹配到的数据源 id */
     fun bindItemDatasource(id: Long, datasourceId: Long) {

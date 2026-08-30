@@ -327,6 +327,8 @@ public class WebServer {
         routes.post("/api/sample-exports/{id}/open-dir", ctx -> sampleExportCtrl.get().openDir(ctx));
         routes.post("/api/sample-exports/{id}/pause", ctx -> sampleExportCtrl.get().pause(ctx));
         routes.post("/api/sample-exports/{id}/resume", ctx -> sampleExportCtrl.get().resume(ctx));
+        routes.post("/api/sample-exports/{id}/export", ctx -> sampleExportCtrl.get().export(ctx));
+        routes.post("/api/sample-exports/{id}/reimport", ctx -> sampleExportCtrl.get().reimport(ctx));
         // 批量删除刻意避开 /api/sample-exports/ 前缀注册(同前缀静态段会被 {id} 吃掉报 400,见上方 template 注释)
         routes.post("/api/sample-exports-delete", ctx -> sampleExportCtrl.get().delete(ctx));
 

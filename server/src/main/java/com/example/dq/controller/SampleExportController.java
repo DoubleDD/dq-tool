@@ -86,6 +86,29 @@ public class SampleExportController {
         ctx.json(Map.of("ok", true));
     }
 
+    /** 检测完成后由用户决策:继续导出(第二步) */
+    public void export(Context ctx) {
+        service.export(id(ctx));
+        ctx.json(Map.of("ok", true));
+    }
+
+    /** 重新导入 Excel(multipart 字段 file):全量替换明细并重跑数据源检测,修复数据源 */
+    public void reimport(Context ctx) throws Exception {
+        UploadedFile file = ctx.uploadedFile("file");
+        if (file == null) {
+            throw new IllegalArgumentException("请选择要上传的 Excel 文件");
+        }
+        String filename = file.filename() == null ? "" : file.filename();
+        if (!filename.toLowerCase(Locale.ROOT).endsWith(".xlsx")) {
+            throw new IllegalArgumentException("仅支持 .xlsx 文件");
+        }
+        long id = id(ctx);
+        try (var in = file.content()) {
+            service.reimport(id, filename, in);
+        }
+        ctx.json(Map.of("ok", true));
+    }
+
     /** 批量删除任务(body {"ids":[...]}):完成/失败直接删,暂停中=取消并删,运行/排队跳过 */
     public void delete(Context ctx) {
         DeleteRequest req = ctx.bodyAsClass(DeleteRequest.class);

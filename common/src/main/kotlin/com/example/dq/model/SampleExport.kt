@@ -7,7 +7,7 @@ data class SampleExportTaskView(
     val id: Long,
     /** 上传的 Excel 文件名 */
     val fileName: String,
-    /** PENDING/RUNNING/DONE/FAILED */
+    /** PENDING/RUNNING/PAUSED/DETECTED/DONE/FAILED;DETECTED=检测完成,待用户决策是否导出 */
     val status: String,
     val stage: String?,
     val totalItems: Int,
@@ -29,7 +29,8 @@ data class SampleExportTaskView(
 /** 抽样导出任务详情:任务字段 + 数据源导入明细(ds_report JSON 反序列化)+ 逐表明细 */
 data class SampleExportDetailView(
     val task: SampleExportTaskView,
-    /** 数据源导入明细(action: ADDED/ADDED_ERROR/SKIPPED/FIXED/STILL_ERROR/ROW_SKIPPED) */
+    /** 数据源导入明细(action: QUEUING(排队中)/TESTING(校验中)/ADDED/ADDED_ERROR/SKIPPED/RENAMED(已存在,按表格改名)/
+     *  FIXED/STILL_ERROR/ROW_SKIPPED;检测开始即全量以「排队中」落库,进线程执行翻「校验中」,完成翻最终结果) */
     val dsReport: List<Map<String, Any?>>,
     val items: List<SampleExportItemView>,
 )
