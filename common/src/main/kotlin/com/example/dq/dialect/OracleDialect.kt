@@ -1,12 +1,16 @@
 package com.example.dq.dialect
 
+import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DbType
 import com.example.dq.model.TableStat
 
 import org.slf4j.LoggerFactory
 
 import java.sql.Connection
+import java.sql.ResultSet
 import java.sql.SQLException
+import java.sql.Types
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -167,6 +171,53 @@ class OracleDialect : AbstractDialect() {
         return "\"" + identifier.replace("\"", "\"\"") + "\""
     }
 
+    /**
+     * LONG/LONG RAW 列归一为 Types.OTHER:Oracle 的 LONG 不能参与函数与比较
+     * (TRIM(LONG) 报 ORA-00932「应为 CHAR,但却获得 LONG」,比较/排序同样不允许),
+     * 而驱动把 LONG 报为 Types.LONGVARCHAR,会被当成字符列做空串统计、被挑为分段键。
+     * 归一后仍统计 NULL 数(IS NULL 对 LONG 合法),只是跳过空串统计且不作为分段键
+     */
+    @Throws(SQLException::class)
+    override fun listColumns(conn: Connection, schema: String, table: String): List<ColumnMeta> {
+        return super.listColumns(conn, schema, table).map { c ->
+            if (c.jdbcType == Types.LONGVARCHAR || c.jdbcType == Types.LONGNVARCHAR) {
+                ColumnMeta(c.name, c.typeName, c.displayType, Types.OTHER, c.nullable,
+                        c.defaultValue, c.comment, c.primaryKey, c.pkSeq, c.uniqueIndexFirst)
+            } else {
+                c
+            }
+        }
+    }
+
+    /**
+     * DATE/TIMESTAMP 键的字面量显式 TO_TIMESTAMP 转换:字符串字面量与日期列比较走会话
+     * NLS 隐式转换,格式不匹配即 ORA-01861「文字与格式字符串不匹配」(分段边界 seek、
+     * 范围谓词、空值规则值均受影响);边界值由 readBoundaryValue 输出
+     * yyyy-MM-dd HH:mm:ss.SSS 固定格式,round-trip 不依赖会话 NLS
+     */
+    override fun literal(value: String?, col: ColumnMeta): String {
+        if (value != null && isTemporal(col)) {
+            return "TO_TIMESTAMP(" + quoteString(value) + ", 'YYYY-MM-DD HH24:MI:SS.FF')"
+        }
+        return super.literal(value, col)
+    }
+
+    /** 日期键的边界值输出固定格式,与 [literal] 的 TO_TIMESTAMP 配套;其余类型按字符串原样 */
+    @Throws(SQLException::class)
+    override fun readBoundaryValue(rs: ResultSet, key: ColumnMeta): String {
+        if (isTemporal(key)) {
+            val ts = rs.getTimestamp(1)
+            if (ts != null) {
+                return DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS").format(ts.toLocalDateTime())
+            }
+        }
+        return rs.getString(1)
+    }
+
+    private fun isTemporal(c: ColumnMeta): Boolean {
+        return c.jdbcType == Types.DATE || c.jdbcType == Types.TIME || c.jdbcType == Types.TIMESTAMP
+    }
+
     @Throws(SQLException::class)
     override fun listSchemas(conn: Connection): List<String> {
         // Oracle 的 schema 与用户一一对应
@@ -256,13 +307,14 @@ class OracleDialect : AbstractDialect() {
 
     @Throws(SQLException::class)
     override fun boundaryQuery(conn: Connection, qTable: String, qKey: String,
-                               prev: String?, offset: Long): String {
-        return boundaryQuerySql(qTable, qKey, prev, offset, oracleMajor(conn))
+                               prev: String?, offset: Long, key: ColumnMeta): String {
+        return boundaryQuerySql(qTable, qKey, prev, offset, key, oracleMajor(conn))
     }
 
     /** 12c 起 OFFSET/FETCH;11g 用 ROWNUM 双层包装取第 offset 行。prev 非空时为 seek 定位(见 AbstractDialect.boundaryQuery) */
-    internal fun boundaryQuerySql(qTable: String, qKey: String, prev: String?, offset: Long, major: Int): String {
-        val seek = if (prev == null) "" else " AND " + qKey + " > " + quoteString(prev)
+    internal fun boundaryQuerySql(qTable: String, qKey: String, prev: String?, offset: Long,
+                                  key: ColumnMeta, major: Int): String {
+        val seek = if (prev == null) "" else " AND " + qKey + " > " + literal(prev, key)
         if (major >= 12) {
             return "SELECT " + qKey + " FROM " + qTable +
                     " WHERE " + qKey + " IS NOT NULL" + seek +

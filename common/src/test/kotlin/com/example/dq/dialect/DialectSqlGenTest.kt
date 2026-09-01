@@ -348,27 +348,42 @@ class DialectSqlGenTest {
     @Test
     fun `Oracle边界值 12c起OFFSET_FETCH`() {
         val oracle = OracleDialect()
-        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", null, 100L, 12)
+        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", null, 100L, pk("id", Types.BIGINT), 12)
         assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
     }
 
     @Test
     fun `Oracle边界值 12c带prev生成seek条件`() {
         val oracle = OracleDialect()
-        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", "a'1", 100L, 12)
+        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", "a'1", 100L, col("id", Types.VARCHAR), 12)
         assertTrue(sql.contains("\"id\" > 'a''1'"))
         assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
     }
 
     @Test
+    fun `Oracle边界值 日期键seek用显式TO_TIMESTAMP防ORA-01861`() {
+        val oracle = OracleDialect()
+        val dateCol = ColumnMeta("d", "DATE", Types.DATE, true, 1, false)
+        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"d\"", "2021-01-01 00:00:00.000", 100L, dateCol, 12)
+        // 字符串字面量与日期列比较走会话 NLS 隐式转换会报 ORA-01861,必须显式 TO_TIMESTAMP
+        assertTrue(sql.contains("\"d\" > TO_TIMESTAMP('2021-01-01 00:00:00.000', 'YYYY-MM-DD HH24:MI:SS.FF')"), sql)
+        assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
+        // 范围谓词同口径
+        val rangeSql = oracle.buildColumnStatsSql("S", "t", listOf(col("v", Types.INTEGER)),
+            Range("2021-01-01 00:00:00.000", "2022-01-01 00:00:00.000", false), dateCol, listOf(), false, 0L, null)
+        assertTrue(rangeSql.contains("\"d\" >= TO_TIMESTAMP('2021-01-01 00:00:00.000', 'YYYY-MM-DD HH24:MI:SS.FF')"), rangeSql)
+        assertTrue(rangeSql.contains("\"d\" < TO_TIMESTAMP('2022-01-01 00:00:00.000', 'YYYY-MM-DD HH24:MI:SS.FF')"), rangeSql)
+    }
+
+    @Test
     fun `Oracle边界值 11g用ROWNUM双层包装`() {
         val oracle = OracleDialect()
-        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", null, 100L, 11)
+        val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", null, 100L, pk("id", Types.BIGINT), 11)
         assertTrue(sql.contains("ROWNUM <= 101"))
         assertTrue(sql.contains("dq_rn = 101"))
         assertFalse(sql.contains("OFFSET"))
         // prev 非空时 seek 条件加在内层子查询
-        val seek = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", "abc", 100L, 11)
+        val seek = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", "abc", 100L, col("id", Types.VARCHAR), 11)
         assertTrue(seek.contains("\"id\" > 'abc'"))
         assertFalse(seek.contains("OFFSET"))
     }
@@ -383,10 +398,10 @@ class DialectSqlGenTest {
     @Test
     fun `SqlServer边界值 2012起OFFSET_FETCH`() {
         val mssql = SqlServerDialect()
-        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", null, 100L, 11)
+        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", null, 100L, pk("id", Types.BIGINT), 11)
         assertTrue(sql.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
         // prev 非空时生成 seek 条件
-        val seek = mssql.boundaryQuerySql("[dbo].[t]", "[id]", "k1", 100L, 11)
+        val seek = mssql.boundaryQuerySql("[dbo].[t]", "[id]", "k1", 100L, col("id", Types.VARCHAR), 11)
         assertTrue(seek.contains("[id] > 'k1'"))
         assertTrue(seek.contains("OFFSET 100 ROWS FETCH NEXT 1 ROWS ONLY"))
     }
@@ -394,12 +409,12 @@ class DialectSqlGenTest {
     @Test
     fun `SqlServer边界值 2008用ROW_NUMBER包装`() {
         val mssql = SqlServerDialect()
-        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", null, 100L, 10)
+        val sql = mssql.boundaryQuerySql("[dbo].[t]", "[id]", null, 100L, pk("id", Types.BIGINT), 10)
         assertTrue(sql.contains("ROW_NUMBER() OVER (ORDER BY [id])"))
         assertTrue(sql.contains("dq_rn = 101"))
         assertFalse(sql.contains("OFFSET"))
         // prev 非空时 seek 条件加进内层
-        val seek = mssql.boundaryQuerySql("[dbo].[t]", "[id]", "k1", 100L, 10)
+        val seek = mssql.boundaryQuerySql("[dbo].[t]", "[id]", "k1", 100L, col("id", Types.VARCHAR), 10)
         assertTrue(seek.contains("[id] > 'k1'"))
         assertFalse(seek.contains("OFFSET"))
     }

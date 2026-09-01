@@ -344,13 +344,14 @@ class SqlServerDialect : AbstractDialect() {
 
     @Throws(SQLException::class)
     override fun boundaryQuery(conn: Connection, qTable: String, qKey: String,
-                               prev: String?, offset: Long): String {
-        return boundaryQuerySql(qTable, qKey, prev, offset, sqlServerMajor(conn))
+                               prev: String?, offset: Long, key: ColumnMeta): String {
+        return boundaryQuerySql(qTable, qKey, prev, offset, key, sqlServerMajor(conn))
     }
 
     /** 2012(11)起 OFFSET/FETCH;2008/2008R2 用 ROW_NUMBER 包装取第 offset 行。prev 非空时为 seek 定位(见 AbstractDialect.boundaryQuery) */
-    internal fun boundaryQuerySql(qTable: String, qKey: String, prev: String?, offset: Long, major: Int): String {
-        val seek = if (prev == null) "" else " AND " + qKey + " > " + quoteString(prev)
+    internal fun boundaryQuerySql(qTable: String, qKey: String, prev: String?, offset: Long,
+                                  key: ColumnMeta, major: Int): String {
+        val seek = if (prev == null) "" else " AND " + qKey + " > " + literal(prev, key)
         if (major >= 11) {
             return "SELECT " + qKey + " FROM " + qTable +
                     " WHERE " + qKey + " IS NOT NULL" + seek +

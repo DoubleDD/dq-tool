@@ -9,6 +9,7 @@ import java.math.BigDecimal
 import java.math.MathContext
 import java.sql.Connection
 import java.sql.DatabaseMetaData
+import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.TreeMap
 import java.util.regex.Pattern
@@ -225,9 +226,9 @@ abstract class AbstractDialect : DbDialect {
             for (i in 1 until chunksPerTable) {
                 var boundary: String? = null
                 conn.createStatement().use { st ->
-                    st.executeQuery(boundaryQuery(conn, qTable, qKey, prev, step)).use { rs ->
+                    st.executeQuery(boundaryQuery(conn, qTable, qKey, prev, step, chunkKey)).use { rs ->
                         if (rs.next()) {
-                            boundary = rs.getString(1)
+                            boundary = readBoundaryValue(rs, chunkKey)
                         }
                     }
                 }
@@ -402,16 +403,21 @@ abstract class AbstractDialect : DbDialect {
 
     /** 非数值分段键的边界值查询:seek(keyset)+固定步进。
      *  prev 为空时从头取第 offset 行(首段);非空时取 "大于 prev 后偏移 offset 行" 的值,
-     *  避免每次从头 OFFSET 深分页。 */
+     *  避免每次从头 OFFSET 深分页。seek 条件经 [literal] 渲染:Oracle 的 DATE/TIMESTAMP 键
+     *  由方言覆写为显式 TO_TIMESTAMP,不依赖会话 NLS 隐式转换(ORA-01861) */
     @Throws(SQLException::class)
     protected open fun boundaryQuery(conn: Connection, qTable: String, qKey: String,
-                                     prev: String?, offset: Long): String {
-        val seek = if (prev == null) "" else " AND " + qKey + " > " + quoteString(prev)
+                                     prev: String?, offset: Long, key: ColumnMeta): String {
+        val seek = if (prev == null) "" else " AND " + qKey + " > " + literal(prev, key)
         return "SELECT " + qKey + " FROM " + qTable +
                 " WHERE " + qKey + " IS NOT NULL" + seek +
                 " ORDER BY " + qKey +
                 boundarySuffix(offset)
     }
+
+    /** 边界值读取:默认按字符串原样;方言可覆写为固定格式输出,与 [literal] 的显式转换配套 */
+    @Throws(SQLException::class)
+    protected open fun readBoundaryValue(rs: ResultSet, key: ColumnMeta): String = rs.getString(1)
 
     /** 分段键 NULL 行探测查询 */
     @Throws(SQLException::class)
