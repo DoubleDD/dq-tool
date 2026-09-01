@@ -214,10 +214,6 @@ public class WebServer {
                 return;
             }
             licenseService.checkActive();
-            // 受控功能校验(业务功能恒有,无需校验):运行日志页需授权码显式包含 logs 功能
-            if (path.startsWith("/api/logs")) {
-                licenseService.checkFeature(LicenseFeature.LOGS);
-            }
         });
         // ---- 统一异常映射(替代 GlobalExceptionHandler,响应体保持 {"message": ...}) ----
         routes.exception(IllegalArgumentException.class, (e, ctx) -> {
@@ -523,7 +519,7 @@ public class WebServer {
         previewCtrl.set(new PreviewController(env.getPreviewService()));
         annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
         listExportCtrl.set(new ListExportController(env.getListExportService()));
-        diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), env.getLicenseService(), logStreamAppender));
+        diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), logStreamAppender));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

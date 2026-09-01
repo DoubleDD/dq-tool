@@ -104,9 +104,7 @@
 
         <!-- 最近错误日志 -->
         <div class="section-title">最近错误日志</div>
-        <el-alert v-if="report.recentLogErrors === null" type="warning" :closable="false"
-                  title="当前授权码未包含「运行日志」功能,无法展示日志摘录,请联系分发方升级授权码"/>
-        <el-empty v-else-if="!report.recentLogErrors.length" description="内存缓冲中暂无 WARN/ERROR 日志" :image-size="60" />
+        <el-empty v-if="!report.recentLogErrors.length" description="内存缓冲中暂无 WARN/ERROR 日志" :image-size="60" />
         <div v-else class="log-list">
           <div v-for="(e, i) in report.recentLogErrors" :key="i" class="log-item">
             <el-tag :type="e.level === 'ERROR' ? 'danger' : 'warning'" size="small" class="log-level">{{ e.level }}</el-tag>
@@ -290,8 +288,7 @@ function buildMarkdown() {
     lines.push(`- 任务 #${f.id} ${f.datasourceName || `数据源 ${f.datasourceId}`} / ${f.dbName || '-'} / ${scope}(${formatDateTime(f.finishedAt)}):${f.error || '-'}`)
   }
   lines.push('', '## 最近错误日志', '')
-  if (r.recentLogErrors === null) lines.push('(授权码未包含运行日志功能)')
-  else if (!r.recentLogErrors.length) lines.push('(无)')
+  if (!r.recentLogErrors.length) lines.push('(无)')
   else for (const e of r.recentLogErrors) {
     lines.push(`- [${e.level}] ${e.ts} ${e.logger}: ${e.message}`)
     if (e.stackTrace) lines.push('', '```', e.stackTrace.trim(), '```', '')

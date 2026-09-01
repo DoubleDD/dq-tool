@@ -67,10 +67,6 @@ router.beforeEach(async (to) => {
   if (to.path === '/license-admin') {
     return (status.admin && features.includes('license_admin')) ? true : '/'
   }
-  // 运行日志页:需授权码包含 logs 功能(入口已按授权隐藏,防直接输入 URL)
-  if (to.path === '/logs') {
-    return features.includes('logs') ? true : '/'
-  }
   const ok = !!(status.activated && !status.expired)
   return ok ? true : '/activate'
 })

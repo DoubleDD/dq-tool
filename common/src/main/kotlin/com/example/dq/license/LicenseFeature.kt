@@ -23,7 +23,7 @@ enum class LicenseFeature(val key: String, val label: String) {
     AI_TAG("ai_tag", "AI自动打标"),
     /** 表标记与统计 */
     TAG("tag", "表标记"),
-    /** 运行日志(SSE 实时日志页;开发者排障功能) */
+    /** 运行日志(SSE 实时日志页;普通功能,默认拥有) */
     LOGS("logs", "运行日志"),
     /** 授权码管理(生成/管理授权码页;管理员实例专属) */
     LICENSE_ADMIN("license_admin", "授权码管理"),
@@ -32,11 +32,11 @@ enum class LicenseFeature(val key: String, val label: String) {
     companion object {
         /** 基础功能集:业务功能默认拥有,授权码中未列出也视为已授权 */
         val BASE_FEATURES: Set<LicenseFeature> = setOf(
-            SCAN, DATASOURCE, EXCEL, REPORT, AI_DOC, AI_TAG, TAG
+            SCAN, DATASOURCE, EXCEL, REPORT, AI_DOC, AI_TAG, TAG, LOGS
         )
 
         /** 受控功能集:必须授权码显式包含 */
-        val CONTROLLED_FEATURES: Set<LicenseFeature> = setOf(LOGS, LICENSE_ADMIN)
+        val CONTROLLED_FEATURES: Set<LicenseFeature> = setOf(LICENSE_ADMIN)
 
         /** 全部功能(签发对话框勾选用),按声明顺序稳定输出 */
         val ALL: List<LicenseFeature> = entries.toList()

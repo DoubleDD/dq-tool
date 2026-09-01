@@ -44,8 +44,8 @@ class DiagnosticsService(
     private val reportExportRepo: ReportExportRepository,
 ) {
 
-    /** 诊断概览(快路径,全本地聚合);recentLogErrors 由 server 侧内存日志缓冲映射传入,未授权 logs 功能时为 null */
-    fun overview(recentLogErrors: List<LogErrorItem>?): DiagnosticsReport {
+    /** 诊断概览(快路径,全本地聚合);recentLogErrors 由 server 侧内存日志缓冲映射传入 */
+    fun overview(recentLogErrors: List<LogErrorItem>): DiagnosticsReport {
         val start = System.nanoTime()
         return DiagnosticsReport(
             env = envInfo(),

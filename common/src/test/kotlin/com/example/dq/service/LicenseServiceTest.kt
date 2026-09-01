@@ -137,18 +137,18 @@ class LicenseServiceTest {
         val service = newServiceWithKey(
             Base64.getEncoder().encodeToString(kp.public.encoded),
             Base64.getEncoder().encodeToString(kp.private.encoded))
-        // 管理员签发:业务功能 + 受控功能 logs/license_admin
+        // 管理员签发:业务功能 + 受控功能 license_admin
         val record = service.generateLicense(
             LicenseGenerateRequest("甲公司", "2027-12-31", features = listOf("scan", "logs", "license_admin")))
 
         service.activate(record.code)
         val status = service.status()
         assertTrue(status.activated)
-        // 业务功能恒有 + 显式包含的受控功能
+        // 业务功能恒有(含 logs)+ 显式包含的受控功能
         assertEquals(
             setOf("scan", "datasource", "excel", "report", "ai_doc", "ai_tag", "tag", "logs", "license_admin"),
             status.features!!.toSet())
-        // 受控功能校验通过
+        // logs 为基础功能恒通过;受控功能校验通过
         service.checkFeature(LicenseFeature.LOGS)
         service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
         // 留档可见功能列表(按枚举声明顺序规范化)
@@ -168,10 +168,10 @@ class LicenseServiceTest {
         service.activate(record.code)
         val status = service.status()
         assertTrue(status.activated)
-        // 业务功能全有,受控功能没有
+        // 业务功能全有(含 logs),受控功能没有
         assertEquals(LicenseFeature.BASE_FEATURES.map { it.key }.toSet(), status.features!!.toSet())
-        // 受控功能校验拒绝
-        assertThrows(LicenseFeatureRequiredException::class.java) { service.checkFeature(LicenseFeature.LOGS) }
+        // logs 为基础功能恒通过;受控功能校验拒绝
+        service.checkFeature(LicenseFeature.LOGS)
         assertThrows(LicenseFeatureRequiredException::class.java) {
             service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
         }
@@ -195,10 +195,13 @@ class LicenseServiceTest {
         service.activate(code)
         val status = service.status()
         assertTrue(status.activated)
-        // 业务功能全有,受控功能没有
+        // 业务功能全有(含 logs),受控功能没有
         assertEquals(LicenseFeature.BASE_FEATURES.map { it.key }.toSet(), status.features!!.toSet())
-        assertFalse(status.features!!.contains("logs"))
-        // 受控功能校验拒绝
-        assertThrows(LicenseFeatureRequiredException::class.java) { service.checkFeature(LicenseFeature.LOGS) }
+        assertTrue(status.features!!.contains("logs"))
+        // logs 为基础功能恒通过;受控功能校验拒绝
+        service.checkFeature(LicenseFeature.LOGS)
+        assertThrows(LicenseFeatureRequiredException::class.java) {
+            service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
+        }
     }
 }

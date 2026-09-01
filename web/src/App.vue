@@ -148,9 +148,11 @@ const themeModeText = computed(() => THEME_MODE_TEXT[themeState.mode])
 const route = useRoute()
 const router = useRouter()
 
-// 「数据源」为特殊导航(可展开树 + 操作下拉),其余一级功能项
-// 「数据源」为特殊导航(可展开树 + 操作下拉);其余一级功能项按授权功能过滤(业务功能恒有;运行日志需授权码包含 logs)
+// 「数据源」为特殊导航(可展开树 + 操作下拉);其余一级功能项均为普通功能,恒显示
 const licenseFeatures = ref([])
+function hasFeature(key) {
+  return licenseFeatures.value.includes(key)
+}
 const otherNav = computed(() => {
   const navs = [
     { path: '/dashboard', label: '扫描记录', icon: Odometer },
@@ -159,16 +161,11 @@ const otherNav = computed(() => {
     { path: '/report-exports', label: '报告列表', icon: Download },
     { path: '/sample-exports', label: '抽样导出', icon: Files },
     { path: '/settings', label: '系统设置', icon: Setting },
-    { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit }
+    { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit },
+    { path: '/logs', label: '运行日志', icon: Document }
   ]
-  if (hasFeature('logs')) {
-    navs.push({ path: '/logs', label: '运行日志', icon: Document, dev: true })
-  }
   return navs
 })
-function hasFeature(key) {
-  return licenseFeatures.value.includes(key)
-}
 
 // 侧边栏收起/展开(持久化到 localStorage)
 const sidebarCollapsed = ref(localStorage.getItem('dq-sidebar-collapsed') === 'true')
@@ -334,7 +331,7 @@ const activeNavLabel = computed(() => {
   return ''
 })
 
-// 授权管理入口仅管理员实例 + 授权码包含 license_admin 功能可见;运行日志入口需授权码包含 logs(复用路由守卫的缓存请求)
+// 授权管理入口仅管理员实例 + 授权码包含 license_admin 功能可见(复用路由守卫的缓存请求)
 const isAdmin = ref(false)
 async function refreshLicenseMenus() {
   const status = await fetchLicenseStatus()
@@ -343,18 +340,17 @@ async function refreshLicenseMenus() {
 }
 onMounted(refreshLicenseMenus)
 // 更换授权码成功后(Activate/LicenseFooter 经 markActivated 广播)整体刷新侧边栏:
-// 授权功能可能变化(logs/license_admin 等入口增删),先重取状态再刷新数据源树
+// 授权功能可能变化(license_admin 入口增删),先重取状态再刷新数据源树
 window.addEventListener('dq-license-changed', onLicenseChanged)
 onUnmounted(() => window.removeEventListener('dq-license-changed', onLicenseChanged))
 async function onLicenseChanged() {
   await refreshLicenseMenus()
   loadDatasources()
-  // 当前页可能因新授权失去入口权限(如正在运行日志页而新码不含 logs),主动跳回首页,
-  // 不等下次路由守卫拦截(运行日志页留着一个永远 403 的界面没有意义)
+  // 当前页可能因新授权失去入口权限(如正在授权管理页而新码不含 license_admin),主动跳回首页,
+  // 不等下次路由守卫拦截(授权管理页留着一个永远 403 的界面没有意义)
   const features = licenseFeatures.value
-  const lostLogs = route.path === '/logs' && !features.includes('logs')
   const lostAdmin = route.path.startsWith('/license-admin') && !(isAdmin.value && features.includes('license_admin'))
-  if (lostLogs || lostAdmin) {
+  if (lostAdmin) {
     router.replace('/')
   }
 }

@@ -1,11 +1,8 @@
 package com.example.dq.controller;
 
-import com.example.dq.license.LicenseFeature;
 import com.example.dq.model.DiagnosticsReport;
 import com.example.dq.model.LogErrorItem;
-import com.example.dq.model.LicenseFeatureRequiredException;
 import com.example.dq.service.DiagnosticsService;
-import com.example.dq.service.LicenseService;
 import com.example.dq.web.LogEntry;
 import com.example.dq.web.LogStreamAppender;
 import io.javalin.http.Context;
@@ -16,18 +13,15 @@ import java.util.List;
 /**
  * 系统诊断(排错中心)端点:概览聚合 + 数据源连通性实测。
  * /api/diagnostics 前缀在授权前置校验中放行(未激活恰是最需要诊断的场景);
- * 日志摘录仍按 logs 受控功能门控——已激活但授权码未包含 logs 功能时降级为 null。
+ * 日志摘录来自内存日志缓冲,运行日志已转为普通功能,不再按授权码门控。
  */
 public class DiagnosticsController {
 
     private final DiagnosticsService diagnosticsService;
-    private final LicenseService licenseService;
     private final LogStreamAppender appender;
 
-    public DiagnosticsController(DiagnosticsService diagnosticsService, LicenseService licenseService,
-                                 LogStreamAppender appender) {
+    public DiagnosticsController(DiagnosticsService diagnosticsService, LogStreamAppender appender) {
         this.diagnosticsService = diagnosticsService;
-        this.licenseService = licenseService;
         this.appender = appender;
     }
 
@@ -41,16 +35,8 @@ public class DiagnosticsController {
         ctx.json(diagnosticsService.checkDatasources());
     }
 
-    /**
-     * 内存环形缓冲中最近 50 条 WARN/ERROR 日志;授权码未包含 logs 功能时返回 null(前端展示升级提示)。
-     * checkFeature(requireActive=false):未激活实例直接放行(未激活时功能全锁,诊断页看日志无碍)。
-     */
+    /** 内存环形缓冲中最近 50 条 WARN/ERROR 日志 */
     private List<LogErrorItem> recentLogErrors() {
-        try {
-            licenseService.checkFeature(LicenseFeature.LOGS, false);
-        } catch (LicenseFeatureRequiredException e) {
-            return null;
-        }
         List<LogEntry> entries = appender.getRecentEntries();
         List<LogErrorItem> items = new ArrayList<>();
         for (int i = entries.size() - 1; i >= 0 && items.size() < 50; i--) {

@@ -95,11 +95,11 @@ public class LicenseKeygen {
             System.out.println("SID 已自动生成: " + sid);
         }
 
-        // 5) 功能列表(默认仅基础业务功能;logs/license_admin 受控需显式包含)
+        // 5) 功能列表(默认仅基础业务功能;license_admin 受控需显式包含,logs 已转为普通功能无需包含)
         System.out.println("功能列表(逗号分隔,回车=仅基础业务功能):");
         System.out.println("  全部功能: scan(扫描检测), datasource(数据源管理), excel(Excel导出), report(Word报告),");
         System.out.println("            ai_doc(AI表说明), ai_tag(AI自动打标), tag(表标记), logs(运行日志), license_admin(授权码管理)");
-        System.out.println("  说明: 扫描/数据源/Excel/报告/AI/标记为基础业务功能恒可用;运行日志(logs)、授权码管理(license_admin)为受控功能,需显式包含");
+        System.out.println("  说明: 扫描/数据源/Excel/报告/AI/标记/运行日志为基础业务功能恒可用;仅授权码管理(license_admin)为受控功能,需显式包含");
         String features = promptOptional(sc, "功能列表");
 
         sign(keyFile, customer, expiresStr, appVersion, serverUrl, username, sid, features);

@@ -16,8 +16,8 @@ data class DiagnosticsReport(
     val scanFailures: List<ScanFailureItem>,
     /** 最近失败的 Word 报告导出任务(最多 10 个) */
     val exportFailures: List<ExportFailureItem>,
-    /** 最近错误/警告日志(内存环形缓冲摘录);授权码未包含 logs 功能时为 null */
-    val recentLogErrors: List<LogErrorItem>?,
+    /** 最近错误/警告日志(内存环形缓冲摘录) */
+    val recentLogErrors: List<LogErrorItem>,
     val generatedAt: LocalDateTime,
     val durationMs: Long,
 )

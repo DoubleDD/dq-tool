@@ -101,7 +101,7 @@ make license
 
 授权码为离线验证,无需授权服务器;格式 `DQ1.<payload>.<签名>`,payload 含客户标识、有效期和扩展字段(server_url/username/sid/签发时间戳/功能列表);其中 username、sid、签发时间会展示在前端授权信息处,server_url 不回传前端。注意:纯离线方案无法防逆向破解,仅作为分发门槛。
 
-功能列表(逗号分隔,可选):`scan,datasource,excel,report,ai_doc,ai_tag,tag,logs,license_admin`。扫描/数据源/Excel/报告/AI/标记为基础业务功能恒可用;`logs`(运行日志)、`license_admin`(授权码管理)为受控功能,需显式包含,否则对应页面入口隐藏、接口返回 403。详见 [docs/wiki/授权码.md](docs/wiki/授权码.md)「功能列表」。
+功能列表(逗号分隔,可选):`scan,datasource,excel,report,ai_doc,ai_tag,tag,logs,license_admin`。扫描/数据源/Excel/报告/AI/标记/运行日志为基础业务功能恒可用;仅 `license_admin`(授权码管理)为受控功能,需显式包含,否则页面入口隐藏、接口返回 403。详见 [docs/wiki/授权码.md](docs/wiki/授权码.md)「功能列表」。
 
 ### 授权码管理(仅分发方/管理员)
 
