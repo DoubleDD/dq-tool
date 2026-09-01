@@ -22,6 +22,7 @@
 - Oracle 表体积统计依赖段视图:23ai 起 ALL_SEGMENTS 被移除(DBA_SEGMENTS 仍在);受限账号看不到段视图时(无权限对象 Oracle 也报 ORA-00942)按 ALL_SEGMENTS → DBA_SEGMENTS → USER_SEGMENTS(仅当前用户)→ 不统计 逐级降级(23ai 链从 DBA_SEGMENTS 起),记 warn 日志;探测结果按「用户名@JDBC URL」内存缓存(OracleDialect.segViewCache,换账号/换服务器自动重探,进程重启重置),非首选落点超过 1 小时(SEG_VIEW_REPROBE_MS)从链头重探一次以捕获权限变更
 - SQL Server 行数/体积统计用目录视图 sys.partitions + sys.allocation_units(行数口径 index_id 0/1 堆/聚集索引,体积为全部分区 used_pages × 8KB),不用 DMV sys.dm_db_partition_stats——后者要求 VIEW DATABASE STATE 权限,受限账号在库列表页整页报错;目录视图只受元数据可见性约束,普通账号即可
 - SQL Server 空串统计的去空白表达式用 LTRIM/RTRIM 而非 TRIM(`SqlServerDialect.trimExpr`):TRIM 是 2017 才引入的内置函数,2016 及以下报「'TRIM' 不是可以识别的内置函数名称」;LTRIM/RTRIM 全版本可用且语义同为去两端空格。表达式内先 `CAST(col AS NVARCHAR(MAX))`:旧 LOB 类型 text/ntext 不支持 LTRIM/RTRIM 与 = '' 比较(报「参数数据类型 text 对于 rtrim 函数的参数 1 无效」),普通 (n)(var)char 转换后语义不变
+- SQL Server 字段元数据(`SqlServerDialect.listColumns`/`countColumns`)整表走目录视图 sys.columns/sys.types/sys.indexes,不走 JDBC DatabaseMetaData:mssql-jdbc 的 `getColumns` 实现调用系统存储过程 sp_columns_100,SQL Server 2008 以下(≤2005)无此过程,整库扫描会在规划阶段全部报「找不到存储过程 'sp_columns_100'」;目录视图 2005+ 全版本可用。类型名 → JDBC 类型的映射(`jdbcTypeOf`,含 money/ntext/sysname/uniqueidentifier 等)与展示类型拼接(`displayType`,nvarchar 字节长度减半、-1 即 max)在方言内自维护
 
 ## Excel 导出
 

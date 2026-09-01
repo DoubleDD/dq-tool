@@ -55,6 +55,39 @@ class DialectSqlGenTest {
     }
 
     @Test
+    fun `sqlserver 类型名到JDBC类型映射`() {
+        val mssql = SqlServerDialect()
+        assertEquals(Types.BIGINT, mssql.jdbcTypeOf("bigint"))
+        assertEquals(Types.INTEGER, mssql.jdbcTypeOf("int"))
+        assertEquals(Types.DECIMAL, mssql.jdbcTypeOf("decimal"))
+        assertEquals(Types.DECIMAL, mssql.jdbcTypeOf("money"))
+        assertEquals(Types.TIMESTAMP, mssql.jdbcTypeOf("datetime2"))
+        assertEquals(Types.TIMESTAMP, mssql.jdbcTypeOf("datetimeoffset"))
+        assertEquals(Types.VARCHAR, mssql.jdbcTypeOf("varchar"))
+        assertEquals(Types.NVARCHAR, mssql.jdbcTypeOf("nvarchar"))
+        assertEquals(Types.NVARCHAR, mssql.jdbcTypeOf("sysname"))
+        assertEquals(Types.LONGNVARCHAR, mssql.jdbcTypeOf("ntext"))
+        assertEquals(Types.BINARY, mssql.jdbcTypeOf("timestamp"))
+        assertEquals(Types.CHAR, mssql.jdbcTypeOf("uniqueidentifier"))
+        assertEquals(Types.OTHER, mssql.jdbcTypeOf("geometry"))
+        // 大小写不敏感
+        assertEquals(Types.INTEGER, mssql.jdbcTypeOf("INT"))
+    }
+
+    @Test
+    fun `sqlserver 展示类型拼接`() {
+        val mssql = SqlServerDialect()
+        assertEquals("varchar(50)", mssql.displayType("varchar", 50, 0, 0))
+        assertEquals("nvarchar(25)", mssql.displayType("nvarchar", 50, 0, 0)) // 字节长度减半
+        assertEquals("nvarchar(max)", mssql.displayType("nvarchar", -1, 0, 0))
+        assertEquals("varchar(max)", mssql.displayType("varchar", -1, 0, 0))
+        assertEquals("decimal(10,2)", mssql.displayType("decimal", 5, 10, 2))
+        assertEquals("bigint", mssql.displayType("bigint", 8, 19, 0))
+        assertEquals("datetime2(7)", mssql.displayType("datetime2", 8, 27, 7))
+        assertEquals("ntext", mssql.displayType("ntext", 16, 0, 0)) // 旧 LOB 固定类型不带长度
+    }
+
+    @Test
     fun `sqlserver 空串统计用 LTRIM RTRIM 兼容 2016 及以下`() {
         val sql = SqlServerDialect().buildColumnStatsSql("dbo", "t",
             listOf(col("name", Types.VARCHAR)), null, null, listOf(), false, 0L, null)

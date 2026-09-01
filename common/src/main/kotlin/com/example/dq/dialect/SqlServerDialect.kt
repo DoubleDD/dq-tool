@@ -6,6 +6,7 @@ import com.example.dq.model.TableStat
 
 import java.sql.Connection
 import java.sql.SQLException
+import java.sql.Types
 
 /**
  * SQL Server 方言。
@@ -92,6 +93,21 @@ class SqlServerDialect : AbstractDialect() {
         return databases
     }
 
+    /** 字段总数与 listColumns 同口径(只算基表),走目录视图,原因同 listColumns */
+    @Throws(SQLException::class)
+    override fun countColumns(conn: Connection, schema: String): Long {
+        conn.createStatement().use { st ->
+            st.executeQuery(
+                    "SELECT COUNT(*) FROM sys.columns c " +
+                            "JOIN sys.tables t ON t.object_id = c.object_id " +
+                            "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+                            "WHERE s.name = " + quoteString(schema)).use { rs ->
+                if (rs.next()) return rs.getLong(1)
+            }
+        }
+        return 0
+    }
+
     /**
      * 切换当前库;jdbcUrl 中的 databaseName 仅作默认库。
      * 多库连接按库分池(DataSourceService.getConnection 借出时已切好 catalog),
@@ -175,35 +191,138 @@ class SqlServerDialect : AbstractDialect() {
         return tables
     }
 
-    /** 字段注释走扩展属性 MS_Description(minor_id = column_id) */
+    /**
+     * 字段元数据整表走目录视图,不走 JDBC DatabaseMetaData:
+     * mssql-jdbc 的 getColumns 实现调用系统存储过程 sp_columns_100,
+     * SQL Server 2008 以下(≤2005)无此过程,报「找不到存储过程 'sp_columns_100'」;
+     * sys.columns/sys.types/sys.indexes 目录视图 2005+ 全版本可用。
+     * 注释走扩展属性 MS_Description(minor_id = column_id)
+     */
     @Throws(SQLException::class)
     override fun listColumns(conn: Connection, schema: String, table: String): List<ColumnMeta> {
-        val base = LinkedHashMap<String, ColumnMeta>()
-        for (c in super.listColumns(conn, schema, table)) {
-            base[c.name] = c
-        }
-        val sql = "SELECT c.name, CAST(ep.value AS NVARCHAR(4000)) " +
-                "FROM sys.columns c " +
-                "JOIN sys.tables t ON t.object_id = c.object_id " +
-                "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
-                "LEFT JOIN sys.extended_properties ep ON ep.major_id = c.object_id " +
-                "  AND ep.minor_id = c.column_id AND ep.name = 'MS_Description' " +
-                "WHERE s.name = ? AND t.name = ?"
-        conn.prepareStatement(sql).use { ps ->
+        // 主键列及序号(key_ordinal 即主键内序号)
+        val pk = LinkedHashMap<String, Int>()
+        conn.prepareStatement(
+                "SELECT col.name, ic.key_ordinal FROM sys.indexes i " +
+                        "JOIN sys.index_columns ic ON ic.object_id = i.object_id " +
+                        "  AND ic.index_id = i.index_id AND ic.is_included_column = 0 " +
+                        "JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id " +
+                        "JOIN sys.tables t ON t.object_id = i.object_id " +
+                        "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+                        "WHERE i.is_primary_key = 1 AND s.name = ? AND t.name = ? " +
+                        "ORDER BY ic.key_ordinal").use { ps ->
             ps.setString(1, schema)
             ps.setString(2, table)
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
-                    val c = base[rs.getString(1)]
-                    if (c == null) continue
-                    val comment = rs.getString(2)
-                    base[c.name] = ColumnMeta(c.name, c.typeName, c.displayType, c.jdbcType,
-                            c.nullable, c.defaultValue, comment ?: "",
-                            c.primaryKey, c.pkSeq, c.uniqueIndexFirst)
+                    pk[rs.getString(1)] = rs.getInt(2)
                 }
             }
         }
-        return ArrayList(base.values)
+
+        // 唯一索引首列(含主键索引;key_ordinal = 1 即索引首列)
+        val uniqueFirst = HashSet<String>()
+        conn.prepareStatement(
+                "SELECT DISTINCT col.name FROM sys.indexes i " +
+                        "JOIN sys.index_columns ic ON ic.object_id = i.object_id " +
+                        "  AND ic.index_id = i.index_id AND ic.is_included_column = 0 " +
+                        "JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id " +
+                        "JOIN sys.tables t ON t.object_id = i.object_id " +
+                        "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+                        "WHERE i.is_unique = 1 AND i.index_id > 0 AND i.is_hypothetical = 0 " +
+                        "  AND ic.key_ordinal = 1 AND s.name = ? AND t.name = ?").use { ps ->
+            ps.setString(1, schema)
+            ps.setString(2, table)
+            ps.executeQuery().use { rs ->
+                while (rs.next()) {
+                    uniqueFirst.add(rs.getString(1))
+                }
+            }
+        }
+
+        val cols = ArrayList<ColumnMeta>()
+        conn.prepareStatement(
+                "SELECT c.name, ty.name, bty.name, c.max_length, c.precision, c.scale, c.is_nullable, " +
+                        "CAST(dc.definition AS NVARCHAR(4000)), " +
+                        "CAST(ep.value AS NVARCHAR(4000)) " +
+                        "FROM sys.columns c " +
+                        "JOIN sys.tables t ON t.object_id = c.object_id " +
+                        "JOIN sys.schemas s ON s.schema_id = t.schema_id " +
+                        "JOIN sys.types ty ON ty.user_type_id = c.user_type_id " +
+                        "LEFT JOIN sys.types bty ON bty.user_type_id = ty.system_type_id " +
+                        "  AND bty.user_type_id <> ty.user_type_id " +
+                        "LEFT JOIN sys.default_constraints dc ON dc.parent_object_id = c.object_id " +
+                        "  AND dc.parent_column_id = c.column_id " +
+                        "LEFT JOIN sys.extended_properties ep ON ep.major_id = c.object_id " +
+                        "  AND ep.minor_id = c.column_id AND ep.name = 'MS_Description' " +
+                        "WHERE s.name = ? AND t.name = ? " +
+                        "ORDER BY c.column_id").use { ps ->
+            ps.setString(1, schema)
+            ps.setString(2, table)
+            ps.executeQuery().use { rs ->
+                while (rs.next()) {
+                    val name = rs.getString(1)
+                    val typeName = rs.getString(2)
+                    val baseTypeName = rs.getString(3)
+                    var jdbcType = jdbcTypeOf(typeName)
+                    if (jdbcType == Types.OTHER && baseTypeName != null) {
+                        // 别名类型(如 sysname/自定义 decimal 别名)按基类型归类
+                        jdbcType = jdbcTypeOf(baseTypeName)
+                    }
+                    val pkSeq = pk[name]
+                    cols.add(ColumnMeta(name, typeName,
+                            displayType(typeName, rs.getInt(4), rs.getInt(5), rs.getInt(6)),
+                            jdbcType, rs.getBoolean(7), rs.getString(8), rs.getString(9) ?: "",
+                            pkSeq != null, pkSeq ?: 0, uniqueFirst.contains(name)))
+                }
+            }
+        }
+        return cols
+    }
+
+    /** SQL Server 系统类型名 → JDBC 类型;未知类型返回 Types.OTHER */
+    internal fun jdbcTypeOf(typeName: String): Int {
+        return when (typeName.lowercase()) {
+            "bigint" -> Types.BIGINT
+            "int" -> Types.INTEGER
+            "smallint" -> Types.SMALLINT
+            "tinyint" -> Types.TINYINT
+            "bit" -> Types.BIT
+            "decimal", "numeric", "money", "smallmoney" -> Types.DECIMAL
+            "float" -> Types.FLOAT
+            "real" -> Types.REAL
+            "date" -> Types.DATE
+            "time" -> Types.TIME
+            "datetime", "datetime2", "smalldatetime", "datetimeoffset" -> Types.TIMESTAMP
+            "char", "uniqueidentifier" -> Types.CHAR
+            "varchar" -> Types.VARCHAR
+            "text" -> Types.LONGVARCHAR
+            "nchar" -> Types.NCHAR
+            "nvarchar", "sysname" -> Types.NVARCHAR
+            "ntext" -> Types.LONGNVARCHAR
+            "binary", "timestamp", "rowversion" -> Types.BINARY
+            "varbinary" -> Types.VARBINARY
+            "image" -> Types.LONGVARBINARY
+            "xml" -> Types.SQLXML
+            else -> Types.OTHER
+        }
+    }
+
+    /**
+     * 展示类型拼接:varchar(50)/nvarchar(max)/decimal(10,2)/datetime2(7)。
+     * nvarchar/nchar 的 max_length 按字节存储,展示长度减半;max_length = -1 即 (max)
+     */
+    internal fun displayType(typeName: String, maxLength: Int, precision: Int, scale: Int): String {
+        return when (typeName.lowercase()) {
+            "nvarchar", "nchar" ->
+                if (maxLength == -1) "$typeName(max)" else "$typeName(${maxLength / 2})"
+            "varchar", "char", "varbinary", "binary" ->
+                if (maxLength == -1) "$typeName(max)" else "$typeName($maxLength)"
+            "decimal", "numeric" -> "$typeName($precision,$scale)"
+            "time", "datetime2", "datetimeoffset" ->
+                if (scale > 0) "$typeName($scale)" else typeName
+            else -> typeName
+        }
     }
 
     /**
