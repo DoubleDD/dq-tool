@@ -52,6 +52,7 @@ dependencies {
     // 测试
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.assertj.core)
+    testImplementation(libs.mockk)
     testImplementation(libs.testcontainers.junit)
     testImplementation(libs.testcontainers.mysql)
     testImplementation(libs.testcontainers.postgresql)

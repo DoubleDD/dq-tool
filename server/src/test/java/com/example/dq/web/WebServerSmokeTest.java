@@ -202,6 +202,26 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void SQL控制台执行端点参数校验与不可达数据源错误映射() throws Exception {
+        activateLicense();
+        HttpResponse<String> created = send("POST", "/api/datasources",
+                "{\"name\":\"控制台源\",\"jdbcUrl\":\"jdbc:mysql://127.0.0.1:59998/db\",\"username\":\"root\",\"password\":\"p\"}");
+        assertEquals(200, created.statusCode(), created.body());
+        long id = Long.parseLong(created.body().replaceAll(".*\"id\":(\\d+).*", "$1"));
+
+        // 空白 SQL:请求体 @NotBlank 校验失败 → 400 统一映射
+        HttpResponse<String> blank = send("POST", "/api/datasources/" + id + "/sql/execute", "{\"sql\":\"  \"}");
+        assertEquals(400, blank.statusCode(), blank.body());
+        assertTrue(blank.body().contains("message"), blank.body());
+
+        // 目标库不可达:Hikari 池初始化失败(RuntimeException → 500 统一映射,与表数据预览同口径);
+        // SQL 错误(SQLException → 502)只在池能建成、语句触达业务库时发生
+        HttpResponse<String> resp = send("POST", "/api/datasources/" + id + "/sql/execute", "{\"sql\":\"SELECT 1\"}");
+        assertEquals(500, resp.statusCode(), resp.body());
+        assertTrue(resp.body().contains("message"), resp.body());
+    }
+
+    @Test
     void 心跳接口不被拦截() throws Exception {
         assertEquals(204, get("/api/heartbeat").statusCode());
     }

@@ -14,6 +14,8 @@ hibernate-validator = "9.1.0.Final"
 tomcat-el = "11.0.22"
 junit = "5.12.2"
 assertj = "3.27.3"
+# Kotlin final 类打桩(SqlConsoleServiceTest 的 DataSourceService/SystemSettingsService)
+mockk = "1.14.11"
 # 内核(common 模块)内部 JSON 固定 Jackson 2,与 server web 层的 Jackson 3 隔离
 jackson2 = "2.20.0"
 # Flyway 数据库迁移;H2 支持内置于 flyway-core(无 flyway-database-h2 模块)
@@ -52,6 +54,7 @@ hibernate-validator = { group = "org.hibernate.validator", name = "hibernate-val
 tomcat-embed-el = { group = "org.apache.tomcat.embed", name = "tomcat-embed-el", version.ref = "tomcat-el" }
 junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit" }
 assertj-core = { group = "org.assertj", name = "assertj-core", version.ref = "assertj" }
+mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 jackson2-module-kotlin = { group = "com.fasterxml.jackson.module", name = "jackson-module-kotlin", version.ref = "jackson2" }
 flyway-core = { group = "org.flywaydb", name = "flyway-core", version.ref = "flyway" }
 # 仅注解:common 模型类携带校验注解,实现由 server 的 hibernate-validator 提供

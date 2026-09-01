@@ -160,6 +160,7 @@ const otherNav = computed(() => {
     { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
     { path: '/report-exports', label: '报告列表', icon: Download },
     { path: '/sample-exports', label: '抽样导出', icon: Files },
+    { path: '/sql-console', label: 'SQL 控制台', icon: Monitor },
     { path: '/settings', label: '系统设置', icon: Setting },
     { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit },
     { path: '/logs', label: '运行日志', icon: Document }
@@ -276,6 +277,7 @@ const activeNav = computed(() => {
   if (p === '/ai-usage' || p.startsWith('/ai-usage/')) return '/ai-usage'
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
   if (p === '/sample-exports' || p.startsWith('/sample-exports/')) return '/sample-exports'
+  if (p === '/sql-console' || p.startsWith('/sql-console/')) return '/sql-console'
   if (p === '/settings' || p.startsWith('/settings/')) return '/settings'
   if (p === '/logs' || p.startsWith('/logs/')) return '/logs'
   if (p === '/diagnostics' || p.startsWith('/diagnostics/')) return '/diagnostics'

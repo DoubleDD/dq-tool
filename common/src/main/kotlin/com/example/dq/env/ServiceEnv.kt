@@ -38,6 +38,7 @@ import com.example.dq.service.MetadataService
 import com.example.dq.service.PreviewService
 import com.example.dq.service.SampleExportService
 import com.example.dq.service.ScanDocService
+import com.example.dq.service.SqlConsoleService
 import com.example.dq.service.ScanService
 import com.example.dq.service.ScanTransferService
 import com.example.dq.service.ScanWordExportService
@@ -127,6 +128,7 @@ class ServiceEnv(val config: AppConfig) {
         dialectFactory, systemSettingsService, executor, chunkRunner, autoTagService, scanDocService, scanAiTracker)
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
+    val sqlConsoleService = SqlConsoleService(dataSourceService, systemSettingsService)
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, dataSourceRepo)
     val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
     val exportService = ExportService(scanService, tableDocRepo)

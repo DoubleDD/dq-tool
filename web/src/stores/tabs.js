@@ -83,6 +83,7 @@ const PAGE_TABS = {
   '/ai-usage': '模型用量统计',
   '/report-exports': '报告列表',
   '/sample-exports': '抽样导出',
+  '/sql-console': 'SQL 控制台',
   '/settings': '系统设置',
   '/logs': '运行日志',
   '/diagnostics': '系统诊断',

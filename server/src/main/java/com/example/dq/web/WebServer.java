@@ -20,6 +20,7 @@ import com.example.dq.controller.MetadataController;
 import com.example.dq.controller.PreviewController;
 import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.SampleExportController;
+import com.example.dq.controller.SqlConsoleController;
 import com.example.dq.controller.LogController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.ScanTransferController;
@@ -54,7 +55,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Web 层装配与路由(去 Spring 后替代容器装配 + DispatcherServlet):
- * 构造对象图(repository → service → handler,全部构造注入),注册 63 个端点、
+ * 构造对象图(repository → service → handler,全部构造注入),注册 64 个端点、
  * 授权前置校验(替代 LicenseInterceptor)、统一异常映射(响应体 {"message": ...},
  * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)、
  * 就绪闸门与 /api/health 就绪探针(共享内核未就绪前业务接口统一 503,前端轮询到 200 再加载数据)。
@@ -96,6 +97,7 @@ public class WebServer {
     private final AtomicReference<SystemSettingsController> settingsCtrl = new AtomicReference<>();
     private final AtomicReference<LicenseController> licenseCtrl = new AtomicReference<>();
     private final AtomicReference<PreviewController> previewCtrl = new AtomicReference<>();
+    private final AtomicReference<SqlConsoleController> sqlConsoleCtrl = new AtomicReference<>();
     private final AtomicReference<AnnotationController> annotationCtrl = new AtomicReference<>();
     private final AtomicReference<ListExportController> listExportCtrl = new AtomicReference<>();
     private final AtomicReference<DiagnosticsController> diagnosticsCtrl = new AtomicReference<>();
@@ -160,7 +162,7 @@ public class WebServer {
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
                     dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl, aiCtrl, aiUsageCtrl,
-                    settingsCtrl, licenseCtrl, previewCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
+                    settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
 
@@ -188,6 +190,7 @@ public class WebServer {
                                 AtomicReference<SystemSettingsController> settingsCtrl,
                                 AtomicReference<LicenseController> licenseCtrl,
                                 AtomicReference<PreviewController> previewCtrl,
+                                AtomicReference<SqlConsoleController> sqlConsoleCtrl,
                                 AtomicReference<AnnotationController> annotationCtrl,
                                 AtomicReference<ListExportController> listExportCtrl,
                                 AtomicReference<DiagnosticsController> diagnosticsCtrl,
@@ -296,6 +299,8 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns", ctx -> metaCtrl.get().tableColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", ctx -> metaCtrl.get().tableIndexes(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/preview", ctx -> previewCtrl.get().preview(ctx));
+        // SQL 控制台:对数据源执行任意 SQL,返回结果集或受影响行数
+        routes.post("/api/datasources/{dsId}/sql/execute", ctx -> sqlConsoleCtrl.get().execute(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", ctx -> metaCtrl.get().countColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", ctx -> metaCtrl.get().latestScanJobs(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/running-scans", ctx -> metaCtrl.get().runningScans(ctx));
@@ -517,6 +522,7 @@ public class WebServer {
         settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener));
         licenseCtrl.set(new LicenseController(env.getLicenseService()));
         previewCtrl.set(new PreviewController(env.getPreviewService()));
+        sqlConsoleCtrl.set(new SqlConsoleController(env.getSqlConsoleService()));
         annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
         listExportCtrl.set(new ListExportController(env.getListExportService()));
         diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), logStreamAppender));
