@@ -65,7 +65,7 @@
     <el-dialog v-model="uploadDialogVisible" title="导入 Excel 检测数据源" width="520px" destroy-on-close @closed="onUploadClosed">
       <el-alert type="info" :closable="false" style="margin-bottom: 12px">
         <template #title>
-          上传后先做第一步「数据源检测」:提取并去重数据源加入系统(连不上的标记错误,可在明细里就地编辑修复,或重新导入表格更新)。检测通过后,在任务列表点「继续导出」再做第二步:每行一张表抽 50 行数据,按 数据源×类别 生成 Excel,按类别目录打 zip
+          上传后先做第一步「数据源检测」:提取并去重数据源加入系统(连不上的标记错误,可在明细里就地编辑修复,或重新导入表格更新)。检测通过后,在任务列表点「继续导出」再做第二步:每行一张表按「数据量」列抽样(留空或未提供该列默认 50 条),按 数据源×类别 生成 Excel,按类别目录打 zip
         </template>
       </el-alert>
       <el-upload
@@ -208,6 +208,9 @@
                 </el-table-column>
                 <el-table-column label="行数" width="90" align="right" prop="rowCount" sortable>
                   <template #default="{ row }">{{ row.rowCount != null ? row.rowCount : '-' }}</template>
+                </el-table-column>
+                <el-table-column label="数据量" width="90" align="right" sortable :sort-method="(a, b) => (a.sampleLimit ?? 50) - (b.sampleLimit ?? 50)">
+                  <template #default="{ row }">{{ row.sampleLimit != null ? row.sampleLimit : '50(默认)' }}</template>
                 </el-table-column>
                 <el-table-column label="错误" min-width="160" sortable :sort-method="(a, b) => (a.error || '').localeCompare(b.error || '')" show-overflow-tooltip>
                   <template #default="{ row }">

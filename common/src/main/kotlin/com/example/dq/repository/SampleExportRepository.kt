@@ -40,19 +40,24 @@ class SampleExportRepository(private val jdbc: Jdbc) {
                        val port: Int?, val username: String?, val databaseName: String?, val schemaName: String?,
                        val tableName: String?, val tableCnName: String?, val dsKey: String?,
                        val datasourceId: Long?, val sheetName: String?, val status: String,
-                       val rowCount: Int?, val error: String?, val excelFile: String?)
+                       val rowCount: Int?, val error: String?, val excelFile: String?,
+                       /** Excel「数据量」列的抽样行数;null=默认抽样行数 */
+                       val sampleLimit: Int?)
 
     private val itemMapper: (ResultSet) -> ItemRow = { rs ->
         val port = rs.getInt("port")
         val dsId = rs.getLong("datasource_id")
         val rowCount = rs.getInt("row_count")
+        val sampleLimit = rs.getInt("sample_limit")
+        val hasSampleLimit = !rs.wasNull()
         ItemRow(rs.getLong("id"), rs.getLong("task_id"), rs.getInt("seq"), rs.getString("category"),
             rs.getString("sys_no"), rs.getString("sys_desc"), rs.getString("db_type"), rs.getString("host"),
             if (rs.wasNull()) null else port, rs.getString("username"),
             rs.getString("database_name"), rs.getString("schema_name"),
             rs.getString("table_name"), rs.getString("table_cn_name"), rs.getString("ds_key"),
             if (rs.wasNull()) null else dsId, rs.getString("sheet_name"), rs.getString("status"),
-            if (rs.wasNull()) null else rowCount, rs.getString("error"), rs.getString("excel_file"))
+            if (rs.wasNull()) null else rowCount, rs.getString("error"), rs.getString("excel_file"),
+            if (hasSampleLimit) sampleLimit else null)
     }
 
     private fun ts(rs: ResultSet, col: String): LocalDateTime? = rs.getTimestamp(col)?.toLocalDateTime()
@@ -143,7 +148,7 @@ class SampleExportRepository(private val jdbc: Jdbc) {
         jdbc.tx { conn ->
             conn.prepareStatement(
                 "INSERT INTO sample_export_item(task_id, seq, category, sys_no, sys_desc, db_type, host, port, username, " +
-                        "database_name, schema_name, table_name, table_cn_name, ds_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                        "database_name, schema_name, table_name, table_cn_name, ds_key, sample_limit) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
                 .use { ps ->
                     for (r in rows) {
                         ps.setLong(1, taskId)
@@ -161,6 +166,8 @@ class SampleExportRepository(private val jdbc: Jdbc) {
                         ps.setString(12, r.tableName)
                         ps.setString(13, r.tableCnName)
                         ps.setString(14, r.dsKey)
+                        val limit = r.sampleLimit
+                        if (limit != null) ps.setInt(15, limit) else ps.setNull(15, Types.INTEGER)
                         ps.addBatch()
                     }
                     ps.executeBatch()

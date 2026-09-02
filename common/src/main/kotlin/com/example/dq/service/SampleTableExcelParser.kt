@@ -9,16 +9,16 @@ import java.io.InputStream
 
 /**
  * 「表格批量导入数据源 + 抽样导出」的上传 Excel 解析(样例 docs/1导入数据.xlsx):
- * 单 sheet,表头 12 列(见 [HEADERS]),每行 = 一张要抽样的表。
+ * 单 sheet,表头 12 列(见 [HEADERS],另有一列可选的「数据量」控制抽样行数),每行 = 一张要抽样的表。
  * 数据坑已由解析层抹平:数值型单元格(端口/口令)经 DataFormatter 取显示字符串、
  * 地址前导空格 trim、端口空/解析不出归一为 null(后续按方言默认端口)。
  */
 object SampleTableExcelParser {
 
-    /** 表头列名(顺序无关,按名定位;匹配前去空白) */
+    /** 表头列名(顺序无关,按名定位;匹配前去空白);「数据量」为可选列,缺失或留空按默认抽样行数 */
     private val HEADERS = listOf(
         "所属水利对象类别名称", "系统编号", "实际系统或模式描述", "数据库类型", "地址", "端口",
-        "用户名", "口令", "数据库名称", "模式名称", "表英文名称", "表中文名称")
+        "用户名", "口令", "数据库名称", "模式名称", "表英文名称", "表中文名称", "数据量")
 
     /** 数据行必需列:缺失/为空的行收集为无效行(ROW_SKIPPED),不参与后续导入与导出 */
     private val REQUIRED_HEADERS = listOf("数据库类型", "地址", "数据库名称", "表英文名称")
@@ -50,6 +50,8 @@ object SampleTableExcelParser {
         val schemaName: String?,
         val tableName: String,
         val tableCnName: String?,
+        /** 抽样行数(Excel「数据量」列);null=列缺失/留空/非正数,导出时按默认抽样行数 */
+        val sampleLimit: Int? = null,
     ) {
         /** 生效端口:显式端口优先,缺省按方言默认 */
         val effectivePort: Int get() = port ?: JdbcUrlRewriter.defaultPort(dbType)
@@ -157,6 +159,7 @@ object SampleTableExcelParser {
                     schemaName = values.getValue("模式名称").ifEmpty { null },
                     tableName = tableName,
                     tableCnName = values.getValue("表中文名称").ifEmpty { null },
+                    sampleLimit = values.getValue("数据量").toIntOrNull()?.takeIf { it > 0 },
                 ))
             }
             return ParseResult(rows, skipped)
@@ -206,7 +209,7 @@ object SampleTableExcelParser {
             }
             val example = listOf(
                 "01流域", "101", "示例系统", "mysql", "192.168.1.10", "3306",
-                "root", "password", "demo_db", "demo_db", "demo_table", "示例表")
+                "root", "password", "demo_db", "demo_db", "demo_table", "示例表", "50")
             val row = sheet.createRow(1)
             example.forEachIndexed { i, v -> row.createCell(i).setCellValue(v) }
             wb.write(out)

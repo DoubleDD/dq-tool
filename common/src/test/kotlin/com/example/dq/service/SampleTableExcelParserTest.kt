@@ -135,6 +135,37 @@ class SampleTableExcelParserTest {
     }
 
     @Test
+    fun `数据量列控制抽样行数,缺列留空非数字或非正数按默认`() {
+        // 旧表格(无数据量列):按默认;新表格:有值按值,留空/非数字/非正数按默认
+        val legacy = SampleTableExcelParser.parse(xlsx(headers, listOf(row())))
+        assertEquals(null, legacy.rows[0].sampleLimit)
+
+        val withLimit = headers + "数据量"
+        val input = xlsx(withLimit, listOf(
+            row(table = "t1").plus("数据量" to 200),   // 数值单元格
+            row(table = "t2").plus("数据量" to "300"), // 文本单元格
+            row(table = "t3").plus("数据量" to ""),    // 留空
+            row(table = "t4").plus("数据量" to "abc"), // 非数字
+            row(table = "t5").plus("数据量" to -5),    // 非正数
+        ))
+        val result = SampleTableExcelParser.parse(input)
+        assertEquals(listOf(200, 300, null, null, null), result.rows.map { it.sampleLimit })
+    }
+
+    @Test
+    fun `导入模版含数据量列表头与示例值`() {
+        val out = ByteArrayOutputStream()
+        SampleTableExcelParser.writeTemplate(out)
+        XSSFWorkbook(ByteArrayInputStream(out.toByteArray())).use { wb ->
+            val head = wb.getSheetAt(0).getRow(0)
+            val headers = head.map { it.stringCellValue }
+            assertEquals("表中文名称", headers[11])
+            assertEquals("数据量", headers[12])
+            assertEquals("50", wb.getSheetAt(0).getRow(1).getCell(12).stringCellValue)
+        }
+    }
+
+    @Test
     fun `buildJdbcUrl 各类型拼法`() {
         val p = SampleTableExcelParser
         assertEquals("jdbc:mysql://h:3306/db", p.buildJdbcUrl(DbType.MYSQL, "h", 3306, "db"))

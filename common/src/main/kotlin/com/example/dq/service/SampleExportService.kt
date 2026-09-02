@@ -39,7 +39,7 @@ import kotlin.streams.asSequence
  * (按数据源身份 key 去重建档/复用/修复,连不上的标记错误等人工处理),检测完成任务停在 DETECTED
  * 等用户决策;用户点「继续导出」才走第二步——按 ds_key 重新解析数据源(用户可能已就地编辑或
  * 重新导入修过连接信息),按「数据源 × 水利对象类别」分组,每组产出一个 xlsx(首 sheet 为
- * 「预览目录」,其后每表一个 sheet,抽样 50 行)→ 任务目录打包 zip。
+ * 「预览目录」,其后每表一个 sheet,按 Excel「数据量」列抽样,缺省 50 行)→ 任务目录打包 zip。
  * 固定 4 线程池执行(暂停中的任务只占住自己的线程,后提交的任务不必排队等它),
  * 任务落 H2(sample_export / sample_export_item),前端任务列表轮询进度;
  * 产物存 数据目录/sample-exports/。解析行(含口令)只活在检测线程执行期内,不落库不常驻内存
@@ -605,20 +605,21 @@ class SampleExportService(
         return done
     }
 
-    /** 借连接抽样最多 [SAMPLE_ROWS] 行:表头取 ResultSetMetaData 列名;schema 为空(MySQL 场景 schema=库名)用 databaseName 兜底 */
+    /** 借连接按明细的「数据量」抽样(未填/非正数按 [SAMPLE_ROWS] 默认):表头取 ResultSetMetaData 列名;schema 为空(MySQL 场景 schema=库名)用 databaseName 兜底 */
     private fun sampleRows(dsId: Long, item: SampleExportRepository.ItemRow, dialect: com.example.dq.dialect.DbDialect)
             : Pair<List<String>, List<Array<Any?>>> {
+        val limit = item.sampleLimit ?: SAMPLE_ROWS
         dataSourceService.getConnection(dsId, item.databaseName).use { conn ->
             conn.createStatement().use { stmt ->
                 // 与数据预览同口径的单条 SQL 超时(系统设置可改)
                 stmt.queryTimeout = systemSettingsService.scanSettings().statementTimeoutSeconds
                 stmt.executeQuery(
                     dialect.sampleRowsSql(item.schemaName ?: item.databaseName ?: "", item.tableName ?: "",
-                        emptyList(), SAMPLE_ROWS)).use { rs ->
+                        emptyList(), limit)).use { rs ->
                     val meta = rs.metaData
                     val header = (1..meta.columnCount).map { meta.getColumnLabel(it) }
                     val data = ArrayList<Array<Any?>>()
-                    while (rs.next() && data.size < SAMPLE_ROWS) {
+                    while (rs.next() && data.size < limit) {
                         data.add(Array(meta.columnCount) { rs.getObject(it + 1) })
                     }
                     return header to data
@@ -751,7 +752,7 @@ class SampleExportService(
             SampleExportItemView(item.id, item.seq, item.category, item.sysNo, item.sysDesc, item.dbType,
                 item.host, item.port, item.username, item.databaseName, item.schemaName, item.tableName,
                 item.tableCnName, item.dsKey, item.datasourceId, dsNames[item.datasourceId], item.sheetName,
-                item.status, item.rowCount, item.error, item.excelFile)
+                item.status, item.rowCount, item.error, item.excelFile, item.sampleLimit)
         }
         return SampleExportDetailView(toTaskView(row), dsReport, items)
     }
@@ -803,7 +804,7 @@ class SampleExportService(
         /** 任务执行线程池的线程序号(线程命名 sample-export-N) */
         private val THREAD_IDX = AtomicInteger()
 
-        /** 每表抽样行数 */
+        /** 「数据量」列缺失/留空/非正数时每表默认抽样行数 */
         private const val SAMPLE_ROWS = 50
 
         /** 单元格字符串截断长度(与数据预览/AI 抽样同口径) */

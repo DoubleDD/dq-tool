@@ -60,4 +60,6 @@ data class SampleExportItemView(
     val error: String?,
     /** 生成的 xlsx 相对路径(类别目录/文件名) */
     val excelFile: String?,
+    /** Excel「数据量」列的抽样行数;null=按默认抽样行数导出 */
+    val sampleLimit: Int?,
 )
