@@ -114,6 +114,41 @@ class MetaCacheRepositoryTest {
         assertFalse(repo.isNoColumns(1, "", "db1", "ghost"))
     }
 
+    // ---------- 并发覆盖(回归:导出表结构文档与扫描并发回源同表时唯一键冲突 23505) ----------
+
+    @Test
+    fun `并发覆盖同表字段缓存 不撞唯一键且结果一致`() {
+        val threads = (1..8).map {
+            Thread {
+                repeat(20) { i ->
+                    // 模拟 MetadataService「未缓存→回源→覆盖」:部分线程从空缓存起步
+                    repo.replaceColumns(1, "", "db1", "t1", listOf(col("id", 0), col("name", 1)))
+                    repo.replaceIndexes(1, "", "db1", "t1", listOf(MetaCacheRepository.CachedIndex("uk_id", true, 0, "id")))
+                }
+            }
+        }
+        threads.forEach(Thread::start)
+        threads.forEach { it.join() }
+        assertEquals(listOf("id", "name"), repo.listColumns(1, "", "db1", "t1").map { it.columnName })
+        assertEquals(1, repo.listIndexes(1, "", "db1", "t1").size)
+        assertTrue(repo.isColumnCacheReady(1, "", "db1", "t1"))
+    }
+
+    @Test
+    fun `并发覆盖同 schema 表清单 不撞唯一键且结果一致`() {
+        val threads = (1..8).map {
+            Thread {
+                repeat(20) {
+                    repo.replaceTables(1, "", "db1", listOf(table("t1"), table("t2")))
+                }
+            }
+        }
+        threads.forEach(Thread::start)
+        threads.forEach { it.join() }
+        assertEquals(listOf("t1", "t2"), repo.listTables(1, "", "db1").map { it.tableName })
+        assertTrue(repo.isTableCacheReady(1, "", "db1"))
+    }
+
     // ---------- 级联清理 ----------
 
     @Test

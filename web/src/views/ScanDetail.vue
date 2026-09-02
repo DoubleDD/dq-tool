@@ -19,7 +19,7 @@
         <el-descriptions-item label="状态">
           <el-tag :type="statusTagType(job.status)" size="small">{{ statusText(job.status) }}</el-tag>
         </el-descriptions-item>
-        <el-descriptions-item label="数据库类型">{{ job.dbType }}</el-descriptions-item>
+        <el-descriptions-item label="数据库类型">{{ job.dbType }}{{ job.dbVersion ? ' ' + job.dbVersion : '' }}</el-descriptions-item>
         <el-descriptions-item label="强制全量">{{ job.forceFull ? '是' : '否' }}</el-descriptions-item>
         <el-descriptions-item label="并发线程数">{{ job.workers ? job.workers + ' 线程' : '默认' }}</el-descriptions-item>
         <el-descriptions-item label="创建时间">{{ formatDateTime(job.createdAt) }}</el-descriptions-item>

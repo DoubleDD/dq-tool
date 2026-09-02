@@ -18,7 +18,8 @@ class ScanRepository(private val jdbc: Jdbc) {
                       val status: ScanStatus, val forceFull: Boolean, val nullRulesJson: String?,
                       val totalTables: Int, val doneTables: Int, val error: String?, val autoTag: Boolean,
                       val workers: Int?, val genDoc: Boolean,
-                      val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?)
+                      val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?,
+                      val dbVersion: String?)
 
     private val jobMapper: (ResultSet) -> JobRow = { rs ->
         JobRow(
@@ -27,7 +28,8 @@ class ScanRepository(private val jdbc: Jdbc) {
             rs.getString("null_rules"), rs.getInt("total_tables"), rs.getInt("done_tables"),
             rs.getString("error"), rs.getBoolean("auto_tag"),
             rs.getObject("workers") as? Int, rs.getBoolean("gen_doc"),
-            ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"))
+            ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"),
+            rs.getString("db_version"))
     }
 
     private fun ts(rs: ResultSet, col: String): LocalDateTime? {
@@ -36,11 +38,12 @@ class ScanRepository(private val jdbc: Jdbc) {
     }
 
     fun insertJob(datasourceId: Long, dbName: String?, schema: String, forceFull: Boolean, nullRulesJson: String?,
-                  totalTables: Int, autoTag: Boolean = false, workers: Int? = null, genDoc: Boolean = true): Long {
+                  totalTables: Int, autoTag: Boolean = false, workers: Int? = null, genDoc: Boolean = true,
+                  dbVersion: String? = null): Long {
         val jobId = jdbc.insert(
-            "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, total_tables, auto_tag, workers, gen_doc) " +
-                    "VALUES (?,?,?,'PENDING',?,?,?,?,?,?)",
-            datasourceId, dbName, schema, forceFull, nullRulesJson, totalTables, autoTag, workers, genDoc)
+            "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, total_tables, auto_tag, workers, gen_doc, db_version) " +
+                    "VALUES (?,?,?,'PENDING',?,?,?,?,?,?,?)",
+            datasourceId, dbName, schema, forceFull, nullRulesJson, totalTables, autoTag, workers, genDoc, dbVersion)
         insertJobEvent(jobId, ScanStatus.PENDING)
         return jobId
     }
@@ -280,11 +283,11 @@ class ScanRepository(private val jdbc: Jdbc) {
         jdbc.tx { conn ->
             val jobId = insertReturningId(conn,
                 "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, " +
-                        "total_tables, done_tables, error, auto_tag, workers, gen_doc, created_at, started_at, finished_at) " +
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "total_tables, done_tables, error, auto_tag, workers, gen_doc, created_at, started_at, finished_at, db_version) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 datasourceId, job.dbName?.takeIf { it.isNotBlank() }, job.schemaName, job.status.name, job.forceFull,
                 job.nullRules, job.totalTables, job.doneTables, job.error, job.autoTag, job.workers, job.genDoc,
-                parseTs(job.createdAt), parseTs(job.startedAt), parseTs(job.finishedAt))
+                parseTs(job.createdAt), parseTs(job.startedAt), parseTs(job.finishedAt), job.dbVersion)
             for (event in job.events) {
                 updateOn(conn, "INSERT INTO scan_job_event(job_id, status, created_at) VALUES (?,?,?)",
                     jobId, event.status.name, parseTs(event.createdAt))

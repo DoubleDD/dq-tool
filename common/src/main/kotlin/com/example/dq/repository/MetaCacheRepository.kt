@@ -4,8 +4,21 @@ package com.example.dq.repository
  * 结构元数据本地缓存(meta_table / meta_column / meta_index):
  * 浏览路径懒加载 + 手动刷新/扫描时同步刷新;刷新语义为整粒度覆盖(delete + insert)。
  * db_name 已由调用方 normalize:无库概念方言存空串(与 schema_doc/table_doc 口径一致)。
+ *
+ * 并发安全:覆盖刷新是「先 DELETE 后 INSERT」,两个线程并发刷同一粒度
+ * (如导出表结构文档与扫描 planTable 并发回源同一表)会互相踩唯一键(23505)。
+ * 内嵌 H2 单进程,用条纹锁按粒度键串行化三个 replace* 方法即可。
  */
 class MetaCacheRepository(private val jdbc: Jdbc) {
+
+    /** 条纹锁:按 粒度键 hash 取锁,串行化同粒度并发覆盖刷新 */
+    private val stripes = Array(STRIPE_COUNT) { Any() }
+
+    /** 粒度键:kind 前缀区分表清单(schema 级)与单表字段/索引,避免无关刷新互斥 */
+    private fun lockKey(kind: String, datasourceId: Long, dbName: String, schema: String, table: String): Any {
+        val key = "$kind|$datasourceId|$dbName|$schema|$table"
+        return stripes[(key.hashCode() and Int.MAX_VALUE) % STRIPE_COUNT]
+    }
 
     /** 表级缓存行 */
     data class CachedTable(
@@ -80,6 +93,7 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         private const val KIND_TABLE = "TABLE"
         private const val KIND_COLUMN = "COLUMN"
         private const val KIND_INDEX = "INDEX"
+        private const val STRIPE_COUNT = 64
     }
 
     // ---------- 表 ----------
@@ -115,25 +129,27 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
 
     /** 整粒度覆盖某 schema 的表缓存(首次拉取或手动/扫描刷新);覆盖后无字段标记随旧行清除(重新同步后字段有无未知) */
     fun replaceTables(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) {
-        jdbc.tx { conn ->
-            conn.prepareStatement("DELETE FROM meta_table WHERE datasource_id=? AND db_name=? AND schema_name=?")
-                .use { ps ->
-                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                    ps.executeUpdate()
+        synchronized(lockKey(KIND_TABLE, datasourceId, dbName, schema, "")) {
+            jdbc.tx { conn ->
+                conn.prepareStatement("DELETE FROM meta_table WHERE datasource_id=? AND db_name=? AND schema_name=?")
+                    .use { ps ->
+                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                        ps.executeUpdate()
+                    }
+                conn.prepareStatement(
+                    "INSERT INTO meta_table(datasource_id, db_name, schema_name, table_name, comment, storage_info, est_rows, size_bytes) " +
+                            "VALUES (?,?,?,?,?,?,?,?)"
+                ).use { ps ->
+                    for (t in tables) {
+                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                        ps.setString(4, t.tableName); ps.setString(5, t.comment); ps.setString(6, t.storageInfo)
+                        ps.setObject(7, t.estRows); ps.setObject(8, t.sizeBytes)
+                        ps.addBatch()
+                    }
+                    ps.executeBatch()
                 }
-            conn.prepareStatement(
-                "INSERT INTO meta_table(datasource_id, db_name, schema_name, table_name, comment, storage_info, est_rows, size_bytes) " +
-                        "VALUES (?,?,?,?,?,?,?,?)"
-            ).use { ps ->
-                for (t in tables) {
-                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                    ps.setString(4, t.tableName); ps.setString(5, t.comment); ps.setString(6, t.storageInfo)
-                    ps.setObject(7, t.estRows); ps.setObject(8, t.sizeBytes)
-                    ps.addBatch()
-                }
-                ps.executeBatch()
+                writeFlag(conn, datasourceId, dbName, schema, "", KIND_TABLE)
             }
-            writeFlag(conn, datasourceId, dbName, schema, "", KIND_TABLE)
         }
     }
 
@@ -155,29 +171,31 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
 
     /** 整粒度覆盖单表字段缓存 */
     fun replaceColumns(datasourceId: Long, dbName: String, schema: String, table: String, columns: List<CachedColumn>) {
-        jdbc.tx { conn ->
-            conn.prepareStatement(
-                "DELETE FROM meta_column WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
-            ).use { ps ->
-                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                ps.executeUpdate()
-            }
-            conn.prepareStatement(
-                "INSERT INTO meta_column(datasource_id, db_name, schema_name, table_name, ordinal, column_name, " +
-                        "type_name, display_type, jdbc_type, nullable, default_value, comment, primary_key, pk_seq, unique_index_first) " +
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-            ).use { ps ->
-                for (c in columns) {
+        synchronized(lockKey(KIND_COLUMN, datasourceId, dbName, schema, table)) {
+            jdbc.tx { conn ->
+                conn.prepareStatement(
+                    "DELETE FROM meta_column WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
+                ).use { ps ->
                     ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                    ps.setInt(5, c.ordinal); ps.setString(6, c.columnName)
-                    ps.setString(7, c.typeName); ps.setString(8, c.displayType); ps.setInt(9, c.jdbcType)
-                    ps.setBoolean(10, c.nullable); ps.setString(11, c.defaultValue); ps.setString(12, c.comment)
-                    ps.setBoolean(13, c.primaryKey); ps.setInt(14, c.pkSeq); ps.setBoolean(15, c.uniqueIndexFirst)
-                    ps.addBatch()
+                    ps.executeUpdate()
                 }
-                ps.executeBatch()
+                conn.prepareStatement(
+                    "INSERT INTO meta_column(datasource_id, db_name, schema_name, table_name, ordinal, column_name, " +
+                            "type_name, display_type, jdbc_type, nullable, default_value, comment, primary_key, pk_seq, unique_index_first) " +
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                ).use { ps ->
+                    for (c in columns) {
+                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                        ps.setInt(5, c.ordinal); ps.setString(6, c.columnName)
+                        ps.setString(7, c.typeName); ps.setString(8, c.displayType); ps.setInt(9, c.jdbcType)
+                        ps.setBoolean(10, c.nullable); ps.setString(11, c.defaultValue); ps.setString(12, c.comment)
+                        ps.setBoolean(13, c.primaryKey); ps.setInt(14, c.pkSeq); ps.setBoolean(15, c.uniqueIndexFirst)
+                        ps.addBatch()
+                    }
+                    ps.executeBatch()
+                }
+                writeFlag(conn, datasourceId, dbName, schema, table, KIND_COLUMN)
             }
-            writeFlag(conn, datasourceId, dbName, schema, table, KIND_COLUMN)
         }
     }
 
@@ -194,26 +212,28 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
 
     /** 整粒度覆盖单表索引缓存 */
     fun replaceIndexes(datasourceId: Long, dbName: String, schema: String, table: String, indexes: List<CachedIndex>) {
-        jdbc.tx { conn ->
-            conn.prepareStatement(
-                "DELETE FROM meta_index WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
-            ).use { ps ->
-                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                ps.executeUpdate()
-            }
-            conn.prepareStatement(
-                "INSERT INTO meta_index(datasource_id, db_name, schema_name, table_name, index_name, is_unique, ordinal, column_name) " +
-                        "VALUES (?,?,?,?,?,?,?,?)"
-            ).use { ps ->
-                for (i in indexes) {
+        synchronized(lockKey(KIND_INDEX, datasourceId, dbName, schema, table)) {
+            jdbc.tx { conn ->
+                conn.prepareStatement(
+                    "DELETE FROM meta_index WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
+                ).use { ps ->
                     ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                    ps.setString(5, i.indexName); ps.setBoolean(6, i.unique); ps.setInt(7, i.ordinal)
-                    ps.setString(8, i.columnName)
-                    ps.addBatch()
+                    ps.executeUpdate()
                 }
-                ps.executeBatch()
+                conn.prepareStatement(
+                    "INSERT INTO meta_index(datasource_id, db_name, schema_name, table_name, index_name, is_unique, ordinal, column_name) " +
+                            "VALUES (?,?,?,?,?,?,?,?)"
+                ).use { ps ->
+                    for (i in indexes) {
+                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                        ps.setString(5, i.indexName); ps.setBoolean(6, i.unique); ps.setInt(7, i.ordinal)
+                        ps.setString(8, i.columnName)
+                        ps.addBatch()
+                    }
+                    ps.executeBatch()
+                }
+                writeFlag(conn, datasourceId, dbName, schema, table, KIND_INDEX)
             }
-            writeFlag(conn, datasourceId, dbName, schema, table, KIND_INDEX)
         }
     }
 

@@ -26,4 +26,5 @@ data class ScanJobView(
     val autoTag: Boolean = false,         // AI 自动打标开关(任务创建时快照)
     val genDoc: Boolean = false,          // 扫描后生成表描述开关(任务创建时快照)
     val ai: ScanAiProgress = ScanAiProgress(0, 0, 0, 0),  // AI 后续分类进度(内存计数,重启清零)
+    val dbVersion: String? = null,        // 目标数据库版本号(任务创建时快照;旧任务为 null)
 )

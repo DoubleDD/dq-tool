@@ -29,6 +29,7 @@ data class ScanJobExport(
     val autoTag: Boolean = false,
     val workers: Int? = null,
     val genDoc: Boolean = true,
+    val dbVersion: String? = null,   // 目标数据库版本号(任务创建时快照);旧导出文件无此字段按 null 导入
     val nullRules: String? = null,   // null_rules CLOB JSON 原文透传
     val totalTables: Int = 0,
     val doneTables: Int = 0,

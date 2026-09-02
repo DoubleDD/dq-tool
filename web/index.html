@@ -39,6 +39,31 @@
       .boot-step.done i { background: #67c23a; }
       @keyframes boot-pulse { 50% { box-shadow: 0 0 0 5px rgba(64, 158, 255, .06); } }
       .boot-text { font-size: 12px; }
+      /* 启动诊断面板:资源加载失败/脚本异常/长时间未就绪时自动展示,用户截图或复制即可反馈 */
+      .boot-diag {
+        display: none; position: fixed; left: 16px; bottom: 16px; z-index: 9999;
+        max-width: min(680px, calc(100vw - 32px)); max-height: 45vh; overflow: auto;
+        background: #fff; border: 1px solid #f56c6c; border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, .12);
+        font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px;
+        color: #606266; text-align: left;
+      }
+      .boot-diag.show { display: block; }
+      .dark .boot-diag { background: #1d1e1f; color: #a3a6ad; }
+      .boot-diag-head {
+        display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+        border-bottom: 1px solid #ebeef5; color: #f56c6c; font-weight: 600;
+        position: sticky; top: 0; background: inherit; font-family: system-ui, sans-serif;
+      }
+      .boot-diag-head span { flex: 1; }
+      .boot-diag-head button {
+        cursor: pointer; border: 1px solid #dcdfe6; background: #fff; border-radius: 4px;
+        padding: 2px 8px; font-size: 12px; color: #606266; font-weight: 400;
+      }
+      .boot-diag-head button:hover { color: #409eff; border-color: #409eff; }
+      #boot-diag-close { border: none; font-size: 14px; }
+      .dark .boot-diag-head button { background: #1d1e1f; border-color: #4c4d4f; color: #a3a6ad; }
+      .boot-diag pre { margin: 0; padding: 10px; white-space: pre-wrap; word-break: break-all; }
     </style>
   </head>
   <body>
@@ -62,5 +87,134 @@
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>
+    <div id="boot-diag" class="boot-diag">
+      <div class="boot-diag-head">
+        <span>启动诊断(如长时间卡在启动页,请截图或复制本面板内容反馈)</span>
+        <button type="button" id="boot-diag-copy">复制诊断信息</button>
+        <button type="button" id="boot-diag-close" aria-label="关闭">×</button>
+      </div>
+      <pre id="boot-diag-body"></pre>
+    </div>
+    <script>
+      /* 启动页自带诊断:资源加载失败/脚本异常/服务长时间未就绪时,把原因直接显示在页面上,
+         用户截图或点「复制诊断信息」即可反馈,无需打开控制台。
+         故意写成内联经典脚本(非模块):主脚本加载失败时本段仍能运行;Vue 挂载后自动隐藏 */
+      (function () {
+        var t0 = Date.now()
+        var issues = []
+        var healthState = '尚未探测'
+        var ready = false
+        var closedByUser = false
+        var panel, body
+
+        function pad(n) { return n < 10 ? '0' + n : '' + n }
+        function ts() {
+          var d = new Date()
+          return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+        }
+
+        function addIssue(text) {
+          issues.push(ts() + '  ' + text)
+          render()
+        }
+
+        // 资源加载失败(script/link 的 error 不冒泡,需捕获阶段监听)与运行时脚本错误
+        window.addEventListener('error', function (e) {
+          var t = e.target
+          if (t && t !== window && (t.src || t.href)) {
+            var kind = t.tagName === 'SCRIPT' ? '脚本' : t.tagName === 'LINK' ? '样式' : '资源'
+            addIssue(kind + '加载失败: ' + (t.src || t.href))
+          } else if (e.message) {
+            addIssue('页面脚本错误: ' + e.message + ' (' + (e.filename || '') + ':' + (e.lineno || 0) + ')')
+          }
+        }, true)
+
+        window.addEventListener('unhandledrejection', function (e) {
+          var r = e.reason
+          addIssue('异步操作失败: ' + (r && r.message ? r.message : String(r)))
+        })
+
+        // 服务就绪状态备用探测:即使主脚本加载失败,也能区分「资源缺失」与「服务未就绪/不可达」
+        function pollHealth() {
+          if (ready) return
+          fetch('/api/health', { cache: 'no-store' })
+            .then(function (res) {
+              if (res.ok) {
+                ready = true
+                healthState = '已就绪(200)'
+              } else {
+                healthState = '启动中(HTTP ' + res.status + ')'
+                res.json().then(function (d) {
+                  if (d && d.stage) healthState = '启动中(HTTP ' + res.status + ',阶段 ' + d.stage + ')'
+                  render()
+                }).catch(function () {})
+              }
+              render()
+            })
+            .catch(function (err) {
+              healthState = '连接服务失败: ' + (err && err.message ? err.message : String(err))
+              render()
+            })
+        }
+        pollHealth()
+        setInterval(pollHealth, 2000)
+
+        function summaryText() {
+          var lines = [
+            '服务状态: ' + healthState,
+            '已等待: ' + Math.round((Date.now() - t0) / 1000) + 's',
+            '页面地址: ' + location.href,
+            '浏览器: ' + navigator.userAgent,
+            issues.length ? '问题记录:' : '问题记录: (无资源加载失败/脚本错误)',
+          ]
+          for (var i = 0; i < issues.length; i++) lines.push('  ' + issues[i])
+          return lines.join('\n')
+        }
+
+        function render() {
+          if (!panel || window.__bootMounted) {
+            if (panel) panel.classList.remove('show')
+            return
+          }
+          // 有错误立即显示;无错误但超过 20s 仍未就绪也显示——长时间卡在启动页时给用户反馈抓手
+          if (issues.length > 0 || Date.now() - t0 > 20000) {
+            if (!closedByUser) {
+              body.textContent = summaryText()
+              panel.classList.add('show')
+            }
+          }
+        }
+        setInterval(render, 1000)
+
+        function fallbackCopy(text) {
+          var ta = document.createElement('textarea')
+          ta.value = text
+          document.body.appendChild(ta)
+          ta.select()
+          try { document.execCommand('copy') } catch (ignore) {}
+          document.body.removeChild(ta)
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+          panel = document.getElementById('boot-diag')
+          body = document.getElementById('boot-diag-body')
+          document.getElementById('boot-diag-close').addEventListener('click', function () {
+            closedByUser = true
+            panel.classList.remove('show')
+          })
+          var copyBtn = document.getElementById('boot-diag-copy')
+          copyBtn.addEventListener('click', function () {
+            var text = summaryText()
+            function done() {
+              copyBtn.textContent = '已复制'
+              setTimeout(function () { copyBtn.textContent = '复制诊断信息' }, 1500)
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text); done() })
+            } else { fallbackCopy(text); done() }
+          })
+        })
+      })()
+    </script>
   </body>
 </html>

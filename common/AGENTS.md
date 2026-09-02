@@ -55,6 +55,7 @@ src/main/resources/db/migration/
   V22__meta_table_no_columns.sql    meta_table.no_columns 列(无字段标记:扫描/续扫/字段明细访问发现表没有字段时置 TRUE 供跳过;replaceTables 覆盖刷新自动还原)
   V23__kingbase_multi_db.sql        Kingbase 升级多库方言:清空存量 KINGBASE 数据源的 schema 级旧白名单(新口径下白名单作用于数据库级,旧值匹配不到任何数据库)
   V24__sample_export.sql            表格批量导入+抽样导出:sample_export/sample_export_item 任务与明细表 + data_source.conn_status/conn_error/conn_checked_at 连接状态标记列(ALTER IF NOT EXISTS)
+  V25__scan_job_db_version.sql      scan_job.db_version 列(目标数据库版本号,任务创建时从连接元数据快照;ALTER IF NOT EXISTS)
   V26__sample_export_item_sample_limit.sql  sample_export_item.sample_limit 列(抽样导出按 Excel「数据量」列逐表控制抽样条数,NULL=默认 50;ALTER IF NOT EXISTS)
 src/main/resources/db/migration-aiusage/   AI 用量独立库(dqaiusage)迁移脚本,独立 flyway_schema_history
   V1__ai_usage_log.sql      用量流水全量建表:token/费用/峰谷时段 + scan_job_id + 扫描标签快照(scan_label/scan_created_at)+ 请求/响应内容(request_content/response_content CLOB,记录截断 5 万字符,供 prompt 调优回溯)

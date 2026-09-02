@@ -44,6 +44,31 @@ services:
         limits:
           memory: 4g
 
+  # Oracle 11g (XE 11.2.0.2) — 用于模拟 11.2.0.x 生产环境(如 Banner), 端口避开 23c 的 1521
+  # 注意: XE 限 1 CPU / 1GB RAM / 11GB 数据; 镜像仅 amd64, Apple Silicon 走 Rosetta
+  oracle11g:
+    image: wnameless/oracle-xe-11g-r2
+    platform: linux/amd64
+    container_name: test-oracle11g
+    environment:
+      ORACLE_ALLOW_REMOTE: "true"
+      ORACLE_DISABLE_ASYNCH_IO: "true"   # 仿真/文件系统下关闭异步 IO, 避免后台进程挂起
+    ports:
+      - "1522:1521"
+    shm_size: 2gb
+    volumes:
+      - ./oracle/initdb-11g:/docker-entrypoint-initdb.d   # 仅首次启动执行一次; 镜像自带预建库, 不能挂空卷覆盖 /u01/app/oracle
+    healthcheck:
+      test: ["CMD-SHELL", "su - oracle -c \"echo 'select 1 from dual;' | sqlplus -s system/oracle@localhost:1521/xe\" | grep -q 1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 300s
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+
 volumes:
   mssql-data:
   oracle-data:

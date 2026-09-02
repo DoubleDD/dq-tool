@@ -188,7 +188,7 @@ class ScanTransferService(
                 tags.map { it.name }, docsByTable[t.tableName])
         }
         return ScanJobExport(dsNames[job.datasourceId] ?: "", job.dbName, job.schemaName, job.status,
-            job.forceFull, job.autoTag, job.workers, job.genDoc, job.nullRulesJson, job.totalTables,
+            job.forceFull, job.autoTag, job.workers, job.genDoc, job.dbVersion, job.nullRulesJson, job.totalTables,
             job.doneTables, job.error, ts(job.createdAt), ts(job.startedAt), ts(job.finishedAt), events, tables)
     }
 

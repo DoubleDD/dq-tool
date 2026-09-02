@@ -50,4 +50,8 @@ function renderBootStage(stage) {
   })
 }
 
-waitBackendReady().finally(() => app.mount('#app'))
+waitBackendReady().finally(() => {
+  app.mount('#app')
+  // 挂载后通知启动页诊断面板隐藏(index.html 内联脚本读取)
+  window.__bootMounted = true
+})

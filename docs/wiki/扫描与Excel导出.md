@@ -5,7 +5,7 @@
 - 表级:估算行数、数据+索引占用一览
 - 字段级:NULL / 空串 / 自定义空值规则统计与有值率
 - 表列表点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;未扫描的表进入结构元数据页(字段名/类型/注释/约束 + 下方索引结构:索引名/唯一性/索引列,接口 `GET /api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns` 与 `.../indexes`,不含统计)
-- 结构元数据本地缓存(库/表/字段/索引):库列表统计(schema_stat)、表清单/字段/索引(meta_table/meta_column/meta_index)首次访问从业务库拉取落 H2,之后浏览读缓存不连业务库;库列表/表列表/字段明细页各有「刷新」按钮(接口带 `?refresh=true`)强制从数据源拉最新结构并覆盖缓存;发起扫描时同步刷新表/字段/索引缓存(createScan 刷表清单,planTable 刷字段+索引,失败不影响扫描)
+- 结构元数据本地缓存(库/表/字段/索引):库列表统计(schema_stat)、表清单/字段/索引(meta_table/meta_column/meta_index)首次访问从业务库拉取落 H2,之后浏览读缓存不连业务库;库列表/表列表/字段明细页各有「刷新」按钮(接口带 `?refresh=true`)强制从数据源拉最新结构并覆盖缓存;发起扫描时同步刷新表/字段/索引缓存(createScan 刷表清单,planTable 刷字段+索引,失败不影响扫描);覆盖刷新为「先 DELETE 后 INSERT」,同粒度并发刷新(如导出表结构文档与扫描 planTable 并发回源同一表)由 MetaCacheRepository 条纹锁串行化,避免唯一键冲突(23505)
 - 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫
 - 并发 worker 数可在发起扫描弹窗中设置(1~128,留空用配置默认 `dq.scan.workers`):落库 `scan_job.workers` 供详情展示与续扫恢复;扫描启动时动态调整全局扫描线程池 `ScanExecutor.resize`(每次发起都按本次任务设定调整,避免上次设置残留)
 - 扫描可选「生成表描述」(`gen_doc` 随 scan_job 持久化,默认开):每张表 DONE 后由 `ScanDocService` 独立守护线程池(2 worker)异步调 `TableDocService.generate` 生成 AI 表说明落 table_doc;已有非空描述/未配置大模型/任务取消或失败均跳过,同 job 首次 LLM 失败后熔断剩余表;前端扫描对话框复选默认勾选(AI 配置可用时)
@@ -68,7 +68,7 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 把扫描记录(任务 + 事件时间线 + 表级/分段/字段明细)导出为 JSON 文件,在另一台机器的部署一键导入,扫描记录列表即可看到导入的历史记录。导出还随任务携带每张表的 USER 表标记与表描述(AI 花钱生成的标注数据),导入成功一个任务后随即合并进本机全局标记/描述,避免换机后重新打标与重新生成描述。实现:`ScanTransferService`(common)+ `ScanTransferController`(server),前端入口在扫描记录页(`Scans.vue`)工具栏「导出记录/导入记录」。
 
-- **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[], tagDefs[])`;job 含 events/tables,table 含 chunks/columns + `tags`(USER 标记名列表,EMPTY 系统空表标记由扫描自动维护不导出)+ `doc`(表描述);文件级 `tagDefs` 收引用到的 USER 标记定义(name/color/description);不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响;tagDefs/tags/doc 为 v1 格式内追加字段,旧导出文件按缺省(空)导入
+- **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[], tagDefs[])`;job 含 events/tables,table 含 chunks/columns + `tags`(USER 标记名列表,EMPTY 系统空表标记由扫描自动维护不导出)+ `doc`(表描述);文件级 `tagDefs` 收引用到的 USER 标记定义(name/color/description);不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响;tagDefs/tags/doc 为 v1 格式内追加字段,旧导出文件按缺省(空)导入;job 级 `dbVersion`(目标数据库版本号,任务创建时快照)同为 v1 内追加字段,旧导出文件按 null 导入
 - **数据源对齐**:与标记导入一致走「预检 + 映射」——预检返回文件内各数据源的 job 数、本机同名数据源 id(前端自动预选)、本机全部数据源;导入 mapping 为「文件数据源名 → 本机数据源 id」,0/缺失/指向不存在的数据源 = 跳过该数据源的全部任务(计入 skipped)
 - **去重幂等**:同数据源 + db_name(可空等值,空白一律落 NULL)+ schema_name + created_at 已存在则跳过,重复导入同一文件不产生重复记录
 - **结果明细**:跳过(未映射/映射目标不存在/判重)与失败均逐条记 `warnings`(任务标签 + 原因),导入完成弹窗在汇总行下方逐行展示

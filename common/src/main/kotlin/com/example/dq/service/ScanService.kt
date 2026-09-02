@@ -48,8 +48,14 @@ class ScanService(
         val dialect = dialectFactory.get(ds.dbType!!)
 
         var all: List<TableStat> = emptyList()
+        var dbVersion: String? = null
         dataSourceService.getConnection(datasourceId, req.database).use { conn ->
             all = dialect.listTables(conn, schema)
+            // 顺带快照目标数据库版本号(扫描记录详情页「数据库类型」旁展示);取不到不影响扫描
+            try {
+                dbVersion = conn.metaData.databaseProductVersion?.takeIf { it.isNotBlank() }
+            } catch (ignored: Exception) {
+            }
         }
         // 顺带刷新库列表缓存:all 是该 schema 的全量表清单,聚合计数与体积即可,零额外查询
         schemaStatRepo.upsert(
@@ -85,7 +91,7 @@ class ScanService(
         val workers = req.workers?.let { it.coerceIn(1, 128) }
         executor.resize(workers ?: systemSettings.scanSettings().workers)
         val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size,
-            req.autoTag, workers, req.genDoc ?: true)
+            req.autoTag, workers, req.genDoc ?: true, dbVersion)
         val scanTableIds = ArrayList<Long>()
         for (t in targets) {
             scanTableIds.add(
@@ -246,7 +252,7 @@ class ScanService(
             j.id, j.datasourceId, dsName, dbType, j.dbName, j.schemaName, j.status,
             j.forceFull, rules, j.totalTables, j.doneTables, progress(j, tables), j.error,
             j.createdAt, j.startedAt, j.finishedAt, events, tables, j.workers,
-            j.autoTag, j.genDoc, aiTracker.progress(j.id)
+            j.autoTag, j.genDoc, aiTracker.progress(j.id), j.dbVersion
         )
     }
 
