@@ -381,6 +381,20 @@ class DataSourceTransferServiceTest {
     }
 
     @Test
+    fun `GBK 转存的导出文件可导入`() {
+        val id = createDs("生产库", "secret-1")
+        val out = ByteArrayOutputStream()
+        service.export(listOf(id), out)
+        // 模拟客户用记事本另存(中文 Windows ANSI=GBK)后的文件
+        val gbk = out.toString(Charsets.UTF_8).toByteArray(charset("GBK"))
+
+        dsRepo.findAll().forEach { dsRepo.delete(it.id!!) }
+        val result = service.importJson(ByteArrayInputStream(gbk))
+        assertEquals(listOf("生产库"), result.imported)
+        assertEquals("secret-1", crypto.decrypt(dsRepo.findAll().single().password))
+    }
+
+    @Test
     fun `导出不存在的数据源抛参数错误`() {
         val e = assertThrows(IllegalArgumentException::class.java) {
             service.export(listOf(9999L), ByteArrayOutputStream())

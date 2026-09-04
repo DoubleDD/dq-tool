@@ -9,8 +9,8 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.util.CryptoUtil
 import com.example.dq.util.NavicatCrypto
 import com.example.dq.util.TransferCrypto
+import com.example.dq.util.TransferJson
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import java.io.OutputStream
@@ -60,10 +60,10 @@ class DataSourceTransferService(
         objectMapper.writerWithDefaultPrettyPrinter().writeValue(out, file)
     }
 
-    /** 导入自有 JSON 导出文件 */
+    /** 导入自有 JSON 导出文件;GBK 转存的文件由 TransferJson 兜底解析 */
     fun importJson(input: InputStream): ImportResult {
         val file: DataSourceExportFile = try {
-            objectMapper.readValue(input)
+            TransferJson.read(input, DataSourceExportFile::class.java)
         } catch (e: Exception) {
             throw IllegalArgumentException("不是有效的数据源导出文件", e)
         }

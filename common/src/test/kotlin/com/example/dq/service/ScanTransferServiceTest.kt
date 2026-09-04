@@ -266,6 +266,42 @@ class ScanTransferServiceTest {
     }
 
     @Test
+    fun `GBK 转存的导出文件可导入且中文保真`() {
+        val src = Env()
+        seedDoneJob(src, src.createDs("生产库"))
+        val out = ByteArrayOutputStream()
+        src.service.export(emptyList(), out)
+        // 模拟客户用记事本另存(中文 Windows ANSI=GBK)后的文件
+        val gbk = out.toString(Charsets.UTF_8).toByteArray(charset("GBK"))
+
+        val dst = Env()
+        val dstDsId = dst.createDs("生产库")
+        // 预检与正式导入都要能解析 GBK
+        assertEquals(1, dst.service.preview(ByteArrayInputStream(gbk)).totalJobs)
+        val result = dst.service.importJson(ByteArrayInputStream(gbk), mapOf("生产库" to dstDsId))
+        assertEquals(1, result.imported)
+        val dstJob = dst.scanRepo.listJobs(dstDsId, null, null).single()
+        val dstTable = dst.scanRepo.listScanTables(dstJob.id).single()
+        assertEquals("用户表", dstTable.comment)
+        assertEquals("姓名", dst.scanRepo.listScanColumns(dstTable.id).single().columnComment)
+    }
+
+    @Test
+    fun `未知字段不拦截导入`() {
+        val dst = Env()
+        val dstDsId = dst.createDs("生产库")
+        // 模拟未来版本追加的字段:旧版本软件导入时不应被拦
+        val json = """
+            {"app":"dq-tool-scans","version":1,"exportedAt":"t","futureTop":{"x":1},
+             "jobs":[{"datasourceName":"生产库","schemaName":"s1","status":"DONE",
+                      "createdAt":"2026-08-01T10:00:00","newJobField":true}]}
+        """.trimIndent()
+        val result = dst.service.importJson(ByteArrayInputStream(json.toByteArray()),
+            mapOf("生产库" to dstDsId))
+        assertEquals(1, result.imported)
+    }
+
+    @Test
     fun `错误 app 标识版本与非 JSON 抛参数错误`() {
         val dst = Env()
         val badApp = """{"app":"other","version":1,"exportedAt":"t","jobs":[]}"""

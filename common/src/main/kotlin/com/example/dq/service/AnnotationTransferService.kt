@@ -11,8 +11,8 @@ import com.example.dq.model.TagKind
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
+import com.example.dq.util.TransferJson
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.fasterxml.jackson.module.kotlin.readValue
 import java.io.InputStream
 import java.io.OutputStream
 import java.time.OffsetDateTime
@@ -145,10 +145,10 @@ class AnnotationTransferService(
         return result
     }
 
-    /** 解析并校验导出文件;格式不对抛 IllegalArgumentException(Web 层映射 400) */
+    /** 解析并校验导出文件(GBK 转存/未知字段由 TransferJson 兜底);格式不对抛 IllegalArgumentException(Web 层映射 400) */
     private fun parseFile(input: InputStream): AnnotationExportFile {
         val file: AnnotationExportFile = try {
-            objectMapper.readValue(input)
+            TransferJson.read(input, AnnotationExportFile::class.java)
         } catch (e: Exception) {
             throw IllegalArgumentException("不是有效的标记与描述导出文件", e)
         }

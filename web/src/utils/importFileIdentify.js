@@ -21,13 +21,23 @@ const KINDS = {
   'annotations-json': { feature: 'annotations', label: '标记与描述导出文件' },
 }
 
+// 读取文件文本:UTF-8 优先,失败按 GBK 兜底(客户可能用记事本把文件另存为 ANSI=GBK)
+async function readTextTolerant(file) {
+  const buf = await file.arrayBuffer()
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buf)
+  } catch {
+    return new TextDecoder('gbk').decode(buf)
+  }
+}
+
 /**
  * 识别导入文件种类。返回 { kind, label, summary, version? }:
  * kind 为 KINDS 的 key 或 'unknown';summary 为内容摘要(如"共 3 个数据源");
  * version 仅三种 JSON 导出文件有,不等于 1 表示与当前工具不兼容。
  */
 export async function identifyImportFile(file) {
-  const text = (await file.text()).trim()
+  const text = (await readTextTolerant(file)).trim()
   if (text.startsWith('{')) {
     try {
       const obj = JSON.parse(text)

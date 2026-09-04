@@ -201,6 +201,27 @@ class AnnotationTransferServiceTest {
     }
 
     @Test
+    fun `GBK 转存的导出文件可导入`() {
+        val src = Env()
+        val dsId = src.createDs("生产库")
+        val core = src.tagRepo.create("核心表", "#F5222D", "核心业务表")
+        src.tagRepo.ensureTableTag(core.id, dsId, "", "public", "users")
+        val out = ByteArrayOutputStream()
+        src.service.export(out)
+        // 模拟客户用记事本另存(中文 Windows ANSI=GBK)后的文件
+        val gbk = out.toString(Charsets.UTF_8).toByteArray(charset("GBK"))
+
+        val dst = Env()
+        val dstDsId = dst.createDs("生产库")
+        val result = dst.service.importJson(ByteArrayInputStream(gbk))
+        assertEquals(1, result.tagsCreated)
+        assertEquals(1, result.tableTagsAdded)
+        assertEquals("核心业务表", dst.tagRepo.findByName("核心表")!!.description)
+        assertEquals(listOf("核心表"),
+            dst.tagRepo.tableTagsBySchema(dstDsId, "", "public")["users"]!!.map { it.name })
+    }
+
+    @Test
     fun `系统空表标记不参与导出与覆盖`() {
         val src = Env()
         // 源库只有系统「空表」标记时,tags 为空
