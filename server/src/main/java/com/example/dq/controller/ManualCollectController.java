@@ -7,6 +7,7 @@ import io.javalin.http.Context;
 import jakarta.validation.constraints.NotNull;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 人工采集(Javalin handler,路由在 WebServer 注册)。
@@ -46,6 +47,12 @@ public class ManualCollectController {
         service.delete(ctx.pathParamAsClass("id", Long.class).get());
     }
 
+    /** 批量取消采集:不存在的 id 跳过(幂等),返回 {deleted} */
+    public void deleteBatch(Context ctx) {
+        DeleteBatchRequest req = Validators.validate(ctx.bodyAsClass(DeleteBatchRequest.class));
+        ctx.json(Map.of("deleted", service.deleteBatch(req.ids())));
+    }
+
     private static long dsId(Context ctx) {
         return ctx.pathParamAsClass("dsId", Long.class).get();
     }
@@ -56,5 +63,9 @@ public class ManualCollectController {
 
     public record CollectItem(@NotNull Long datasourceId, String dbName, String schemaName,
                               String tableName, String tableComment) {
+    }
+
+    /** 批量取消采集请求体:按记录 id 删除 */
+    public record DeleteBatchRequest(@NotNull List<Long> ids) {
     }
 }

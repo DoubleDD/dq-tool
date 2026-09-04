@@ -352,6 +352,7 @@ public class WebServer {
         // ---- 人工采集(收藏重点关注的表) ----
         routes.get("/api/manual-collects", ctx -> manualCollectCtrl.get().list(ctx));
         routes.post("/api/manual-collects", ctx -> manualCollectCtrl.get().addBatch(ctx));
+        routes.post("/api/manual-collects/batch-delete", ctx -> manualCollectCtrl.get().deleteBatch(ctx));
         routes.delete("/api/manual-collects/{id}", ctx -> manualCollectCtrl.get().delete(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/manual-collects", ctx -> manualCollectCtrl.get().tableCollectMap(ctx));
 

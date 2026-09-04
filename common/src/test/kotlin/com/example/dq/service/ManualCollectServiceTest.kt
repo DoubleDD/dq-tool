@@ -8,6 +8,8 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.ManualCollectRepository
 import com.example.dq.repository.SchemaInit
+import com.example.dq.repository.TableDocRepository
+import com.example.dq.repository.TagRepository
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -96,6 +98,22 @@ class ManualCollectServiceTest {
     }
 
     @Test
+    fun `批量取消按id删除且不存在的跳过`() {
+        val dsId = newDs("水库库")
+        service.addBatch(listOf(
+            ManualCollectItem(dsId, null, "s1", "t1", null),
+            ManualCollectItem(dsId, null, "s1", "t2", null),
+            ManualCollectItem(dsId, null, "s1", "t3", null)))
+        val ids = service.list().map { it.id }
+
+        assertThrows(IllegalArgumentException::class.java) { service.deleteBatch(emptyList()) }
+        // 混入不存在的 id:跳过不报错,返回实际删除条数
+        assertEquals(2, service.deleteBatch(listOf(ids[0], 9999L, ids[1])))
+        assertEquals(1, service.list().size)
+        assertEquals(setOf(ids[2]), service.list().map { it.id }.toSet())
+    }
+
+    @Test
     fun `数据源删除后记录保留且数据源名为空串`() {
         val dsId = newDs("水库库")
         service.addBatch(listOf(ManualCollectItem(dsId, null, "s1", "t1", null)))
@@ -103,5 +121,28 @@ class ManualCollectServiceTest {
         val list = service.list()
         assertEquals(1, list.size)
         assertEquals("", list[0].datasourceName)
+    }
+
+    @Test
+    fun `列表按四元组补齐表标记与表说明`() {
+        val dsId = newDs("水库库")
+        service.addBatch(listOf(
+            ManualCollectItem(dsId, null, "s1", "t1", null),
+            ManualCollectItem(dsId, null, "s1", "t2", null)))
+
+        val tagRepo = TagRepository(jdbc)
+        val docRepo = TableDocRepository(jdbc)
+        val tag = tagRepo.create("重点", "#ff0000")
+        // t1 打标 + 表说明;t2 无标记无说明
+        tagRepo.ensureTableTag(tag.id, dsId, "", "s1", "t1")
+        docRepo.upsert(dsId, "", "s1", "t1", "水库基础信息", "test")
+
+        val list = service.list()
+        val t1 = list.first { it.tableName == "t1" }
+        assertEquals(listOf("重点"), t1.tags.map { it.name })
+        assertEquals("水库基础信息", t1.description)
+        val t2 = list.first { it.tableName == "t2" }
+        assertTrue(t2.tags.isEmpty())
+        assertEquals(null, t2.description)
     }
 }

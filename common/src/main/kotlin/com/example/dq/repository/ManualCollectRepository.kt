@@ -1,6 +1,8 @@
 package com.example.dq.repository
 
 import com.example.dq.model.ManualCollect
+import com.example.dq.model.Tag
+import com.example.dq.model.TagKind
 import java.sql.ResultSet
 import java.time.LocalDateTime
 
@@ -37,6 +39,31 @@ class ManualCollectRepository(private val jdbc: Jdbc) {
     /** 返回影响行数,0 表示记录不存在(service 层转 400) */
     fun delete(id: Long): Int =
         jdbc.update("DELETE FROM manual_collect WHERE id=?", id)
+
+    /** 各采集记录对应表的标记:采集记录 id -> 标记列表(按四元组关联 table_tag,含系统空表标记) */
+    fun tagsByCollectId(): Map<Long, List<Tag>> {
+        val result = LinkedHashMap<Long, MutableList<Tag>>()
+        jdbc.query("SELECT mc.id AS mc_id, d.id, d.name, d.color, d.kind, d.description FROM manual_collect mc " +
+                "JOIN table_tag tt ON tt.datasource_id=mc.datasource_id AND tt.db_name=mc.db_name " +
+                "AND tt.schema_name=mc.schema_name AND tt.table_name=mc.table_name " +
+                "JOIN tag_def d ON d.id = tt.tag_id ORDER BY mc.id, d.id") { rs ->
+            result.getOrPut(rs.getLong("mc_id")) { ArrayList() }
+                .add(Tag(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
+                    TagKind.valueOf(rs.getString("kind")), rs.getString("description")))
+        }
+        return result
+    }
+
+    /** 各采集记录对应表的 AI 表说明:采集记录 id -> 描述文字(按四元组关联 table_doc) */
+    fun descriptionByCollectId(): Map<Long, String> {
+        val result = HashMap<Long, String>()
+        jdbc.query("SELECT mc.id AS mc_id, td.description FROM manual_collect mc " +
+                "JOIN table_doc td ON td.datasource_id=mc.datasource_id AND td.db_name=mc.db_name " +
+                "AND td.schema_name=mc.schema_name AND td.table_name=mc.table_name") { rs ->
+            result[rs.getLong("mc_id")] = rs.getString("description")
+        }
+        return result
+    }
 
     private fun map(rs: ResultSet): ManualCollect =
         ManualCollect(rs.getLong("id"), rs.getLong("datasource_id"), rs.getString("ds_name"),

@@ -16,8 +16,18 @@ class ManualCollectService(
     private val dataSourceRepo: DataSourceRepository,
 ) {
 
-    /** 全部采集记录(跨数据源,采集时间倒序),带数据源名 */
-    fun list(): List<ManualCollect> = collectRepo.listAll()
+    /** 全部采集记录(跨数据源,采集时间倒序),带数据源名;并按四元组补齐表标记与 AI 表说明 */
+    fun list(): List<ManualCollect> {
+        val rows = collectRepo.listAll()
+        if (rows.isEmpty()) {
+            return rows
+        }
+        val tagsById = collectRepo.tagsByCollectId()
+        val docsById = collectRepo.descriptionByCollectId()
+        return rows.map { row ->
+            row.copy(tags = tagsById[row.id] ?: emptyList(), description = docsById[row.id])
+        }
+    }
 
     /** 某库下已采集表 map:表名 -> 采集记录 id */
     fun tableCollectMap(datasourceId: Long, database: String?, schema: String): Map<String, Long> =
@@ -57,6 +67,18 @@ class ManualCollectService(
         if (collectRepo.delete(id) == 0) {
             throw IllegalArgumentException("采集记录不存在:$id")
         }
+    }
+
+    /** 批量取消采集:按 id 逐个删除,不存在的跳过(可能已被别处取消),返回实际删除条数 */
+    fun deleteBatch(ids: List<Long>): Int {
+        if (ids.isEmpty()) {
+            throw IllegalArgumentException("采集记录 id 列表不能为空")
+        }
+        var deleted = 0
+        for (id in ids) {
+            deleted += collectRepo.delete(id)
+        }
+        return deleted
     }
 
     private companion object {
