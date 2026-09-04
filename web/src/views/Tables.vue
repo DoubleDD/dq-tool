@@ -19,6 +19,9 @@
         <ExportButton ref="latestExportRef" hide-trigger :latest-url="latestExportUrl" />
         <el-button @click="$router.push(`/datasources/${dsId}/schemas/${encodeURIComponent(schema)}/scans${dbQuery()}`)">扫描记录</el-button>
         <template v-if="!filterTagId">
+          <el-button :disabled="!selectedTables.length" :loading="collectBatchLoading" @click="collectBatch">
+            人工采集{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
+          </el-button>
           <el-button :disabled="!selectedTables.length" :loading="batchDocLoading" @click="generateDocsBatch">
             生成描述{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
           </el-button>
@@ -163,7 +166,7 @@
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="190" fixed="right">
+      <el-table-column label="操作" width="250" fixed="right">
         <template #default="{ row }">
           <!-- 正在扫描:显示分段进度,点击跳到任务详情;排队中的表显示 0% -->
           <el-progress
@@ -175,6 +178,9 @@
           />
           <template v-else-if="!filterTagId">
             <el-button link type="primary" @click="openTagDialog(row)">打标</el-button>
+            <el-button link type="primary" :loading="collectLoading[row.name]" @click="toggleCollect(row)">
+              {{ collectMap[row.name] ? '取消采集' : '采集' }}
+            </el-button>
             <el-button link type="primary" @click="scanSingle(row)">扫描</el-button>
           </template>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
@@ -262,7 +268,7 @@
       </template>
     </el-dialog>
 
-    <!-- 打标弹窗(含标记集中管理) -->
+    <!-- 打标弹窗(勾选 + 新建标记;编辑/删除统一在「标记统计」页维护) -->
     <TableTagDialog
       v-model="tagDialogVisible"
       :ds-id="dsId"
@@ -271,7 +277,6 @@
       :table-name="tagDialogTable"
       :current-tags="tableTags[tagDialogTable] || []"
       @saved="onTagsSaved"
-      @tags-changed="reloadTableTags"
     />
   </div>
 </template>
@@ -391,6 +396,62 @@ const availableTags = computed(() => {
 const tagDialogVisible = ref(false)
 const tagDialogTable = ref('')
 
+// 本库已采集表 map:表名 -> 采集记录 id(行内「采集/取消采集」按钮状态)
+const collectMap = ref({})
+// 行内采集按钮的提交中状态(表名 -> bool);批量采集提交中状态
+const collectLoading = ref({})
+const collectBatchLoading = ref(false)
+
+// 采集请求项:四元组定位一张表(数据源+库+schema+表名),注释做快照
+function collectItem(row) {
+  return {
+    datasourceId: /^\d+$/.test(String(dsId)) ? Number(dsId) : dsId,
+    dbName: db || null,
+    schemaName: schema,
+    tableName: row.name,
+    tableComment: row.comment || null
+  }
+}
+
+// 行内「采集/取消采集」切换:取消按记录 id 删除,采集走批量接口(单表即一项)
+async function toggleCollect(row) {
+  const id = collectMap.value[row.name]
+  collectLoading.value[row.name] = true
+  try {
+    if (id) {
+      await request.delete(`/manual-collects/${id}`)
+      const next = { ...collectMap.value }
+      delete next[row.name]
+      collectMap.value = next
+      ElMessage.success(`已取消采集「${row.name}」`)
+    } else {
+      await request.post('/manual-collects', { items: [collectItem(row)] })
+      ElMessage.success(`已采集「${row.name}」,可在「人工采集」页签查看`)
+      await reloadCollectMap()
+    }
+  } finally {
+    collectLoading.value[row.name] = false
+  }
+}
+
+// 批量采集勾选的表:后端幂等,已存在的跳过计数
+async function collectBatch() {
+  collectBatchLoading.value = true
+  try {
+    const res = await request.post('/manual-collects', { items: selectedTables.value.map(collectItem) })
+    ElMessage.success(`人工采集完成:新增 ${res.added} 张,已存在跳过 ${res.skipped} 张`)
+    await reloadCollectMap()
+  } finally {
+    collectBatchLoading.value = false
+  }
+}
+
+// 重拉本库采集 map(表名 -> 记录 id),失败静默维持旧值
+async function reloadCollectMap() {
+  const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
+  collectMap.value = await request.get(`${base}/manual-collects${dbQuery()}`).catch(() => ({}))
+}
+
 // 按标记筛选的只读模式:路由 query 带 tagId 时只显示打了该标记的表,并禁用所有操作类交互
 const filterTagId = computed(() => (route.query.tagId ? String(route.query.tagId) : ''))
 const filterTagName = computed(() => route.query.tagName || '')
@@ -408,12 +469,6 @@ function openTagDialog(row) {
 // 打标保存成功:回填该表最新标记数组
 function onTagsSaved(tags) {
   tableTags.value[tagDialogTable.value] = tags
-}
-
-// 弹窗内管理操作(新建/改名/改色/删除)后,整库标记 map 需重拉(名称/颜色/打标关系可能变了)
-async function reloadTableTags() {
-  const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
-  tableTags.value = await request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({}))
 }
 
 const scanDialogVisible = ref(false)
@@ -510,18 +565,20 @@ async function load(refresh = false) {
     const tablesUrl = `${base}/tables${q}${refresh ? (q ? '&' : '?') + 'refresh=true' : ''}`
     // 最新扫描映射/表说明查的是本地 H2,失败时仅影响表名是否可点与说明展示,不阻塞表列表
     // 字段总数走业务库元数据,失败时也不阻塞表列表(显示 -)
-    const [tableList, latest, tableDocs, colCount, tagMap] = await Promise.all([
+    const [tableList, latest, tableDocs, colCount, tagMap, collects] = await Promise.all([
       request.get(tablesUrl),
       request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/column-count${dbQuery()}`).catch(() => null),
-      request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({}))
+      request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({})),
+      request.get(`${base}/manual-collects${dbQuery()}`).catch(() => ({}))
     ])
     tables.value = tableList
     latestScans.value = latest || {}
     docs.value = tableDocs || {}
     columnCount.value = colCount
     tableTags.value = tagMap || {}
+    collectMap.value = collects || {}
   } finally {
     loading.value = false
   }

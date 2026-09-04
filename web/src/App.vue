@@ -130,7 +130,7 @@ import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Coin, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
+import { Coin, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Star, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
@@ -157,10 +157,11 @@ const otherNav = computed(() => {
   const navs = [
     { path: '/dashboard', label: '扫描记录', icon: Odometer },
     { path: '/tags', label: '标记统计', icon: PriceTag },
-    { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
+    { path: '/manual-collects', label: '人工采集', icon: Star },
     { path: '/report-exports', label: '报告列表', icon: Download },
     { path: '/sample-exports', label: '抽样导出', icon: Files },
     { path: '/sql-console', label: 'SQL 控制台', icon: Monitor },
+    { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
     { path: '/settings', label: '系统设置', icon: Setting },
     { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit },
     { path: '/logs', label: '运行日志', icon: Document }
@@ -274,6 +275,7 @@ const activeNav = computed(() => {
   if (p === '/scans' || p.startsWith('/scans/')) return '/dashboard'
   if (p === '/dashboard' || p.startsWith('/dashboard/')) return '/dashboard'
   if (p === '/tags' || p.startsWith('/tags/')) return '/tags'
+  if (p === '/manual-collects' || p.startsWith('/manual-collects/')) return '/manual-collects'
   if (p === '/ai-usage' || p.startsWith('/ai-usage/')) return '/ai-usage'
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
   if (p === '/sample-exports' || p.startsWith('/sample-exports/')) return '/sample-exports'

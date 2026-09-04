@@ -9,6 +9,7 @@ import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.LicenseRepository
+import com.example.dq.repository.ManualCollectRepository
 import com.example.dq.repository.ReportExportRepository
 import com.example.dq.repository.SampleExportRepository
 import com.example.dq.repository.ScanRepository
@@ -34,6 +35,7 @@ import com.example.dq.service.DiagnosticsService
 import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
+import com.example.dq.service.ManualCollectService
 import com.example.dq.service.MetadataService
 import com.example.dq.service.PreviewService
 import com.example.dq.service.SampleExportService
@@ -94,6 +96,7 @@ class ServiceEnv(val config: AppConfig) {
     val licenseRecordRepo = LicenseRecordRepository(jdbc)
     val reportExportRepo = ReportExportRepository(jdbc)
     val sampleExportRepo = SampleExportRepository(jdbc)
+    val manualCollectRepo = ManualCollectRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -105,6 +108,7 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceService = DataSourceService(dataSourceRepo, crypto, dialectFactory, config, schemaStatRepo, metaCacheRepo, sshTunnelService)
     val dataSourceTransferService = DataSourceTransferService(dataSourceRepo, crypto, dataSourceService)
     val tagService = TagService(tagRepo, dataSourceRepo)
+    val manualCollectService = ManualCollectService(manualCollectRepo, dataSourceRepo)
     /** 扫描标签解析:记录用量时快照数据源名/库/schema(主库查询,任务被删返回 null 兜底) */
     private val scanLabelResolver: (Long) -> AiUsageRepository.ScanJobLabel? = { jobId ->
         scanRepo.findJob(jobId)?.let { job ->
