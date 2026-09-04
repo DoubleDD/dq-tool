@@ -35,6 +35,16 @@ open class MySqlDialect : AbstractDialect() {
         return true
     }
 
+    /** MySQL 的 schema 即 catalog:USE 切库(OceanBase MySQL 模式继承同口径) */
+    override fun currentSchema(conn: Connection): String? {
+        return conn.catalog
+    }
+
+    @Throws(SQLException::class)
+    override fun useSchema(conn: Connection, schema: String) {
+        conn.catalog = schema
+    }
+
     @Throws(SQLException::class)
     override fun listSchemas(conn: Connection): List<String> {
         val schemas = ArrayList<String>()
@@ -106,5 +116,19 @@ open class MySqlDialect : AbstractDialect() {
             }
         }
         return ArrayList(base.values)
+    }
+
+    /** MySQL 系原生 DDL:SHOW CREATE TABLE 自带索引/外键/表选项,结果集第 2 列为 DDL 文本 */
+    @Throws(SQLException::class)
+    override fun tableDdl(conn: Connection, schema: String, table: String): String {
+        conn.createStatement().use { st ->
+            st.executeQuery("SHOW CREATE TABLE " + qualifiedTable(schema, table)).use { rs ->
+                if (rs.next()) {
+                    return rs.getString(2)
+                }
+            }
+        }
+        // 查不到(表不存在等)时走元数据拼接兜底
+        return super.tableDdl(conn, schema, table)
     }
 }

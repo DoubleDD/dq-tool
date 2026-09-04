@@ -130,12 +130,13 @@
           <el-button size="small" type="primary" plain @click="applyPreviewFilter">应用</el-button>
         </div>
         <el-alert v-if="previewError" type="error" :closable="false" show-icon :title="previewError" style="margin-bottom: 12px" />
-        <el-table v-else :data="previewTableData" v-loading="previewLoading" border size="small">
+        <el-table v-else :data="previewTableData" v-loading="previewLoading" border size="small" class="preview-table"
+                  @cell-click="copyPreviewCell">
           <el-table-column type="index" label="#" width="50" :index="(previewPage - 1) * previewSize + 1" />
           <el-table-column v-for="col in previewColumns" :key="col.key" :prop="col.key" min-width="140" show-overflow-tooltip>
             <template #header>
-              <span>{{ col.name }}</span>
-              <span style="margin-left: 6px; font-size: 12px; font-weight: normal; color: var(--el-text-color-placeholder)">{{ col.type }}</span>
+              <div>{{ col.name }}</div>
+              <div style="font-size: 12px; font-weight: normal; color: var(--el-text-color-placeholder)">{{ col.type }}</div>
             </template>
             <template #default="{ row }">
               <span v-if="row[col.key] !== null && row[col.key] !== undefined">{{ row[col.key] }}</span>
@@ -150,6 +151,17 @@
                          :page-sizes="[15, 30, 50, 100]" :total="previewTotal"
                          layout="total, sizes, prev, pager, next" background
                          @current-change="loadPreview" @size-change="onPreviewSizeChange" />
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="DDL" name="ddl">
+        <div style="display: flex; gap: 8px; margin-bottom: 12px">
+          <el-button size="small" type="primary" plain :disabled="!ddlText" @click="copyDdl">复制 DDL</el-button>
+        </div>
+        <el-alert v-if="ddlError" type="error" :closable="false" show-icon :title="ddlError" style="margin-bottom: 12px" />
+        <div v-loading="ddlLoading">
+          <pre v-if="ddlText" class="ddl-view">{{ ddlText }}</pre>
+          <el-empty v-if="!ddlLoading && !ddlError && ddlLoaded && !ddlText" description="未获取到 DDL" :image-size="60" />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -196,6 +208,10 @@ const previewPage = ref(1)        // 预览当前页码
 const previewTotal = ref(0)       // 预览全表总行数(COUNT(*) 实时)
 const previewWhere = ref('')      // 预览过滤条件输入(WHERE,DataGrip 风格原文)
 const previewOrderBy = ref('')    // 预览排序输入(ORDER BY 原文)
+const ddlText = ref('')           // 建表 DDL 文本(含索引)
+const ddlLoading = ref(false)
+const ddlLoaded = ref(false)      // DDL 是否已加载(懒加载)
+const ddlError = ref('')          // DDL 加载失败的内联错误提示
 const appliedWhere = ref('')      // 已应用的过滤条件(翻页用,输入未应用不影响)
 const appliedOrderBy = ref('')    // 已应用的排序
 // 过滤栏补全字段清单(复用字段明细的元数据,无需额外请求)
@@ -299,6 +315,27 @@ async function loadIndexes(force = false) {
   }
 }
 
+/** DDL 懒加载:首次切到 DDL tab 或刷新时调用(实时拉取,接口本身不落缓存,无 refresh 参数) */
+async function loadDdl() {
+  if (!dsId.value || !schema.value) return
+  ddlLoading.value = true
+  ddlError.value = ''
+  try {
+    const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
+    const params = new URLSearchParams()
+    if (db.value) params.set('db', db.value)
+    const q = params.toString() ? `?${params.toString()}` : ''
+    const data = await request.get(`${base}/tables/${encodeURIComponent(tableName)}/ddl${q}`)
+    ddlText.value = data?.ddl || ''
+    ddlLoaded.value = true
+  } catch (e) {
+    // 拦截器已弹出错误消息,这里留内联提示;不置 loaded,允许重试
+    ddlError.value = e?.response?.data?.message || e?.message || '加载 DDL 失败'
+  } finally {
+    ddlLoading.value = false
+  }
+}
+
 // 预览行数组转成 el-table 需要的行对象(c0/c1/... 与列定义 key 对应)
 const previewTableData = computed(() =>
   previewRows.value.map((r) => Object.fromEntries(r.map((v, i) => ['c' + i, v]))))
@@ -336,6 +373,39 @@ function onPreviewSizeChange() {
   loadPreview(1)
 }
 
+/** 复制文本到剪贴板:内网 http 部署是非安全上下文,没有 Clipboard API,退回隐藏 textarea 方案 */
+async function copyText(text, successMsg) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      ta.remove()
+    }
+    ElMessage.success(successMsg)
+  } catch {
+    ElMessage.error('复制失败')
+  }
+}
+
+/** 点击预览单元格复制完整内容(长文本截断成 ... 时靠它取全文);NULL/序号列不复制 */
+async function copyPreviewCell(row, column) {
+  const v = row[column.property]
+  if (v === null || v === undefined) return
+  copyText(String(v), '已复制单元格内容')
+}
+
+/** 复制整段建表 DDL */
+function copyDdl() {
+  copyText(ddlText.value, '已复制 DDL')
+}
+
 /** 应用过滤/排序:同步到已应用变量并回到第 1 页重新查询 */
 function applyPreviewFilter() {
   appliedWhere.value = previewWhere.value.trim()
@@ -343,10 +413,11 @@ function applyPreviewFilter() {
   loadPreview(1)
 }
 
-/** 切换 tab:切到索引/预览时各自懒加载(预览仅首次,之后翻页由分页器触发) */
+/** 切换 tab:切到索引/预览/DDL 时各自懒加载(预览仅首次,之后翻页由分页器触发) */
 function onTabChange(name) {
   if (name === 'indexes') loadIndexes()
   if (name === 'preview' && !previewLoaded.value) loadPreview(1)
+  if (name === 'ddl' && !ddlLoaded.value) loadDdl()
 }
 
 /** 导出当前 tab 的列表 Excel(字段明细/索引结构/数据预览当前页,列与页面一致) */
@@ -386,6 +457,8 @@ function exportExcel() {
       (i.columns || []).join(', ')
     ])
     exportListToExcel(`索引结构-${tableName}`, headers, rows, '索引结构')
+  } else if (activeTab.value === 'ddl') {
+    return ElMessage.warning('DDL 请使用「复制 DDL」按钮')
   } else {
     if (!previewRows.value.length) return ElMessage.warning('当前列表没有可导出的数据')
     const headers = previewColumns.value.map((c) => (c.type ? `${c.name} ${c.type}` : c.name))
@@ -394,16 +467,18 @@ function exportExcel() {
   }
 }
 
-/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引/预览按当前 tab 决定是否重载 */
+/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引/预览/DDL 按当前 tab 决定是否重载 */
 async function refreshAll() {
   refreshing.value = true
   try {
-    // 重置索引/预览加载标记,若当前在对应 tab 则强制重新拉取
+    // 重置索引/预览/DDL 加载标记,若当前在对应 tab 则强制重新拉取
     indexesLoaded.value = false
     previewLoaded.value = false
+    ddlLoaded.value = false
     await load(true)
     if (activeTab.value === 'indexes') await loadIndexes(true)
     if (activeTab.value === 'preview') await loadPreview(previewPage.value)
+    if (activeTab.value === 'ddl') await loadDdl()
     ElMessage.success('已刷新结构与扫描信息')
   } finally {
     refreshing.value = false
@@ -440,5 +515,29 @@ onMounted(async () => {
   display: flex;
   justify-content: flex-end;
   padding-top: 12px;
+}
+
+/* 数据预览表格:正文与表头用一级文字色,提高对比度(NULL/类型标注仍用占位色弱化) */
+.preview-table {
+  --el-table-text-color: var(--el-text-color-primary);
+  --el-table-header-text-color: var(--el-text-color-primary);
+}
+
+/* 单元格点击可复制,用 copy 光标提示可交互 */
+.preview-table :deep(.el-table__cell) {
+  cursor: copy;
+}
+
+/* 建表 DDL 文本视图:等宽字体,长行自动换行 */
+.ddl-view {
+  margin: 0;
+  padding: 12px 16px;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

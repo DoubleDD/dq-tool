@@ -5,6 +5,7 @@ import com.example.dq.model.DbType
 import com.example.dq.model.IndexMeta
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
+import com.example.dq.model.SchemaColumn
 import com.example.dq.model.TableStat
 
 import java.sql.Connection
@@ -41,6 +42,16 @@ interface DbDialect {
     /** 切换连接的目标数据库;不支持多库选择的方言忽略 */
     @Throws(SQLException::class)
     fun useDatabase(conn: Connection, database: String?) {
+    }
+
+    /** 当前会话默认 schema(SQL 控制台选库后恢复用);默认 JDBC getSchema,方言按实际查询语法覆盖 */
+    @Throws(SQLException::class)
+    fun currentSchema(conn: Connection): String? = conn.schema
+
+    /** 切换会话默认 schema(SQL 控制台选库后,未限定表名解析到该库);默认 JDBC setSchema,方言按实际语法覆盖 */
+    @Throws(SQLException::class)
+    fun useSchema(conn: Connection, schema: String) {
+        conn.schema = schema
     }
 
     /**
@@ -85,9 +96,25 @@ interface DbDialect {
     @Throws(SQLException::class)
     fun listColumns(conn: Connection, schema: String, table: String): List<ColumnMeta>
 
+    /** 整库字段清单(表名+字段名+展示类型;SQL 控制台智能提示用,一次查整个 schema 避免逐表请求) */
+    @Throws(SQLException::class)
+    fun listSchemaColumns(conn: Connection, schema: String): List<SchemaColumn>
+
+    /** 单表字段清单(lite:表名+字段名+展示类型+注释;SQL 控制台字段分批拉取用) */
+    @Throws(SQLException::class)
+    fun listSchemaColumns(conn: Connection, schema: String, table: String): List<SchemaColumn>
+
     /** 表索引结构(索引名/是否唯一/索引列);主键索引通常也包含在内;方言不支持时为默认空实现 */
     @Throws(SQLException::class)
     fun listIndexes(conn: Connection, schema: String, table: String): List<IndexMeta> = emptyList()
+
+    /**
+     * 表结构 DDL(含索引),未扫描的表也可查看;
+     * 方言有原生取数语句的覆盖(MySQL 系 SHOW CREATE TABLE,Oracle/达梦 DBMS_METADATA),
+     * 默认实现按 listColumns/listIndexes 元数据拼接(仅字段/主键/索引,不含注释与表选项)
+     */
+    @Throws(SQLException::class)
+    fun tableDdl(conn: Connection, schema: String, table: String): String
 
     /** 选分段键:单列可比主键 > 主键首列 > 唯一索引首列;无则 null */
     fun pickChunkKey(cols: List<ColumnMeta>): ColumnMeta?

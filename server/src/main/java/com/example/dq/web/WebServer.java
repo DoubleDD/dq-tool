@@ -22,6 +22,7 @@ import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.SampleExportController;
 import com.example.dq.controller.SqlConsoleController;
 import com.example.dq.controller.LogController;
+import com.example.dq.controller.ManualCollectController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.ScanTransferController;
 import com.example.dq.controller.SystemSettingsController;
@@ -55,7 +56,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Web 层装配与路由(去 Spring 后替代容器装配 + DispatcherServlet):
- * 构造对象图(repository → service → handler,全部构造注入),注册 64 个端点、
+ * 构造对象图(repository → service → handler,全部构造注入),注册 68 个端点、
  * 授权前置校验(替代 LicenseInterceptor)、统一异常映射(响应体 {"message": ...},
  * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)、
  * 就绪闸门与 /api/health 就绪探针(共享内核未就绪前业务接口统一 503,前端轮询到 200 再加载数据)。
@@ -92,6 +93,7 @@ public class WebServer {
     private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
     private final AtomicReference<SampleExportController> sampleExportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
+    private final AtomicReference<ManualCollectController> manualCollectCtrl = new AtomicReference<>();
     private final AtomicReference<AiConfigController> aiCtrl = new AtomicReference<>();
     private final AtomicReference<AiUsageController> aiUsageCtrl = new AtomicReference<>();
     private final AtomicReference<SystemSettingsController> settingsCtrl = new AtomicReference<>();
@@ -161,7 +163,8 @@ public class WebServer {
             }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
-                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl, aiCtrl, aiUsageCtrl,
+                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl,
+                    manualCollectCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
@@ -185,6 +188,7 @@ public class WebServer {
                                 AtomicReference<ReportExportController> reportCtrl,
                                 AtomicReference<SampleExportController> sampleExportCtrl,
                                 AtomicReference<TagController> tagCtrl,
+                                AtomicReference<ManualCollectController> manualCollectCtrl,
                                 AtomicReference<AiConfigController> aiCtrl,
                                 AtomicReference<AiUsageController> aiUsageCtrl,
                                 AtomicReference<SystemSettingsController> settingsCtrl,
@@ -298,10 +302,12 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables", ctx -> metaCtrl.get().listTables(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns", ctx -> metaCtrl.get().tableColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", ctx -> metaCtrl.get().tableIndexes(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/ddl", ctx -> metaCtrl.get().tableDdl(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/preview", ctx -> previewCtrl.get().preview(ctx));
         // SQL 控制台:对数据源执行任意 SQL,返回结果集或受影响行数
         routes.post("/api/datasources/{dsId}/sql/execute", ctx -> sqlConsoleCtrl.get().execute(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", ctx -> metaCtrl.get().countColumns(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/columns", ctx -> metaCtrl.get().schemaColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", ctx -> metaCtrl.get().latestScanJobs(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/running-scans", ctx -> metaCtrl.get().runningScans(ctx));
         // 最新扫描结果 Excel 导出:每表最近一次表级 DONE 快照,跨任务,不依赖指定任务记录
@@ -342,6 +348,12 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schema-tag-stats", ctx -> tagCtrl.get().schemaTagStats(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/table-tags", ctx -> tagCtrl.get().tableTags(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/tags", ctx -> tagCtrl.get().replaceTableTags(ctx));
+
+        // ---- 人工采集(收藏重点关注的表) ----
+        routes.get("/api/manual-collects", ctx -> manualCollectCtrl.get().list(ctx));
+        routes.post("/api/manual-collects", ctx -> manualCollectCtrl.get().addBatch(ctx));
+        routes.delete("/api/manual-collects/{id}", ctx -> manualCollectCtrl.get().delete(ctx));
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/manual-collects", ctx -> manualCollectCtrl.get().tableCollectMap(ctx));
 
         // ---- 标记与描述数据导出/导入(跨机器迁移) ----
         routes.get("/api/annotations/export", ctx -> annotationCtrl.get().export(ctx));
@@ -517,6 +529,7 @@ public class WebServer {
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
+        manualCollectCtrl.set(new ManualCollectController(env.getManualCollectService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));
         aiUsageCtrl.set(new AiUsageController(env.getAiUsageService()));
         settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener));

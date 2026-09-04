@@ -4,7 +4,7 @@
 
 - 表级:估算行数、数据+索引占用一览
 - 字段级:NULL / 空串 / 自定义空值规则统计与有值率
-- 表列表点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;未扫描的表进入结构元数据页(字段名/类型/注释/约束 + 下方索引结构:索引名/唯一性/索引列,接口 `GET /api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns` 与 `.../indexes`,不含统计)
+- 表列表点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;未扫描的表进入结构元数据页(字段名/类型/注释/约束 + 下方索引结构:索引名/唯一性/索引列,接口 `GET /api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns` 与 `.../indexes`,不含统计);另有「DDL」页签(`.../tables/{table}/ddl`,实时拉取不落缓存,含索引定义)
 - 结构元数据本地缓存(库/表/字段/索引):库列表统计(schema_stat)、表清单/字段/索引(meta_table/meta_column/meta_index)首次访问从业务库拉取落 H2,之后浏览读缓存不连业务库;库列表/表列表/字段明细页各有「刷新」按钮(接口带 `?refresh=true`)强制从数据源拉最新结构并覆盖缓存;发起扫描时同步刷新表/字段/索引缓存(createScan 刷表清单,planTable 刷字段+索引,失败不影响扫描);覆盖刷新为「先 DELETE 后 INSERT」,同粒度并发刷新(如导出表结构文档与扫描 planTable 并发回源同一表)由 MetaCacheRepository 条纹锁串行化,避免唯一键冲突(23505)
 - 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫
 - 并发 worker 数可在发起扫描弹窗中设置(1~128,留空用配置默认 `dq.scan.workers`):落库 `scan_job.workers` 供详情展示与续扫恢复;扫描启动时动态调整全局扫描线程池 `ScanExecutor.resize`(每次发起都按本次任务设定调整,避免上次设置残留)
@@ -18,7 +18,7 @@
 - 无字段标记(`meta_table.no_columns`,V22):扫描规划/续扫或字段明细页访问发现表没有字段(如 Oracle IOT 溢出段 SYS_IOT_OVER_%)时置 TRUE,供识别「可跳过」的表;表有字段时清除。强制刷新表结构(`replaceTables` 整粒度覆盖)后标记随旧行自动还原——重新同步后字段有无未知,待下次访问字段列表或扫描时按实测重新标定
 - 大表默认采样估算(行数 > 100 万或体积 > 10GB,阈值可在数据源级别覆盖);MySQL/达梦/OB 的采样是 LIMIT 顺序采样,结果有偏,UI 需标注"估算值"
 - Oracle 把空字符串存为 NULL,空串统计恒为 0,这是数据库本身行为,不是 bug
-- Oracle ORA-01000(超出打开游标的最大数)防护:扫描 SQL 是一次性字面量文本,连接池长会话上反复硬解析会让会话游标缓存(驻留游标计入 open_cursors)持续累积。工具侧两道防线:① 建池时 `connectionInitSql` 执行 `ALTER SESSION SET session_cached_cursors = 0`(`OracleDialect.connectionInitSql`,方言接口 `DbDialect.connectionInitSql` 默认无),关掉会话游标缓存,语句关闭即真正释放;② `ChunkRunner` 捕获 ORA-01000(异常链上 errorCode=1000,`OracleDialect.isOpenCursorsExceeded`)时调 `DataSourceService.recyclePool` 回收该数据源全部连接池,分段重试自动拿到全新会话;在建连接上的其他分段失败由既有重试逻辑兜底
+- Oracle ORA-01000(超出打开游标的最大数)防护:扫描 SQL 是一次性字面量文本,连接池长会话上反复硬解析会让会话游标缓存(驻留游标计入 open_cursors)持续累积。工具侧三道防线:① 建池时 `connectionInitSql` 执行 `ALTER SESSION SET session_cached_cursors = 0`(`OracleDialect.connectionInitSql`,方言接口 `DbDialect.connectionInitSql` 默认无),关掉会话游标缓存,语句关闭即真正释放;② `ChunkRunner` 捕获 ORA-01000(异常链上 errorCode=1000,`OracleDialect.isOpenCursorsExceeded`)时调 `DataSourceService.recyclePool` 回收该数据源全部连接池,分段重试自动拿到全新会话;在建连接上的其他分段失败由既有重试逻辑兜底;③ 字段/索引元数据的 `DatabaseMetaData.getIndexInfo` 一律传 `approximate=true`(`AbstractDialect.listColumns`/`listIndexes`)——ojdbc 23c 在 approximate=false 且非本地事务时会先执行 `DBMS_STATS.GATHER_TABLE_STATS(schema, table)` 再查索引,既改写客户库统计信息,又在收集失败(权限不足)时不 close 内部 CallableStatement,逐表泄漏游标直至打满 open_cursors;工具只取索引名/列名/序号,不读 CARDINALITY,近似结果无影响
 - Oracle 表体积统计依赖段视图:23ai 起 ALL_SEGMENTS 被移除(DBA_SEGMENTS 仍在);受限账号看不到段视图时(无权限对象 Oracle 也报 ORA-00942)按 ALL_SEGMENTS → DBA_SEGMENTS → USER_SEGMENTS(仅当前用户)→ 不统计 逐级降级(23ai 链从 DBA_SEGMENTS 起),记 warn 日志;探测结果按「用户名@JDBC URL」内存缓存(OracleDialect.segViewCache,换账号/换服务器自动重探,进程重启重置),非首选落点超过 1 小时(SEG_VIEW_REPROBE_MS)从链头重探一次以捕获权限变更
 - Oracle LONG/LONG RAW 列归一为 Types.OTHER(`OracleDialect.listColumns`):LONG 不能参与函数与比较(TRIM(LONG) 报 ORA-00932「应为 CHAR,但却获得 LONG」,比较/排序同样不允许),而驱动报为 Types.LONGVARCHAR 会被当成字符列做空串统计、被挑为分段键;归一后仍统计 NULL 数(IS NULL 对 LONG 合法),只是跳过空串统计且不作为分段键
 - Oracle DATE/TIMESTAMP 分段键的字面量显式 TO_TIMESTAMP(`OracleDialect.literal` 覆写,格式 'YYYY-MM-DD HH24:MI:SS.FF'):字符串字面量与日期列比较走会话 NLS 隐式转换,格式不匹配即 ORA-01861「文字与格式字符串不匹配」,分段边界 seek、范围谓词、空值规则值均受影响;边界值读取(`readBoundaryValue` 覆写)用 getTimestamp 输出 yyyy-MM-dd HH:mm:ss.SSS 固定格式,round-trip 不依赖会话 NLS
@@ -58,7 +58,7 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 ## 通用列表导出(各列表页「导出 Excel」)
 
-数据源菜单下除数据源卡片页外的列表页(库列表「导出→导出当前列表」、表列表、字段明细/索引结构/数据预览三个 tab、扫描记录)都有导出按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同)。
+数据源菜单下除数据源卡片页外的列表页(库列表「导出→导出当前列表」、表列表、字段明细/索引结构/数据预览 tab、扫描记录)都有导出按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同);DDL tab 不导出 Excel,用页内「复制 DDL」按钮。
 
 - **机制**(`ListExportService` common + `ListExportController` server):前端把当前表格的表头与行(展示口径字符串,空单元格传空串)POST `/api/list-exports` → 后端 POI 渲染 xlsx 内存暂存并返回一次性 token → 前端 `utils/listExport.js` 的 `exportListToExcel` 拿 token 后走既有 `downloadFile` GET `/api/list-exports/{token}` 下载(桌面端 Tauri 原生保存对话框零改动);token 取走即删,5 分钟过期
 - **与扫描结果导出的分工**:扫描结果 Excel(`ExportService`)是含业务查询的多 sheet 定制结构;通用列表导出不含任何业务查询,数据完全由前端按展示口径组装,因此各列表页可直接复用
@@ -68,7 +68,7 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 把扫描记录(任务 + 事件时间线 + 表级/分段/字段明细)导出为 JSON 文件,在另一台机器的部署一键导入,扫描记录列表即可看到导入的历史记录。导出还随任务携带每张表的 USER 表标记与表描述(AI 花钱生成的标注数据),导入成功一个任务后随即合并进本机全局标记/描述,避免换机后重新打标与重新生成描述。实现:`ScanTransferService`(common)+ `ScanTransferController`(server),前端入口在扫描记录页(`Scans.vue`)工具栏「导出记录/导入记录」。
 
-- **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[], tagDefs[])`;job 含 events/tables,table 含 chunks/columns + `tags`(USER 标记名列表,EMPTY 系统空表标记由扫描自动维护不导出)+ `doc`(表描述);文件级 `tagDefs` 收引用到的 USER 标记定义(name/color/description);不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响;tagDefs/tags/doc 为 v1 格式内追加字段,旧导出文件按缺省(空)导入;job 级 `dbVersion`(目标数据库版本号,任务创建时快照)同为 v1 内追加字段,旧导出文件按 null 导入
+- **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[], tagDefs[])`;job 含 events/tables,table 含 chunks/columns + `tags`(USER 标记名列表,EMPTY 系统空表标记由扫描自动维护不导出)+ `doc`(表描述);文件级 `tagDefs` 收引用到的 USER 标记定义(name/color/description);不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响;tagDefs/tags/doc 为 v1 格式内追加字段,旧导出文件按缺省(空)导入;job 级 `dbVersion`(目标数据库版本号,任务创建时快照)同为 v1 内追加字段,旧导出文件按 null 导入;三种导出文件(数据源/扫描记录/标记描述)的导入解析统一走 `TransferJson`(common/util):UTF-8 优先、失败按 GB18030 兜底(客户可能用记事本把文件另存成 ANSI/GBK,兜底避让记 warn 日志带堆栈便于排查),并忽略未知字段(v1 内追加字段不拦截旧版本软件导入)
 - **数据源对齐**:与标记导入一致走「预检 + 映射」——预检返回文件内各数据源的 job 数、本机同名数据源 id(前端自动预选)、本机全部数据源;导入 mapping 为「文件数据源名 → 本机数据源 id」,0/缺失/指向不存在的数据源 = 跳过该数据源的全部任务(计入 skipped)
 - **去重幂等**:同数据源 + db_name(可空等值,空白一律落 NULL)+ schema_name + created_at 已存在则跳过,重复导入同一文件不产生重复记录
 - **结果明细**:跳过(未映射/映射目标不存在/判重)与失败均逐条记 `warnings`(任务标签 + 原因),导入完成弹窗在汇总行下方逐行展示

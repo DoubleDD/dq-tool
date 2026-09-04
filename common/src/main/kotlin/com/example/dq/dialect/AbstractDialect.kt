@@ -4,6 +4,7 @@ import com.example.dq.model.ColumnMeta
 import com.example.dq.model.IndexMeta
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
+import com.example.dq.model.SchemaColumn
 
 import java.math.BigDecimal
 import java.math.MathContext
@@ -17,10 +18,43 @@ import java.util.regex.Pattern
 abstract class AbstractDialect : DbDialect {
 
     companion object {
+        private val log = org.slf4j.LoggerFactory.getLogger(AbstractDialect::class.java)
+
         private val NUMERIC_LITERAL: Pattern = Pattern.compile("-?\\d+(\\.\\d+)?")
 
         /** 每条统计 SQL 最多包含的列数(防 SQL 过长) */
         internal const val MAX_COLS_PER_SQL = 80
+
+        /**
+         * 按字段/索引元数据拼接建表 DDL(各方言降级共用,纯函数便于单测):
+         * 仅含字段、主键与索引定义,不含注释与表选项;与主键列完全一致的索引跳过(已由 PRIMARY KEY 体现)
+         */
+        internal fun buildTableDdl(quote: (String) -> String, schema: String, table: String,
+                                   cols: List<ColumnMeta>, indexes: List<IndexMeta>): String {
+            val sb = StringBuilder()
+            sb.append("CREATE TABLE ").append(quote(schema)).append('.').append(quote(table)).append(" (\n")
+            val lines = ArrayList<String>()
+            for (c in cols) {
+                val line = StringBuilder("  ").append(quote(c.name)).append(' ')
+                        .append(c.displayType.ifBlank { c.typeName })
+                if (!c.nullable) line.append(" NOT NULL")
+                if (!c.defaultValue.isNullOrBlank()) line.append(" DEFAULT ").append(c.defaultValue)
+                lines.add(line.toString())
+            }
+            val pkCols = cols.filter { it.primaryKey }.sortedBy { it.pkSeq }
+            if (pkCols.isNotEmpty()) {
+                lines.add("  PRIMARY KEY (" + pkCols.joinToString(", ") { quote(it.name) } + ")")
+            }
+            sb.append(lines.joinToString(",\n")).append("\n);\n")
+            val pkColNames = pkCols.map { it.name }
+            for (idx in indexes) {
+                if (pkColNames.isNotEmpty() && idx.columns == pkColNames) continue // 主键背后的索引不再重复输出
+                sb.append("\nCREATE ").append(if (idx.unique) "UNIQUE " else "").append("INDEX ")
+                        .append(quote(idx.name)).append(" ON ").append(quote(schema)).append('.').append(quote(table))
+                        .append(" (").append(idx.columns.joinToString(", ") { quote(it) }).append(");\n")
+            }
+            return sb.toString()
+        }
     }
 
     /** MySQL 系用 catalog 定位库;PG/DM 系用 schema */
@@ -54,6 +88,22 @@ abstract class AbstractDialect : DbDialect {
         return sums
     }
 
+    /** 执行单列单行查询,返回首行首列字符串(无行返回 null);供 currentSchema 各实现复用 */
+    @Throws(SQLException::class)
+    protected fun queryFirstString(conn: Connection, sql: String): String? {
+        conn.createStatement().use { st ->
+            st.executeQuery(sql).use { rs ->
+                return if (rs.next()) rs.getString(1) else null
+            }
+        }
+    }
+
+    /** 执行无返回语句(SET/ALTER SESSION 等会话级命令);供 useSchema 各实现复用 */
+    @Throws(SQLException::class)
+    protected fun executeCommand(conn: Connection, sql: String) {
+        conn.createStatement().use { st -> st.execute(sql) }
+    }
+
     @Throws(SQLException::class)
     override fun listColumns(conn: Connection, schema: String, table: String): List<ColumnMeta> {
         val meta = conn.metaData
@@ -69,10 +119,14 @@ abstract class AbstractDialect : DbDialect {
         }
 
         // 唯一索引首列
+        // approximate 必须传 true:ojdbc 23c 在 approximate=false 且非本地事务时会先执行
+        // DBMS_STATS.GATHER_TABLE_STATS(schema, table) 再查索引——只读工具不该改写客户库的统计信息,
+        // 且收集失败(权限不足)时驱动内 CallableStatement 不 close,逐表泄漏游标直至 ORA-01000;
+        // 此处只取索引名/列名/序号,不读 CARDINALITY,近似结果无影响
         val uniqueFirst = HashMap<String, String>() // indexName -> firstColumn
         val uniqueOrd = HashMap<String, Int>()
         try {
-            meta.getIndexInfo(catalog, schemaPattern, table, true, false).use { rs ->
+            meta.getIndexInfo(catalog, schemaPattern, table, true, true).use { rs ->
                 while (rs.next()) {
                     val idx = rs.getString("INDEX_NAME")
                     val col = rs.getString("COLUMN_NAME")
@@ -115,6 +169,42 @@ abstract class AbstractDialect : DbDialect {
         return cols
     }
 
+    /** 整库字段清单:与 [listColumns] 同一 catalog/schema 口径,JDBC 元数据一次取全库(table 传 null) */
+    @Throws(SQLException::class)
+    override fun listSchemaColumns(conn: Connection, schema: String): List<SchemaColumn> =
+        querySchemaColumns(conn, schema, null)
+
+    /** 单表字段清单(lite):与整库版同 catalog/schema 口径,table 限定为具体表名(分批拉取用) */
+    @Throws(SQLException::class)
+    override fun listSchemaColumns(conn: Connection, schema: String, table: String): List<SchemaColumn> =
+        querySchemaColumns(conn, schema, table)
+
+    /** listSchemaColumns 两个重载的公共实现:tablePattern 为 null 时取整个 schema */
+    @Throws(SQLException::class)
+    private fun querySchemaColumns(conn: Connection, schema: String, tablePattern: String?): List<SchemaColumn> {
+        val meta = conn.metaData
+        val catalog = if (catalogBased()) schema else null
+        val schemaPattern = if (catalogBased()) null else schema
+        val columns = ArrayList<SchemaColumn>()
+        meta.getColumns(catalog, schemaPattern, tablePattern, null).use { rs ->
+            while (rs.next()) {
+                val size = rs.getInt("COLUMN_SIZE")
+                var digits = 0
+                try {
+                    digits = rs.getInt("DECIMAL_DIGITS")
+                } catch (ignored: SQLException) {
+                    // 部分驱动不支持 DECIMAL_DIGITS
+                }
+                columns.add(SchemaColumn(
+                        rs.getString("TABLE_NAME"),
+                        rs.getString("COLUMN_NAME"),
+                        displayType(rs.getString("TYPE_NAME"), size, digits),
+                        rs.getString("REMARKS") ?: ""))
+            }
+        }
+        return columns
+    }
+
     /** 表索引结构:索引名 + 是否唯一 + 按 ORDINAL_POSITION 排序的索引列;主键索引也包含在内 */
     @Throws(SQLException::class)
     override fun listIndexes(conn: Connection, schema: String, table: String): List<IndexMeta> {
@@ -125,7 +215,8 @@ abstract class AbstractDialect : DbDialect {
         val uniqueByIndex = HashMap<String, Boolean>()
         val colsByIndex = HashMap<String, TreeMap<Int, String>>()
         try {
-            meta.getIndexInfo(catalog, schemaPattern, table, false, false).use { rs ->
+            // approximate=true:同 listColumns,避免 ojdbc 23c 附带执行 DBMS_STATS.GATHER_TABLE_STATS
+            meta.getIndexInfo(catalog, schemaPattern, table, false, true).use { rs ->
                 while (rs.next()) {
                     val idx = rs.getString("INDEX_NAME")
                     val col = rs.getString("COLUMN_NAME")
@@ -141,6 +232,38 @@ abstract class AbstractDialect : DbDialect {
         return colsByIndex.entries
             .sortedBy { it.key }
             .map { (name, cols) -> IndexMeta(name, uniqueByIndex[name] ?: false, cols.values.toList()) }
+    }
+
+    /** 表结构 DDL:默认按字段/索引元数据拼接(降级口径);有原生取数语句的方言覆盖 */
+    @Throws(SQLException::class)
+    override fun tableDdl(conn: Connection, schema: String, table: String): String {
+        return buildTableDdl(::quote, schema, table, listColumns(conn, schema, table), listIndexes(conn, schema, table))
+    }
+
+    /**
+     * 经 DBMS_METADATA.GET_DDL 取原生 DDL(Oracle/达梦可用):表 DDL + 未内嵌的索引 DDL。
+     * GET_DDL('TABLE') 是否内嵌索引取决于会话 transform 设置,故按 listIndexes 逐个比对补取;
+     * 权限不足(ORA-31603 等)或包不存在时返回 null,由调用方降级为 [tableDdl] 默认拼接
+     */
+    protected fun dbmsMetadataDdl(conn: Connection, schema: String, table: String): String? {
+        return try {
+            val esc = { s: String -> s.replace("'", "''") }
+            val sb = StringBuilder()
+            val tableDdl = queryFirstString(conn,
+                    "SELECT DBMS_METADATA.GET_DDL('TABLE', '" + esc(table) + "', '" + esc(schema) + "') FROM DUAL")
+            if (tableDdl.isNullOrBlank()) return null
+            sb.append(tableDdl.trim())
+            for (idx in listIndexes(conn, schema, table)) {
+                if (sb.contains(idx.name)) continue // 已内嵌在表 DDL 中
+                val idxDdl = queryFirstString(conn,
+                        "SELECT DBMS_METADATA.GET_DDL('INDEX', '" + esc(idx.name) + "', '" + esc(schema) + "') FROM DUAL")
+                if (!idxDdl.isNullOrBlank()) sb.append("\n\n").append(idxDdl.trim())
+            }
+            sb.toString()
+        } catch (e: SQLException) {
+            log.warn("DBMS_METADATA.GET_DDL 失败,降级为元数据拼接: {}.{} - {}", schema, table, e.message)
+            null
+        }
     }
 
     /** 统计指定库/schema 下所有基表的字段总数;只算基表(与 listTables 一致),不含视图 */

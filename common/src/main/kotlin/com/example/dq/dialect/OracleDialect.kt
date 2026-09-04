@@ -132,6 +132,12 @@ class OracleDialect : AbstractDialect() {
         return "oracle.jdbc.OracleDriver"
     }
 
+    /** Oracle 原生 DDL:DBMS_METADATA.GET_DDL(含索引);权限不足(ORA-31603 等)降级为元数据拼接 */
+    @Throws(SQLException::class)
+    override fun tableDdl(conn: Connection, schema: String, table: String): String {
+        return dbmsMetadataDdl(conn, schema, table) ?: super.tableDdl(conn, schema, table)
+    }
+
     /**
      * 关闭会话游标缓存:扫描 SQL 均为一次性字面量文本,缓存无复用收益;
      * 缓存驻留的游标计入 open_cursors,连接池长会话上反复硬解析会持续累积,最终触发 ORA-01000
@@ -230,6 +236,17 @@ class OracleDialect : AbstractDialect() {
             }
         }
         return schemas
+    }
+
+    /** Oracle 当前 schema:ALTER SESSION 切换(会话级,归还连接前由调用方恢复) */
+    @Throws(SQLException::class)
+    override fun currentSchema(conn: Connection): String? {
+        return queryFirstString(conn, "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL")
+    }
+
+    @Throws(SQLException::class)
+    override fun useSchema(conn: Connection, schema: String) {
+        executeCommand(conn, "ALTER SESSION SET CURRENT_SCHEMA = " + quote(schema))
     }
 
     @Throws(SQLException::class)

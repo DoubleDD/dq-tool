@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Map;
 
 /** 元数据/浏览(Javalin handler,路由在 WebServer 注册,统一挂在 /api/datasources/{dsId} 下) */
@@ -55,6 +56,19 @@ public class MetadataController {
         ctx.json(service.countColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema")));
     }
 
+    /**
+     * 整库字段清单(SQL 控制台智能提示):一次返回 schema 下全部 表名+字段名+类型;本地缓存优先。
+     * refresh=true 强制从业务库拉最新并覆盖缓存;tables(重复参数 ?tables=a&tables=b)限定表子集分批拉取(防整库一次拉超时)
+     */
+    public void schemaColumns(Context ctx) throws SQLException {
+        List<String> tables = ctx.queryParams("tables");
+        if (tables.isEmpty()) {
+            ctx.json(service.listSchemaColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), refresh(ctx)));
+        } else {
+            ctx.json(service.listSchemaColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), tables, refresh(ctx)));
+        }
+    }
+
     /** 单表字段元数据(结构明细:字段名/类型/注释/约束),未扫描的表也可查看;refresh=true 强制刷新缓存 */
     public void tableColumns(Context ctx) throws SQLException {
         ctx.json(service.listTableColumns(dsId(ctx), ctx.queryParam("db"),
@@ -65,6 +79,12 @@ public class MetadataController {
     public void tableIndexes(Context ctx) throws SQLException {
         ctx.json(service.listTableIndexes(dsId(ctx), ctx.queryParam("db"),
                 ctx.pathParam("schema"), ctx.pathParam("table"), refresh(ctx)));
+    }
+
+    /** 单表建表 DDL(含索引),实时从业务库拉取,未扫描的表也可查看 */
+    public void tableDdl(Context ctx) throws SQLException {
+        ctx.json(Map.of("ddl", service.tableDdl(dsId(ctx), ctx.queryParam("db"),
+                ctx.pathParam("schema"), ctx.pathParam("table"))));
     }
 
     /** 每张表最近一次 DONE 扫描的信息(表名 -> {jobId, finishedAt}),表列表页点击表名直达最新结果、展示最近扫描时间 */

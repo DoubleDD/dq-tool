@@ -149,6 +149,63 @@ class MetaCacheRepositoryTest {
         assertTrue(repo.isTableCacheReady(1, "", "db1"))
     }
 
+    // ---------- 整库字段清单缓存(meta_schema_column,SQL 控制台智能提示用,kind=SCOLUMN) ----------
+
+    private fun scol(table: String, name: String, ordinal: Int) =
+        MetaCacheRepository.CachedSchemaColumn(table, ordinal, name, "varchar(50)", "注释")
+
+    @Test
+    fun `字段清单缓存 整库覆盖后按 表名+ordinal 往返`() {
+        assertFalse(repo.isSchemaColumnsReady(1, "", "db1"))
+        repo.replaceSchemaColumns(1, "", "db1", listOf(
+            scol("t2", "b", 0), scol("t1", "id", 0), scol("t1", "name", 1)
+        ))
+        assertTrue(repo.isSchemaColumnsReady(1, "", "db1"))
+        val cached = repo.listSchemaColumns(1, "", "db1")
+        assertEquals(listOf("t1", "t1", "t2"), cached.map { it.tableName })
+        assertEquals(listOf("id", "name"), cached.filter { it.tableName == "t1" }.map { it.columnName })
+        assertEquals("varchar(50)", cached.first().colType)
+        // 不同 schema/数据源互不影响
+        assertFalse(repo.isSchemaColumnsReady(1, "", "db2"))
+        assertFalse(repo.isSchemaColumnsReady(2, "", "db1"))
+    }
+
+    @Test
+    fun `字段清单缓存 分批按表覆盖并记录已缓存表`() {
+        repo.replaceSchemaTableColumns(1, "", "db1", "t1", listOf(scol("t1", "id", 0)))
+        repo.replaceSchemaTableColumns(1, "", "db1", "t2", listOf(scol("t2", "oid", 0), scol("t2", "note", 1)))
+        assertEquals(setOf("t1", "t2"), repo.schemaColumnCachedTables(1, "", "db1"))
+        // schema 级整库标记不受影响(分批与整库是两条路径)
+        assertFalse(repo.isSchemaColumnsReady(1, "", "db1"))
+        // 按表子集查询:IN 过滤 + 排序
+        val cached = repo.listSchemaColumns(1, "", "db1", listOf("t2"))
+        assertEquals(listOf("oid", "note"), cached.map { it.columnName })
+        // 空表集合直接返回空
+        assertEquals(0, repo.listSchemaColumns(1, "", "db1", emptyList()).size)
+        // 单表覆盖:同名表旧字段被替换
+        repo.replaceSchemaTableColumns(1, "", "db1", "t1", listOf(scol("t1", "id2", 0)))
+        assertEquals(listOf("id2"), repo.listSchemaColumns(1, "", "db1", listOf("t1")).map { it.columnName })
+    }
+
+    @Test
+    fun `字段清单缓存 整库覆盖会清掉 per-table 分批标记`() {
+        repo.replaceSchemaTableColumns(1, "", "db1", "t1", listOf(scol("t1", "id", 0)))
+        assertEquals(setOf("t1"), repo.schemaColumnCachedTables(1, "", "db1"))
+        repo.replaceSchemaColumns(1, "", "db1", listOf(scol("t1", "id", 0), scol("t3", "c", 0)))
+        assertTrue(repo.isSchemaColumnsReady(1, "", "db1"))
+        assertEquals(emptySet<String>(), repo.schemaColumnCachedTables(1, "", "db1"))
+        assertEquals(listOf("t1", "t3"), repo.listSchemaColumns(1, "", "db1").map { it.tableName })
+    }
+
+    @Test
+    fun `删除数据源 级联清理字段清单缓存`() {
+        repo.replaceSchemaColumns(1, "", "db1", listOf(scol("t1", "id", 0)))
+        repo.deleteByDatasource(1)
+        assertFalse(repo.isSchemaColumnsReady(1, "", "db1"))
+        assertEquals(0, repo.listSchemaColumns(1, "", "db1").size)
+        assertEquals(emptySet<String>(), repo.schemaColumnCachedTables(1, "", "db1"))
+    }
+
     // ---------- 级联清理 ----------
 
     @Test

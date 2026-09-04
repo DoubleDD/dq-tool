@@ -1,6 +1,7 @@
 package com.example.dq.dialect
 
 import com.example.dq.model.ColumnMeta
+import com.example.dq.model.IndexMeta
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
 import com.example.dq.service.PreviewService
@@ -472,6 +473,36 @@ class DialectSqlGenTest {
         assertEquals("SELECT \"id\" FROM \"SCOTT\".\"T\" WHERE x = 1 ORDER BY id desc OFFSET 40 ROWS FETCH NEXT 20 ROWS ONLY", filtered)
         val legacyFiltered = oracle.pageRowsSql("\"SCOTT\".\"T\"", cols, "x = 1", "id desc", 40, 20, 11)
         assertTrue(legacyFiltered.contains("(SELECT \"id\" FROM \"SCOTT\".\"T\" WHERE x = 1 ORDER BY id desc) dq_i"), legacyFiltered)
+    }
+
+    @Test
+    fun `降级DDL拼接 字段主键索引齐全且主键索引不重复输出`() {
+        val cols = listOf(
+            ColumnMeta("id", "BIGINT", "bigint", Types.BIGINT, false, null, "", true, 1, false),
+            ColumnMeta("name", "VARCHAR", "varchar(50)", Types.VARCHAR, true, "'x'", "", false, 0, false)
+        )
+        val indexes = listOf(
+            IndexMeta("PRIMARY", true, listOf("id")),      // 与主键列一致,跳过
+            IndexMeta("idx_name", false, listOf("name")),
+            IndexMeta("uk_name", true, listOf("name"))
+        )
+        val ddl = AbstractDialect.buildTableDdl(mysql::quote, "db1", "user", cols, indexes)
+        assertEquals(
+            "CREATE TABLE `db1`.`user` (\n" +
+            "  `id` bigint NOT NULL,\n" +
+            "  `name` varchar(50) DEFAULT 'x',\n" +
+            "  PRIMARY KEY (`id`)\n" +
+            ");\n" +
+            "\nCREATE INDEX `idx_name` ON `db1`.`user` (`name`);\n" +
+            "\nCREATE UNIQUE INDEX `uk_name` ON `db1`.`user` (`name`);\n",
+            ddl)
+    }
+
+    @Test
+    fun `降级DDL拼接 无主键无索引时仅字段`() {
+        val cols = listOf(ColumnMeta("c1", "INT", "int", Types.INTEGER, true, null, "", false, 0, false))
+        val ddl = AbstractDialect.buildTableDdl(mysql::quote, "db1", "t", cols, emptyList())
+        assertEquals("CREATE TABLE `db1`.`t` (\n  `c1` int\n);\n", ddl)
     }
 
     @Test

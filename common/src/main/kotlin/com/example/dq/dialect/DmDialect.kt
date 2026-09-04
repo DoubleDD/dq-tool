@@ -34,6 +34,12 @@ class DmDialect : AbstractDialect() {
         return "dm.jdbc.driver.DmDriver"
     }
 
+    /** 达梦兼容 Oracle 的 DBMS_METADATA.GET_DDL;权限不足时降级为元数据拼接 */
+    @Throws(SQLException::class)
+    override fun tableDdl(conn: Connection, schema: String, table: String): String {
+        return dbmsMetadataDdl(conn, schema, table) ?: super.tableDdl(conn, schema, table)
+    }
+
     /** DM8 系统账号(schema 与用户一一对应):SYS/SYSDBA/SYSAUDITOR/SYSSSO/SYSMAINT */
     override fun systemSchemas(): Set<String> {
         return setOf("sys", "sysdba", "sysauditor", "syssso", "sysmaint")
@@ -55,6 +61,18 @@ class DmDialect : AbstractDialect() {
             }
         }
         return schemas
+    }
+
+    /** DM8 兼容 Oracle 的 SYS_CONTEXT 取当前模式 */
+    @Throws(SQLException::class)
+    override fun currentSchema(conn: Connection): String? {
+        return queryFirstString(conn, "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL")
+    }
+
+    /** DM8 用 SET SCHEMA 切当前模式(2022 年后版本;老版本不支持时错误原样抛给前端) */
+    @Throws(SQLException::class)
+    override fun useSchema(conn: Connection, schema: String) {
+        executeCommand(conn, "SET SCHEMA " + quote(schema))
     }
 
     @Throws(SQLException::class)

@@ -4,6 +4,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.IndexMeta
+import com.example.dq.model.SchemaColumn
 import com.example.dq.model.SchemaStat
 import com.example.dq.model.TableStat
 import com.example.dq.repository.MetaCacheRepository
@@ -89,6 +90,54 @@ class MetadataService(
         }
     }
 
+    /** 整库字段清单(表名+字段名+类型;SQL 控制台智能提示用):本地缓存优先;refresh=true 从业务库拉最新并覆盖缓存 */
+    @Throws(SQLException::class)
+    fun listSchemaColumns(datasourceId: Long, database: String?, schema: String, refresh: Boolean = false): List<SchemaColumn> {
+        val db = normalizeDb(database)
+        if (!refresh && metaCacheRepo.isSchemaColumnsReady(datasourceId, db, schema)) {
+            return metaCacheRepo.listSchemaColumns(datasourceId, db, schema).map { it.toSchemaColumn() }
+        }
+        // 缓存未就绪或强制刷新:从业务库拉最新并整粒度覆盖本地缓存
+        val fresh = fetchSchemaColumns(datasourceId, database, schema)
+        metaCacheRepo.replaceSchemaColumns(datasourceId, db, schema, fresh.toCachedSchemaColumns())
+        return fresh
+    }
+
+    /** 实时整库字段清单(不经缓存) */
+    @Throws(SQLException::class)
+    private fun fetchSchemaColumns(datasourceId: Long, database: String?, schema: String): List<SchemaColumn> {
+        val ds = dataSourceService.get(datasourceId)
+        val dialect = dialectOf(ds)
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
+            return dialect.listSchemaColumns(conn, schema)
+        }
+    }
+
+    /** 分批字段清单(指定表子集):已缓存的表读本地;未缓存或 refresh 的表逐表回源并落缓存;返回请求表集合的并集 */
+    @Throws(SQLException::class)
+    fun listSchemaColumns(datasourceId: Long, database: String?, schema: String, tables: List<String>, refresh: Boolean): List<SchemaColumn> {
+        if (tables.isEmpty()) return emptyList()
+        val db = normalizeDb(database)
+        // schema 级整库缓存已就绪则视为全部表已缓存;否则看 per-table 分批标记
+        val toFetch = when {
+            refresh -> tables
+            metaCacheRepo.isSchemaColumnsReady(datasourceId, db, schema) -> emptyList()
+            else -> tables - metaCacheRepo.schemaColumnCachedTables(datasourceId, db, schema)
+        }
+        if (toFetch.isNotEmpty()) {
+            val ds = dataSourceService.get(datasourceId)
+            val dialect = dialectOf(ds)
+            dataSourceService.getConnection(datasourceId, database).use { conn ->
+                // 同一条业务库连接逐表拉取,每张表单独落缓存(成功部分不丢)
+                for (table in toFetch) {
+                    val fresh = dialect.listSchemaColumns(conn, schema, table)
+                    metaCacheRepo.replaceSchemaTableColumns(datasourceId, db, schema, table, fresh.toCachedSchemaColumns())
+                }
+            }
+        }
+        return metaCacheRepo.listSchemaColumns(datasourceId, db, schema, tables).map { it.toSchemaColumn() }
+    }
+
     /** 单表字段元数据(结构明细:字段名/类型/注释/约束),未扫描的表也可查看;不含扫描统计 */
     @Throws(SQLException::class)
     fun listTableColumns(datasourceId: Long, database: String?, schema: String, table: String, refresh: Boolean = false): List<ColumnMeta> {
@@ -137,6 +186,16 @@ class MetadataService(
         val dialect = dialectOf(ds)
         dataSourceService.getConnection(datasourceId, database).use { conn ->
             return dialect.listIndexes(conn, schema, table)
+        }
+    }
+
+    /** 单表建表 DDL(含索引):实时从业务库拉取,不落缓存,未扫描的表也可查看 */
+    @Throws(SQLException::class)
+    fun tableDdl(datasourceId: Long, database: String?, schema: String, table: String): String {
+        val ds = dataSourceService.get(datasourceId)
+        val dialect = dialectOf(ds)
+        dataSourceService.getConnection(datasourceId, database).use { conn ->
+            return dialect.tableDdl(conn, schema, table)
         }
     }
 
@@ -220,6 +279,19 @@ class MetadataService(
     private fun MetaCacheRepository.CachedColumn.toColumnMeta() = ColumnMeta(
         columnName, typeName, displayType, jdbcType, nullable, defaultValue, comment, primaryKey, pkSeq, uniqueIndexFirst
     )
+
+    /** SchemaColumn 列表 → 字段清单缓存行:按表分组保持返回顺序生成表内 ordinal */
+    private fun List<SchemaColumn>.toCachedSchemaColumns(): List<MetaCacheRepository.CachedSchemaColumn> {
+        val ordinals = HashMap<String, Int>()
+        return map { c ->
+            val ord = ordinals[c.table] ?: 0
+            ordinals[c.table] = ord + 1
+            MetaCacheRepository.CachedSchemaColumn(c.table, ord, c.name, c.type, c.comment)
+        }
+    }
+
+    private fun MetaCacheRepository.CachedSchemaColumn.toSchemaColumn() =
+        SchemaColumn(tableName, columnName, colType ?: "", comment ?: "")
 
     /** 首次访问:从业务库元数据拉取 schema 列表/表数量/占用空间并整体落缓存 */
     @Throws(SQLException::class)

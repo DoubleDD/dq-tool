@@ -1,9 +1,13 @@
 package com.example.dq.repository
 
 /**
- * 结构元数据本地缓存(meta_table / meta_column / meta_index):
+ * 结构元数据本地缓存(meta_table / meta_column / meta_index / meta_schema_column):
  * 浏览路径懒加载 + 手动刷新/扫描时同步刷新;刷新语义为整粒度覆盖(delete + insert)。
  * db_name 已由调用方 normalize:无库概念方言存空串(与 schema_doc/table_doc 口径一致)。
+ *
+ * meta_schema_column 是整库字段清单的 lite 缓存(SQL 控制台智能提示用,kind=SCOLUMN):
+ * 与 meta_column(单表结构明细)互不干扰;meta_cache_flag 中 table_name 空串 = 整 schema 字段清单已缓存,
+ * table_name=具体表 = 该表字段已分批缓存;整库覆盖时同步清掉 per-table 标记。
  *
  * 并发安全:覆盖刷新是「先 DELETE 后 INSERT」,两个线程并发刷同一粒度
  * (如导出表结构文档与扫描 planTable 并发回源同一表)会互相踩唯一键(23505)。
@@ -52,6 +56,15 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         val columnName: String
     )
 
+    /** 整库字段清单缓存行(lite:表名+字段名+展示类型+注释;ordinal 为表内字段顺序,与方言返回一致) */
+    data class CachedSchemaColumn(
+        val tableName: String,
+        val ordinal: Int,
+        val columnName: String,
+        val colType: String?,
+        val comment: String?
+    )
+
     // ---------- 缓存存在标记(区分「未缓存」与「已缓存但为空」,如表无索引) ----------
 
     /** schema 表清单缓存是否已就绪(tableName 空串 = schema 级) */
@@ -65,6 +78,18 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
     /** 单表索引缓存是否已就绪 */
     fun isIndexCacheReady(datasourceId: Long, dbName: String, schema: String, table: String): Boolean =
         flagExists(datasourceId, dbName, schema, table, KIND_INDEX)
+
+    /** 整库字段清单缓存是否已就绪(tableName 空串 = schema 级) */
+    fun isSchemaColumnsReady(datasourceId: Long, dbName: String, schema: String): Boolean =
+        flagExists(datasourceId, dbName, schema, "", KIND_SCOLUMN)
+
+    /** 已分批缓存字段的表名集合(per-table SCOLUMN 标记) */
+    fun schemaColumnCachedTables(datasourceId: Long, dbName: String, schema: String): Set<String> =
+        jdbc.query(
+            "SELECT table_name FROM meta_cache_flag " +
+                    "WHERE datasource_id=? AND db_name=? AND schema_name=? AND kind=? AND table_name<>''",
+            datasourceId, dbName, schema, KIND_SCOLUMN
+        ) { it.getString(1) }.toSet()
 
     private fun flagExists(datasourceId: Long, dbName: String, schema: String, table: String, kind: String): Boolean =
         jdbc.queryOne(
@@ -93,6 +118,7 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         private const val KIND_TABLE = "TABLE"
         private const val KIND_COLUMN = "COLUMN"
         private const val KIND_INDEX = "INDEX"
+        private const val KIND_SCOLUMN = "SCOLUMN"
         private const val STRIPE_COUNT = 64
     }
 
@@ -237,12 +263,90 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         }
     }
 
+    // ---------- 整库字段清单(SQL 控制台智能提示,lite 缓存) ----------
+
+    /** 读整 schema 字段清单缓存,按 表名, ordinal 排序 */
+    fun listSchemaColumns(datasourceId: Long, dbName: String, schema: String): List<CachedSchemaColumn> =
+        jdbc.query(
+            "SELECT table_name, ordinal, column_name, col_type, comment FROM meta_schema_column " +
+                    "WHERE datasource_id=? AND db_name=? AND schema_name=? ORDER BY table_name, ordinal",
+            datasourceId, dbName, schema
+        ) { rs -> CachedSchemaColumn(rs.getString(1), rs.getInt(2), rs.getString(3), rs.getString(4), rs.getString(5)) }
+
+    /** 读指定表子集的字段清单缓存(批量 ≤50,占位符拼接),按 表名, ordinal 排序 */
+    fun listSchemaColumns(datasourceId: Long, dbName: String, schema: String, tables: Collection<String>): List<CachedSchemaColumn> {
+        if (tables.isEmpty()) return emptyList()
+        val placeholders = tables.joinToString(",") { "?" }
+        return jdbc.query(
+            "SELECT table_name, ordinal, column_name, col_type, comment FROM meta_schema_column " +
+                    "WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name IN ($placeholders) " +
+                    "ORDER BY table_name, ordinal",
+            datasourceId, dbName, schema, *tables.toTypedArray()
+        ) { rs -> CachedSchemaColumn(rs.getString(1), rs.getInt(2), rs.getString(3), rs.getString(4), rs.getString(5)) }
+    }
+
+    /** 整粒度覆盖某 schema 的字段清单缓存;同时清掉 per-table SCOLUMN 标记(schema 级就绪后不再需要) */
+    fun replaceSchemaColumns(datasourceId: Long, dbName: String, schema: String, rows: List<CachedSchemaColumn>) {
+        synchronized(lockKey(KIND_SCOLUMN, datasourceId, dbName, schema, "")) {
+            jdbc.tx { conn ->
+                conn.prepareStatement("DELETE FROM meta_schema_column WHERE datasource_id=? AND db_name=? AND schema_name=?")
+                    .use { ps ->
+                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                        ps.executeUpdate()
+                    }
+                conn.prepareStatement(
+                    "DELETE FROM meta_cache_flag " +
+                            "WHERE datasource_id=? AND db_name=? AND schema_name=? AND kind=? AND table_name<>''"
+                ).use { ps ->
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                    ps.setString(4, KIND_SCOLUMN)
+                    ps.executeUpdate()
+                }
+                insertSchemaColumns(conn, datasourceId, dbName, schema, rows)
+                writeFlag(conn, datasourceId, dbName, schema, "", KIND_SCOLUMN)
+            }
+        }
+    }
+
+    /** 单表粒度覆盖字段清单缓存(分批拉取时每批落库) */
+    fun replaceSchemaTableColumns(datasourceId: Long, dbName: String, schema: String, table: String, rows: List<CachedSchemaColumn>) {
+        synchronized(lockKey(KIND_SCOLUMN, datasourceId, dbName, schema, table)) {
+            jdbc.tx { conn ->
+                conn.prepareStatement(
+                    "DELETE FROM meta_schema_column WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
+                ).use { ps ->
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                    ps.executeUpdate()
+                }
+                insertSchemaColumns(conn, datasourceId, dbName, schema, rows)
+                writeFlag(conn, datasourceId, dbName, schema, table, KIND_SCOLUMN)
+            }
+        }
+    }
+
+    /** 批量插入字段清单缓存行(rows 可跨多张表,表名随行携带) */
+    private fun insertSchemaColumns(conn: java.sql.Connection, datasourceId: Long, dbName: String, schema: String, rows: List<CachedSchemaColumn>) {
+        conn.prepareStatement(
+            "INSERT INTO meta_schema_column(datasource_id, db_name, schema_name, table_name, ordinal, column_name, col_type, comment) " +
+                    "VALUES (?,?,?,?,?,?,?,?)"
+        ).use { ps ->
+            for (c in rows) {
+                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                ps.setString(4, c.tableName); ps.setInt(5, c.ordinal); ps.setString(6, c.columnName)
+                ps.setString(7, c.colType); ps.setString(8, c.comment)
+                ps.addBatch()
+            }
+            ps.executeBatch()
+        }
+    }
+
     // ---------- 级联清理 ----------
 
     fun deleteByDatasource(datasourceId: Long) {
         jdbc.update("DELETE FROM meta_table WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_column WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_index WHERE datasource_id=?", datasourceId)
+        jdbc.update("DELETE FROM meta_schema_column WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_cache_flag WHERE datasource_id=?", datasourceId)
 }
 }

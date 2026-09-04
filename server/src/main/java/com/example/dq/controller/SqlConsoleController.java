@@ -20,10 +20,10 @@ public class SqlConsoleController {
     public void execute(Context ctx) throws SQLException {
         SqlExecuteRequest req = Validators.validate(ctx.bodyAsClass(SqlExecuteRequest.class));
         long dsId = ctx.pathParamAsClass("dsId", Long.class).get();
-        ctx.json(service.execute(dsId, req.sql()));
+        ctx.json(service.execute(dsId, req.sql(), req.schema()));
     }
 
-    /** SQL 执行请求体;sql 为用户输入的 SQL 原文,透传业务库(JDBC)执行 */
-    public record SqlExecuteRequest(@NotBlank String sql) {
+    /** SQL 执行请求体;sql 为用户输入的 SQL 原文,透传业务库(JDBC)执行;schema 为选中的目标库(可空=数据源默认库) */
+    public record SqlExecuteRequest(@NotBlank String sql, String schema) {
     }
 }

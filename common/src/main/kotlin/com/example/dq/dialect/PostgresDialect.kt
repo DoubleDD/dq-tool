@@ -42,6 +42,17 @@ open class PostgresDialect : AbstractDialect() {
         return schemas
     }
 
+    /** PG 的当前 schema 由 search_path 决定(瀚高继承同口径) */
+    @Throws(SQLException::class)
+    override fun currentSchema(conn: Connection): String? {
+        return queryFirstString(conn, "SELECT current_schema()")
+    }
+
+    @Throws(SQLException::class)
+    override fun useSchema(conn: Connection, schema: String) {
+        executeCommand(conn, "SET search_path TO " + quote(schema))
+    }
+
     @Throws(SQLException::class)
     override fun listTables(conn: Connection, schema: String): List<TableStat> {
         val tables = ArrayList<TableStat>()

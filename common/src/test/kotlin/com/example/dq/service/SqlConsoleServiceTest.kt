@@ -1,14 +1,20 @@
 package com.example.dq.service
 
 import com.example.dq.config.ScanConfig
+import com.example.dq.dialect.DialectFactory
+import com.example.dq.model.DataSourceConfig
+import com.example.dq.model.DbType
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
+import io.mockk.verifyOrder
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.sql.Connection
 import java.sql.DriverManager
 
 /**
@@ -32,7 +38,7 @@ class SqlConsoleServiceTest {
         every { dataSourceService.getConnection(any<Long>(), null) } answers { DriverManager.getConnection(dbUrl) }
         systemSettingsService = mockk()
         every { systemSettingsService.scanSettings() } returns ScanConfig(statementTimeoutSeconds = 30)
-        service = SqlConsoleService(dataSourceService, systemSettingsService)
+        service = SqlConsoleService(dataSourceService, systemSettingsService, DialectFactory)
     }
 
     @Test
@@ -77,5 +83,35 @@ class SqlConsoleServiceTest {
         assertEquals(SqlConsoleService.MAX_ROWS, r.rows.size)
         assertEquals(SqlConsoleService.MAX_ROWS, r.total)
         assertTrue(r.truncated)
+    }
+
+    @Test
+    fun `选库执行时非多库方言会话级切 schema 且归还前恢复`() {
+        // MySQL 方言以 catalog 切库;连接打桩 relaxed mock,只观察 catalog 读写
+        val conn = mockk<Connection>(relaxed = true)
+        every { conn.catalog } returns "db1"
+        every { dataSourceService.get(1L) } returns DataSourceConfig().apply { dbType = DbType.MYSQL }
+        every { dataSourceService.getConnection(1L, null) } returns conn
+
+        service.execute(1L, "SELECT 1", "db2")
+
+        // 先切到目标库 db2,执行完恢复旧值 db1,防池化连接串库
+        verifyOrder {
+            conn.setCatalog("db2")
+            conn.setCatalog("db1")
+        }
+    }
+
+    @Test
+    fun `选库执行时多库方言目标库直达 getConnection 按库分池`() {
+        val conn = mockk<Connection>(relaxed = true)
+        every { dataSourceService.get(1L) } returns DataSourceConfig().apply { dbType = DbType.SQLSERVER }
+        every { dataSourceService.getConnection(1L, "db2") } returns conn
+
+        service.execute(1L, "SELECT 1", "db2")
+
+        // SQL Server 由 getConnection 内部切 catalog,服务层不再会话级切 schema
+        verify { dataSourceService.getConnection(1L, "db2") }
+        verify(exactly = 0) { conn.setCatalog(any()) }
     }
 }
