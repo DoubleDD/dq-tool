@@ -94,7 +94,7 @@
             @dragstart="onDragStart($event, row)"
             @dragend="onDragEnd"
             @click="goSchemas(row)">
-            <DbTypeIcon :type="row.dbType" :size="110" class="ds-bg-icon" />
+            <DbTypeIcon :type="row.dbType" :size="72" class="ds-bg-icon" />
             <div class="ds-card-header">
               <span class="ds-name" :title="row.name">
                 <el-tooltip v-if="row.hasPassword === false" content="未设置密码,请先编辑补充密码" placement="top">
@@ -763,8 +763,8 @@ onActivated(loadList)
   flex: 1;
   min-width: 0;
   gap: 4px 8px;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
   white-space: normal;
   word-break: break-all;
 }

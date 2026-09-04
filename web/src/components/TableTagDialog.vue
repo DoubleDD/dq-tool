@@ -9,7 +9,7 @@
     @open="onOpen"
   >
     <div v-loading="loading">
-      <!-- 上半:当前表标记勾选(空表标记由系统驱动,不列出) -->
+      <!-- 当前表标记勾选(空表标记由系统驱动,不列出);标记的编辑/删除统一在「标记统计」页维护 -->
       <div class="section-title">当前表标记</div>
       <el-checkbox-group v-model="checkedTagIds">
         <el-checkbox v-for="tag in userTags" :key="tag.id" :value="tag.id">
@@ -20,8 +20,8 @@
 
       <el-divider />
 
-      <!-- 下半:标记集中管理(全局,跨数据源共享) -->
-      <div class="section-title">标记管理(全局)</div>
+      <!-- 新建标记(列表中没有想要的时候就地建;编辑/删除在「标记统计」页) -->
+      <div class="section-title">新建标记</div>
       <div class="tag-edit-row">
         <el-input v-model="createForm.name" placeholder="新标记名称" maxlength="50" style="width: 220px" />
         <el-color-picker v-model="createForm.color" :predefine="presetColors" />
@@ -36,35 +36,6 @@
           :autosize="{ minRows: 1, maxRows: 3 }"
         />
       </div>
-      <div v-for="tag in userTags" :key="tag.id" class="tag-manage-row">
-        <template v-if="editingId === tag.id">
-          <div class="tag-edit-fields">
-            <div class="tag-edit-row-inner">
-              <el-input v-model="editForm.name" maxlength="50" style="width: 200px" />
-              <el-color-picker v-model="editForm.color" :predefine="presetColors" />
-              <el-button link type="primary" :loading="operating" @click="saveEdit">保存</el-button>
-              <el-button link @click="editingId = null">取消</el-button>
-            </div>
-            <el-input
-              v-model="editForm.description"
-              placeholder="描述(可选,供 AI 自动打标理解标记含义)"
-              maxlength="500"
-              type="textarea"
-              :autosize="{ minRows: 1, maxRows: 3 }"
-            />
-          </div>
-        </template>
-        <template v-else>
-          <span class="tag-dot" :style="{ background: tag.color }"></span>
-          <el-tooltip :content="tag.description" :disabled="!tag.description" placement="top" :show-after="200">
-            <span class="tag-name">{{ tag.name }}</span>
-          </el-tooltip>
-          <span class="tag-count">{{ tag.tableCount }} 张表</span>
-          <el-button link type="primary" @click="startEdit(tag)">编辑</el-button>
-          <el-button link type="danger" @click="removeTag(tag)">删除</el-button>
-        </template>
-      </div>
-      <div v-if="!userTags.length" class="empty-tip">暂无标记</div>
     </div>
     <template #footer>
       <el-button @click="$emit('update:modelValue', false)">取消</el-button>
@@ -74,8 +45,8 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import request from '../api'
 
 const props = defineProps({
@@ -87,17 +58,15 @@ const props = defineProps({
   // 该表当前全部标记(含空表标记),勾选初始值只取其中的 USER 标记
   currentTags: { type: Array, default: () => [] }
 })
-const emit = defineEmits(['update:modelValue', 'saved', 'tagsChanged'])
+const emit = defineEmits(['update:modelValue', 'saved'])
 
 const loading = ref(false)
 const saving = ref(false)
 const operating = ref(false)
-// 全部 USER 标记(空表标记是系统驱动,不参与勾选与管理)
+// 全部 USER 标记(空表标记是系统驱动,不参与勾选)
 const userTags = ref([])
 const checkedTagIds = ref([])
-const editingId = ref(null)
 const createForm = reactive({ name: '', color: '#409EFF', description: '' })
-const editForm = reactive({ name: '', color: '#409EFF', description: '' })
 
 // 预设色板
 const presetColors = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#9B59B6', '#16A085', '#D35400']
@@ -123,20 +92,12 @@ async function fetchTags() {
 
 function onOpen() {
   checkedTagIds.value = props.currentTags.filter((t) => t.kind === 'USER').map((t) => t.id)
-  editingId.value = null
   createForm.name = ''
   createForm.description = ''
   fetchTags()
 }
 
-// 管理操作后刷新标记列表,并剔除勾选里已不存在的标记(如被删除的)
-async function refreshAfterOp() {
-  await fetchTags()
-  const alive = new Set(userTags.value.map((t) => t.id))
-  checkedTagIds.value = checkedTagIds.value.filter((id) => alive.has(id))
-  emit('tagsChanged')
-}
-
+// 新建后刷新标记列表,新标记即可勾选
 async function createTag() {
   const name = createForm.name.trim()
   if (!name) {
@@ -149,47 +110,7 @@ async function createTag() {
     createForm.name = ''
     createForm.description = ''
     ElMessage.success('已创建')
-    await refreshAfterOp()
-  } finally {
-    operating.value = false
-  }
-}
-
-function startEdit(tag) {
-  editingId.value = tag.id
-  editForm.name = tag.name
-  editForm.color = tag.color
-  editForm.description = tag.description || ''
-}
-
-async function saveEdit() {
-  const name = editForm.name.trim()
-  if (!name) {
-    ElMessage.warning('标记名称不能为空')
-    return
-  }
-  operating.value = true
-  try {
-    await request.put(`/tags/${editingId.value}`, { name, color: editForm.color || '#409EFF', description: editForm.description.trim() || null })
-    editingId.value = null
-    ElMessage.success('已保存')
-    await refreshAfterOp()
-  } finally {
-    operating.value = false
-  }
-}
-
-async function removeTag(tag) {
-  await ElMessageBox.confirm(
-    `确定删除标记「${tag.name}」吗?已打该标记的 ${tag.tableCount} 张表会自动解除。`,
-    '删除确认',
-    { type: 'warning', confirmButtonText: '删除', closeOnPressEscape: false }
-  )
-  operating.value = true
-  try {
-    await request.delete(`/tags/${tag.id}`)
-    ElMessage.success('已删除')
-    await refreshAfterOp()
+    await fetchTags()
   } finally {
     operating.value = false
   }
@@ -227,31 +148,6 @@ async function save() {
   gap: 8px;
   align-items: center;
   margin-bottom: 10px;
-}
-.tag-manage-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 6px;
-}
-.tag-edit-fields {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.tag-edit-row-inner {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-.tag-name {
-  min-width: 120px;
-}
-.tag-count {
-  flex: 1;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
 }
 .empty-tip {
   color: var(--el-text-color-secondary);

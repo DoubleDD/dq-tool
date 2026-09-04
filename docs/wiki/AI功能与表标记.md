@@ -12,11 +12,11 @@
 
 ## 表标记
 
-全局表级标记(数据源+库+表名,一表多标记,名称+颜色+描述);「空表」系统标记随扫描结果自动打/摘,用户标记在表列表打标弹窗集中管理;库列表标签块点击筛选 + 独立「标记统计」页(需求 `docs/requirements/表标记与统计需求.md`,实施见 `docs/plans/表标记与统计-实施计划.md`)。
+全局表级标记(数据源+库+表名,一表多标记,名称+颜色+描述);「空表」系统标记随扫描结果自动打/摘,用户标记在表列表打标弹窗勾选(可就地新建),编辑/删除统一在「标记统计」页维护;库列表标签块点击筛选 + 独立「标记统计」页(需求 `docs/requirements/表标记与统计需求.md`,实施见 `docs/plans/表标记与统计-实施计划.md`)。
 
 ## 标记与描述数据导出/导入
 
-换机迁移用:`AnnotationTransferService` 把 USER 标记定义(name/color/description,不含 id)、USER 标记的表-标记关联、全部表描述(table_doc)打包成 JSON(`app=dq-tool-annotations, version=1`),表级数据导出为 数据源名+db+schema+table(不导内部 id)。导入按 name 合并标记(不存在创建、已存在覆盖 color/description;系统空表标记不动);表级行的数据源对应走**显式映射**——不同机器上同一数据源命名可能不同,导入前先 `POST /api/annotations/import/preview` 解析文件里的数据源分布,前端弹窗让用户把每个文件数据源映射到本机数据源(同名自动预填,可选「不导入」=映射值 0),`POST /api/annotations/import` 带 mapping JSON 执行;未给映射时回退按数据源名匹配(兼容无映射直接导入),匹配不到的行跳过并计数。表标记 ensure 幂等插入、表描述 upsert 覆盖(model 记 `import`)。接口 `GET /api/annotations/export`(附件下载)、`POST /api/annotations/import`(multipart,返回 新建/更新标记、新增/跳过表标记、覆盖/跳过描述 六项摘要);入口在系统设置页「标记与描述数据」卡片。
+换机迁移用:`AnnotationTransferService` 把 USER 标记定义(name/color/description,不含 id)、USER 标记的表-标记关联、全部表描述(table_doc)打包成 JSON(`app=dq-tool-annotations, version=1`),表级数据导出为 数据源名+db+schema+table(不导内部 id)。导入按 name 合并标记(不存在创建、已存在覆盖 color/description;系统空表标记不动);表级行的数据源对应走**显式映射**——不同机器上同一数据源命名可能不同,导入前先 `POST /api/annotations/import/preview` 解析文件里的数据源分布,前端弹窗让用户把每个文件数据源映射到本机数据源(同名自动预填,可选「不导入」=映射值 0),`POST /api/annotations/import` 带 mapping JSON 执行;未给映射时回退按数据源名匹配(兼容无映射直接导入),匹配不到的行跳过并计数。表标记 ensure 幂等插入、表描述 upsert 覆盖(model 记 `import`)。接口 `GET /api/annotations/export`(附件下载)、`POST /api/annotations/import`(multipart,返回 新建/更新标记、新增/跳过表标记、覆盖/跳过描述 六项摘要);入口在系统设置页「标记与描述数据」卡片。导入解析经 `TransferJson` 支持 GBK 转存文件兜底与未知字段忽略(口径见 扫描与Excel导出.md)。
 
 ## AI Token 与费用统计
 
