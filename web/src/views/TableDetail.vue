@@ -38,12 +38,29 @@
     <el-tabs v-model="activeTab" @tab-change="onTabChange">
       <el-tab-pane label="字段明细" name="columns">
         <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
-          <el-input v-model="keyword" placeholder="按字段名或注释搜索" clearable style="width: 280px" />
-          <el-checkbox v-if="hasJob" v-model="onlyEmpty">只看空字段(有值数为 0)</el-checkbox>
+          <template v-if="columnView === 'table'">
+            <el-input v-model="keyword" placeholder="按字段名或注释搜索" clearable style="width: 280px" />
+            <el-checkbox v-if="hasJob" v-model="onlyEmpty">只看空字段(有值数为 0)</el-checkbox>
+          </template>
+          <el-button v-else size="small" type="primary" plain :disabled="!ddlText" @click="copyDdl">复制 DDL</el-button>
+          <!-- 表格 / DDL 视图切换(靠右) -->
+          <el-radio-group v-model="columnView" size="small" style="margin-left: auto" @change="onColumnViewChange">
+            <el-radio-button value="table">表格</el-radio-button>
+            <el-radio-button value="ddl">DDL</el-radio-button>
+          </el-radio-group>
         </div>
 
+        <!-- DDL 视图:建表语句(含索引),懒加载实时拉取 -->
+        <template v-if="columnView === 'ddl'">
+          <el-alert v-if="ddlError" type="error" :closable="false" show-icon :title="ddlError" style="margin-bottom: 12px" />
+          <div v-loading="ddlLoading">
+            <pre v-if="ddlText" class="ddl-view">{{ ddlText }}</pre>
+            <el-empty v-if="!ddlLoading && !ddlError && ddlLoaded && !ddlText" description="未获取到 DDL" :image-size="60" />
+          </div>
+        </template>
+
         <!-- 字段列表:基础结构列 + (已扫描时)统计列 -->
-        <el-table :data="filteredColumns" v-loading="loading" border>
+        <el-table v-else :data="filteredColumns" v-loading="loading" border>
           <el-table-column type="index" label="序号" width="60" />
           <el-table-column prop="name" label="字段名" min-width="140" sortable show-overflow-tooltip />
           <el-table-column prop="comment" label="注释" min-width="140" sortable show-overflow-tooltip>
@@ -154,16 +171,6 @@
         </div>
       </el-tab-pane>
 
-      <el-tab-pane label="DDL" name="ddl">
-        <div style="display: flex; gap: 8px; margin-bottom: 12px">
-          <el-button size="small" type="primary" plain :disabled="!ddlText" @click="copyDdl">复制 DDL</el-button>
-        </div>
-        <el-alert v-if="ddlError" type="error" :closable="false" show-icon :title="ddlError" style="margin-bottom: 12px" />
-        <div v-loading="ddlLoading">
-          <pre v-if="ddlText" class="ddl-view">{{ ddlText }}</pre>
-          <el-empty v-if="!ddlLoading && !ddlError && ddlLoaded && !ddlText" description="未获取到 DDL" :image-size="60" />
-        </div>
-      </el-tab-pane>
     </el-tabs>
   </div>
 </template>
@@ -218,6 +225,7 @@ const appliedOrderBy = ref('')    // 已应用的排序
 const completionColumns = computed(() =>
   metaColumns.value.map((c) => ({ name: c.name, type: c.displayType || '' })))
 const activeTab = ref('columns')
+const columnView = ref('table')   // 字段明细内视图:table=字段表格,ddl=建表 DDL
 const refreshing = ref(false)
 const keyword = ref('')
 const onlyEmpty = ref(false)
@@ -315,7 +323,7 @@ async function loadIndexes(force = false) {
   }
 }
 
-/** DDL 懒加载:首次切到 DDL tab 或刷新时调用(实时拉取,接口本身不落缓存,无 refresh 参数) */
+/** DDL 懒加载:首次切到 DDL 视图或刷新时调用(实时拉取,接口本身不落缓存,无 refresh 参数) */
 async function loadDdl() {
   if (!dsId.value || !schema.value) return
   ddlLoading.value = true
@@ -413,16 +421,21 @@ function applyPreviewFilter() {
   loadPreview(1)
 }
 
-/** 切换 tab:切到索引/预览/DDL 时各自懒加载(预览仅首次,之后翻页由分页器触发) */
+/** 切换 tab:切到索引/预览时各自懒加载(预览仅首次,之后翻页由分页器触发) */
 function onTabChange(name) {
   if (name === 'indexes') loadIndexes()
   if (name === 'preview' && !previewLoaded.value) loadPreview(1)
-  if (name === 'ddl' && !ddlLoaded.value) loadDdl()
+}
+
+/** 字段明细内 表格/DDL 切换:首次切到 DDL 时懒加载 */
+function onColumnViewChange(view) {
+  if (view === 'ddl' && !ddlLoaded.value) loadDdl()
 }
 
 /** 导出当前 tab 的列表 Excel(字段明细/索引结构/数据预览当前页,列与页面一致) */
 function exportExcel() {
   if (activeTab.value === 'columns') {
+    if (columnView.value === 'ddl') return ElMessage.warning('DDL 请使用「复制 DDL」按钮')
     if (!filteredColumns.value.length) return ElMessage.warning('当前列表没有可导出的数据')
     const headers = ['字段名', '注释', '类型', '键', '可空', '默认值']
     if (hasJob.value) headers.push('空值数(合计)', '总行数', 'NULL 数', '空串数', '有值数', '有值率%')
@@ -457,8 +470,6 @@ function exportExcel() {
       (i.columns || []).join(', ')
     ])
     exportListToExcel(`索引结构-${tableName}`, headers, rows, '索引结构')
-  } else if (activeTab.value === 'ddl') {
-    return ElMessage.warning('DDL 请使用「复制 DDL」按钮')
   } else {
     if (!previewRows.value.length) return ElMessage.warning('当前列表没有可导出的数据')
     const headers = previewColumns.value.map((c) => (c.type ? `${c.name} ${c.type}` : c.name))
@@ -467,18 +478,18 @@ function exportExcel() {
   }
 }
 
-/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引/预览/DDL 按当前 tab 决定是否重载 */
+/** 手动刷新:结构强制从业务库拉最新并覆盖本地缓存,统计一并重拉;索引/预览/DDL 按当前展示位置决定是否重载 */
 async function refreshAll() {
   refreshing.value = true
   try {
-    // 重置索引/预览/DDL 加载标记,若当前在对应 tab 则强制重新拉取
+    // 重置索引/预览/DDL 加载标记,若当前正在展示则强制重新拉取
     indexesLoaded.value = false
     previewLoaded.value = false
     ddlLoaded.value = false
     await load(true)
     if (activeTab.value === 'indexes') await loadIndexes(true)
     if (activeTab.value === 'preview') await loadPreview(previewPage.value)
-    if (activeTab.value === 'ddl') await loadDdl()
+    if (activeTab.value === 'columns' && columnView.value === 'ddl') await loadDdl()
     ElMessage.success('已刷新结构与扫描信息')
   } finally {
     refreshing.value = false

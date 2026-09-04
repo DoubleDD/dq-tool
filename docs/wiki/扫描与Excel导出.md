@@ -4,7 +4,7 @@
 
 - 表级:估算行数、数据+索引占用一览
 - 字段级:NULL / 空串 / 自定义空值规则统计与有值率
-- 表列表点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;未扫描的表进入结构元数据页(字段名/类型/注释/约束 + 下方索引结构:索引名/唯一性/索引列,接口 `GET /api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns` 与 `.../indexes`,不含统计);另有「DDL」页签(`.../tables/{table}/ddl`,实时拉取不落缓存,含索引定义)
+- 表列表点击表名查看字段明细:已扫描的表直达最近一次扫描的字段级统计;未扫描的表进入结构元数据页(字段名/类型/注释/约束 + 下方索引结构:索引名/唯一性/索引列,接口 `GET /api/datasources/{dsId}/schemas/{schema}/tables/{table}/columns` 与 `.../indexes`,不含统计);另有建表 DDL 在「字段明细」页签内切换查看(表格/DDL 视图,`.../tables/{table}/ddl`,实时拉取不落缓存,含索引定义)
 - 结构元数据本地缓存(库/表/字段/索引):库列表统计(schema_stat)、表清单/字段/索引(meta_table/meta_column/meta_index)首次访问从业务库拉取落 H2,之后浏览读缓存不连业务库;库列表/表列表/字段明细页各有「刷新」按钮(接口带 `?refresh=true`)强制从数据源拉最新结构并覆盖缓存;发起扫描时同步刷新表/字段/索引缓存(createScan 刷表清单,planTable 刷字段+索引,失败不影响扫描);覆盖刷新为「先 DELETE 后 INSERT」,同粒度并发刷新(如导出表结构文档与扫描 planTable 并发回源同一表)由 MetaCacheRepository 条纹锁串行化,避免唯一键冲突(23505)
 - 大表并发分段扫描(按主键/唯一键切分)、真实进度、断点续扫
 - 并发 worker 数可在发起扫描弹窗中设置(1~128,留空用配置默认 `dq.scan.workers`):落库 `scan_job.workers` 供详情展示与续扫恢复;扫描启动时动态调整全局扫描线程池 `ScanExecutor.resize`(每次发起都按本次任务设定调整,避免上次设置残留)
@@ -58,7 +58,7 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 ## 通用列表导出(各列表页「导出 Excel」)
 
-数据源菜单下除数据源卡片页外的列表页(库列表「导出→导出当前列表」、表列表、字段明细/索引结构/数据预览 tab、扫描记录)都有导出按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同);DDL tab 不导出 Excel,用页内「复制 DDL」按钮。
+数据源菜单下除数据源卡片页外的列表页(库列表「导出→导出当前列表」、表列表、字段明细/索引结构/数据预览 tab、扫描记录)都有导出按钮,导出内容与页面所见一致(含前端过滤结果,列与表格展示口径相同);DDL 视图不导出 Excel,用页内「复制 DDL」按钮。
 
 - **机制**(`ListExportService` common + `ListExportController` server):前端把当前表格的表头与行(展示口径字符串,空单元格传空串)POST `/api/list-exports` → 后端 POI 渲染 xlsx 内存暂存并返回一次性 token → 前端 `utils/listExport.js` 的 `exportListToExcel` 拿 token 后走既有 `downloadFile` GET `/api/list-exports/{token}` 下载(桌面端 Tauri 原生保存对话框零改动);token 取走即删,5 分钟过期
 - **与扫描结果导出的分工**:扫描结果 Excel(`ExportService`)是含业务查询的多 sheet 定制结构;通用列表导出不含任何业务查询,数据完全由前端按展示口径组装,因此各列表页可直接复用
