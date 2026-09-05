@@ -111,6 +111,7 @@
         <el-table-column label="文件中的数据源" prop="datasourceName" min-width="130" show-overflow-tooltip />
         <el-table-column label="表标记" width="70" align="right" prop="tableTags" />
         <el-table-column label="表描述" width="70" align="right" prop="tableDocs" />
+        <el-table-column label="所属系统" width="80" align="right" prop="tableSystems" />
         <el-table-column label="导入到本机数据源" min-width="200">
           <template #default="{ row }">
             <el-select v-model="row.targetDsId" size="small" style="width: 100%">
@@ -267,7 +268,7 @@ function exportAnnotations() {
 const annotationImporting = ref(false)
 const importDialogVisible = ref(false)
 const importPreview = ref({ tags: 0, datasources: [] })
-const importMappingRows = ref([])   // [{datasourceName, tableTags, tableDocs, targetDsId}],targetDsId=0 表示不导入
+const importMappingRows = ref([])   // [{datasourceName, tableTags, tableDocs, tableSystems, targetDsId}],targetDsId=0 表示不导入
 const localDatasources = ref([])
 let importFileRaw = null            // 暂存待导入的文件,确认时随映射一起提交
 
@@ -315,7 +316,8 @@ async function confirmImport() {
     ElMessageBox.alert(
       `新建标记 ${r.tagsCreated} 个,更新标记 ${r.tagsUpdated} 个;` +
       `新增表标记 ${r.tableTagsAdded} 条,跳过 ${r.tableTagsSkipped} 条;` +
-      `导入表描述 ${r.docsUpserted} 条,跳过 ${r.docsSkipped} 条。`,
+      `导入表描述 ${r.docsUpserted} 条,跳过 ${r.docsSkipped} 条;` +
+      `导入所属系统 ${r.systemsUpserted ?? 0} 条,跳过 ${r.systemsSkipped ?? 0} 条。`,
       '导入完成',
       { confirmButtonText: '知道了', closeOnPressEscape: false }
     )

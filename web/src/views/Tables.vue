@@ -3,7 +3,6 @@
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
       <div class="toolbar-actions">
-        <el-button @click="goBack">返回</el-button>
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshTables">刷新</el-button>
         <el-dropdown trigger="click" @command="onExportCommand">
           <el-button>导出<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
@@ -24,6 +23,9 @@
           </el-button>
           <el-button :disabled="!selectedTables.length" :loading="batchDocLoading" @click="generateDocsBatch">
             生成描述{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
+          </el-button>
+          <el-button :disabled="!selectedTables.length" @click="batchTagDialogVisible = true">
+            批量打标{{ selectedTables.length ? `(${selectedTables.length})` : '' }}
           </el-button>
           <el-button type="primary" @click="openScanDialog">开始扫描</el-button>
         </template>
@@ -53,7 +55,26 @@
           {{ tag.name }}
         </el-option>
       </el-select>
-      <el-checkbox v-model="onlyEmpty">只看空表(行数为 0)</el-checkbox>
+      <el-select v-model="dataFilter" clearable placeholder="全部表" style="width: 130px">
+        <el-option label="有数据表" value="hasData" />
+        <el-option label="无数据表" value="noData" />
+      </el-select>
+      <!-- 列设置:勾选自定义显示列,隐藏列存 localStorage,新增列默认显示 -->
+      <el-popover placement="bottom-end" :width="150" trigger="click">
+        <template #reference>
+          <el-button :icon="Setting" style="margin-left: auto">列设置</el-button>
+        </template>
+        <!-- 全选:部分勾选时显示半选状态 -->
+        <el-checkbox
+          class="col-setting-all"
+          :model-value="visibleCols.length === COLUMN_DEFS.length"
+          :indeterminate="visibleCols.length > 0 && visibleCols.length < COLUMN_DEFS.length"
+          @change="toggleAllCols"
+        >全选</el-checkbox>
+        <el-checkbox-group v-model="visibleCols" class="col-setting">
+          <el-checkbox v-for="c in COLUMN_DEFS" :key="c.key" :value="c.key">{{ c.label }}</el-checkbox>
+        </el-checkbox-group>
+      </el-popover>
     </div>
 
     <el-alert v-if="tables.length" type="success" :closable="false" style="margin-bottom: 12px">
@@ -63,25 +84,27 @@
       <span style="margin-right: 24px">字段数量: {{ columnCount === null ? '-' : formatNumber(columnCount) }}</span>
       <span>
         空表数量:
-        <el-link type="primary" :disabled="!emptyTables.length" @click="onlyEmpty = true">{{ emptyTables.length }}</el-link>
+        <el-link type="primary" :disabled="!emptyTables.length" @click="dataFilter = 'noData'">{{ emptyTables.length }}</el-link>
       </span>
     </el-alert>
 
-    <el-table :data="filteredTables" v-loading="loading" border row-key="name" @selection-change="onSelectionChange">
-      <el-table-column v-if="!filterTagId" type="selection" width="45" reserve-selection />
-      <el-table-column type="index" label="序号" width="60" />
-      <el-table-column prop="name" label="表名" min-width="180" sortable show-overflow-tooltip>
+    <!-- max-height 由视口计算:表头固定 + 纵向滚动;列宽超出容器自动出横向滚动 -->
+    <div ref="tableWrapRef">
+      <el-table :data="filteredTables" v-loading="loading" border row-key="name" :max-height="tableMaxHeight" @selection-change="onSelectionChange">
+      <el-table-column v-if="!filterTagId" type="selection" width="45" reserve-selection fixed="left" />
+      <el-table-column type="index" label="序号" width="60" fixed="left" />
+      <el-table-column prop="name" label="表名" min-width="180" sortable show-overflow-tooltip fixed="left">
         <template #default="{ row }">
           <el-link type="primary" @click="goTableDetail(row)">{{ row.name }}</el-link>
         </template>
       </el-table-column>
-      <el-table-column prop="comment" label="注释" min-width="160" show-overflow-tooltip>
+      <el-table-column v-if="colVisible('comment')" key="comment" prop="comment" label="注释" min-width="160" show-overflow-tooltip>
         <template #default="{ row }">
           <span v-if="row.comment">{{ row.comment }}</span>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="标记" min-width="160">
+      <el-table-column v-if="colVisible('tags')" key="tags" label="标记" min-width="160">
         <template #default="{ row }">
           <template v-if="(tableTags[row.name] || []).length">
             <el-tag
@@ -98,7 +121,13 @@
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="描述" min-width="220">
+      <el-table-column v-if="colVisible('system')" key="system" label="所属系统" min-width="120" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="tableSystems[row.name]">{{ tableSystems[row.name] }}</span>
+          <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column v-if="colVisible('doc')" key="doc" label="描述" min-width="220">
         <template #header>
           <el-tooltip placement="top" :show-after="200">
             <template #content>
@@ -125,13 +154,13 @@
           </div>
         </template>
       </el-table-column>
-      <el-table-column prop="storageInfo" label="引擎/表空间" width="130">
+      <el-table-column v-if="colVisible('storage')" key="storage" prop="storageInfo" label="引擎/表空间" width="130">
         <template #default="{ row }">
           <span v-if="row.storageInfo">{{ row.storageInfo }}</span>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="行数" width="140" sortable :sort-method="(a, b) => (effectiveRows(a).value ?? -1) - (effectiveRows(b).value ?? -1)">
+      <el-table-column v-if="colVisible('rows')" key="rows" label="行数" width="140" sortable :sort-method="(a, b) => (effectiveRows(a).value ?? -1) - (effectiveRows(b).value ?? -1)">
         <template #header>
           <el-tooltip placement="top" :show-after="200">
             <template #content>
@@ -149,7 +178,7 @@
           <span v-else>-</span>
         </template>
       </el-table-column>
-      <el-table-column label="总大小" width="140" sortable :sort-method="(a, b) => (effectiveSize(a) ?? -1) - (effectiveSize(b) ?? -1)">
+      <el-table-column v-if="colVisible('size')" key="size" label="总大小" width="140" sortable :sort-method="(a, b) => (effectiveSize(a) ?? -1) - (effectiveSize(b) ?? -1)">
         <template #header>
           <el-tooltip placement="top" :show-after="200">
             <template #content>
@@ -160,7 +189,7 @@
         </template>
         <template #default="{ row }">{{ formatBytes(effectiveSize(row)) }}</template>
       </el-table-column>
-      <el-table-column label="最近扫描时间" width="170" sortable :sort-method="(a, b) => latestScanTime(a) - latestScanTime(b)">
+      <el-table-column v-if="colVisible('scanTime')" key="scanTime" label="最近扫描时间" width="170" sortable :sort-method="(a, b) => latestScanTime(a) - latestScanTime(b)">
         <template #default="{ row }">
           <span v-if="latestScans[row.name]">{{ formatDateTime(latestScans[row.name].finishedAt) }}</span>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
@@ -187,6 +216,7 @@
         </template>
       </el-table-column>
     </el-table>
+    </div>
 
     <el-dialog v-model="scanDialogVisible" title="开始扫描" width="640px" destroy-on-close :close-on-press-escape="false">
       <el-form label-width="110px">
@@ -278,22 +308,32 @@
       :current-tags="tableTags[tagDialogTable] || []"
       @saved="onTagsSaved"
     />
+
+    <!-- 批量打标弹窗(勾选多张表 → 批量打上选中标记,只增不删;可就地新建标记) -->
+    <BatchTagDialog
+      v-model="batchTagDialogVisible"
+      :ds-id="dsId"
+      :schema="schema"
+      :db="db"
+      :table-names="selectedTables.map((t) => t.name)"
+      @saved="onBatchTagged"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, QuestionFilled, Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, QuestionFilled, Refresh, Setting } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import TableTagDialog from '../components/TableTagDialog.vue'
+import BatchTagDialog from '../components/BatchTagDialog.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import ExportButton from '../components/ExportButton.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
-import { goBack as historyBack } from '../utils/back'
 
 const route = useRoute()
 const router = useRouter()
@@ -323,7 +363,7 @@ async function exportReport() {
 
 /** 导出当前过滤后的表列表 Excel(列与页面一致,行数/大小取值口径同表格展示) */
 function exportExcel() {
-  const headers = ['表名', '注释', '标记', '描述', '引擎/表空间', '行数', '总大小', '最近扫描时间']
+  const headers = ['表名', '注释', '标记', '所属系统', '描述', '引擎/表空间', '行数', '总大小', '最近扫描时间']
   const rows = filteredTables.value.map((t) => {
     const er = effectiveRows(t)
     const latest = latestScans.value[t.name]
@@ -331,6 +371,7 @@ function exportExcel() {
       cellText(t.name),
       cellText(t.comment),
       (tableTags.value[t.name] || []).map((tag) => tag.name).join(', '),
+      cellText(tableSystems.value[t.name]),
       cellText(docs.value[t.name]),
       cellText(t.storageInfo),
       er.value === null || er.value === undefined ? '' : (er.exact ? '' : '约 ') + formatNumber(er.value),
@@ -354,6 +395,52 @@ function onExportCommand(cmd) {
 // schema 下所有基表的字段总数(业务库元数据查询,失败时显示 -)
 const columnCount = ref(null)
 const keyword = ref('')
+
+// 可自定义显示列(表名/序号/操作列固定显示);存隐藏列而非可见列,新增列对老用户默认显示
+const COLUMN_DEFS = [
+  { key: 'comment', label: '注释' },
+  { key: 'tags', label: '标记' },
+  { key: 'system', label: '所属系统' },
+  { key: 'doc', label: '描述' },
+  { key: 'storage', label: '引擎/表空间' },
+  { key: 'rows', label: '行数' },
+  { key: 'size', label: '总大小' },
+  { key: 'scanTime', label: '最近扫描时间' }
+]
+const HIDDEN_COLS_KEY = 'tables.hiddenColumns'
+// 读取本地保存的隐藏列;无保存记录时默认隐藏「所属系统」列(该功能暂缓,数据仍在采集,可在列设置开启)
+function loadHiddenCols() {
+  const raw = localStorage.getItem(HIDDEN_COLS_KEY)
+  if (raw === null) return ['system']
+  try {
+    const saved = JSON.parse(raw)
+    if (Array.isArray(saved)) {
+      const all = COLUMN_DEFS.map((c) => c.key)
+      return saved.filter((k) => all.includes(k))
+    }
+  } catch { /* 本地缓存损坏按默认处理 */ }
+  return ['system']
+}
+const hiddenCols = ref(loadHiddenCols())
+watch(hiddenCols, (v) => localStorage.setItem(HIDDEN_COLS_KEY, JSON.stringify(v)), { deep: true })
+// 列设置弹层的勾选值 = 全部列减去隐藏列
+const visibleCols = computed({
+  get: () => COLUMN_DEFS.map((c) => c.key).filter((k) => !hiddenCols.value.includes(k)),
+  set: (v) => { hiddenCols.value = COLUMN_DEFS.map((c) => c.key).filter((k) => !v.includes(k)) }
+})
+const colVisible = (key) => !hiddenCols.value.includes(key)
+// 全选/全不选
+const toggleAllCols = (checked) => {
+  visibleCols.value = checked ? COLUMN_DEFS.map((c) => c.key) : []
+}
+
+// 表格最大高度 = 视口高 - 表格顶部位置 - 底部留白,配合 max-height 实现表头固定 + 纵向滚动
+const tableWrapRef = ref(null)
+const tableMaxHeight = ref(600)
+function updateTableMaxHeight() {
+  const top = tableWrapRef.value?.getBoundingClientRect().top
+  if (top) tableMaxHeight.value = Math.max(300, Math.floor(window.innerHeight - top - 16))
+}
 // 本地标记多选筛选:选中的标记 id(字符串数组),OR 逻辑--任一命中即展示
 const selectedTagIds = ref([])
 const selectedTables = ref([])
@@ -395,6 +482,11 @@ const availableTags = computed(() => {
 // 打标弹窗
 const tagDialogVisible = ref(false)
 const tagDialogTable = ref('')
+
+// 整个库的表→所属系统 map(表名 -> 系统名),独立于标记体系;列默认隐藏,可在「列设置」开启
+const tableSystems = ref({})
+// 批量打标弹窗
+const batchTagDialogVisible = ref(false)
 
 // 本库已采集表 map:表名 -> 采集记录 id(行内「采集/取消采集」按钮状态)
 const collectMap = ref({})
@@ -471,6 +563,12 @@ function onTagsSaved(tags) {
   tableTags.value[tagDialogTable.value] = tags
 }
 
+// 批量打标成功:重拉本库打标 map(批量接口只返回计数)
+async function onBatchTagged() {
+  const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
+  tableTags.value = await request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({}))
+}
+
 const scanDialogVisible = ref(false)
 const submitting = ref(false)
 // maxSizeValue 为空(null)表示不限制表大小
@@ -510,8 +608,9 @@ function effectiveSize(row) {
   return s && s.sizeBytes !== null && s.sizeBytes !== undefined ? s.sizeBytes : row.sizeBytes
 }
 
+// 数据筛选:'' 全部 / hasData 有数据(有效行数>0) / noData 无数据(有效行数为 0 或未知)
+const dataFilter = ref('')
 // 空表:行数为 0(含未知)的表,已全量扫描的按精确值算
-const onlyEmpty = ref(false)
 const emptyTables = computed(() => tables.value.filter((t) => !effectiveRows(t).value))
 // 库级汇总:行数/大小按各表有效值(扫描准确值优先)求和
 const totalEstRows = computed(() => tables.value.reduce((sum, t) => sum + (effectiveRows(t).value || 0), 0))
@@ -537,7 +636,9 @@ const skippedBySize = computed(() => {
 })
 
 const filteredTables = computed(() => {
-  let list = onlyEmpty.value ? emptyTables.value : tables.value
+  let list = tables.value
+  if (dataFilter.value === 'noData') list = emptyTables.value
+  else if (dataFilter.value === 'hasData') list = list.filter((t) => !!effectiveRows(t).value)
   // 标记筛选只读模式:该库 table-tags map 中含该 tagId 的表
   if (filterTagId.value) {
     list = list.filter((t) =>
@@ -565,13 +666,14 @@ async function load(refresh = false) {
     const tablesUrl = `${base}/tables${q}${refresh ? (q ? '&' : '?') + 'refresh=true' : ''}`
     // 最新扫描映射/表说明查的是本地 H2,失败时仅影响表名是否可点与说明展示,不阻塞表列表
     // 字段总数走业务库元数据,失败时也不阻塞表列表(显示 -)
-    const [tableList, latest, tableDocs, colCount, tagMap, collects] = await Promise.all([
+    const [tableList, latest, tableDocs, colCount, tagMap, collects, systemMap] = await Promise.all([
       request.get(tablesUrl),
       request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/column-count${dbQuery()}`).catch(() => null),
       request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({})),
-      request.get(`${base}/manual-collects${dbQuery()}`).catch(() => ({}))
+      request.get(`${base}/manual-collects${dbQuery()}`).catch(() => ({})),
+      request.get(`${base}/table-systems${dbQuery()}`).catch(() => ({}))
     ])
     tables.value = tableList
     latestScans.value = latest || {}
@@ -579,8 +681,11 @@ async function load(refresh = false) {
     columnCount.value = colCount
     tableTags.value = tagMap || {}
     collectMap.value = collects || {}
+    tableSystems.value = systemMap || {}
   } finally {
     loading.value = false
+    // 数据到位后布局可能变化(汇总条出现),重算表格最大高度
+    nextTick(updateTableMaxHeight)
   }
 }
 
@@ -716,11 +821,6 @@ function dbQuery() {
   return db ? `?db=${encodeURIComponent(db)}` : ''
 }
 
-// 原路返回;无历史记录(直接打开)时兜底回库列表
-function goBack() {
-  historyBack(router, `/datasources/${dsId}/schemas`)
-}
-
 function onSelectionChange(rows) {
   selectedTables.value = rows
 }
@@ -787,6 +887,7 @@ onMounted(async () => {
   mounted.value = true
   fetchRunning()
   startPolling()
+  window.addEventListener('resize', updateTableMaxHeight)
   // 数据源名兜底解析:刷新/直达 URL 无 ?name= 时也能恢复真名,并刷新页签标题
   ensureDsName(dsId).then(() => syncTab(route))
 })
@@ -801,7 +902,10 @@ onActivated(() => {
 
 onDeactivated(stopPolling)
 
-onUnmounted(stopPolling)
+onUnmounted(() => {
+  stopPolling()
+  window.removeEventListener('resize', updateTableMaxHeight)
+})
 </script>
 
 <style scoped>
@@ -816,6 +920,18 @@ onUnmounted(stopPolling)
 }
 .table-tag {
   margin: 0 4px 2px 0;
+}
+/* 列设置弹层:复选框纵向排列 */
+.col-setting {
+  display: flex;
+  flex-direction: column;
+}
+/* 全选行与列表之间加分隔线 */
+.col-setting-all {
+  width: 100%;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  padding-bottom: 4px;
+  margin-bottom: 4px;
 }
 .doc-cell {
   display: flex;

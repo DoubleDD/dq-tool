@@ -143,7 +143,7 @@ class ScanTransferServiceTest {
         val src = Env()
         val srcDsId = src.createDs("生产库")
         val srcJobId = seedDoneJob(src, srcDsId)
-        // 源实例的标注数据:USER 标记定义(含颜色/描述)+ 打标关系 + AI 生成的表描述;空表系统标记不参与导出
+        // 源实例的标注数据:USER 标记定义(含颜色/描述)+ 打标关系 + AI 生成的表描述;空表系统标记只导名字不入 tagDefs
         val tag = src.tagRepo.create("核心表", "#F56C6C", "核心业务表")
         src.tagRepo.ensureTableTag(tag.id, srcDsId, "", "public", "t_user")
         src.tagRepo.findEmptyTag()?.let { src.tagRepo.ensureTableTag(it.id, srcDsId, "", "public", "t_user") }
@@ -153,6 +153,7 @@ class ScanTransferServiceTest {
         src.service.export(listOf(srcJobId), out)
         val json = out.toString(Charsets.UTF_8)
         assertTrue(json.contains("核心表"), json)
+        assertTrue(json.contains("空表"), json)
         assertTrue(json.contains("用户主表,存登录账号"), json)
 
         val dst = Env()
@@ -162,12 +163,12 @@ class ScanTransferServiceTest {
         assertEquals(1, result.imported)
         assertTrue(result.warnings.isEmpty())
 
-        // 标记定义按名创建(颜色/描述透传),打标关系落库;空表系统标记的关系不由导入补
+        // 标记定义按名创建(颜色/描述透传),打标关系落库;空表系统标记定义不动、关系由导入补上
         val dstTag = dst.tagRepo.findByName("核心表")!!
         assertEquals("#F56C6C", dstTag.color)
         assertEquals("核心业务表", dstTag.description)
         val dstTags = dst.tagRepo.tableTagsBySchema(dstDsId, "", "public")["t_user"]!!
-        assertEquals(listOf("核心表"), dstTags.map { it.name })
+        assertEquals(listOf("核心表", "空表"), dstTags.map { it.name }.sorted())
         // 表描述 upsert 落库,model 记 import
         assertEquals("用户主表,存登录账号", dst.tableDocRepo.findBySchema(dstDsId, "", "public")["t_user"])
     }

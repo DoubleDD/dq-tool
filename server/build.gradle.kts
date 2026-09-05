@@ -124,7 +124,33 @@ val buildWebForRelease by tasks.registering {
     }
 }
 
+// 更新日志硬校验(发版强制):CHANGELOG.md 必须存在当前版本对应的 `## <展示版>` 段落
+// (展示版 = VERSION 去掉 0. 前缀,与页脚显示/页签「本次更新」口径一致;`## <原始VERSION>` 也接受)。
+// 挂在 processResources 前置:dev 运行与 release 打包都必经,缺失立即构建失败并提示填写
+val verifyChangelog by tasks.registering {
+    group = "build"
+    description = "校验 CHANGELOG.md 含当前版本段落(processResources 前置)"
+    val changelogFile = rootProject.layout.projectDirectory.file("CHANGELOG.md")
+    inputs.file(changelogFile)
+    inputs.property("version", project.version.toString())
+    doLast {
+        val version = project.version.toString()
+        val displayVersion = version.replaceFirst(Regex("^0\\."), "")
+        val lines = changelogFile.asFile.takeIf { it.isFile }?.readLines() ?: emptyList()
+        val found = lines.any { it.startsWith("## $displayVersion") || it.startsWith("## $version") }
+        if (!found) {
+            throw GradleException(
+                "CHANGELOG.md 缺少当前版本($displayVersion)的更新段落,请以「## $displayVersion (YYYY-MM-DD)」标题补充本次更新内容;" +
+                    "scripts/bump-version.sh 升版本号时会自动插入模板段落"
+            )
+        }
+    }
+}
+
 tasks.processResources {
+    dependsOn(verifyChangelog)
+    // 更新日志随 jar 分发:运行时由 common 的 ChangelogService 从 classpath /CHANGELOG.md 读取解析
+    from(rootProject.layout.projectDirectory.file("CHANGELOG.md"))
     // dev 模式与测试不再强依赖前端构建:dist 存在则拷入 static,缺失时 from 空目录静默跳过(API-only 调试)。
     // 注意不能用 if(distDir.isDirectory) 在配置期判断:buildWeb 同轮新建的 dist 会赶上 processResources
     // 已被 up-to-date 跳过,static 永远拷不进去(WebServerSmokeTest 404);必须无条件 from + 声明可选输入,

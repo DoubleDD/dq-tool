@@ -5,11 +5,14 @@ import com.example.dq.model.AnnotationImportPreview
 import com.example.dq.model.AnnotationImportResult
 import com.example.dq.model.AnnotationPreviewDs
 import com.example.dq.model.AnnotationTableDocItem
+import com.example.dq.model.AnnotationTableSystemItem
 import com.example.dq.model.AnnotationTableTagItem
 import com.example.dq.model.AnnotationTagItem
 import com.example.dq.model.TagKind
+import com.example.dq.model.TagType
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.TableDocRepository
+import com.example.dq.repository.TableSystemRepository
 import com.example.dq.repository.TagRepository
 import com.example.dq.util.TransferJson
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -19,34 +22,38 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 
 /**
- * 标记与描述数据的导出/导入:把 USER 标记定义(含描述)、表-标记关联、表描述打包成 JSON,
+ * 标记与描述数据的导出/导入:把 USER 标记定义(含描述)、表-标记关联、表描述、表所属系统打包成 JSON,
  * 在另一台机器导入,避免换机后重新打标与重新生成描述。
  * 跨实例对齐键:标记按 name,表级数据按 数据源名 + db + schema + table;不导出任何内部 id。
  * 导入合并规则:标记不存在则创建、已存在则用文件里的 color/description 覆盖更新;
  * 表级行的数据源对应:显式映射(dsMapping:文件数据源名 → 本机数据源 id,值 0 表示强制跳过)优先,
  * 未给映射的名称回退按数据源名匹配(不同机器上同一数据源的命名可能不同,故提供预检+映射);
- * 匹配不到的行跳过并计数;表标记 ensure 幂等插入,表描述 upsert 覆盖现有内容。
+ * 匹配不到的行跳过并计数;表标记 ensure 幂等插入,表描述与所属系统 upsert 覆盖现有内容。
  * EMPTY 系统空表标记由扫描自动维护,定义与关联都不参与导出/导入。
  */
 class AnnotationTransferService(
     private val tagRepo: TagRepository,
     private val tableDocRepo: TableDocRepository,
+    private val tableSystemRepo: TableSystemRepository,
     private val dataSourceRepo: DataSourceRepository,
 ) {
 
     private val objectMapper = jacksonObjectMapper()
 
-    /** 导出全部 USER 标记定义、USER 标记的表级关联、全部表描述为 JSON 文件 */
+    /** 导出全部 USER 标记定义、USER 标记的表级关联、全部表描述与表所属系统为 JSON 文件 */
     fun export(out: OutputStream) {
         val dsNames = dataSourceRepo.findAll().associate { it.id!! to (it.name ?: "") }
         val tags = tagRepo.listAll()
             .filter { it.kind == TagKind.USER }
-            .map { AnnotationTagItem(it.name, it.color, it.description) }
+            .map { AnnotationTagItem(it.name, it.color, it.description, it.tagType.name) }
         val tableTags = tagRepo.listUserTableTagRows().map { r ->
             AnnotationTableTagItem(dsNames[r.datasourceId] ?: "", r.dbName, r.schemaName, r.tableName, r.tagName)
         }
         val tableDocs = tableDocRepo.findAll().map { r ->
             AnnotationTableDocItem(dsNames[r.datasourceId] ?: "", r.dbName, r.schemaName, r.tableName, r.description)
+        }
+        val tableSystems = tableSystemRepo.findAll().map { r ->
+            AnnotationTableSystemItem(dsNames[r.datasourceId] ?: "", r.dbName, r.schemaName, r.tableName, r.systemName)
         }
         val file = AnnotationExportFile(
             app = APP_MARKER,
@@ -55,6 +62,7 @@ class AnnotationTransferService(
             tags = tags,
             tableTags = tableTags,
             tableDocs = tableDocs,
+            tableSystems = tableSystems,
         )
         objectMapper.writerWithDefaultPrettyPrinter().writeValue(out, file)
     }
@@ -71,6 +79,10 @@ class AnnotationTransferService(
             val row = dsRows.getOrPut(item.datasourceName) { AnnotationPreviewDs(item.datasourceName, 0, 0) }
             dsRows[item.datasourceName] = row.copy(tableDocs = row.tableDocs + 1)
         }
+        for (item in file.tableSystems) {
+            val row = dsRows.getOrPut(item.datasourceName) { AnnotationPreviewDs(item.datasourceName, 0, 0) }
+            dsRows[item.datasourceName] = row.copy(tableSystems = row.tableSystems + 1)
+        }
         return AnnotationImportPreview(tags = file.tags.size, datasources = dsRows.values.toList())
     }
 
@@ -85,7 +97,8 @@ class AnnotationTransferService(
 
         val result = AnnotationImportResult()
 
-        // 1. 标记按 name 合并:不存在则创建,已存在则覆盖 color/description(系统空表标记不动)
+        // 1. 标记按 name 合并:不存在则创建,已存在则覆盖 color/description(系统空表标记不动);
+        // tagType 为可选字段:老文件缺省 → 新建用缺省 AI(与旧行为一致)、更新保留原值
         for (item in file.tags) {
             val name = item.name.trim()
             if (name.isEmpty()) {
@@ -93,14 +106,15 @@ class AnnotationTransferService(
             }
             val color = normalizeColor(item.color)
             val description = item.description?.trim()?.takeIf { it.isNotEmpty() }
+            val tagType = parseTagType(item.tagType)
             val existing = tagRepo.findByName(name)
             when {
                 existing == null -> {
-                    tagRepo.create(name, color, description)
+                    tagRepo.create(name, color, description, tagType ?: TagType.AI)
                     result.tagsCreated++
                 }
                 existing.kind == TagKind.USER -> {
-                    tagRepo.update(existing.id, name, color, description)
+                    tagRepo.update(existing.id, name, color, description, tagType)
                     result.tagsUpdated++
                 }
                 // 与系统空表标记重名:由扫描自动维护,不覆盖
@@ -142,6 +156,18 @@ class AnnotationTransferService(
             tableDocRepo.upsert(dsId, item.dbName, item.schemaName, item.tableName, item.description, MODEL_IMPORT)
             result.docsUpserted++
         }
+
+        for (item in file.tableSystems) {
+            val dsId = resolveDs(item.datasourceName)
+            val systemName = item.systemName.trim()
+            if (dsId == null || item.tableName.isBlank() || systemName.isEmpty()) {
+                result.systemsSkipped++
+                continue
+            }
+            // upsert 覆盖现有所属系统(一张表最多归属一个系统)
+            tableSystemRepo.upsert(dsId, item.dbName, item.schemaName, item.tableName, systemName)
+            result.systemsUpserted++
+        }
         return result
     }
 
@@ -168,5 +194,11 @@ class AnnotationTransferService(
         /** 颜色缺省回落到默认色,与 tag_def.color 默认值一致 */
         fun normalizeColor(color: String?): String =
             color?.trim()?.takeIf { it.isNotEmpty() } ?: "#409EFF"
+
+        /** 用途类型解析:空值/非法值/SYSTEM 按 null 处理(导入宽容,新建落缺省、更新保留原值) */
+        fun parseTagType(tagType: String?): TagType? =
+            tagType?.trim()?.takeIf { it.isNotEmpty() }
+                ?.let { runCatching { TagType.valueOf(it) }.getOrNull() }
+                ?.takeIf { it != TagType.SYSTEM }
     }
 }

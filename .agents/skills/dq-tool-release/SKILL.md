@@ -34,11 +34,13 @@ git status -s                 # 改动归属:只提交本次发布相关的文�
 git diff HEAD --name-only     # 逐个确认是自己/本次发布的改动
 git log --oneline -3 origin/main   # 了解远端 main 位置
 cat VERSION                   # 确认版本号,推导目标 tag(如 0.1.8 → v1.8)
+grep -E "^## $(sed 's/^0\.//;s/\./\\./g' VERSION)([[:space:]]|$)" CHANGELOG.md   # changelog 检查:当前版本必须有更新段落
 ```
 
 - 有不属于本次发布的改动 → 先报给用户,绝不代交
 - 改动较多时用 `git diff HEAD -- <file>` 抽查,警惕 IDE 格式化污染
 - 若用户只给了版本号没给 tag:按 `v` + 去 `0.` 前缀推导并先与用户确认
+- **changelog 检查**:`CHANGELOG.md` 必须有当前版本(去 `0.` 前缀的展示版)的 `## ` 段落且内容已填写(不是 bump 脚本插入的「待填写」占位);缺失/未填写时提醒用户先补——构建有 verifyChangelog 硬校验,缺段落打包直接失败(格式约定见 `docs/wiki/更新日志.md`)
 
 ### 2. 提交代码到 main
 

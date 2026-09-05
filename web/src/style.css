@@ -44,6 +44,12 @@
   /* 项目级:页面背景(柔和渐变)+ 纯色近似值(供页签激活态融合,渐变无法对齐) */
   --dq-page-bg: linear-gradient(180deg, #f6f8fc 0%, #eef1f7 100%);
   --dq-page-bg-solid: #f2f4fa;
+  /* 页面渐变顶端颜色:Chrome 风格激活页签与翅膀底色,与正下方主区无缝衔接 */
+  --dq-page-bg-top: #f6f8fc;
+  /* 头栏条带底色:压暗半档,衬托激活页签(Chrome 式:标签栏深、激活标签与内容区同色) */
+  --dq-header-bg: #eaeef5;
+  /* 页签 hover 底色:介于头栏条带(--dq-header-bg)与激活页签(--dq-page-bg-top)之间 */
+  --dq-tab-hover-bg: #f1f4fa;
   /* 表面与滚动条 */
   --dq-surface: #ffffff;
   --dq-surface-border: var(--el-border-color-extra-light);
@@ -111,6 +117,12 @@ html.dark {
   /* 项目级:页面深灰蓝渐变 */
   --dq-page-bg: linear-gradient(180deg, #23262b 0%, #1d2024 100%);
   --dq-page-bg-solid: #202329;
+  /* 页面渐变顶端颜色:Chrome 风格激活页签与翅膀底色,与正下方主区无缝衔接 */
+  --dq-page-bg-top: #23262b;
+  /* 头栏条带底色:压暗半档,衬托激活页签(Chrome 式:标签栏深、激活标签与内容区同色) */
+  --dq-header-bg: #1d2024;
+  /* 页签 hover 底色:介于头栏条带(--dq-header-bg)与激活页签(--dq-page-bg-top)之间 */
+  --dq-tab-hover-bg: #202329;
   --dq-surface: #2b2d31;
   --dq-surface-border: var(--el-border-color-lighter);
   --dq-surface-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
@@ -419,18 +431,29 @@ html.dark .sidebar-menu .el-menu-item.is-active {
 }
 
 .header {
-  background: var(--dq-surface);
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  background: var(--dq-header-bg);
+  border-bottom: 1px solid var(--el-border-color-light);
   display: flex;
   align-items: center;
   padding: 0 16px !important;
 }
 
-.header .header-title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+/* 头栏左侧浏览器式导航按钮(返回/前进/刷新) */
+.header .nav-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 10px;
+}
+
+.header .nav-buttons .el-button {
   color: var(--el-text-color-primary);
+  font-size: 17px;
+}
+
+.header .nav-buttons .el-button:not(.is-disabled):hover {
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
 }
 
 /* 主题切换按钮推到头栏右侧 */
@@ -439,20 +462,19 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   color: var(--el-text-color-secondary);
 }
 
+/* 页签栏内嵌头栏(Chrome 标签页风格):占满导航按钮与主题按钮之间的剩余空间,贴头栏底边;
+   min-width:0 保证 EP 页签溢出滚动箭头生效 */
 .tab-bar {
-  background: var(--dq-surface);
-  padding: 6px 12px 0;
-  border-bottom: 1px solid var(--el-border-color-lighter);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
-  position: relative;
-  z-index: 1;
-}
-
-html.dark .tab-bar {
-  box-shadow: none;
+  flex: 1;
+  min-width: 0;
+  margin-left: 12px;
+  align-self: stretch;
+  display: flex;
+  align-items: flex-end;
 }
 
 .tab-bar .el-tabs {
+  width: 100%;
   --el-tabs-header-height: 34px;
 }
 
@@ -461,19 +483,72 @@ html.dark .tab-bar {
   border-bottom: none;
 }
 
-/* 卡片式页签:圆角收窄,激活态更干净 */
+/* EP 卡片模式会给整条 nav 描一圈边框,Chrome 风格下去掉(分隔由页签间细线承担) */
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__nav {
+  border: none;
+}
+
+/* Chrome 风格页签:上圆角 8px,下移 1px 盖住头栏底线,激活页签与下方主区无缝衔接 */
 .tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item {
+  gap: 4px;
+  max-width: 200px;
   border-left: none;
-  border-radius: 6px 6px 0 0;
+  border-bottom-color: transparent;
+  border-radius: 8px 8px 0 0;
+  margin-bottom: -1px;
   color: var(--el-text-color-secondary);
   transition: color 0.2s ease, background-color 0.2s ease;
 }
 
+/* 标题文本超宽省略,关闭按钮不被挤出 */
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item .tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 相邻非激活页签之间的细分隔线(邻位 hover/激活时隐藏,贴近 Chrome) */
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item:not(.is-active):not(:hover)
+  + .el-tabs__item:not(.is-active):not(:hover)::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 14px;
+  background: var(--el-border-color);
+}
+
+/* 激活页签:底色与主区衔接(色差天然小),靠顶部 2px 主题色高亮线 + 主题色文字保证辨识度 */
 .tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active {
-  background: var(--dq-page-bg-solid);
-  border-bottom-color: var(--dq-page-bg-solid);
+  background: var(--dq-page-bg-top);
+  border-bottom-color: var(--dq-page-bg-top);
+  box-shadow: inset 0 2px 0 var(--el-color-primary);
   color: var(--el-color-primary);
-  font-weight: 500;
+  font-weight: 600;
+}
+
+/* 激活页签底部两侧的倒圆角「翅膀」:radial-gradient 裁出弧形缺口,盖住头栏底线的左右段 */
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active::before,
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  width: 8px;
+  height: 8px;
+  pointer-events: none;
+}
+
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active::before {
+  left: -8px;
+  background: radial-gradient(circle at left top, transparent 7.5px, var(--dq-page-bg-top) 8px);
+}
+
+.tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item.is-active::after {
+  right: -8px;
+  background: radial-gradient(circle at right top, transparent 7.5px, var(--dq-page-bg-top) 8px);
 }
 
 /* 关闭图标常显:EP 默认仅 hover/激活时给 14px 宽度,这里所有页签一直占宽;
@@ -490,14 +565,15 @@ html.dark .tab-bar {
   width: 14px;
 }
 
-/* hover 底纹:非激活页签 hover 时微微提亮,与激活态底色保持可区分 */
+/* hover 底纹:非激活页签 hover 时向激活态方向微微过渡,但仍与激活底色可区分 */
 .tab-bar .el-tabs--card > .el-tabs__header .el-tabs__item:not(.is-active):hover {
-  background: var(--dq-table-row-hover-bg);
+  background: var(--dq-tab-hover-bg);
 }
 
-.main {
+/* el-main 默认 padding(var(--el-main-padding)=20px)置 0,页面间距由 page-card 的 margin 承担;
+   EP 的 .el-main 后加载,需双类选择器提高特异度才能压住 */
+.el-main.main {
   background: var(--dq-page-bg);
-  /* padding 改由 page-card 的 margin 承担:滚动时内容在 padding 条带内透出会破坏表头吸顶 */
   padding: 0;
 }
 
@@ -524,7 +600,7 @@ html.dark .tab-bar {
   color: var(--el-text-color-primary);
 }
 
-/* 面包屑:替代页面标题 + 返回按钮,字号与 h3 对齐 */
+/* 面包屑:替代页面标题,字号与 h3 对齐 */
 .page-breadcrumb {
   font-size: 15px;
   line-height: 1.5;
@@ -614,4 +690,23 @@ html.dark .tab-bar {
 
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/**
+ * ElMessage 改为右上角弹出、从右向左滑入/滑出(类 macOS 通知):
+ *  - 默认实现是顶部居中(left:50% + translateX(-50%)),大量错误提示会挡住界面;
+ *  - 只覆盖定位与进出方向,堆叠偏移(top 内联样式 + top 过渡)仍由组件自身计算;
+ *  - 限定最大宽度,避免超长错误信息横贯窗口。
+ */
+.el-message {
+  left: auto;
+  right: 16px;
+  transform: none;
+  max-width: min(420px, calc(100vw - 32px));
+}
+
+.el-message-fade-enter-from,
+.el-message-fade-leave-to {
+  opacity: 0;
+  transform: translateX(calc(100% + 16px));
 }

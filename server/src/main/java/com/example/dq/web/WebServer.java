@@ -12,6 +12,7 @@ import com.example.dq.config.TrayManager;
 import com.example.dq.controller.AiConfigController;
 import com.example.dq.controller.AiUsageController;
 import com.example.dq.controller.AnnotationController;
+import com.example.dq.controller.ChangelogController;
 import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.DiagnosticsController;
 import com.example.dq.controller.LicenseController;
@@ -103,6 +104,7 @@ public class WebServer {
     private final AtomicReference<AnnotationController> annotationCtrl = new AtomicReference<>();
     private final AtomicReference<ListExportController> listExportCtrl = new AtomicReference<>();
     private final AtomicReference<DiagnosticsController> diagnosticsCtrl = new AtomicReference<>();
+    private final AtomicReference<ChangelogController> changelogCtrl = new AtomicReference<>();
     /** 实时日志 Appender 引用:LogController(SSE)与 DiagnosticsController(错误日志摘录)共用同一实例 */
     private LogStreamAppender logStreamAppender;
 
@@ -166,6 +168,7 @@ public class WebServer {
                     dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl,
                     manualCollectCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
+                    changelogCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
 
@@ -198,6 +201,7 @@ public class WebServer {
                                 AtomicReference<AnnotationController> annotationCtrl,
                                 AtomicReference<ListExportController> listExportCtrl,
                                 AtomicReference<DiagnosticsController> diagnosticsCtrl,
+                                AtomicReference<ChangelogController> changelogCtrl,
                                 LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
@@ -217,7 +221,7 @@ public class WebServer {
                 licenseService.checkFeature(LicenseFeature.LICENSE_ADMIN, false);
                 return;
             }
-            if (path.startsWith("/api/license") || path.startsWith("/api/diagnostics") || path.equals("/api/heartbeat")) {
+            if (path.startsWith("/api/license") || path.startsWith("/api/diagnostics") || path.startsWith("/api/changelog") || path.equals("/api/heartbeat")) {
                 return;
             }
             licenseService.checkActive();
@@ -313,6 +317,9 @@ public class WebServer {
         // 最新扫描结果 Excel 导出:每表最近一次表级 DONE 快照,跨任务,不依赖指定任务记录
         routes.get("/api/datasources/{dsId}/schemas/{schema}/export-latest", ctx -> scanCtrl.get().exportLatest(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/table-docs", ctx -> metaCtrl.get().tableDocs(ctx));
+        // 表所属系统:GET 取整库 map,PUT 批量设置/清除(静态段 table-systems 与 {table} 不冲突,同 table-docs 先例)
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/table-systems", ctx -> metaCtrl.get().tableSystems(ctx));
+        routes.put("/api/datasources/{dsId}/schemas/{schema}/table-systems", ctx -> metaCtrl.get().batchSetTableSystems(ctx));
         routes.post("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().generateTableDoc(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().updateTableDoc(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/description", ctx -> metaCtrl.get().updateSchemaDescription(ctx));
@@ -347,6 +354,8 @@ public class WebServer {
         routes.get("/api/tags/{id}/stats", ctx -> tagCtrl.get().stats(ctx));
         routes.get("/api/datasources/{dsId}/schema-tag-stats", ctx -> tagCtrl.get().schemaTagStats(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/table-tags", ctx -> tagCtrl.get().tableTags(ctx));
+        // 批量打标(只增不删),与 GET 同路径不同方法;单表整体替换走 tables/{table}/tags
+        routes.put("/api/datasources/{dsId}/schemas/{schema}/table-tags", ctx -> tagCtrl.get().batchAddTableTags(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/tags", ctx -> tagCtrl.get().replaceTableTags(ctx));
 
         // ---- 人工采集(收藏重点关注的表) ----
@@ -410,6 +419,9 @@ public class WebServer {
         // ---- 系统诊断(排错中心):概览聚合 + 数据源连通实测;放行激活检查(未激活恰是最需要诊断的场景) ----
         routes.get("/api/diagnostics", ctx -> diagnosticsCtrl.get().overview(ctx));
         routes.post("/api/diagnostics/check-datasources", ctx -> diagnosticsCtrl.get().checkDatasources(ctx));
+
+        // ---- 更新日志:CHANGELOG.md 解析结果;放行激活检查(未激活也能看版本更新说明) ----
+        routes.get("/api/changelog", ctx -> changelogCtrl.get().overview(ctx));
 
         // SPA 回退(替代 SpaWebConfig):静态资源未命中且非 /api/** 的 GET 一律回退 index.html 交给前端路由;
         // 但路径末段带扩展名(如 /assets/xxx.js)说明是静态文件缺失,必须真实 404——
@@ -526,7 +538,7 @@ public class WebServer {
         scanCtrl.set(new ScanController(env.getScanService(), env.getExportService(), env.getScanWordExportService()));
         scanTransferCtrl.set(new ScanTransferController(env.getScanTransferService()));
         metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService(),
-                env.getDbStructExportService(), env.getDataSourceService()));
+                env.getTableSystemService(), env.getDbStructExportService(), env.getDataSourceService()));
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
@@ -540,6 +552,7 @@ public class WebServer {
         annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
         listExportCtrl.set(new ListExportController(env.getListExportService()));
         diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), logStreamAppender));
+        changelogCtrl.set(new ChangelogController(env.getChangelogService()));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

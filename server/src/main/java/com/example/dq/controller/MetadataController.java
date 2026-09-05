@@ -2,10 +2,12 @@ package com.example.dq.controller;
 
 import com.example.dq.model.SchemaDocUpdateRequest;
 import com.example.dq.model.TableDocUpdateRequest;
+import com.example.dq.model.TableSystemBatchRequest;
 import com.example.dq.service.DataSourceService;
 import com.example.dq.service.DbStructExportService;
 import com.example.dq.service.MetadataService;
 import com.example.dq.service.TableDocService;
+import com.example.dq.service.TableSystemService;
 import io.javalin.http.Context;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -21,23 +23,28 @@ public class MetadataController {
 
     private final MetadataService service;
     private final TableDocService tableDocService;
+    private final TableSystemService tableSystemService;
     private final DbStructExportService dbStructExportService;
     private final DataSourceService dataSourceService;
 
     public MetadataController(MetadataService service, TableDocService tableDocService,
+                              TableSystemService tableSystemService,
                               DbStructExportService dbStructExportService, DataSourceService dataSourceService) {
         this.service = service;
         this.tableDocService = tableDocService;
+        this.tableSystemService = tableSystemService;
         this.dbStructExportService = dbStructExportService;
         this.dataSourceService = dataSourceService;
     }
 
+    /** 库清单:本地缓存优先;refresh=true 强制从业务库拉最新并覆盖本地缓存 */
     public void listDatabases(Context ctx) throws SQLException {
-        ctx.json(service.listDatabases(dsId(ctx), unfiltered(ctx)));
+        ctx.json(service.listDatabases(dsId(ctx), unfiltered(ctx), refresh(ctx)));
     }
 
+    /** schema 清单:本地缓存优先;refresh=true 强制从业务库拉最新并覆盖本地缓存 */
     public void listSchemas(Context ctx) throws SQLException {
-        ctx.json(service.listSchemas(dsId(ctx), ctx.queryParam("db"), unfiltered(ctx)));
+        ctx.json(service.listSchemas(dsId(ctx), ctx.queryParam("db"), unfiltered(ctx), refresh(ctx)));
     }
 
     /** 库列表页概览:schema + 表数量 + 最近一次扫描 */
@@ -100,6 +107,18 @@ public class MetadataController {
     /** AI 表说明(表名 -> 说明文字),本地查询不连业务库 */
     public void tableDocs(Context ctx) {
         ctx.json(tableDocService.list(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema")));
+    }
+
+    /** 表所属系统(表名 -> 系统名),本地查询不连业务库 */
+    public void tableSystems(Context ctx) {
+        ctx.json(tableSystemService.list(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema")));
+    }
+
+    /** 批量设置/清除表所属系统;systemName trim 后空白表示清除,响应 {updated, cleared} */
+    public void batchSetTableSystems(Context ctx) {
+        TableSystemBatchRequest req = ctx.bodyAsClass(TableSystemBatchRequest.class);
+        ctx.json(tableSystemService.batchSet(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"),
+                req.getTableNames(), req.getSystemName()));
     }
 
     /** 触发大模型生成单表说明并落库 */

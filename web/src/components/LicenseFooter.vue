@@ -9,6 +9,8 @@
       <template v-else>永久有效</template>
     </span>
     <el-button v-if="status.activated" link type="primary" size="small" @click="openDialog">更换授权码</el-button>
+    <!-- 版本号:可点击,跳「更新记录」页签查看全部历史版本更新记录 -->
+    <span v-if="status.appVersion" class="license-version version-link" title="查看更新记录" @click="goChangelog">v{{ status.appVersion }}</span>
 
     <el-dialog v-model="dialogVisible" title="更换授权码" width="520px" destroy-on-close :close-on-press-escape="false">
       <el-input v-model="code" type="textarea" :rows="4" placeholder="粘贴新授权码(DQ1. 开头)" />
@@ -22,9 +24,17 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../api'
 import { fetchLicenseStatus, markActivated } from '../router'
+
+const router = useRouter()
+
+/** 点击页脚版本号:打开「更新记录」页签(全部历史版本) */
+function goChangelog() {
+  router.push('/changelog')
+}
 
 const status = ref(null)
 const dialogVisible = ref(false)
@@ -83,5 +93,12 @@ async function onActivate() {
 .license-version {
   color: var(--el-text-color-placeholder);
   font-size: 11px;
+}
+.version-link {
+  cursor: pointer;
+}
+.version-link:hover {
+  color: var(--el-color-primary);
+  text-decoration: underline;
 }
 </style>

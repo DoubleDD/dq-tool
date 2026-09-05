@@ -18,6 +18,7 @@ import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.SystemSettingsRepository
 import com.example.dq.repository.TableDocRepository
+import com.example.dq.repository.TableSystemRepository
 import com.example.dq.repository.TagRepository
 import com.example.dq.scan.ChunkRunner
 import com.example.dq.scan.InterruptRecovery
@@ -28,6 +29,7 @@ import com.example.dq.service.AiService
 import com.example.dq.service.AiUsageService
 import com.example.dq.service.AnnotationTransferService
 import com.example.dq.service.AutoTagService
+import com.example.dq.service.ChangelogService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
 import com.example.dq.service.DbStructExportService
@@ -47,6 +49,7 @@ import com.example.dq.service.ScanWordExportService
 import com.example.dq.service.SshTunnelService
 import com.example.dq.service.SystemSettingsService
 import com.example.dq.service.TableDocService
+import com.example.dq.service.TableSystemService
 import com.example.dq.service.TagService
 import com.example.dq.service.WordReportExportService
 import com.example.dq.service.WordReportService
@@ -88,6 +91,7 @@ class ServiceEnv(val config: AppConfig) {
     val metaCacheRepo = MetaCacheRepository(jdbc)
     val schemaDocRepo = SchemaDocRepository(jdbc)
     val tableDocRepo = TableDocRepository(jdbc)
+    val tableSystemRepo = TableSystemRepository(jdbc)
     val tagRepo = TagRepository(jdbc)
     val aiConfigRepo = AiConfigRepository(jdbc)
     val aiUsageRepo = AiUsageRepository(aiUsageJdbc)
@@ -125,6 +129,7 @@ class ServiceEnv(val config: AppConfig) {
     val autoTagService = AutoTagService(aiConfigService, aiService, tagService, tagRepo, scanRepo,
         tableDocRepo, dataSourceService, dialectFactory, scanAiTracker)
     val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, dataSourceService, dialectFactory)
+    val tableSystemService = TableSystemService(tableSystemRepo)
     val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, scanAiTracker)
     private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
         tagService, autoTagService, scanDocService, scanAiTracker)
@@ -133,7 +138,7 @@ class ServiceEnv(val config: AppConfig) {
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
     val sqlConsoleService = SqlConsoleService(dataSourceService, systemSettingsService, dialectFactory)
-    val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, dataSourceRepo)
+    val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, tableSystemRepo, dataSourceRepo)
     val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
     val exportService = ExportService(scanService, tableDocRepo)
     val scanWordExportService = ScanWordExportService(scanService, tagRepo, schemaDocRepo)
@@ -148,6 +153,7 @@ class ServiceEnv(val config: AppConfig) {
         licenseRecordRepo, config.licensePrivateKey, config.appVersion)
     val diagnosticsService = DiagnosticsService(config, dataSourceService, dataSourceRepo, licenseService,
         aiConfigService, scanRepo, reportExportRepo)
+    val changelogService = ChangelogService(config)
 
     /**
      * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的

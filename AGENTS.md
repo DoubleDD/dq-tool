@@ -44,6 +44,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [系统诊断](docs/wiki/系统诊断.md) — 排错中心:环境/授权/AI/数据源连通实测/失败记录/错误日志聚合,Markdown 诊断报告导出
 - [SQL 控制台](docs/wiki/SQL控制台.md) — 类 DataGrip 执行 SQL:选数据源、执行选中片段、结果集上限 1000 行/单元格截断同数据预览、受影响行数、localStorage 历史(不落服务端)
 - [授权码](docs/wiki/授权码.md) — 离线 Ed25519 授权码、签发工具、管理员实例授权码管理
+- [更新日志](docs/wiki/更新日志.md) — 根 CHANGELOG.md 人维护+构建期拷入 jar;新版本首启自动弹「本次更新」页签(dq-seen-version 判定)、页脚版本号开「更新记录」页签;verifyChangelog 构建硬校验,发版必填
 
 ### 架构与开发
 

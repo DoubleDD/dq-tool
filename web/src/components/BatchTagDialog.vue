@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    :title="`打标 - ${tableName}`"
+    title="批量打标"
     width="720px"
     append-to-body
     :close-on-press-escape="false"
@@ -9,8 +9,10 @@
     @open="onOpen"
   >
     <div v-loading="loading">
-      <!-- 当前表标记勾选(空表标记由系统驱动,不列出);标记的编辑/删除统一在「标记统计」页维护 -->
-      <div class="section-title">当前表标记</div>
+      <div class="tip">对勾选的 {{ tableNames.length }} 张表打上选中的标记(只增不删,已有该标记的表自动跳过)</div>
+
+      <!-- 勾选要批量打上的标记(空表标记由系统驱动,不列出);编辑/删除统一在「标记统计」页维护 -->
+      <div class="section-title">选择标记</div>
       <el-checkbox-group v-model="checkedTagIds">
         <el-checkbox v-for="tag in userTags" :key="tag.id" :value="tag.id">
           <span class="tag-dot" :style="{ background: tag.color }"></span>{{ tag.name }}
@@ -20,7 +22,7 @@
 
       <el-divider />
 
-      <!-- 新建标记(列表中没有想要的时候就地建;编辑/删除在「标记统计」页;新建区与批量打标弹窗共用 TagCreateForm) -->
+      <!-- 新建标记(列表中没有想要的时候就地建;编辑/删除在「标记统计」页;新建区与单表打标弹窗共用 TagCreateForm) -->
       <div class="section-title">新建标记</div>
       <TagCreateForm ref="createFormRef" @created="onTagCreated" />
     </div>
@@ -42,9 +44,8 @@ const props = defineProps({
   dsId: [String, Number],
   schema: String,
   db: { type: String, default: '' },
-  tableName: { type: String, default: '' },
-  // 该表当前全部标记(含空表标记),勾选初始值只取其中的 USER 标记
-  currentTags: { type: Array, default: () => [] }
+  // 勾选的表名列表
+  tableNames: { type: Array, default: () => [] }
 })
 const emit = defineEmits(['update:modelValue', 'saved'])
 
@@ -58,11 +59,6 @@ const createFormRef = ref(null)
 
 function dbQuery() {
   return props.db ? `?db=${encodeURIComponent(props.db)}` : ''
-}
-
-function tableTagsUrl() {
-  const base = `/datasources/${props.dsId}/schemas/${encodeURIComponent(props.schema)}`
-  return `${base}/tables/${encodeURIComponent(props.tableName)}/tags${dbQuery()}`
 }
 
 async function fetchTags() {
@@ -84,19 +80,27 @@ async function onTagCreated(tag) {
 }
 
 function onOpen() {
-  checkedTagIds.value = props.currentTags.filter((t) => t.kind === 'USER').map((t) => t.id)
+  checkedTagIds.value = []
   createFormRef.value?.reset()
   fetchTags()
 }
 
-// 确定:整体替换该表的 USER 标记,返回该表最新标记数组(含空表标记)
+// 确定:对勾选的表批量确保打上选中标记(幂等,已存在的跳过),返回 新增/跳过 计数
 async function save() {
+  if (!checkedTagIds.value.length) {
+    ElMessage.warning('请勾选要打的标记')
+    return
+  }
   saving.value = true
   try {
-    const tags = await request.put(tableTagsUrl(), { tagIds: checkedTagIds.value })
-    emit('saved', tags || [])
+    const base = `/datasources/${props.dsId}/schemas/${encodeURIComponent(props.schema)}`
+    const res = await request.put(`${base}/table-tags${dbQuery()}`, {
+      tableNames: props.tableNames,
+      tagIds: checkedTagIds.value
+    })
+    emit('saved')
     emit('update:modelValue', false)
-    ElMessage.success('已保存')
+    ElMessage.success(`批量打标完成:新增 ${res?.added ?? 0} 条,已存在跳过 ${res?.skipped ?? 0} 条`)
   } finally {
     saving.value = false
   }
@@ -104,6 +108,11 @@ async function save() {
 </script>
 
 <style scoped>
+.tip {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
 .section-title {
   font-weight: 600;
   margin-bottom: 10px;

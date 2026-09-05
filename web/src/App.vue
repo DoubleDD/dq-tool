@@ -96,25 +96,46 @@
     </el-aside>
     <el-container direction="vertical">
       <el-header class="header" height="48px">
-        <span class="header-title">{{ activeNavLabel }}</span>
+        <!-- 浏览器式导航:返回/前进基于路由历史(无历史置灰),刷新为软刷新(重挂载当前页,不丢页签状态) -->
+        <div class="nav-buttons">
+          <el-tooltip content="返回" placement="bottom">
+            <span>
+              <el-button text circle :disabled="!navState.canBack" @click="goBack">
+                <el-icon><Back /></el-icon>
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip content="前进" placement="bottom">
+            <span>
+              <el-button text circle :disabled="!navState.canForward" @click="goForward">
+                <el-icon><Right /></el-icon>
+              </el-button>
+            </span>
+          </el-tooltip>
+          <el-tooltip content="刷新" placement="bottom">
+            <el-button text circle @click="refreshPage">
+              <el-icon><Refresh /></el-icon>
+            </el-button>
+          </el-tooltip>
+        </div>
+        <!-- 页签栏内嵌头栏:下钻页(库/表/字段/任务详情)与数据源外的一级功能页占用,全部关闭后隐藏 -->
+        <div v-if="tabState.tabs.length" class="tab-bar">
+          <el-tabs v-model="tabState.activeKey" type="card" @tab-click="onTabClick" @tab-remove="onTabRemove">
+            <el-tab-pane v-for="t in tabState.tabs" :key="t.key" :name="t.key" :closable="t.closable">
+              <template #label><span class="tab-label">{{ t.title }}</span></template>
+            </el-tab-pane>
+          </el-tabs>
+        </div>
         <el-tooltip :content="`主题:${themeModeText}(点击切换)`" placement="bottom">
           <el-button class="theme-toggle" text circle @click="cycleTheme">
             <el-icon><Monitor v-if="themeState.mode === 'auto'" /><Sunny v-else-if="themeState.mode === 'light'" /><Moon v-else /></el-icon>
           </el-button>
         </el-tooltip>
       </el-header>
-      <!-- 页签栏:下钻页(库/表/字段/任务详情)与数据源外的一级功能页(扫描记录/标记统计/报告列表/运行日志/授权管理)占用,全部关闭后整条隐藏 -->
-      <div v-if="tabState.tabs.length" class="tab-bar">
-        <el-tabs v-model="tabState.activeKey" type="card" @tab-click="onTabClick" @tab-remove="onTabRemove">
-          <el-tab-pane v-for="t in tabState.tabs" :key="t.key" :name="t.key" :closable="t.closable">
-            <template #label>{{ t.title }}</template>
-          </el-tab-pane>
-        </el-tabs>
-      </div>
       <el-main class="main">
         <router-view v-slot="{ Component }">
           <keep-alive :max="20">
-            <component :is="Component" :key="route.fullPath" />
+            <component :is="Component" :key="`${route.fullPath}#${refreshStamp}`" />
           </keep-alive>
         </router-view>
       </el-main>
@@ -126,11 +147,12 @@
 </template>
 
 <script setup>
-import { computed, watch, onMounted, onUnmounted, ref } from 'vue'
+import { computed, watch, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
-import { Coin, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Star, Sunny, Moon, TrendCharts } from '@element-plus/icons-vue'
+import request from './api'
+import { Coin, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
@@ -168,6 +190,29 @@ const otherNav = computed(() => {
   ]
   return navs
 })
+
+// 浏览器式返回/前进/刷新(头栏):可否回退/前进读 vue-router 写入的 history.state,
+// 每次导航后(afterEach 覆盖 push/replace/back/forward)刷新;刷新为软刷新——
+// 递增 refreshStamp 改变 keep-alive key 强制重挂载当前页(组件 mounted 逻辑重新拉数),
+// 不做 location.reload()(硬刷新会丢失内存页签状态并重走启动轮询)
+const navState = reactive({ canBack: false, canForward: false })
+const refreshStamp = ref(0)
+function updateNavState() {
+  navState.canBack = !!window.history.state?.back
+  navState.canForward = !!window.history.state?.forward
+}
+const removeAfterEach = router.afterEach(updateNavState)
+onMounted(updateNavState)
+onUnmounted(removeAfterEach)
+function goBack() {
+  if (navState.canBack) router.back()
+}
+function goForward() {
+  if (navState.canForward) router.forward()
+}
+function refreshPage() {
+  refreshStamp.value++
+}
 
 // 侧边栏收起/展开(持久化到 localStorage)
 const sidebarCollapsed = ref(localStorage.getItem('dq-sidebar-collapsed') === 'true')
@@ -326,15 +371,6 @@ function onEditDs(ds) {
   router.push('/datasources')
 }
 
-// 顶栏左侧显示当前一级功能名,给位置感
-const activeNavLabel = computed(() => {
-  if (activeNav.value === '/datasources' || activeNav.value.startsWith('/datasources/')) return '数据源'
-  const item = otherNav.value.find((n) => n.path === activeNav.value)
-  if (item) return item.label
-  if (activeNav.value === '/license-admin') return '授权管理'
-  return ''
-})
-
 // 授权管理入口仅管理员实例 + 授权码包含 license_admin 功能可见(复用路由守卫的缓存请求)
 const isAdmin = ref(false)
 async function refreshLicenseMenus() {
@@ -343,6 +379,24 @@ async function refreshLicenseMenus() {
   licenseFeatures.value = status.features || []
 }
 onMounted(refreshLicenseMenus)
+
+// 新版本首启自动打开「本次更新」页签:版本号变化(升级后第一次打开)且 CHANGELOG 含当前版本条目时触发。
+// dq-seen-version 记录上次已展示「本次更新」的版本;先写回再判断,避免接口失败/用户中途关页导致重复弹。
+// dev 版本(本地开发)与未激活实例跳过(激活页不渲染主框架,守卫也会拦路由)
+const SEEN_VERSION_KEY = 'dq-seen-version'
+async function checkWhatsNew() {
+  try {
+    const status = await fetchLicenseStatus()
+    const version = status.appVersion
+    if (!version || version === 'dev' || !(status.activated && !status.expired)) return
+    if (localStorage.getItem(SEEN_VERSION_KEY) === version) return
+    localStorage.setItem(SEEN_VERSION_KEY, version)
+    const view = await request.get('/changelog')
+    const hasEntry = (view.entries || []).some((e) => e.version === view.currentVersion)
+    if (hasEntry) router.push('/whats-new')
+  } catch { /* 静默失败:不打扰正常使用;版本号已先写回,接口异常不会重复弹 */ }
+}
+onMounted(checkWhatsNew)
 // 更换授权码成功后(Activate/LicenseFooter 经 markActivated 广播)整体刷新侧边栏:
 // 授权功能可能变化(license_admin 入口增删),先重取状态再刷新数据源树
 window.addEventListener('dq-license-changed', onLicenseChanged)

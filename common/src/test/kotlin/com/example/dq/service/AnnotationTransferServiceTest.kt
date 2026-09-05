@@ -9,6 +9,7 @@ import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.TableDocRepository
+import com.example.dq.repository.TableSystemRepository
 import com.example.dq.repository.TagRepository
 import com.example.dq.util.CryptoUtil
 import org.h2.jdbcx.JdbcDataSource
@@ -29,6 +30,7 @@ class AnnotationTransferServiceTest {
     private class Env {
         val tagRepo: TagRepository
         val tableDocRepo: TableDocRepository
+        val tableSystemRepo: TableSystemRepository
         private val dataSourceService: DataSourceService
         val service: AnnotationTransferService
 
@@ -40,10 +42,11 @@ class AnnotationTransferServiceTest {
             val dsRepo = DataSourceRepository(jdbc)
             tagRepo = TagRepository(jdbc)
             tableDocRepo = TableDocRepository(jdbc)
+            tableSystemRepo = TableSystemRepository(jdbc)
             val config = AppConfig(dataDir = Files.createTempDirectory("annotation-transfer-test"))
             dataSourceService = DataSourceService(dsRepo, CryptoUtil(config), DialectFactory, config,
                 SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
-            service = AnnotationTransferService(tagRepo, tableDocRepo, dsRepo)
+            service = AnnotationTransferService(tagRepo, tableDocRepo, tableSystemRepo, dsRepo)
         }
 
         fun createDs(name: String): Long =
@@ -242,5 +245,60 @@ class AnnotationTransferServiceTest {
         assertEquals(0, result.tagsUpdated)
         val emptyAfter = dst.tagRepo.findEmptyTag()!!
         assertEquals(emptyBefore.color, emptyAfter.color)
+    }
+
+    @Test
+    fun `导出导入往返保留所属系统 数据源未匹配的行跳过计数`() {
+        val src = Env()
+        val dsId = src.createDs("生产库")
+        src.tableSystemRepo.upsert(dsId, "", "public", "users", "核心系统")
+        src.tableSystemRepo.upsert(dsId, "", "public", "login_log", "日志系统")
+        // 已被删除数据源名的行也照导出(导出方无法判断目标实例是否有该数据源)
+        src.tableSystemRepo.upsert(dsId + 100, "", "public", "ghost", "幽灵系统")
+
+        val out = ByteArrayOutputStream()
+        src.service.export(out)
+        val json = out.toString(Charsets.UTF_8)
+        assertTrue(json.contains("核心系统"), json)
+
+        // 预检:所属系统行按数据源名聚合
+        val preview = src.service.preview(ByteArrayInputStream(out.toByteArray()))
+        assertEquals(2, preview.datasources[0].tableSystems)
+
+        val dst = Env()
+        val dstDsId = dst.createDs("生产库")
+        val result = dst.service.importJson(ByteArrayInputStream(out.toByteArray()))
+        assertEquals(2, result.systemsUpserted)
+        assertEquals(1, result.systemsSkipped) // 文件里的空数据源名匹配不到本机数据源
+        assertEquals("核心系统", dst.tableSystemRepo.findBySchema(dstDsId, "", "public")["users"])
+        assertEquals("日志系统", dst.tableSystemRepo.findBySchema(dstDsId, "", "public")["login_log"])
+
+        // 重复导入幂等:upsert 覆盖同内容,不产生重复行
+        val again = dst.service.importJson(ByteArrayInputStream(out.toByteArray()))
+        assertEquals(2, again.systemsUpserted)
+        assertEquals(2, dst.tableSystemRepo.findBySchema(dstDsId, "", "public").size)
+    }
+
+    @Test
+    fun `旧版本导出文件无 tableSystems 字段按空导入`() {
+        val dst = Env()
+        dst.createDs("生产库")
+        // 模拟旧版本导出的文件:没有 tableSystems 键,必须能正常导入(向后兼容红线)
+        val json = """
+            {"app":"dq-tool-annotations","version":1,"exportedAt":"t",
+             "tags":[{"name":"核心表","color":"#F00","description":null}],
+             "tableTags":[
+               {"datasourceName":"生产库","dbName":"","schemaName":"public","tableName":"users","tagName":"核心表"}
+             ],
+             "tableDocs":[
+               {"datasourceName":"生产库","dbName":"","schemaName":"public","tableName":"users","description":"说明"}
+             ]}
+        """.trimIndent()
+        val result = dst.service.importJson(ByteArrayInputStream(json.toByteArray()))
+        assertEquals(1, result.tagsCreated)
+        assertEquals(1, result.tableTagsAdded)
+        assertEquals(1, result.docsUpserted)
+        assertEquals(0, result.systemsUpserted)
+        assertEquals(0, result.systemsSkipped)
     }
 }

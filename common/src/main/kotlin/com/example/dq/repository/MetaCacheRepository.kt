@@ -1,9 +1,12 @@
 package com.example.dq.repository
 
 /**
- * 结构元数据本地缓存(meta_table / meta_column / meta_index / meta_schema_column):
+ * 结构元数据本地缓存(meta_database / meta_table / meta_column / meta_index / meta_schema_column):
  * 浏览路径懒加载 + 手动刷新/扫描时同步刷新;刷新语义为整粒度覆盖(delete + insert)。
  * db_name 已由调用方 normalize:无库概念方言存空串(与 schema_doc/table_doc 口径一致)。
+ *
+ * meta_database 是库/schema 清单的缓存(V29):db_name 空串 = 数据源级库清单(多库方言的 database 列表),
+ * db_name=库名 = 该库的 schema 清单;缓存一律存全量,白名单过滤在读取路径生效(改白名单无需重建缓存)。
  *
  * meta_schema_column 是整库字段清单的 lite 缓存(SQL 控制台智能提示用,kind=SCOLUMN):
  * 与 meta_column(单表结构明细)互不干扰;meta_cache_flag 中 table_name 空串 = 整 schema 字段清单已缓存,
@@ -83,6 +86,14 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
     fun isSchemaColumnsReady(datasourceId: Long, dbName: String, schema: String): Boolean =
         flagExists(datasourceId, dbName, schema, "", KIND_SCOLUMN)
 
+    /** 数据源级库清单缓存是否已就绪(db/schema/table 均空串) */
+    fun isDatabaseListReady(datasourceId: Long): Boolean =
+        flagExists(datasourceId, "", "", "", KIND_DATABASE)
+
+    /** 某库的 schema 清单缓存是否已就绪(单库方言 dbName 空串) */
+    fun isSchemaListReady(datasourceId: Long, dbName: String): Boolean =
+        flagExists(datasourceId, dbName, "", "", KIND_SCHEMA)
+
     /** 已分批缓存字段的表名集合(per-table SCOLUMN 标记) */
     fun schemaColumnCachedTables(datasourceId: Long, dbName: String, schema: String): Set<String> =
         jdbc.query(
@@ -119,7 +130,60 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         private const val KIND_COLUMN = "COLUMN"
         private const val KIND_INDEX = "INDEX"
         private const val KIND_SCOLUMN = "SCOLUMN"
+        private const val KIND_DATABASE = "DATABASE"
+        private const val KIND_SCHEMA = "SCHEMA"
         private const val STRIPE_COUNT = 64
+    }
+
+    // ---------- 库/schema 清单(meta_database,缓存存全量,白名单在读取路径过滤) ----------
+
+    /** 读清单缓存(库清单 dbName 传空串;schema 清单传所属库名),按方言返回顺序(ordinal)排序 */
+    fun listNames(datasourceId: Long, dbName: String): List<String> =
+        jdbc.query(
+            "SELECT name FROM meta_database WHERE datasource_id=? AND db_name=? ORDER BY ordinal",
+            datasourceId, dbName
+        ) { it.getString(1) }
+
+    /** 整粒度覆盖数据源级库清单缓存 */
+    fun replaceDatabases(datasourceId: Long, names: List<String>) {
+        synchronized(lockKey(KIND_DATABASE, datasourceId, "", "", "")) {
+            jdbc.tx { conn ->
+                deleteNames(conn, datasourceId, "")
+                insertNames(conn, datasourceId, "", names)
+                writeFlag(conn, datasourceId, "", "", "", KIND_DATABASE)
+            }
+        }
+    }
+
+    /** 整粒度覆盖某库的 schema 清单缓存(单库方言 dbName 空串) */
+    fun replaceSchemas(datasourceId: Long, dbName: String, names: List<String>) {
+        synchronized(lockKey(KIND_SCHEMA, datasourceId, dbName, "", "")) {
+            jdbc.tx { conn ->
+                deleteNames(conn, datasourceId, dbName)
+                insertNames(conn, datasourceId, dbName, names)
+                writeFlag(conn, datasourceId, dbName, "", "", KIND_SCHEMA)
+            }
+        }
+    }
+
+    private fun deleteNames(conn: java.sql.Connection, datasourceId: Long, dbName: String) {
+        conn.prepareStatement("DELETE FROM meta_database WHERE datasource_id=? AND db_name=?").use { ps ->
+            ps.setLong(1, datasourceId); ps.setString(2, dbName)
+            ps.executeUpdate()
+        }
+    }
+
+    private fun insertNames(conn: java.sql.Connection, datasourceId: Long, dbName: String, names: List<String>) {
+        conn.prepareStatement(
+            "INSERT INTO meta_database(datasource_id, db_name, name, ordinal) VALUES (?,?,?,?)"
+        ).use { ps ->
+            names.forEachIndexed { i, name ->
+                ps.setLong(1, datasourceId); ps.setString(2, dbName)
+                ps.setString(3, name); ps.setInt(4, i)
+                ps.addBatch()
+            }
+            ps.executeBatch()
+        }
     }
 
     // ---------- 表 ----------
@@ -343,6 +407,7 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
     // ---------- 级联清理 ----------
 
     fun deleteByDatasource(datasourceId: Long) {
+        jdbc.update("DELETE FROM meta_database WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_table WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_column WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_index WHERE datasource_id=?", datasourceId)

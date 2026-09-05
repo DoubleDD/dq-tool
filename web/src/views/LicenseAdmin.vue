@@ -1,7 +1,6 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <el-button @click="goBack">返回</el-button>
       <h3 style="margin: 0">授权码管理</h3>
       <el-button type="primary" @click="openGenerate">生成授权码</el-button>
     </div>
@@ -103,12 +102,8 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../api'
-import { goBack as historyBack } from '../utils/back'
-
-const router = useRouter()
 
 const list = ref([])
 const loading = ref(false)
@@ -137,11 +132,6 @@ const canGenerate = computed(() =>
   form.value.customer.trim() && (form.value.permanent || form.value.expiresDate))
 
 onMounted(load)
-
-// 原路返回;无历史记录(直接打开)时兜底回首页
-function goBack() {
-  historyBack(router, '/')
-}
 
 async function load() {
   loading.value = true

@@ -2,7 +2,7 @@ package com.example.dq.service
 
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.ScanColumnView
-import com.example.dq.model.TagKind
+import com.example.dq.model.TagSource
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TagRepository
@@ -16,6 +16,7 @@ import java.util.concurrent.Executors
  * 入队/完成经 ScanAiTracker 计数:全部表终态且 AI 后续清零前,扫描任务保持 RUNNING 不收尾(进度封顶 99%)。
  * 上下文:表注释 / 字段注释 / AI 表描述;三者全空且表非空时,抽样业务数据(前 20 列、100 行、
  * 单元格截断 100 字符)一并发给大模型 —— 注意这超出了「只发元数据」的口径,复选框默认勾选即授权。
+ * 候选标记只取 AI 类型的 USER 标记(MANUAL 人工用途标记不发给大模型);
  * 只增不删(幂等 ensureTableTag);表已有任一 USER 标记、未配置大模型、无候选标记时静默跳过;
  * 同一 job 内首次 LLM 调用失败后熔断,该 job 剩余表不再调用(内存 Set,不持久化)。
  */
@@ -75,9 +76,9 @@ class AutoTagService(
             log.debug("AI 自动打标跳过:未配置大模型 jobId={}", job.id)
             return
         }
-        val candidates = tagService.list().filter { it.kind == TagKind.USER }
+        val candidates = tagService.aiCandidates()
         if (candidates.isEmpty()) {
-            log.debug("AI 自动打标跳过:无候选 USER 标记 jobId={}", job.id)
+            log.debug("AI 自动打标跳过:无候选 AI 类型标记 jobId={}", job.id)
             return
         }
         val table = scanRepo.findScanTable(scanTableId) ?: return
@@ -116,7 +117,7 @@ class AutoTagService(
         }
         val tagName = parseTag(answer, candidates.map { it.name }) ?: return
         val tag = candidates.first { it.name == tagName }
-        tagRepo.ensureTableTag(tag.id, job.datasourceId, dbName, job.schemaName, tableName)
+        tagRepo.ensureTableTag(tag.id, job.datasourceId, dbName, job.schemaName, tableName, TagSource.AI)
         log.info("AI 自动打标 jobId={} table={} -> {}", job.id, tableName, tagName)
     }
 

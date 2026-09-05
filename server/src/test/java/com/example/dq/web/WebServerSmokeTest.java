@@ -227,6 +227,16 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 更新日志端点未激活可访问且回传当前版本() throws Exception {
+        // /api/changelog 在授权前置校验白名单内(与 /api/diagnostics 同理),未激活也应 200
+        HttpResponse<String> resp = get("/api/changelog");
+        assertEquals(200, resp.statusCode(), resp.body());
+        // currentVersion 取 AppConfig.appVersion;entries 为数组(CHANGELOG.md 经 processResources 拷入 classpath)
+        assertTrue(resp.body().contains("\"currentVersion\":\"1.5-test\""), resp.body());
+        assertTrue(resp.body().contains("\"entries\":["), resp.body());
+    }
+
+    @Test
     void 通用列表导出全链路() throws Exception {
         activateLicense();
         // stage:提交所见表格数据 → token

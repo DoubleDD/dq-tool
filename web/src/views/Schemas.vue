@@ -479,31 +479,35 @@ async function loadSchemaStats(refresh = false) {
   }
 }
 
-/** 手动刷新:从业务库拉最新库结构统计并覆盖本地缓存 */
+/** 手动刷新:从业务库拉最新库清单/库结构统计并覆盖本地缓存 */
 async function refreshStats() {
   refreshing.value = true
   try {
-    await loadSchemaStats(true)
+    // 库/schema 清单同为本地缓存,刷新时一并回源覆盖,保证业务库新增的库能出现在列表里
+    if (isMultiDb.value) {
+      databases.value = await request.get(`/datasources/${dsId}/databases?refresh=true`).catch(() => databases.value)
+    }
+    await loadSchemas(true)
     ElMessage.success('已从数据源刷新库结构缓存')
   } finally {
     refreshing.value = false
   }
 }
 
-async function loadSchemas() {
+async function loadSchemas(refresh = false) {
   statsLoaded.value = false
   if (isMultiDb.value && databases.value.length) {
     // 跨库模式:逐库拉取 schema 清单合并,行内携带所属数据库
     const perDb = await Promise.all(databases.value.map(async (db) => {
-      const list = await request.get(`/datasources/${dsId}/schemas?db=${encodeURIComponent(db)}`).catch(() => [])
+      const list = await request.get(`/datasources/${dsId}/schemas?db=${encodeURIComponent(db)}${refresh ? '&refresh=true' : ''}`).catch(() => [])
       return (list || []).map((name) => ({ name, database: db }))
     }))
     schemas.value = perDb.flat()
   } else {
-    const schemaList = await request.get(`/datasources/${dsId}/schemas`)
+    const schemaList = await request.get(`/datasources/${dsId}/schemas${refresh ? '?refresh=true' : ''}`)
     schemas.value = (schemaList || []).map((name) => ({ name, database: '' }))
   }
-  loadSchemaStats()
+  loadSchemaStats(refresh)
 }
 
 async function load() {

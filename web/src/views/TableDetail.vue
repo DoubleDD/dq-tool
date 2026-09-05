@@ -3,6 +3,9 @@
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
       <div>
+        <el-button type="primary" :loading="collectLoading" :disabled="!dsId" @click="toggleCollect">
+          {{ collectId ? '取消采集' : '采集' }}
+        </el-button>
         <ExportButton v-if="hasJob" :job-id="jobId" label="导出扫描结果" />
         <el-button @click="exportExcel">导出列表</el-button>
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshAll">刷新</el-button>
@@ -171,7 +174,57 @@
         </div>
       </el-tab-pane>
 
+      <el-tab-pane label="标签" name="tags">
+        <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
+          <el-input v-model="tagKeyword" placeholder="按标记名搜索" clearable style="width: 240px" />
+          <el-select v-model="tagSourceFilter" placeholder="打标类型(全部)" clearable style="width: 160px">
+            <el-option label="人工打标" value="MANUAL" />
+            <el-option label="系统打标" value="SYSTEM" />
+          </el-select>
+          <el-button type="primary" :disabled="!dsId" style="margin-left: auto" @click="tagDialogVisible = true">打标</el-button>
+        </div>
+        <!-- 当前表已打标记:含系统自动维护的「空表」标记;手工打标走上方「打标」弹窗 -->
+        <el-table :data="filteredTableTags" v-loading="tagsLoading" border>
+          <el-table-column type="index" label="序号" width="60" />
+          <el-table-column label="标记" min-width="160">
+            <template #default="{ row }">
+              <el-tag
+                :type="row.kind === 'EMPTY' ? 'info' : undefined"
+                :effect="row.kind === 'EMPTY' ? 'plain' : 'dark'"
+                :color="row.kind === 'EMPTY' ? undefined : row.color"
+                :style="row.kind === 'EMPTY' ? {} : { borderColor: row.color }"
+              >{{ row.name }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="打标类型" width="110">
+            <template #default="{ row }">
+              <el-tag v-if="row.source === 'MANUAL'" size="small" type="info" effect="plain">人工打标</el-tag>
+              <el-tag v-else size="small" type="success" effect="plain">系统打标</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span v-if="row.description">{{ row.description }}</span>
+              <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!tagsLoading && tagsLoaded && !tableTags.length"
+                  description="该表还没有标记,点右上角「打标」添加" :image-size="60" />
+      </el-tab-pane>
+
     </el-tabs>
+
+    <!-- 打标弹窗(复用表列表页同款组件):勾选 USER 标记 + 就地新建 -->
+    <TableTagDialog
+      v-model="tagDialogVisible"
+      :ds-id="dsId"
+      :schema="schema"
+      :db="db"
+      :table-name="tableName"
+      :current-tags="tableTags"
+      @saved="onTagsSaved"
+    />
   </div>
 </template>
 
@@ -184,6 +237,7 @@ import request from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import SqlInput from '../components/SqlInput.vue'
+import TableTagDialog from '../components/TableTagDialog.vue'
 import { formatDuration, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
@@ -229,6 +283,16 @@ const columnView = ref('table')   // 字段明细内视图:table=字段表格,dd
 const refreshing = ref(false)
 const keyword = ref('')
 const onlyEmpty = ref(false)
+// 当前表的人工采集状态:采集记录 id(null=未采集)
+const collectId = ref(null)
+const collectLoading = ref(false)
+// 「标签」页签:当前表已打标记(含系统空表标记),懒加载
+const tableTags = ref([])
+const tagsLoading = ref(false)
+const tagsLoaded = ref(false)     // 标记是否已加载(懒加载)
+const tagKeyword = ref('')        // 标记名过滤
+const tagSourceFilter = ref('')   // 打标类型过滤:MANUAL 人工打标 / SYSTEM 系统打标(含 AI 自动打标与空表联动),空=全部
+const tagDialogVisible = ref(false)
 
 const hasJob = computed(() => !!jobId.value)
 
@@ -250,6 +314,24 @@ const filteredColumns = computed(() => {
   }
   return list
 })
+
+// 标签页签筛选:名称关键字 + 打标类型(source:MANUAL=人工打标,其余=系统打标)
+const filteredTableTags = computed(() => {
+  let list = tableTags.value
+  const kw = tagKeyword.value.trim().toLowerCase()
+  if (kw) list = list.filter((t) => (t.name || '').toLowerCase().includes(kw))
+  if (tagSourceFilter.value) {
+    list = list.filter((t) => tagSourceFilter.value === 'MANUAL'
+      ? t.source === 'MANUAL'
+      : t.source !== 'MANUAL')
+  }
+  return list
+})
+
+/** 打标类型展示文案:人工打标(手动勾选)/ 系统打标(AI 自动打标、空表联动) */
+function tagSourceLabel(tag) {
+  return tag.source === 'MANUAL' ? '人工打标' : '系统打标'
+}
 
 // 键约束展示:PK / UNI / 空(结构推导优先,兼容扫描接口旧 keyLabel)
 function keyLabel(row) {
@@ -302,6 +384,61 @@ async function load(refresh = false) {
   } finally {
     loading.value = false
   }
+}
+
+/** 拉取当前表采集状态(本库采集 map 里按表名取记录 id),失败静默按未采集处理 */
+async function loadCollectStatus() {
+  if (!dsId.value || !schema.value) return
+  const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
+  const q = db.value ? `?db=${encodeURIComponent(db.value)}` : ''
+  const map = await request.get(`${base}/manual-collects${q}`).catch(() => ({}))
+  collectId.value = map?.[tableName] ?? null
+}
+
+/** 采集/取消采集切换:取消按记录 id 删除,采集走批量接口(单表即一项);本页无表注释,快照传 null */
+async function toggleCollect() {
+  collectLoading.value = true
+  try {
+    if (collectId.value) {
+      await request.delete(`/manual-collects/${collectId.value}`)
+      collectId.value = null
+      ElMessage.success(`已取消采集「${tableName}」`)
+    } else {
+      await request.post('/manual-collects', {
+        items: [{
+          datasourceId: /^\d+$/.test(String(dsId.value)) ? Number(dsId.value) : dsId.value,
+          dbName: db.value || null,
+          schemaName: schema.value,
+          tableName,
+          tableComment: null
+        }]
+      })
+      ElMessage.success(`已采集「${tableName}」,可在「人工采集」页签查看`)
+      await loadCollectStatus()
+    }
+  } finally {
+    collectLoading.value = false
+  }
+}
+
+/** 标签页签:拉本库打标 map 取当前表 entry,失败静默按无标记处理 */
+async function loadTags() {
+  if (!dsId.value || !schema.value) return
+  tagsLoading.value = true
+  try {
+    const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
+    const q = db.value ? `?db=${encodeURIComponent(db.value)}` : ''
+    const map = await request.get(`${base}/table-tags${q}`).catch(() => ({}))
+    tableTags.value = map?.[tableName] || []
+    tagsLoaded.value = true
+  } finally {
+    tagsLoading.value = false
+  }
+}
+
+/** 打标保存:接口返回该表最新标记数组(含空表标记),就地回填 */
+function onTagsSaved(tags) {
+  tableTags.value = tags
 }
 
 /** 索引懒加载:首次切到索引 tab 或刷新时调用,已加载则跳过(除非强制) */
@@ -421,10 +558,11 @@ function applyPreviewFilter() {
   loadPreview(1)
 }
 
-/** 切换 tab:切到索引/预览时各自懒加载(预览仅首次,之后翻页由分页器触发) */
+/** 切换 tab:切到索引/预览/标签时各自懒加载(预览仅首次,之后翻页由分页器触发) */
 function onTabChange(name) {
   if (name === 'indexes') loadIndexes()
   if (name === 'preview' && !previewLoaded.value) loadPreview(1)
+  if (name === 'tags' && !tagsLoaded.value) loadTags()
 }
 
 /** 字段明细内 表格/DDL 切换:首次切到 DDL 时懒加载 */
@@ -470,6 +608,11 @@ function exportExcel() {
       (i.columns || []).join(', ')
     ])
     exportListToExcel(`索引结构-${tableName}`, headers, rows, '索引结构')
+  } else if (activeTab.value === 'tags') {
+    if (!filteredTableTags.value.length) return ElMessage.warning('当前列表没有可导出的数据')
+    const headers = ['标记名', '打标类型', '描述']
+    const rows = filteredTableTags.value.map((t) => [cellText(t.name), tagSourceLabel(t), cellText(t.description)])
+    exportListToExcel(`标签-${tableName}`, headers, rows, '标签')
   } else {
     if (!previewRows.value.length) return ElMessage.warning('当前列表没有可导出的数据')
     const headers = previewColumns.value.map((c) => (c.type ? `${c.name} ${c.type}` : c.name))
@@ -482,13 +625,16 @@ function exportExcel() {
 async function refreshAll() {
   refreshing.value = true
   try {
-    // 重置索引/预览/DDL 加载标记,若当前正在展示则强制重新拉取
+    // 重置索引/预览/DDL/标签 加载标记,若当前正在展示则强制重新拉取
     indexesLoaded.value = false
     previewLoaded.value = false
     ddlLoaded.value = false
+    tagsLoaded.value = false
     await load(true)
+    await loadCollectStatus()
     if (activeTab.value === 'indexes') await loadIndexes(true)
     if (activeTab.value === 'preview') await loadPreview(previewPage.value)
+    if (activeTab.value === 'tags') await loadTags()
     if (activeTab.value === 'columns' && columnView.value === 'ddl') await loadDdl()
     ElMessage.success('已刷新结构与扫描信息')
   } finally {
@@ -515,6 +661,7 @@ const breadcrumbItems = computed(() => {
 
 onMounted(async () => {
   await load()
+  loadCollectStatus()
   // 数据源名兜底解析:刷新/直达 URL 无 ?name= 时也能恢复真名,并刷新页签标题
   // (dsId 在 load 内由任务接口回填,须在 load 之后解析)
   if (dsId.value) ensureDsName(dsId.value).then(() => syncTab(route))

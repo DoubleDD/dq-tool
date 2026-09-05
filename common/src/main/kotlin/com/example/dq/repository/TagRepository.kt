@@ -2,6 +2,8 @@ package com.example.dq.repository
 
 import com.example.dq.model.Tag
 import com.example.dq.model.TagKind
+import com.example.dq.model.TagSource
+import com.example.dq.model.TagType
 import java.sql.ResultSet
 
 /** 表标记:全局标记定义 CRUD + 表级打标关系维护 + 标记统计查询(只读本地 H2,不连业务库) */
@@ -9,16 +11,18 @@ class TagRepository(private val jdbc: Jdbc) {
 
     private val mapper: (ResultSet) -> Tag = { rs ->
         Tag(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
-            TagKind.valueOf(rs.getString("kind")), rs.getString("description"))
+            TagKind.valueOf(rs.getString("kind")), rs.getString("description"),
+            TagType.fromCode(rs.getInt("tag_type")))
     }
 
     /** 全部标记(含系统「空表」),带打标表数 */
     fun listAll(): List<Tag> =
-        jdbc.query("SELECT d.id, d.name, d.color, d.kind, d.description, COUNT(t.id) AS table_count FROM tag_def d " +
+        jdbc.query("SELECT d.id, d.name, d.color, d.kind, d.description, d.tag_type, COUNT(t.id) AS table_count FROM tag_def d " +
                 "LEFT JOIN table_tag t ON t.tag_id = d.id " +
-                "GROUP BY d.id, d.name, d.color, d.kind, d.description ORDER BY d.id") { rs ->
+                "GROUP BY d.id, d.name, d.color, d.kind, d.description, d.tag_type ORDER BY d.id") { rs ->
             Tag(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
-                TagKind.valueOf(rs.getString("kind")), rs.getString("description"), rs.getLong("table_count"))
+                TagKind.valueOf(rs.getString("kind")), rs.getString("description"),
+                TagType.fromCode(rs.getInt("tag_type")), rs.getLong("table_count"))
         }
 
     fun findById(id: Long): Tag? =
@@ -31,14 +35,20 @@ class TagRepository(private val jdbc: Jdbc) {
     fun findEmptyTag(): Tag? =
         jdbc.queryOne("SELECT * FROM tag_def WHERE kind='EMPTY'", mapper = mapper)
 
-    fun create(name: String, color: String, description: String? = null): Tag {
-        val id = jdbc.insert("INSERT INTO tag_def(name, color, kind, description) VALUES (?,?,'USER',?)",
-            name, color, description)
-        return Tag(id, name, color, TagKind.USER, description)
+    fun create(name: String, color: String, description: String? = null, tagType: TagType = TagType.AI): Tag {
+        val id = jdbc.insert("INSERT INTO tag_def(name, color, kind, description, tag_type) VALUES (?,?,'USER',?,?)",
+            name, color, description, tagType.code)
+        return Tag(id, name, color, TagKind.USER, description, tagType)
     }
 
-    fun update(id: Long, name: String, color: String, description: String? = null) {
-        jdbc.update("UPDATE tag_def SET name=?, color=?, description=? WHERE id=?", name, color, description, id)
+    /** tagType 为 null 表示不改动(导入老格式文件缺该字段时保留原值) */
+    fun update(id: Long, name: String, color: String, description: String? = null, tagType: TagType? = null) {
+        if (tagType == null) {
+            jdbc.update("UPDATE tag_def SET name=?, color=?, description=? WHERE id=?", name, color, description, id)
+        } else {
+            jdbc.update("UPDATE tag_def SET name=?, color=?, description=?, tag_type=? WHERE id=?",
+                name, color, description, tagType.code, id)
+        }
     }
 
     /** 删除标记;table_tag 外键 ON DELETE CASCADE 自动解除全部打标关系 */
@@ -57,17 +67,18 @@ class TagRepository(private val jdbc: Jdbc) {
             TableTagExportRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5))
         }
 
-    /** 某库下全部表的打标情况:表名 -> 标记列表(一次拉回,供表列表页与客户端按标记过滤) */
+    /** 某库下全部表的打标情况:表名 -> 标记列表(一次拉回,供表列表页与客户端按标记过滤);Tag.source 填充打标来源 */
     fun tableTagsBySchema(datasourceId: Long, dbName: String, schema: String): Map<String, List<Tag>> {
         val result = LinkedHashMap<String, MutableList<Tag>>()
-        jdbc.query("SELECT tt.table_name, d.id, d.name, d.color, d.kind, d.description FROM table_tag tt " +
+        jdbc.query("SELECT tt.table_name, d.id, d.name, d.color, d.kind, d.description, d.tag_type, tt.source FROM table_tag tt " +
                 "JOIN tag_def d ON d.id = tt.tag_id " +
                 "WHERE tt.datasource_id=? AND tt.db_name=? AND tt.schema_name=? " +
                 "ORDER BY tt.table_name, d.id",
             datasourceId, dbName, schema) { rs ->
             result.getOrPut(rs.getString("table_name")) { ArrayList() }
                 .add(Tag(rs.getLong("id"), rs.getString("name"), rs.getString("color"),
-                    TagKind.valueOf(rs.getString("kind")), rs.getString("description")))
+                    TagKind.valueOf(rs.getString("kind")), rs.getString("description"),
+                    TagType.fromCode(rs.getInt("tag_type")), source = rs.getString("source")))
         }
         return result
     }
@@ -89,14 +100,15 @@ class TagRepository(private val jdbc: Jdbc) {
             }
             if (tagIds.isNotEmpty()) {
                 conn.prepareStatement(
-                    "INSERT INTO table_tag(tag_id, datasource_id, db_name, schema_name, table_name) " +
-                            "VALUES (?,?,?,?,?)").use { ps ->
+                    "INSERT INTO table_tag(tag_id, datasource_id, db_name, schema_name, table_name, source) " +
+                            "VALUES (?,?,?,?,?,?)").use { ps ->
                     for (tagId in tagIds) {
                         ps.setLong(1, tagId)
                         ps.setLong(2, datasourceId)
                         ps.setString(3, dbName)
                         ps.setString(4, schema)
                         ps.setString(5, table)
+                        ps.setString(6, TagSource.MANUAL)   // 打标弹窗整体替换 = 人工打标
                         ps.addBatch()
                     }
                     ps.executeBatch()
@@ -105,11 +117,31 @@ class TagRepository(private val jdbc: Jdbc) {
         }
     }
 
-    /** 打上标记(幂等,唯一键兜底);空表标记联动用 */
-    fun ensureTableTag(tagId: Long, datasourceId: Long, dbName: String, schema: String, table: String) {
-        jdbc.update("MERGE INTO table_tag(tag_id, datasource_id, db_name, schema_name, table_name) " +
-                "KEY(tag_id, datasource_id, db_name, schema_name, table_name) VALUES (?,?,?,?,?)",
-            tagId, datasourceId, dbName, schema, table)
+    /** 打上标记(幂等,唯一键兜底);source 记录打标来源(TagSource.*),缺省 MANUAL */
+    fun ensureTableTag(tagId: Long, datasourceId: Long, dbName: String, schema: String, table: String,
+                       source: String = TagSource.MANUAL) {
+        jdbc.update("MERGE INTO table_tag(tag_id, datasource_id, db_name, schema_name, table_name, source) " +
+                "KEY(tag_id, datasource_id, db_name, schema_name, table_name) VALUES (?,?,?,?,?,?)",
+            tagId, datasourceId, dbName, schema, table, source)
+    }
+
+    /** 批量打标(只增不删):逐 表×标记 幂等插入,返回 (新增数, 已存在跳过数);页面批量操作 = 人工打标 */
+    fun ensureTableTagsBatch(tagIds: List<Long>, datasourceId: Long, dbName: String,
+                             schema: String, tables: List<String>): Pair<Int, Int> {
+        var added = 0
+        var skipped = 0
+        for (table in tables) {
+            for (tagId in tagIds) {
+                val n = jdbc.update(
+                    "INSERT INTO table_tag(tag_id, datasource_id, db_name, schema_name, table_name, source) " +
+                            "SELECT ?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM table_tag WHERE tag_id=? " +
+                            "AND datasource_id=? AND db_name=? AND schema_name=? AND table_name=?)",
+                    tagId, datasourceId, dbName, schema, table, TagSource.MANUAL,
+                    tagId, datasourceId, dbName, schema, table)
+                if (n > 0) added++ else skipped++
+            }
+        }
+        return added to skipped
     }
 
     /** 摘除标记(幂等);空表标记联动用 */

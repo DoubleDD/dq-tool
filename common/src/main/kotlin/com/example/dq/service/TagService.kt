@@ -4,6 +4,9 @@ import com.example.dq.model.SchemaTagCount
 import com.example.dq.model.SchemaTagStat
 import com.example.dq.model.Tag
 import com.example.dq.model.TagKind
+import com.example.dq.model.TagSource
+import com.example.dq.model.TagType
+import com.example.dq.model.BatchTagResult
 import com.example.dq.model.TagSchemaStat
 import com.example.dq.model.TagStats
 import com.example.dq.repository.DataSourceRepository
@@ -21,17 +24,21 @@ class TagService(
     /** 全部标记(含系统「空表」),带打标表数 */
     fun list(): List<Tag> = tagRepo.listAll()
 
-    fun create(name: String?, color: String?, description: String? = null): Tag {
+    /** AI 自动打标候选:仅 AI 类型的 USER 标记(人工用途标记不发给大模型) */
+    fun aiCandidates(): List<Tag> =
+        tagRepo.listAll().filter { it.kind == TagKind.USER && it.tagType == TagType.AI }
+
+    fun create(name: String?, color: String?, description: String? = null, tagType: String? = null): Tag {
         val n = normalizeName(name)
         val c = normalizeColor(color)
         val d = normalizeDescription(description)
         if (tagRepo.findByName(n) != null) {
             throw IllegalStateException("标记名称已存在:$n")
         }
-        return tagRepo.create(n, c, d)
+        return tagRepo.create(n, c, d, normalizeTagType(tagType))
     }
 
-    fun update(id: Long, name: String?, color: String?, description: String? = null): Tag {
+    fun update(id: Long, name: String?, color: String?, description: String? = null, tagType: String? = null): Tag {
         val tag = requireTag(id)
         requireUserKind(tag)
         val n = normalizeName(name)
@@ -41,7 +48,8 @@ class TagService(
         if (dup != null && dup.id != id) {
             throw IllegalStateException("标记名称已存在:$n")
         }
-        tagRepo.update(id, n, c, d)
+        // tagType 缺省(null)保持原值,显式传入才变更
+        tagRepo.update(id, n, c, d, tagType?.let { normalizeTagType(it) })
         return tagRepo.findById(id)!!
     }
 
@@ -98,12 +106,29 @@ class TagService(
         return tagRepo.tableTagsBySchema(datasourceId, db, schema)[table] ?: emptyList()
     }
 
+    /** 批量打标(只增不删):对多张表确保打上选中的 USER 标记,返回 新增/已存在跳过 计数 */
+    fun batchAddTableTags(datasourceId: Long, database: String?, schema: String,
+                          tables: List<String>, tagIds: List<Long>): BatchTagResult {
+        val names = tables.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        if (names.isEmpty()) throw IllegalArgumentException("请选择要打标的表")
+        val ids = tagIds.distinct()
+        if (ids.isEmpty()) throw IllegalArgumentException("请选择要打的标记")
+        for (tagId in ids) {
+            val tag = tagRepo.findById(tagId) ?: throw IllegalArgumentException("标记不存在:$tagId")
+            if (tag.kind == TagKind.EMPTY) {
+                throw IllegalArgumentException("空表标记由扫描结果自动维护,不可手动打标")
+            }
+        }
+        val (added, skipped) = tagRepo.ensureTableTagsBatch(ids, datasourceId, normalizeDb(database), schema, names)
+        return BatchTagResult(added, skipped)
+    }
+
     /** 扫描完成联动:空表(totalRows=0)确保打上「空表」标记,非空摘除;幂等 */
     fun syncEmptyTag(datasourceId: Long, dbName: String?, schema: String, table: String, totalRows: Long) {
         val empty = tagRepo.findEmptyTag() ?: return
         val db = normalizeDb(dbName)
         if (totalRows == 0L) {
-            tagRepo.ensureTableTag(empty.id, datasourceId, db, schema, table)
+            tagRepo.ensureTableTag(empty.id, datasourceId, db, schema, table, TagSource.SYSTEM)
         } else {
             tagRepo.removeTableTag(empty.id, datasourceId, db, schema, table)
         }
@@ -137,6 +162,19 @@ class TagService(
             throw IllegalArgumentException("标记描述不能超过 500 字符")
         }
         return d
+    }
+
+    /** 标记类型(用途):空值缺省 AI(与升级前「全部 USER 标记都是 AI 候选」行为一致);SYSTEM 由系统维护不可指定,非法值 400 */
+    private fun normalizeTagType(tagType: String?): TagType {
+        val t = tagType?.trim()?.takeIf { it.isNotEmpty() } ?: return TagType.AI
+        if (t == TagType.SYSTEM.name) {
+            throw IllegalArgumentException("系统标记由系统维护,不可指定该类型")
+        }
+        return try {
+            TagType.valueOf(t)
+        } catch (e: IllegalArgumentException) {
+            throw IllegalArgumentException("标记类型只能是 AI(可用于AI打标)或 MANUAL(仅用于人工打标):$t")
+        }
     }
 
     private companion object {

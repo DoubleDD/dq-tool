@@ -36,12 +36,37 @@ CONF="$ROOT/tauri/src-tauri/tauri.conf.json"
 sed -i.bak "s/\"version\": \".*\"/\"version\": \"$TAURI_VERSION\"/" "$CONF"
 rm -f "$CONF.bak"
 
+# 4. 更新日志模板:CHANGELOG.md 缺少新展示版(去 0. 前缀)段落时,在「# 更新日志」标题行后插入占位段落。
+# 构建有 verifyChangelog 硬校验(processResources 前置),发版前必须填写该段落
+CHANGELOG="$ROOT/CHANGELOG.md"
+CHANGELOG_TEMPLATE="## ${BASE_VERSION} ($(date +%F))
+
+- (待填写:本次版本更新内容)"
+if [[ ! -f "$CHANGELOG" ]]; then
+  printf '# 更新日志\n\n%s\n' "$CHANGELOG_TEMPLATE" > "$CHANGELOG"
+  CHANGELOG_INSERTED=1
+elif ! grep -qE "^## ${BASE_VERSION//./\\.}([[:space:]]|$)" "$CHANGELOG"; then
+  # 在首个「# 更新日志」标题行后插入;文件无该标题时插到文件顶部
+  if head -1 "$CHANGELOG" | grep -q '^# 更新日志'; then
+    { head -1 "$CHANGELOG"; echo; echo "$CHANGELOG_TEMPLATE"; tail -n +2 "$CHANGELOG"; } > "$CHANGELOG.tmp"
+  else
+    { echo "$CHANGELOG_TEMPLATE"; echo; cat "$CHANGELOG"; } > "$CHANGELOG.tmp"
+  fi
+  mv "$CHANGELOG.tmp" "$CHANGELOG"
+  CHANGELOG_INSERTED=1
+fi
+
 echo "版本号已更新:"
 echo "  VERSION 文件:       $NEW_VERSION"
 echo "  tauri.conf.json:    $TAURI_VERSION"
+if [[ "${CHANGELOG_INSERTED:-0}" == "1" ]]; then
+  echo "  CHANGELOG.md:       已插入 ${BASE_VERSION} 占位段落,请填写本次更新内容(构建有硬校验)"
+else
+  echo "  CHANGELOG.md:       已存在 ${BASE_VERSION} 段落,请确认内容已填写(构建有硬校验)"
+fi
 echo ""
 echo "后续操作:"
-echo "  git add VERSION tauri/src-tauri/tauri.conf.json"
+echo "  git add VERSION CHANGELOG.md tauri/src-tauri/tauri.conf.json"
 echo "  git commit -m 'chore: 版本号升至 ${NEW_VERSION#0.}'"
 echo "  git tag v${NEW_VERSION#0.}"
 echo "  git push origin main && git push origin v${NEW_VERSION#0.}"

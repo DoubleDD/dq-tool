@@ -18,6 +18,8 @@
               <span class="tag-name" :title="tag.name">{{ tag.name }}</span>
             </el-tooltip>
             <el-tag v-if="tag.kind === 'EMPTY'" size="small" type="info">系统</el-tag>
+            <el-tag v-else-if="tag.tagType === 'AI'" size="small" type="success" effect="plain" title="类型 1:AI 自动打标候选">可用于AI打标</el-tag>
+            <el-tag v-else size="small" type="info" effect="plain" title="类型 2:不作为 AI 自动打标候选">仅用于人工打标</el-tag>
             <span class="tag-count">{{ formatNumber(tag.tableCount ?? 0) }}</span>
             <span v-if="tag.kind !== 'EMPTY'" class="tag-actions">
               <el-button link type="primary" :icon="Edit" title="编辑" @click.stop="startEdit(tag)" />
@@ -114,6 +116,13 @@
         <el-form-item label="颜色">
           <el-color-picker v-model="tagForm.color" :predefine="presetColors" />
         </el-form-item>
+        <el-form-item label="类型">
+          <el-radio-group v-model="tagForm.tagType">
+            <el-radio-button value="MANUAL">仅用于人工打标</el-radio-button>
+            <el-radio-button value="AI">可用于AI打标</el-radio-button>
+          </el-radio-group>
+          <div class="form-tip">类型 1=可用于AI打标(AI 自动打标候选),2=仅用于人工打标;系统标记(0)由系统维护</div>
+        </el-form-item>
         <el-form-item label="描述">
           <el-input v-model="tagForm.description" placeholder="描述(可选,供 AI 自动打标理解标记含义)"
                     maxlength="500" type="textarea" :rows="2" resize="none" />
@@ -150,7 +159,7 @@ const tagDialogVisible = ref(false)
 const tagDialogMode = ref('create') // 'create' | 'edit'
 const editingId = ref(null)
 const operating = ref(false)
-const tagForm = reactive({ name: '', color: '#409EFF', description: '' })
+const tagForm = reactive({ name: '', color: '#409EFF', description: '', tagType: 'MANUAL' })
 const presetColors = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#9B59B6', '#16A085', '#D35400']
 
 /** null(该库无已扫描表)显示「—」 */
@@ -210,6 +219,7 @@ function startEdit(tag) {
   tagForm.name = tag.name
   tagForm.color = tag.color
   tagForm.description = tag.description || ''
+  tagForm.tagType = tag.tagType || 'MANUAL'
   tagDialogVisible.value = true
 }
 
@@ -217,6 +227,7 @@ function resetTagForm() {
   tagForm.name = ''
   tagForm.color = '#409EFF'
   tagForm.description = ''
+  tagForm.tagType = 'MANUAL'
 }
 
 async function submitTagForm() {
@@ -225,7 +236,7 @@ async function submitTagForm() {
     ElMessage.warning('标记名称不能为空')
     return
   }
-  const payload = { name, color: tagForm.color || '#409EFF', description: tagForm.description.trim() || null }
+  const payload = { name, color: tagForm.color || '#409EFF', description: tagForm.description.trim() || null, tagType: tagForm.tagType }
   operating.value = true
   try {
     if (tagDialogMode.value === 'create') {
@@ -365,6 +376,12 @@ onActivated(() => {
 .stats-panel {
   flex: 1;
   min-width: 0;
+}
+.form-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
+  margin-top: 4px;
 }
 .metric-cards {
   display: grid;

@@ -97,6 +97,31 @@ class TagRepositoryTest {
     }
 
     @Test
+    fun `批量打标幂等计数与四元组隔离`() {
+        val tagA = repo.create("标记A", "#409EFF")
+        val tagB = repo.create("标记B", "#67C23A")
+
+        // 2 表 × 2 标记 = 4 条新增
+        val (added1, skipped1) = repo.ensureTableTagsBatch(listOf(tagA.id, tagB.id), 1L, "", "s1", listOf("t1", "t2"))
+        assertEquals(4, added1)
+        assertEquals(0, skipped1)
+
+        // 重复批量:全部已存在跳过
+        val (added2, skipped2) = repo.ensureTableTagsBatch(listOf(tagA.id, tagB.id), 1L, "", "s1", listOf("t1", "t2"))
+        assertEquals(0, added2)
+        assertEquals(4, skipped2)
+
+        // 部分已存在:t1 已有标记A(跳过),t3 全新(新增)
+        val (added3, skipped3) = repo.ensureTableTagsBatch(listOf(tagA.id), 1L, "", "s1", listOf("t1", "t3"))
+        assertEquals(1, added3)
+        assertEquals(1, skipped3)
+
+        // 四元组隔离:换数据源互不影响
+        val (added4, _) = repo.ensureTableTagsBatch(listOf(tagA.id), 2L, "", "s1", listOf("t1"))
+        assertEquals(1, added4)
+    }
+
+    @Test
     fun `库维度标记计数只返回有标记表的库`() {
         val tagA = repo.create("标记A", "#409EFF")
         val empty = repo.findEmptyTag()!!

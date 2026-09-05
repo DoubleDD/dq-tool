@@ -27,12 +27,12 @@ public class TagController {
 
     public void create(Context ctx) {
         TagRequest req = Validators.validate(ctx.bodyAsClass(TagRequest.class));
-        ctx.json(service.create(req.name(), req.color(), req.description()));
+        ctx.json(service.create(req.name(), req.color(), req.description(), req.tagType()));
     }
 
     public void update(Context ctx) {
         TagRequest req = Validators.validate(ctx.bodyAsClass(TagRequest.class));
-        ctx.json(service.update(tagId(ctx), req.name(), req.color(), req.description()));
+        ctx.json(service.update(tagId(ctx), req.name(), req.color(), req.description(), req.tagType()));
     }
 
     public void delete(Context ctx) {
@@ -61,6 +61,13 @@ public class TagController {
                 ctx.pathParam("table"), req.tagIds()));
     }
 
+    /** 批量打标(只增不删):对勾选的多张表确保打上选中 USER 标记,返回 新增/已存在跳过 计数 */
+    public void batchAddTableTags(Context ctx) {
+        TableTagsBatchRequest req = Validators.validate(ctx.bodyAsClass(TableTagsBatchRequest.class));
+        ctx.json(service.batchAddTableTags(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"),
+                req.tableNames(), req.tagIds()));
+    }
+
     private static long dsId(Context ctx) {
         return ctx.pathParamAsClass("dsId", Long.class).get();
     }
@@ -69,11 +76,15 @@ public class TagController {
         return ctx.pathParamAsClass("id", Long.class).get();
     }
 
-    /** 标记新建/编辑请求体;名称为空、颜色缺省、描述归一等细节由 TagService 处理 */
-    public record TagRequest(String name, String color, String description) {
+    /** 标记新建/编辑请求体;名称为空、颜色缺省、描述归一、类型缺省等细节由 TagService 处理 */
+    public record TagRequest(String name, String color, String description, String tagType) {
     }
 
     /** 单表打标请求体:整体替换的 USER 标记 id 列表 */
     public record TableTagsRequest(@NotNull List<Long> tagIds) {
+    }
+
+    /** 批量打标请求体:表名列表 + 要确保打上的 USER 标记 id 列表(只增不删) */
+    public record TableTagsBatchRequest(@NotNull List<String> tableNames, @NotNull List<Long> tagIds) {
     }
 }

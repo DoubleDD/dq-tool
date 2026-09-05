@@ -13,6 +13,9 @@ const routes = [
   { path: '/settings', component: () => import('../views/Settings.vue') },
   { path: '/logs', component: () => import('../views/Logs.vue') },
   { path: '/diagnostics', component: () => import('../views/Diagnostics.vue') },
+  // 更新日志:两路由共用组件,props.mode 区分(latest=本次更新,仅当前版本 / all=更新记录,全部历史版本)
+  { path: '/whats-new', component: () => import('../views/Changelog.vue'), props: { mode: 'latest' } },
+  { path: '/changelog', component: () => import('../views/Changelog.vue'), props: { mode: 'all' } },
   { path: '/datasources', component: () => import('../views/Datasources.vue') },
   { path: '/datasources/:id/schemas', component: () => import('../views/Schemas.vue') },
   { path: '/datasources/:id/schemas/:schema/tables', component: () => import('../views/Tables.vue') },

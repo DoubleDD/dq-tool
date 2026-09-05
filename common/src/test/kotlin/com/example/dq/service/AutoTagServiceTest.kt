@@ -7,6 +7,7 @@ import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DbType
 import com.example.dq.model.ScanColumnView
 import com.example.dq.model.ScanStatus
+import com.example.dq.model.TagSource
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
@@ -210,6 +211,19 @@ class AutoTagServiceTest {
     }
 
     @Test
+    fun `人工类型标记不作为AI候选`() {
+        val service = newService(configuredAi)
+        tagService.create("内部收藏", null, null, "MANUAL")
+        val (jobId, tableId) = newDoneTable("t_order")
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        // 无 AI 类型候选:不调 LLM、不打标
+        assertTrue(chatCalls.isEmpty())
+        assertFalse(tagRepo.hasUserTag(dsId, "", "s1", "t_order"))
+    }
+
+    @Test
     fun `命中路径fake返回标记名则落库`() {
         val service = newService(configuredAi)
         tagService.create("订单", null)
@@ -222,6 +236,7 @@ class AutoTagServiceTest {
         assertEquals(1, chatCalls.size)
         val tags = tagRepo.tableTagsBySchema(dsId, "", "s1")["t_order"]!!
         assertEquals(listOf("订单"), tags.map { it.name })
+        assertEquals(TagSource.AI, tags[0].source)   // AI 自动打标来源记 AI
     }
 
     @Test

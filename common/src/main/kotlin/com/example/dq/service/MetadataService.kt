@@ -27,14 +27,31 @@ class MetadataService(
     /** dbType 在数据源保存时一定已写入,此处直接解空 */
     private fun dialectOf(ds: DataSourceConfig) = dialectFactory.get(ds.dbType!!)
 
+    /**
+     * 数据源级库清单(多库方言的 database 列表;单库方言恒为空列表):本地缓存优先。
+     * 缓存存全量,白名单在读取路径过滤(与 schema_stat 一致);refresh=true 从业务库拉最新并覆盖缓存
+     */
     @Throws(SQLException::class)
-    fun listDatabases(datasourceId: Long, unfiltered: Boolean = false): List<String> {
+    fun listDatabases(datasourceId: Long, unfiltered: Boolean = false, refresh: Boolean = false): List<String> {
+        val ds = dataSourceService.get(datasourceId)
+        val all = if (!refresh && metaCacheRepo.isDatabaseListReady(datasourceId)) {
+            metaCacheRepo.listNames(datasourceId, "")
+        } else {
+            val fresh = fetchDatabases(datasourceId)
+            metaCacheRepo.replaceDatabases(datasourceId, fresh)
+            fresh
+        }
+        if (unfiltered) return all
+        return applySchemaFilter(all, ds.schemaFilter)
+    }
+
+    /** 实时库清单(不经缓存) */
+    @Throws(SQLException::class)
+    private fun fetchDatabases(datasourceId: Long): List<String> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
         dataSourceService.getConnection(datasourceId).use { conn ->
-            val databases = dialect.listDatabases(conn)
-            if (unfiltered) return databases
-            return applySchemaFilter(databases, ds.schemaFilter)
+            return dialect.listDatabases(conn)
         }
     }
 
@@ -46,15 +63,34 @@ class MetadataService(
         }
     }
 
+    /**
+     * 某库的 schema 清单(单库方言 schema 即用户眼中的库):本地缓存优先,断网时有缓存即可正常浏览。
+     * 缓存存全量,白名单在读取路径过滤;refresh=true 从业务库拉最新并覆盖缓存
+     */
     @Throws(SQLException::class)
-    fun listSchemas(datasourceId: Long, database: String?, unfiltered: Boolean = false): List<String> {
+    fun listSchemas(datasourceId: Long, database: String?, unfiltered: Boolean = false, refresh: Boolean = false): List<String> {
+        val ds = dataSourceService.get(datasourceId)
+        val dialect = dialectOf(ds)
+        val db = normalizeDb(database)
+        val all = if (!refresh && metaCacheRepo.isSchemaListReady(datasourceId, db)) {
+            metaCacheRepo.listNames(datasourceId, db)
+        } else {
+            val fresh = fetchSchemas(datasourceId, database)
+            metaCacheRepo.replaceSchemas(datasourceId, db, fresh)
+            fresh
+        }
+        // 多库方言(SQL Server)的 schema(dbo 等)不属于白名单语义,只过滤单库方言的 schema(即用户眼中的「库」)
+        if (unfiltered || dialect.supportsMultiDatabase()) return all
+        return applySchemaFilter(all, ds.schemaFilter)
+    }
+
+    /** 实时 schema 清单(不经缓存) */
+    @Throws(SQLException::class)
+    private fun fetchSchemas(datasourceId: Long, database: String?): List<String> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
         dataSourceService.getConnection(datasourceId, database).use { conn ->
-            // 多库方言(SQL Server)的 schema(dbo 等)不属于白名单语义,只过滤单库方言的 schema(即用户眼中的「库」)
-            val schemas = dialect.listSchemas(conn)
-            if (unfiltered || dialect.supportsMultiDatabase()) return schemas
-            return applySchemaFilter(schemas, ds.schemaFilter)
+            return dialect.listSchemas(conn)
         }
     }
 
@@ -293,22 +329,26 @@ class MetadataService(
     private fun MetaCacheRepository.CachedSchemaColumn.toSchemaColumn() =
         SchemaColumn(tableName, columnName, colType ?: "", comment ?: "")
 
-    /** 首次访问:从业务库元数据拉取 schema 列表/表数量/占用空间并整体落缓存 */
+    /** 首次访问:从业务库元数据拉取 schema 列表/表数量/占用空间并整体落缓存;顺带刷新 schema 清单缓存 */
     @Throws(SQLException::class)
     private fun fetchAndCache(datasourceId: Long, database: String?): List<SchemaStatRepository.CachedStat> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
         val stats = ArrayList<SchemaStatRepository.CachedStat>()
+        val schemasAll: List<String>
         dataSourceService.getConnection(datasourceId, database).use { conn ->
             val counts = dialect.countTablesBySchema(conn)
             val sizes = dialect.sumSizeBySchema(conn)
+            schemasAll = dialect.listSchemas(conn)
             // 库过滤白名单同样作用于概览缓存;多库方言的 schema 层级不过滤
-            val schemas = if (dialect.supportsMultiDatabase()) dialect.listSchemas(conn)
-            else applySchemaFilter(dialect.listSchemas(conn), ds.schemaFilter)
+            val schemas = if (dialect.supportsMultiDatabase()) schemasAll
+            else applySchemaFilter(schemasAll, ds.schemaFilter)
             for (schema in schemas) {
                 stats.add(SchemaStatRepository.CachedStat(schema, counts[schema], sizes[schema]))
             }
         }
+        // schema 清单缓存存全量(白名单在读取路径过滤),与概览缓存同次回源保持一致
+        metaCacheRepo.replaceSchemas(datasourceId, normalizeDb(database), schemasAll)
         schemaStatRepo.replaceAll(datasourceId, database, stats)
         return stats
     }

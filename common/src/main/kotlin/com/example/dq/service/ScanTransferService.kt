@@ -11,6 +11,8 @@ import com.example.dq.model.ScanPreviewLocalDs
 import com.example.dq.model.ScanTableExport
 import com.example.dq.model.ScanTransferPreview
 import com.example.dq.model.TagKind
+import com.example.dq.model.TagSource
+import com.example.dq.model.TagType
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.TableDocRepository
@@ -26,8 +28,9 @@ import java.time.format.DateTimeFormatter
 /**
  * 扫描记录导出/导入:把扫描任务连同事件/表/分段/字段明细打包成 JSON,在另一台机器的部署导入,
  * 扫描记录列表即可看到导入的历史记录(详情/字段统计照常可查)。
- * 随任务携带花钱生成的标注数据:每张表的 USER 表标记(名字引用,定义收在文件级 tagDefs)与表描述,
- * 导入成功一个任务后随即合并进本机全局标记/描述(标记按 name 建/更新、ensure 幂等打标、描述 upsert 覆盖),
+ * 随任务携带花钱生成的标注数据:每张表的表标记(USER 标记名字引用,定义收在文件级 tagDefs;
+ * EMPTY 系统空表标记只导名字不入 tagDefs,定义由各实例迁移自建)与表描述,
+ * 导入成功一个任务后随即合并进本机全局标记/描述(标记按 name 建/更新、ensure 幂等打标(含空表标记关系)、描述 upsert 覆盖),
  * 避免换机后重新打标与重新生成描述;标注合并失败只记 warning,不影响已导入的扫描记录。
  * 跨实例对齐:数据源按名预检,导入时显式映射(文件数据源名 → 本机数据源 id,0 或缺失=跳过该数据源的全部任务);
  * 不导出任何内部 id,导入时全部重新生成。任务级幂等去重:同数据源 + db(可空等值)+ schema + 创建时间
@@ -127,8 +130,8 @@ class ScanTransferService(
 
     /**
      * 导入单任务携带的表标记与表描述(花钱生成的标注数据):标记定义按 name 合并(不存在则创建、
-     * 已存在的 USER 标记用文件里的 color/description 覆盖,系统空表标记不动),表标记 ensure 幂等插入,
-     * 表描述 upsert 覆盖(model 记 import 表示来自导入而非大模型生成)。
+     * 已存在的 USER 标记用文件里的 color/description 覆盖,系统空表标记定义不动但其打标关系照常补),
+     * 表标记 ensure 幂等插入,表描述 upsert 覆盖(model 记 import 表示来自导入而非大模型生成)。
      * 整体 try/catch:标注合并失败只记 warning,不影响已导入的扫描记录。
      */
     private fun importAnnotations(dsId: Long, job: ScanJobExport, tagDefs: List<AnnotationTagItem>,
@@ -141,19 +144,23 @@ class ScanTransferService(
                     val def = defByName[tagName]
                     val existing = tagRepo.findByName(tagName)
                     val tag = when {
-                        existing == null -> tagRepo.create(tagName, normalizeColor(def?.color),
-                            def?.description?.trim()?.takeIf { it.isNotEmpty() })
-                        // 与系统空表标记重名:由扫描自动维护,不覆盖;关系也不补(扫描会自行维护)
-                        existing.kind != TagKind.USER -> null
+                        // 系统空表标记:定义由扫描自动维护不覆盖,但打标关系要补上(导入的历史记录不一定再扫,不补就丢空表标记)
+                        existing?.kind == TagKind.EMPTY -> existing
+                        // 文件里没有定义(空表标记不入 tagDefs)且本机不存在同名标记时无法对齐,跳过
+                        existing == null -> if (def == null) null else tagRepo.create(tagName,
+                            normalizeColor(def.color), def.description?.trim()?.takeIf { it.isNotEmpty() },
+                            parseTagType(def.tagType) ?: TagType.AI)
                         def != null -> {
                             tagRepo.update(existing.id, tagName, normalizeColor(def.color),
-                                def.description?.trim()?.takeIf { it.isNotEmpty() })
+                                def.description?.trim()?.takeIf { it.isNotEmpty() },
+                                parseTagType(def.tagType))
                             existing
                         }
                         else -> existing
                     } ?: continue
-                    // 幂等:已存在的关系不重复插入(唯一键兜底)
-                    tagRepo.ensureTableTag(tag.id, dsId, dbName, job.schemaName, table.tableName)
+                    // 幂等:已存在的关系不重复插入(唯一键兜底);空表标记关系记系统来源,USER 标记关系记人工(导入的标注数据)
+                    tagRepo.ensureTableTag(tag.id, dsId, dbName, job.schemaName, table.tableName,
+                        if (tag.kind == TagKind.EMPTY) TagSource.SYSTEM else TagSource.MANUAL)
                 }
                 val doc = table.doc?.takeIf { it.isNotBlank() }
                 if (doc != null) {
@@ -170,7 +177,7 @@ class ScanTransferService(
     private fun toExport(job: ScanRepository.JobRow, dsNames: Map<Long, String>,
                          tagDefs: LinkedHashMap<String, AnnotationTagItem>): ScanJobExport {
         val events = scanRepo.listJobEvents(job.id).map { ScanEventExport(it.status!!, ts(it.at)) }
-        // 本任务库表范围内的标注数据:USER 表标记(EMPTY 系统标记由扫描自动维护,不导出)与表描述
+        // 本任务库表范围内的标注数据:表标记(含 EMPTY 系统空表标记,否则导入方不知道哪些表是空表)与表描述
         val tagsByTable = tagRepo.tableTagsBySchema(job.datasourceId, job.dbName ?: "", job.schemaName)
         val docsByTable = tableDocRepo.findBySchema(job.datasourceId, job.dbName ?: "", job.schemaName)
         val tables = scanRepo.listScanTables(job.id).map { t ->
@@ -178,9 +185,12 @@ class ScanTransferService(
                 ScanColumnExport(col.columnName ?: "", col.columnType, col.columnComment, col.nullable,
                     col.defaultValue, col.keyLabel, col.totalRows, col.nullCount, col.emptyCount, col.ruleHitCount)
             }
-            val tags = tagsByTable[t.tableName].orEmpty().filter { it.kind == TagKind.USER }
+            // 空表标记只导名字(定义由各实例 V3 迁移自建,不入 tagDefs);USER 标记定义收进 tagDefs 供导入合并
+            val tags = tagsByTable[t.tableName].orEmpty()
             for (tag in tags) {
-                tagDefs.putIfAbsent(tag.name, AnnotationTagItem(tag.name, tag.color, tag.description))
+                if (tag.kind == TagKind.USER) {
+                    tagDefs.putIfAbsent(tag.name, AnnotationTagItem(tag.name, tag.color, tag.description, tag.tagType.name))
+                }
             }
             ScanTableExport(t.tableName, t.status!!, t.sampled, t.sampleRows, t.estRows, t.sizeBytes,
                 t.chunkKey, t.comment, t.storageInfo, t.totalChunks, t.doneChunks, t.scannedRows, t.totalRows,
@@ -221,5 +231,11 @@ class ScanTransferService(
         /** 颜色缺省回落到默认色,与 tag_def.color 默认值一致(同 AnnotationTransferService) */
         fun normalizeColor(color: String?): String =
             color?.trim()?.takeIf { it.isNotEmpty() } ?: "#409EFF"
+
+        /** 用途类型解析:空值/非法值/SYSTEM 按 null 处理(导入宽容,新建落缺省、更新保留原值;同 AnnotationTransferService) */
+        fun parseTagType(tagType: String?): TagType? =
+            tagType?.trim()?.takeIf { it.isNotEmpty() }
+                ?.let { runCatching { TagType.valueOf(it) }.getOrNull() }
+                ?.takeIf { it != TagType.SYSTEM }
     }
 }

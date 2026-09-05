@@ -5,6 +5,8 @@ import com.example.dq.model.DbType
 import com.example.dq.model.ScanColumnView
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.TagKind
+import com.example.dq.model.TagSource
+import com.example.dq.model.TagType
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.ScanRepository
@@ -58,6 +60,29 @@ class TagServiceTest {
     }
 
     @Test
+    fun `用途类型缺省AI且可显式指定与更新`() {
+        // 缺省 AI(与升级前「全部 USER 标记都是 AI 候选」行为一致)
+        val legacy = service.create("缺省标记", null)
+        assertEquals(TagType.AI, legacy.tagType)
+        assertEquals(TagType.AI, tagRepo.findById(legacy.id)!!.tagType)
+
+        // 显式创建人工类型;AI 候选清单只含 AI 类型
+        val manual = service.create("人工标记", null, null, "MANUAL")
+        assertEquals(TagType.MANUAL, manual.tagType)
+        assertEquals(listOf("缺省标记"), service.aiCandidates().map { it.name })
+
+        // 更新缺省 tagType 保留原值;显式传入才变更
+        service.update(manual.id, "人工标记", null)
+        assertEquals(TagType.MANUAL, tagRepo.findById(manual.id)!!.tagType)
+        service.update(manual.id, "人工标记", null, null, "AI")
+        assertEquals(TagType.AI, tagRepo.findById(manual.id)!!.tagType)
+
+        // 非法值 400;SYSTEM 由系统维护不可指定
+        assertThrows(IllegalArgumentException::class.java) { service.create("坏类型", null, null, "X") }
+        assertThrows(IllegalArgumentException::class.java) { service.create("系统类型", null, null, "SYSTEM") }
+    }
+
+    @Test
     fun `重名创建与改名抛状态冲突`() {
         service.create("水利对象表", null)
         assertThrows(IllegalStateException::class.java) { service.create("水利对象表", "#FF0000") }
@@ -85,24 +110,28 @@ class TagServiceTest {
 
     @Test
     fun `空表标记随扫描结果自动打摘且幂等`() {
-        // 空表打上;重复联动不产生重复关系
+        // 空表打上;重复联动不产生重复关系;打标来源记系统
         service.syncEmptyTag(1L, null, "s1", "t1", 0L)
         service.syncEmptyTag(1L, null, "s1", "t1", 0L)
         var tags = service.tableTags(1L, null, "s1")["t1"]!!
         assertEquals(1, tags.size)
         assertEquals(TagKind.EMPTY, tags[0].kind)
+        assertEquals(TagType.SYSTEM, tags[0].tagType)
+        assertEquals(TagSource.SYSTEM, tags[0].source)
 
         // 非空摘除;重复摘除不报错
         service.syncEmptyTag(1L, null, "s1", "t1", 5L)
         service.syncEmptyTag(1L, null, "s1", "t1", 5L)
         assertTrue(service.tableTags(1L, null, "s1").isEmpty())
 
-        // 手动打的 USER 标记不受联动影响
+        // 手动打的 USER 标记不受联动影响;打标来源记人工
         val userTag = service.create("水利对象表", null)
         service.replaceTableTags(1L, null, "s1", "t2", listOf(userTag.id))
         service.syncEmptyTag(1L, null, "s1", "t2", 0L)
         tags = service.tableTags(1L, null, "s1")["t2"]!!
         assertEquals(setOf("水利对象表", "空表"), tags.map { it.name }.toSet())
+        assertEquals(TagSource.MANUAL, tags.first { it.name == "水利对象表" }.source)
+        assertEquals(TagSource.SYSTEM, tags.first { it.name == "空表" }.source)
     }
 
     @Test
@@ -156,5 +185,35 @@ class TagServiceTest {
         assertEquals(1, counts["水利对象表"])
         assertEquals(1, counts["防洪业务表"])
         assertEquals(1, counts["未扫描标记"])
+    }
+
+    @Test
+    fun `批量打标校验与幂等计数`() {
+        val tagA = service.create("标记A", null)
+        val empty = tagRepo.findEmptyTag()!!
+
+        // 空表标记不可手动批量打(400)
+        assertThrows(IllegalArgumentException::class.java) {
+            service.batchAddTableTags(1L, null, "s1", listOf("t1"), listOf(empty.id))
+        }
+        // 表列表为空 / 标记列表为空 / 标记不存在 均 400
+        assertThrows(IllegalArgumentException::class.java) {
+            service.batchAddTableTags(1L, null, "s1", emptyList(), listOf(tagA.id))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            service.batchAddTableTags(1L, null, "s1", listOf("t1"), emptyList())
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            service.batchAddTableTags(1L, null, "s1", listOf("t1"), listOf(9999L))
+        }
+
+        // 正常批量:2 表 1 标记(表名 trim),db null 归一空串;重复执行全部跳过;关系来源记 MANUAL
+        val r1 = service.batchAddTableTags(1L, null, "s1", listOf("t1", " t2 "), listOf(tagA.id))
+        assertEquals(2, r1.added)
+        assertEquals(0, r1.skipped)
+        val r2 = service.batchAddTableTags(1L, null, "s1", listOf("t1", "t2"), listOf(tagA.id))
+        assertEquals(0, r2.added)
+        assertEquals(2, r2.skipped)
+        assertEquals(setOf("t1", "t2"), tagRepo.tableTagsBySchema(1L, "", "s1").keys)
     }
 }

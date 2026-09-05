@@ -206,6 +206,50 @@ class MetaCacheRepositoryTest {
         assertEquals(emptySet<String>(), repo.schemaColumnCachedTables(1, "", "db1"))
     }
 
+    // ---------- 库/schema 清单缓存(meta_database,kind=DATABASE/SCHEMA) ----------
+
+    @Test
+    fun `库清单缓存 按 ordinal 保持方言返回顺序`() {
+        assertFalse(repo.isDatabaseListReady(1))
+        repo.replaceDatabases(1, listOf("db_b", "db_a"))
+        assertTrue(repo.isDatabaseListReady(1))
+        assertEquals(listOf("db_b", "db_a"), repo.listNames(1, ""))
+        // 覆盖刷新替换旧清单;空列表也标记就绪(flag 区分「未缓存」与「已缓存但为空」)
+        repo.replaceDatabases(1, emptyList())
+        assertTrue(repo.isDatabaseListReady(1))
+        assertEquals(0, repo.listNames(1, "").size)
+        // 不同数据源互不影响
+        assertFalse(repo.isDatabaseListReady(2))
+    }
+
+    @Test
+    fun `schema 清单缓存 按库隔离且可覆盖刷新`() {
+        assertFalse(repo.isSchemaListReady(1, "db1"))
+        repo.replaceSchemas(1, "db1", listOf("dbo", "guest"))
+        repo.replaceSchemas(1, "db2", listOf("public"))
+        assertTrue(repo.isSchemaListReady(1, "db1"))
+        assertTrue(repo.isSchemaListReady(1, "db2"))
+        assertEquals(listOf("dbo", "guest"), repo.listNames(1, "db1"))
+        assertEquals(listOf("public"), repo.listNames(1, "db2"))
+        // 未缓存的库与单库方言空串库名各自独立
+        assertFalse(repo.isSchemaListReady(1, "db3"))
+        assertFalse(repo.isSchemaListReady(1, ""))
+        // 覆盖刷新替换旧清单
+        repo.replaceSchemas(1, "db1", listOf("dbo"))
+        assertEquals(listOf("dbo"), repo.listNames(1, "db1"))
+    }
+
+    @Test
+    fun `删除数据源 级联清理库与schema清单缓存`() {
+        repo.replaceDatabases(1, listOf("db1"))
+        repo.replaceSchemas(1, "db1", listOf("dbo"))
+        repo.deleteByDatasource(1)
+        assertFalse(repo.isDatabaseListReady(1))
+        assertFalse(repo.isSchemaListReady(1, "db1"))
+        assertEquals(0, repo.listNames(1, "").size)
+        assertEquals(0, repo.listNames(1, "db1").size)
+    }
+
     // ---------- 级联清理 ----------
 
     @Test
