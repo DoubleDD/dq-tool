@@ -94,7 +94,9 @@ function goHistory() {
 }
 </script>
 
-<style scoped>
+<!-- 样式不带 scoped:条目卡片是手写 h() 渲染函数的局部组件,元素拿不到本文件 SFC 的 scope id,
+     scoped 选择器([data-v-x])会全部失配导致样式不生效;cl-* 类名仅本页使用,全局样式无冲突 -->
+<style>
 .cl-entry {
   margin-bottom: 24px;
 }
