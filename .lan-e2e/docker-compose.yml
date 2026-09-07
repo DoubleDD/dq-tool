@@ -1,0 +1,54 @@
+# dq-tool 局域网共享 E2E:MySQL 演示库 + 两个 dq-tool 实例(dq-a/dq-b)在同一桥接网络。
+# 关键:两个实例在同一 bridge 网络内,容器 eth0 的子网广播地址(172.x.0.255)会被 docker
+# 桥按二层广播转发给所有容器,从而真实验证 UDP 广播自动发现(非单播注入)。
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: dq-lan-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: "Test@12345"
+      MYSQL_ROOT_HOST: "%"
+      MYSQL_DATABASE: dqdemo
+      MYSQL_USER: dquser
+      MYSQL_PASSWORD: "Dq@12345"
+    volumes:
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pTest@12345"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks:
+      - lan
+
+  dq-a:
+    build:
+      context: ..
+      dockerfile: .lan-e2e/Dockerfile
+    image: dq-tool-e2e:latest
+    container_name: dq-lan-a
+    ports:
+      - "10101:10000"
+    volumes:
+      - dq-a-data:/data
+    networks:
+      - lan
+
+  dq-b:
+    image: dq-tool-e2e:latest
+    container_name: dq-lan-b
+    ports:
+      - "10102:10000"
+    volumes:
+      - dq-b-data:/data
+    networks:
+      - lan
+
+networks:
+  lan:
+    driver: bridge
+
+volumes:
+  dq-a-data:
+  dq-b-data:

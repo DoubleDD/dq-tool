@@ -57,6 +57,9 @@ class SystemSettingsService(
                 sampleRows = req.sampleRows?.coerceAtLeast(1) ?: prev?.sampleRows,
                 statementTimeoutSeconds = req.statementTimeoutSeconds?.coerceAtLeast(1) ?: prev?.statementTimeoutSeconds,
                 browserApp = prev?.browserApp,
+                lanEnabled = prev?.lanEnabled,
+                instanceId = prev?.instanceId,
+                instanceName = prev?.instanceName,
             )
         )
     }

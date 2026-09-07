@@ -79,4 +79,20 @@ class SystemSettingsRepositoryTest {
         assertEquals("chrome", after.browserApp)
         assertFalse(after.customized)
     }
+
+    @Test
+    fun `lan 列往返,resetScan 保留局域网共享设置与实例身份`() {
+        repo.upsert(row().copy(lanEnabled = false, instanceId = "inst-1", instanceName = "小王的电脑"))
+        val read = repo.get()!!
+        assertEquals(false, read.lanEnabled)
+        assertEquals("inst-1", read.instanceId)
+        assertEquals("小王的电脑", read.instanceName)
+
+        repo.resetScan()
+        val after = repo.get()!!
+        assertNull(after.workers)
+        assertEquals(false, after.lanEnabled)
+        assertEquals("inst-1", after.instanceId)
+        assertEquals("小王的电脑", after.instanceName)
+    }
 }

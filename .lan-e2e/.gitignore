@@ -1,0 +1,7 @@
+# E2E 测试工件不入仓库:一次性测试密钥对、打补丁的 jar、npm 依赖
+keys/
+jar-patch/
+shots/node_modules/
+shots/package*.json
+evidence/
+evidence-run.log

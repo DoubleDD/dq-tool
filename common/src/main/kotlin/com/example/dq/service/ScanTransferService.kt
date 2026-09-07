@@ -1,6 +1,7 @@
 package com.example.dq.service
 
 import com.example.dq.model.AnnotationTagItem
+import com.example.dq.model.LanScanJobItem
 import com.example.dq.model.ScanColumnExport
 import com.example.dq.model.ScanEventExport
 import com.example.dq.model.ScanExportFile
@@ -45,6 +46,24 @@ class ScanTransferService(
 ) {
 
     private val objectMapper = jacksonObjectMapper()
+
+    /**
+     * 局域网共享:本机全部扫描任务的轻量预览(供 peer 拉取前勾选要导入的任务)。
+     * 数据源已删除的任务也列出(名字标注),导入侧映射时自然匹配不到而跳过。
+     */
+    fun localJobsPreview(): List<LanScanJobItem> =
+        scanRepo.listJobs(null, null, null).map { j ->
+            LanScanJobItem(
+                jobId = j.id,
+                datasourceName = dataSourceRepo.findById(j.datasourceId)?.name ?: "(数据源已删除 ${j.datasourceId})",
+                dbName = j.dbName,
+                schemaName = j.schemaName,
+                status = j.status,
+                totalTables = j.totalTables,
+                doneTables = j.doneTables,
+                createdAt = j.createdAt?.format(TS_FORMAT),
+            )
+        }
 
     /** 导出指定任务(jobIds 为空 = 全部任务)为 JSON 文件;不存在的 id 直接忽略 */
     fun export(jobIds: List<Long>, out: OutputStream) {

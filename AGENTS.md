@@ -43,6 +43,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [表格批量导入与抽样导出](docs/wiki/批量导入与抽样导出.md) — 上传 Excel(每行一张表)的两步流程:先数据源检测(去重导入,连不上标记错误待人工处理),任务停在「待导出」由用户决策;可就地编辑数据源(独立弹窗组件 DatasourceEditDialog,多页面复用)或重新导入表格修复,点「继续导出」后每表抽 50 行按 数据源×类别 出 xlsx、类别目录归档打 zip;1s 轮询
 - [系统诊断](docs/wiki/系统诊断.md) — 排错中心:环境/授权/AI/数据源连通实测/失败记录/错误日志聚合,Markdown 诊断报告导出
 - [SQL 控制台](docs/wiki/SQL控制台.md) — 类 DataGrip 执行 SQL:选数据源、执行选中片段、结果集上限 1000 行/单元格截断同数据预览、受影响行数、localStorage 历史(不落服务端)
+- [局域网共享](docs/wiki/局域网共享.md) — UDP 广播自动发现同网段实例,互拉标记/表描述/表所属系统与全部扫描记录(复用 Transfer 口径合并);实例身份存 system_settings,共享出口无鉴权仅限可信内网
 - [授权码](docs/wiki/授权码.md) — 离线 Ed25519 授权码、签发工具、管理员实例授权码管理
 - [更新日志](docs/wiki/更新日志.md) — 根 CHANGELOG.md 人维护+构建期拷入 jar;新版本首启自动弹「本次更新」页签(dq-seen-version 判定)、页脚版本号开「更新记录」页签;verifyChangelog 构建硬校验,发版必填
 

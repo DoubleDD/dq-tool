@@ -152,7 +152,7 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import request from './api'
-import { Coin, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh } from '@element-plus/icons-vue'
+import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
@@ -183,6 +183,7 @@ const otherNav = computed(() => {
     { path: '/report-exports', label: '报告列表', icon: Download },
     { path: '/sample-exports', label: '抽样导出', icon: Files },
     { path: '/sql-console', label: 'SQL 控制台', icon: Monitor },
+    { path: '/lan-share', label: '局域网共享', icon: Connection },
     { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
     { path: '/settings', label: '系统设置', icon: Setting },
     { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit },
@@ -325,6 +326,7 @@ const activeNav = computed(() => {
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
   if (p === '/sample-exports' || p.startsWith('/sample-exports/')) return '/sample-exports'
   if (p === '/sql-console' || p.startsWith('/sql-console/')) return '/sql-console'
+  if (p === '/lan-share' || p.startsWith('/lan-share/')) return '/lan-share'
   if (p === '/settings' || p.startsWith('/settings/')) return '/settings'
   if (p === '/logs' || p.startsWith('/logs/')) return '/logs'
   if (p === '/diagnostics' || p.startsWith('/diagnostics/')) return '/diagnostics'

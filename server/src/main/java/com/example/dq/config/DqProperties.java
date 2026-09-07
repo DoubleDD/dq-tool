@@ -6,6 +6,7 @@ public class DqProperties {
     private final Security security = new Security();
     private final License license = new License();
     private final Desktop desktop = new Desktop();
+    private final Lan lan = new Lan();
 
     public Scan getScan() {
         return scan;
@@ -21,6 +22,10 @@ public class DqProperties {
 
     public Desktop getDesktop() {
         return desktop;
+    }
+
+    public Lan getLan() {
+        return lan;
     }
 
     public static class Scan {
@@ -85,5 +90,21 @@ public class DqProperties {
 
         public int getShutdownTimeoutSeconds() { return shutdownTimeoutSeconds; }
         public void setShutdownTimeoutSeconds(int shutdownTimeoutSeconds) { this.shutdownTimeoutSeconds = shutdownTimeoutSeconds; }
+    }
+
+    public static class Lan {
+        /** 局域网共享默认开关(页面「局域网共享」可覆盖) */
+        private boolean enabled = true;
+        /** UDP 发现端口(广播心跳 + 监听);同一局域网内各实例需一致 */
+        private int discoveryPort = 17386;
+        /** 心跳间隔(秒);超过 3 个间隔未收到心跳的实例判离线 */
+        private int announceIntervalSeconds = 5;
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+        public int getDiscoveryPort() { return discoveryPort; }
+        public void setDiscoveryPort(int discoveryPort) { this.discoveryPort = discoveryPort; }
+        public int getAnnounceIntervalSeconds() { return announceIntervalSeconds; }
+        public void setAnnounceIntervalSeconds(int announceIntervalSeconds) { this.announceIntervalSeconds = announceIntervalSeconds; }
     }
 }

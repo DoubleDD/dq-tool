@@ -1,0 +1,1 @@
+{"peerInstanceName":"实例A-小王的电脑","peerHost":"192.168.148.4","annotations":{"tagsCreated":0,"tagsUpdated":2,"tableTagsAdded":2,"tableTagsSkipped":0,"docsUpserted":2,"docsSkipped":0,"systemsUpserted":1,"systemsSkipped":0},"scans":{"total":1,"imported":0,"skipped":1,"failed":0,"warnings":["任务 演示MySQL/dqdemo:本机已存在相同任务(同数据源+库+schema+创建时间),判重跳过"]},"datasourcesCreated":[],"errors":[]}

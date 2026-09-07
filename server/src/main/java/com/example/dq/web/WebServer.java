@@ -17,6 +17,7 @@ import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.DiagnosticsController;
 import com.example.dq.controller.LicenseController;
 import com.example.dq.controller.ListExportController;
+import com.example.dq.controller.LanController;
 import com.example.dq.controller.MetadataController;
 import com.example.dq.controller.PreviewController;
 import com.example.dq.controller.ReportExportController;
@@ -105,6 +106,7 @@ public class WebServer {
     private final AtomicReference<ListExportController> listExportCtrl = new AtomicReference<>();
     private final AtomicReference<DiagnosticsController> diagnosticsCtrl = new AtomicReference<>();
     private final AtomicReference<ChangelogController> changelogCtrl = new AtomicReference<>();
+    private final AtomicReference<LanController> lanCtrl = new AtomicReference<>();
     /** 实时日志 Appender 引用:LogController(SSE)与 DiagnosticsController(错误日志摘录)共用同一实例 */
     private LogStreamAppender logStreamAppender;
 
@@ -168,7 +170,7 @@ public class WebServer {
                     dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl,
                     manualCollectCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
-                    changelogCtrl,
+                    changelogCtrl, lanCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
 
@@ -202,6 +204,7 @@ public class WebServer {
                                 AtomicReference<ListExportController> listExportCtrl,
                                 AtomicReference<DiagnosticsController> diagnosticsCtrl,
                                 AtomicReference<ChangelogController> changelogCtrl,
+                                AtomicReference<LanController> lanCtrl,
                                 LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
@@ -221,7 +224,9 @@ public class WebServer {
                 licenseService.checkFeature(LicenseFeature.LICENSE_ADMIN, false);
                 return;
             }
-            if (path.startsWith("/api/license") || path.startsWith("/api/diagnostics") || path.startsWith("/api/changelog") || path.equals("/api/heartbeat")) {
+            // 局域网共享出口(/api/lan/share/*)放行激活检查:供同网段其他实例 HTTP 拉取数据,peer 侧无本机授权上下文
+            if (path.startsWith("/api/license") || path.startsWith("/api/diagnostics") || path.startsWith("/api/changelog")
+                    || path.startsWith("/api/lan/share/") || path.equals("/api/heartbeat")) {
                 return;
             }
             licenseService.checkActive();
@@ -423,6 +428,19 @@ public class WebServer {
         // ---- 更新日志:CHANGELOG.md 解析结果;放行激活检查(未激活也能看版本更新说明) ----
         routes.get("/api/changelog", ctx -> changelogCtrl.get().overview(ctx));
 
+        // ---- 局域网共享:状态/在线实例/设置/预览/拉取为本机页面用;share/* 为实例间拉取出口(放行激活检查) ----
+        // share 静态段(preview)须先于同前缀注册;pull/preview 的 {instanceId} 与 share 不同前缀,无截获问题
+        routes.get("/api/lan/status", ctx -> lanCtrl.get().status(ctx));
+        routes.get("/api/lan/peers", ctx -> lanCtrl.get().peers(ctx));
+        routes.put("/api/lan/settings", ctx -> lanCtrl.get().saveSettings(ctx));
+        routes.get("/api/lan/preview/{instanceId}", ctx -> lanCtrl.get().previewPeer(ctx));
+        routes.post("/api/lan/pull/{instanceId}", ctx -> lanCtrl.get().pull(ctx));
+        routes.get("/api/lan/share/annotations/preview", ctx -> lanCtrl.get().shareAnnotationsPreview(ctx));
+        routes.get("/api/lan/share/annotations", ctx -> lanCtrl.get().shareAnnotations(ctx));
+        routes.get("/api/lan/share/scans/preview", ctx -> lanCtrl.get().shareScansPreview(ctx));
+        routes.get("/api/lan/share/scans", ctx -> lanCtrl.get().shareScans(ctx));
+        routes.get("/api/lan/share/datasources", ctx -> lanCtrl.get().shareDatasources(ctx));
+
         // SPA 回退(替代 SpaWebConfig):静态资源未命中且非 /api/** 的 GET 一律回退 index.html 交给前端路由;
         // 但路径末段带扩展名(如 /assets/xxx.js)说明是静态文件缺失,必须真实 404——
         // 回退成 text/html 会让浏览器把 404 的 js 当 HTML 解析,报 MIME 错误白屏且掩盖真实问题;
@@ -491,6 +509,7 @@ public class WebServer {
         ready.set(true);
         StartupLog.log("  共享内核初始化完成,服务就绪");
         syncBrowserSetting();
+        startLanShare();
     }
 
     /**
@@ -514,6 +533,21 @@ public class WebServer {
         ready.set(true);
         StartupLog.log("  共享内核初始化完成,服务就绪");
         syncBrowserSetting();
+        startLanShare();
+    }
+
+    /**
+     * 内核就绪后启动局域网共享(UDP 实例发现):需要实际监听的 HTTP 端口随心跳广播,
+     * 开关(dq.lan.enabled / 页面设置)在 LanShareService 内判定;失败不阻断启动。
+     */
+    private void startLanShare() {
+        try {
+            if (env != null) {
+                env.getLanShareService().start(app.port());
+            }
+        } catch (Exception e) {
+            log.warn("局域网发现启动失败(不影响主服务): {}", e.getMessage());
+        }
     }
 
     /**
@@ -553,6 +587,7 @@ public class WebServer {
         listExportCtrl.set(new ListExportController(env.getListExportService()));
         diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), logStreamAppender));
         changelogCtrl.set(new ChangelogController(env.getChangelogService()));
+        lanCtrl.set(new LanController(env.getLanShareService()));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

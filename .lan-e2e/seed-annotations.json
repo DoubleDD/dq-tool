@@ -1,0 +1,22 @@
+{
+  "app": "dq-tool-annotations",
+  "version": 1,
+  "exportedAt": "2026-09-06T00:00:00",
+  "tags": [],
+  "tableTags": [],
+  "tableDocs": [
+    {
+      "datasourceName": "演示MySQL",
+      "schemaName": "dqdemo",
+      "tableName": "reservoir_info",
+      "description": "水库基本信息主档表,记录水库编码/地区/库容/建成年份,是资产台账核心表"
+    },
+    {
+      "datasourceName": "分析库",
+      "schemaName": "dqdemo",
+      "tableName": "water_level_log",
+      "description": "水位观测记录流水表,按水库维度记录每次人工/自动测量结果"
+    }
+  ],
+  "tableSystems": []
+}
