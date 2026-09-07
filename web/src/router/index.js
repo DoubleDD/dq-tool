@@ -10,6 +10,7 @@ const routes = [
   { path: '/report-exports', component: () => import('../views/ReportExports.vue') },
   { path: '/sample-exports', component: () => import('../views/SampleExports.vue') },
   { path: '/sql-console', component: () => import('../views/SqlConsole.vue') },
+  { path: '/lan-share', component: () => import('../views/LanShare.vue') },
   { path: '/settings', component: () => import('../views/Settings.vue') },
   { path: '/logs', component: () => import('../views/Logs.vue') },
   { path: '/diagnostics', component: () => import('../views/Diagnostics.vue') },

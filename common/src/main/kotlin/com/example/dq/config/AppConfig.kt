@@ -31,6 +31,16 @@ data class AiDefaults(
     val weekendValley: Boolean = true,      // 周末全天按谷价
 )
 
+/** 局域网共享(实例自动发现 + 数据互拉)默认配置;页面「局域网共享」的开关覆盖 enabled */
+data class LanConfig(
+    /** 默认开关(system_settings.lan_enabled 为 NULL 时回落到这里) */
+    val enabled: Boolean = true,
+    /** UDP 发现端口(广播心跳 + 监听);同一局域网内各实例需一致 */
+    val discoveryPort: Int = 17386,
+    /** 心跳间隔(秒);超过 3 个间隔未收到心跳的实例判离线 */
+    val announceIntervalSeconds: Int = 5,
+)
+
 /**
  * 应用配置。默认值与原 Spring Boot 工程的 application.yml 对齐,
  * 支持在数据目录下放 config.properties 覆盖(键名沿用 yml 的点分层级,如 dq.scan.workers=16)。
@@ -46,6 +56,8 @@ data class AppConfig(
     val licensePrivateKey: String = "",
     /** 软件版本号(构建期注入,与安装包版本一致);空表示未知 */
     val appVersion: String = "",
+    /** 局域网共享默认配置 */
+    val lan: LanConfig = LanConfig(),
 ) {
     /** H2 文件库连接串,与原工程一致 */
     val h2JdbcUrl: String
@@ -110,6 +122,11 @@ data class AppConfig(
                     valleyOutputPrice = str("ai.valley-output-price")?.toDoubleOrNull() ?: 13.5,
                     workPeriods = str("ai.work-periods") ?: "09:00-12:00,14:00-18:00",
                     weekendValley = str("ai.weekend-valley")?.toBooleanStrictOrNull() ?: true,
+                ),
+                lan = LanConfig(
+                    enabled = str("dq.lan.enabled")?.toBooleanStrictOrNull() ?: true,
+                    discoveryPort = int("dq.lan.discovery-port") ?: 17386,
+                    announceIntervalSeconds = int("dq.lan.announce-interval-seconds") ?: 5,
                 ),
             )
         }

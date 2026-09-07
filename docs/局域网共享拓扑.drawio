@@ -1,0 +1,80 @@
+<mxfile host="65bd71144e">
+    <diagram name="Page-1" id="0">
+        <mxGraphModel dx="1297" dy="720" grid="1" gridSize="8" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1008" pageHeight="736" background="#FFFFFF" math="1" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="2" value="同一局域网(二层广播域 / 同 VLAN)" style="rounded=1;arcSize=12;html=1;whiteSpace=wrap;fillColor=#F8FAFC;strokeColor=#E2E8F0;strokeWidth=1;fontColor=#1E293B;fontSize=14;fontFamily=Times New Roman,SimSun;fontStyle=1;verticalAlign=top;align=left;spacingLeft=12;spacingTop=10" parent="1" vertex="1">
+                    <mxGeometry x="32" y="88" width="896" height="568" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="电脑 A" style="rounded=1;arcSize=8;html=1;whiteSpace=wrap;fillColor=#DBEAFE;strokeColor=#2563EB;strokeWidth=1.5;fontColor=#1E293B;fontSize=13;fontFamily=Times New Roman,SimSun;verticalAlign=middle;align=center" parent="2" vertex="1">
+                    <mxGeometry x="112" y="64" width="160" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="电脑 B" style="rounded=1;arcSize=8;html=1;whiteSpace=wrap;fillColor=#DBEAFE;strokeColor=#2563EB;strokeWidth=1.5;fontColor=#1E293B;fontSize=13;fontFamily=Times New Roman,SimSun;verticalAlign=middle;align=center" parent="2" vertex="1">
+                    <mxGeometry x="624" y="64" width="160" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="二层交换机" style="rounded=1;arcSize=8;html=1;whiteSpace=wrap;fillColor=#DBEAFE;strokeColor=#2563EB;strokeWidth=1.5;fontColor=#1E293B;fontSize=13;fontFamily=Times New Roman,SimSun;verticalAlign=middle;align=center" parent="2" vertex="1">
+                    <mxGeometry x="392" y="232" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="电脑 C" style="rounded=1;arcSize=8;html=1;whiteSpace=wrap;fillColor=#DBEAFE;strokeColor=#2563EB;strokeWidth=1.5;fontColor=#1E293B;fontSize=13;fontFamily=Times New Roman,SimSun;verticalAlign=middle;align=center" parent="2" vertex="1">
+                    <mxGeometry x="368" y="384" width="160" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="每台电脑运行一个 dq-tool 实例&lt;br&gt;HTTP 服务 10000 · UDP 发现 17386" style="text;html=1;whiteSpace=wrap;labelBackgroundColor=none;fillColor=none;strokeColor=none;strokeWidth=0;fontColor=#1E293B;fontSize=13;fontFamily=Times New Roman,SimSun;align=left;verticalAlign=top" parent="2" vertex="1">
+                    <mxGeometry x="560" y="360" width="264" height="48" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" value="实线 = 以太网链路 / HTTP 数据拉取(TCP 10000)&lt;br&gt;虚线 = UDP 广播心跳(17386,每 5 秒)" style="text;html=1;whiteSpace=wrap;labelBackgroundColor=none;fillColor=none;strokeColor=none;strokeWidth=0;fontColor=#1E293B;fontSize=13;fontFamily=Times New Roman,SimSun;align=left;verticalAlign=top" parent="2" vertex="1">
+                    <mxGeometry x="24" y="496" width="344" height="48" as="geometry"/>
+                </mxCell>
+                <mxCell id="10" value="广播跨不出 VLAN/路由器;AP 隔离时收不到心跳&lt;br&gt;此时仍可走手工导出/导入文件方式迁移数据" style="text;html=1;whiteSpace=wrap;labelBackgroundColor=none;fillColor=none;strokeColor=none;strokeWidth=0;fontColor=#1E293B;fontSize=13;fontFamily=Times New Roman,SimSun;align=left;verticalAlign=top" parent="2" vertex="1">
+                    <mxGeometry x="552" y="496" width="320" height="48" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="dq-tool 局域网共享拓扑" style="text;html=1;whiteSpace=wrap;labelBackgroundColor=none;fillColor=none;strokeColor=none;strokeWidth=0;fontColor=#1E293B;fontSize=20;fontFamily=Times New Roman,SimSun;align=left;verticalAlign=top;fontStyle=1" parent="1" vertex="1">
+                    <mxGeometry x="64" y="48" width="300" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=none;endFill=0;jumpStyle=arc;jumpSize=8" parent="1" source="4" target="6" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="352" y="192"/>
+                            <mxPoint x="352" y="352"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="12" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=none;endFill=0;jumpStyle=arc;jumpSize=8" parent="1" source="5" target="6" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="608" y="192"/>
+                            <mxPoint x="608" y="352"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="13" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#64748B;strokeWidth=1.5;endArrow=none;endFill=0;exitX=0.525;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;jumpStyle=arc;jumpSize=8" parent="1" source="7" target="6" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="14" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#1E293B;strokeWidth=2;endArrow=open;endFill=0;endSize=12;dashed=1;dashPattern=6 4;jumpStyle=arc;jumpSize=8" parent="1" source="4" target="5" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="480" y="192"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="15" value="UDP 广播心跳 · 17386" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=18;fontColor=#64748B;fontFamily=Times New Roman,SimSun;" parent="14" vertex="1" connectable="0">
+                    <mxGeometry x="0.5" relative="1" as="geometry">
+                        <mxPoint y="-20" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="16" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#1E293B;strokeWidth=2;endArrow=open;endFill=0;endSize=12;exitX=-0.001;exitY=0.63;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;jumpStyle=arc;jumpSize=8;exitPerimeter=0;" parent="1" source="7" target="4" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="224" y="522"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="17" value="HTTP 拉取 share 端点 · 10000" style="edgeLabel;html=1;align=center;verticalAlign=middle;fontSize=18;fontColor=#64748B;fontFamily=Times New Roman,SimSun;" parent="16" vertex="1" connectable="0">
+                    <mxGeometry x="0.5" relative="1" as="geometry">
+                        <mxPoint x="-100" y="-60" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

@@ -49,7 +49,11 @@ public final class KernelConfigAdapter {
                 aiDefaults,
                 nullToEmpty(dq.getLicense().getPublicKey()),
                 nullToEmpty(dq.getLicense().getPrivateKey()),
-                nullToEmpty(config.appVersion()));
+                nullToEmpty(config.appVersion()),
+                new LanConfig(
+                        dq.getLan().isEnabled(),
+                        dq.getLan().getDiscoveryPort(),
+                        dq.getLan().getAnnounceIntervalSeconds()));
     }
 
     private static String nullToEmpty(String value) {

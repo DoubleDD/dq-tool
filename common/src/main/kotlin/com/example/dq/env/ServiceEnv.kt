@@ -2,6 +2,7 @@ package com.example.dq.env
 
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
+import com.example.dq.discovery.LanDiscoveryService
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.AiUsageRepository
 import com.example.dq.repository.DataSourceRepository
@@ -37,6 +38,7 @@ import com.example.dq.service.DiagnosticsService
 import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
+import com.example.dq.service.LanShareService
 import com.example.dq.service.ManualCollectService
 import com.example.dq.service.MetadataService
 import com.example.dq.service.PreviewService
@@ -140,6 +142,10 @@ class ServiceEnv(val config: AppConfig) {
     val sqlConsoleService = SqlConsoleService(dataSourceService, systemSettingsService, dialectFactory)
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, tableSystemRepo, dataSourceRepo)
     val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
+    /** 局域网共享:UDP 发现(纯网络,不做持久化)+ 拉取导入编排;start(httpPort) 由壳层在内核就绪后调用 */
+    val lanDiscoveryService = LanDiscoveryService(config.lan)
+    val lanShareService = LanShareService(lanDiscoveryService, systemSettingsRepo,
+        annotationTransferService, scanTransferService, config, dataSourceRepo, dataSourceService, crypto)
     val exportService = ExportService(scanService, tableDocRepo)
     val scanWordExportService = ScanWordExportService(scanService, tagRepo, schemaDocRepo)
     val dbStructExportService = DbStructExportService(metadataService, dataSourceService, dialectFactory, tagRepo)
@@ -171,6 +177,7 @@ class ServiceEnv(val config: AppConfig) {
     }
 
     fun shutdown() {
+        lanShareService.stop()
         aiUsageDataSource.close()
         dataSource.close()
     }

@@ -75,6 +75,23 @@ class ScanTransferServiceTest {
     }
 
     @Test
+    fun `局域网共享本机任务预览,列出任务摘要与数据源名`() {
+        val env = Env()
+        val dsId = env.createDs("生产库")
+        seedDoneJob(env, dsId)
+
+        val preview = env.service.localJobsPreview()
+        assertEquals(1, preview.size)
+        val item = preview[0]
+        assertEquals("生产库", item.datasourceName)
+        assertEquals("public", item.schemaName)
+        assertEquals(ScanStatus.DONE, item.status)
+        assertEquals(1, item.totalTables)
+        assertEquals(1, item.doneTables)
+        assertTrue(item.createdAt != null)
+    }
+
+    @Test
     fun `导出导入往返保留任务事件表分段字段明细`() {
         val src = Env()
         val srcDsId = src.createDs("生产库")

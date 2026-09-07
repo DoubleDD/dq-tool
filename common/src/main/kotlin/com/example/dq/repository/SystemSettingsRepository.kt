@@ -12,6 +12,12 @@ class SystemSettingsRepository(private val jdbc: Jdbc) {
         val statementTimeoutSeconds: Int?,
         /** 应用模式首选浏览器 id(null=自动按系统优先级选择);浏览器清单由 server 壳层探测 */
         val browserApp: String? = null,
+        /** 局域网共享开关(null=用配置文件 dq.lan.enabled 默认值) */
+        val lanEnabled: Boolean? = null,
+        /** 本机实例 id(局域网发现身份,首次启动发现时生成,生成后不变) */
+        val instanceId: String? = null,
+        /** 本机实例名称(局域网心跳广播给 peer 展示;空=用主机名兜底) */
+        val instanceName: String? = null,
     ) {
         /** 是否已保存过扫描参数自定义值(任一扫描字段非空;浏览器选择不算扫描自定义) */
         val customized: Boolean
@@ -29,6 +35,9 @@ class SystemSettingsRepository(private val jdbc: Jdbc) {
                 sampleRows = (rs.getObject("scan_sample_rows") as Number?)?.toLong(),
                 statementTimeoutSeconds = (rs.getObject("scan_statement_timeout_seconds") as Number?)?.toInt(),
                 browserApp = rs.getString("browser_app"),
+                lanEnabled = rs.getObject("lan_enabled") as Boolean?,
+                instanceId = rs.getString("instance_id"),
+                instanceName = rs.getString("instance_name"),
             )
         }
 
@@ -37,18 +46,21 @@ class SystemSettingsRepository(private val jdbc: Jdbc) {
             """UPDATE system_settings
                SET scan_workers=?, scan_chunks_per_table=?, scan_row_threshold=?,
                    scan_size_threshold_bytes=?, scan_sample_rows=?, scan_statement_timeout_seconds=?,
-                   browser_app=?, updated_at=CURRENT_TIMESTAMP
+                   browser_app=?, lan_enabled=?, instance_id=?, instance_name=?, updated_at=CURRENT_TIMESTAMP
                WHERE id=1""",
             row.workers, row.chunksPerTable, row.rowThreshold,
-            row.sizeThresholdBytes, row.sampleRows, row.statementTimeoutSeconds, row.browserApp)
+            row.sizeThresholdBytes, row.sampleRows, row.statementTimeoutSeconds, row.browserApp,
+            row.lanEnabled, row.instanceId, row.instanceName)
         if (n == 0) {
             jdbc.update(
                 """INSERT INTO system_settings
                    (id, scan_workers, scan_chunks_per_table, scan_row_threshold,
-                    scan_size_threshold_bytes, scan_sample_rows, scan_statement_timeout_seconds, browser_app)
-                   VALUES (1,?,?,?,?,?,?,?)""",
+                    scan_size_threshold_bytes, scan_sample_rows, scan_statement_timeout_seconds, browser_app,
+                    lan_enabled, instance_id, instance_name)
+                   VALUES (1,?,?,?,?,?,?,?,?,?,?)""",
                 row.workers, row.chunksPerTable, row.rowThreshold,
-                row.sizeThresholdBytes, row.sampleRows, row.statementTimeoutSeconds, row.browserApp)
+                row.sizeThresholdBytes, row.sampleRows, row.statementTimeoutSeconds, row.browserApp,
+                row.lanEnabled, row.instanceId, row.instanceName)
         }
     }
 

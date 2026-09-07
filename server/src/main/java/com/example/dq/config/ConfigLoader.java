@@ -58,6 +58,10 @@ public final class ConfigLoader {
         }
         dq.getDesktop().setShutdownTimeoutSeconds(getInt(yaml, "dq.desktop.shutdown-timeout-seconds",
                 dq.getDesktop().getShutdownTimeoutSeconds()));
+        dq.getLan().setEnabled(getBoolean(yaml, "dq.lan.enabled", dq.getLan().isEnabled()));
+        dq.getLan().setDiscoveryPort(getInt(yaml, "dq.lan.discovery-port", dq.getLan().getDiscoveryPort()));
+        dq.getLan().setAnnounceIntervalSeconds(getInt(yaml, "dq.lan.announce-interval-seconds",
+                dq.getLan().getAnnounceIntervalSeconds()));
 
         AiProperties ai = new AiProperties();
         ai.setBaseUrl(getString(yaml, "ai.base-url", null));

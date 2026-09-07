@@ -1,0 +1,1 @@
+[{"id":1,"name":"空表","color":"#909399","kind":"EMPTY","description":null,"tagType":"SYSTEM","tableCount":0,"source":null},{"id":2,"name":"核心业务","color":"#F56C6C","kind":"USER","description":"核心业务系统相关表","tagType":"AI","tableCount":1,"source":null},{"id":3,"name":"需治理","color":"#E6A23C","kind":"USER","description":"存在空值/缺失需治理","tagType":"MANUAL","tableCount":1,"source":null}]
