@@ -1,5 +1,6 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.LanManualPeerRequest;
 import com.example.dq.model.LanPullRequest;
 import com.example.dq.model.LanSettingsRequest;
 import com.example.dq.service.LanShareService;
@@ -13,6 +14,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 局域网共享(Javalin handler,路由在 WebServer 注册):
@@ -67,6 +69,28 @@ public class LanController {
     public void shareScans(Context ctx) throws IOException {
         streamJson(ctx, "dq-scans");
         service.exportScans(parseIds(ctx.queryParam("ids")), ctx.res().getOutputStream());
+    }
+
+    /** 共享出口:本机实例身份(实例 id/名称/版本),供其他实例手动添加时直连探测确认 */
+    public void shareInfo(Context ctx) {
+        ctx.json(service.shareInfo());
+    }
+
+    /** 手动添加实例(UDP 广播发现不可用的网络):立即直连探测,确认对方是本软件实例才入库 */
+    public void addManualPeer(Context ctx) {
+        LanManualPeerRequest req = ctx.bodyAsClass(LanManualPeerRequest.class);
+        ctx.json(service.addManualPeer(req.getHost() == null ? "" : req.getHost(), req.getPort()));
+    }
+
+    /** 移除手动添加的实例(query 参数 host/port) */
+    public void removeManualPeer(Context ctx) {
+        String host = ctx.queryParam("host");
+        String port = ctx.queryParam("port");
+        if (host == null || host.isBlank() || port == null) {
+            throw new IllegalArgumentException("缺少 host/port 参数");
+        }
+        service.removeManualPeer(host.trim(), Integer.parseInt(port));
+        ctx.json(Map.of("ok", true));
     }
 
     /** 同步前预览:拉取指定在线实例的标注/扫描任务预览,供页面勾选 */

@@ -18,7 +18,7 @@ src/main/kotlin/com/example/dq/
   config/AppConfig.kt      内核配置(data class):dataDir/scan/securitySecret/ai 默认值/licensePublicKey;
                            server 由 KernelConfigAdapter 从 yml 映射
   dialect/                 DbDialect + AbstractDialect + 8 方言 + DialectFactory(object 单例)
-  discovery/               LanDiscoveryService 局域网实例发现(纯 JDK DatagramSocket 广播心跳+监听,SO_REUSEADDR 同机多实例,peer 表纯内存;广播目标可注入走回环单测)
+  discovery/               LanDiscoveryService 局域网实例发现(纯 JDK DatagramSocket 广播心跳+监听,SO_REUSEADDR 同机多实例、macOS 叠加 SO_REUSEPORT 保证广播全员投递,逐目标独立发送互不中断、失败目标 10 分钟冷却防刷屏+重解析自动探测目标,peer 表纯内存;广播目标可注入走回环单测)
   model/                   data class/枚举;3 个请求类带 @field:NotNull/@field:NotBlank(server 用 hibernate-validator 触发)
   repository/              Jdbc.kt 薄封装 + 13 仓储(TableSystemRepository:表所属系统四元组存储,一表一系统,upsert 幂等 + 批量清除;MetaCacheRepository:库/schema 清单(meta_database)+ 表/字段/索引结构本地缓存 + 整库字段清单缓存(meta_schema_column,SQL 控制台智能提示用,支持 schema 级整库覆盖与按表分批覆盖),懒加载 + 手动/扫描刷新,meta_cache_flag 区分「未缓存」与「已缓存但为空」;AiUsageRepository:AI 调用用量流水——独立 H2 库 dqaiusage,含请求/响应内容,记录时快照扫描标签不跨库 join,启动时一次性搬迁主库老数据 migrateLegacyIfEmpty,按日/按场景/按扫描聚合 + 最近明细分页)+ SchemaInit(Flyway 迁移封装,location 参数区分主库/AI 用量库脚本目录)
   scan/                    ScanExecutor(线程池)/ ChunkRunner(表 DONE 后联动 TagService 自动打/摘「空表」标记 + 提交 AutoTagService、ScanDocService 异步入队)/ ScanAiTracker(AI 后续按 job 计数与任务收尾:全部表终态且 AI 清零才置 DONE/FAILED,此前 RUNNING 进度封顶 99%;打标/表描述按 AiKind 分类计数,经 ScanJobView.ai 暴露给前端三段式进度条;reset 供 ScanService.finish 手动结束清零放弃挂起的 AI 后续)/ InterruptRecovery
@@ -64,6 +64,8 @@ src/main/resources/db/migration/
   V30__tag_def_tag_type.sql       tag_def.tag_type 列(标记类型数字码:0=系统 / 1=可用于AI打标 / 2=仅用于人工打标,AI 自动打标只把类型 1 发给大模型;存量 USER 默认 1 保持旧行为,空表标记置 0)
   V31__table_system.sql           表所属系统 table_system(数据源+库+schema+表四元组唯一,一表一系统;独立于 tag 标记体系,随 AnnotationTransfer 导出导入)
   V32__table_tag_source.sql       table_tag.source 列(打标来源:MANUAL 人工打标 / AI 自动打标 / SYSTEM 系统联动-空表标记;存量默认 MANUAL,空表标记关系修正为 SYSTEM;字段明细页「标签」页签按 人工/系统 区分展示)
+  V33__lan_share.sql             局域网共享:system_settings 加 lan_enabled/instance_id/instance_name 三列(ALTER IF NOT EXISTS)
+  V34__lan_manual_peers.sql      局域网共享:system_settings.lan_manual_peers 列(手动添加实例清单,逗号分隔 host:port;广播发现不可用的网络按地址直连探测)
 src/main/resources/db/migration-aiusage/   AI 用量独立库(dqaiusage)迁移脚本,独立 flyway_schema_history
   V1__ai_usage_log.sql      用量流水全量建表:token/费用/峰谷时段 + scan_job_id + 扫描标签快照(scan_label/scan_created_at)+ 请求/响应内容(request_content/response_content CLOB,记录截断 5 万字符,供 prompt 调优回溯)
 src/test/kotlin/           方言/分段/级联删除/标记(TagRepository/TagService)/AI prompt/授权码/Flyway 迁移单测 + Testcontainers 端到端(MySQL/PG/SQLServer;SSH 隧道 SshTunnelIntegrationTest:linuxserver/openssh-server 跳板机 + MySQL 网络别名,注意该镜像 sshd 监听 2222 且默认 AllowTcpForwarding no 需 custom-cont-init.d 打开)

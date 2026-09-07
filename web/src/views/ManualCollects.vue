@@ -83,7 +83,8 @@
 <script setup>
 import { computed, onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { Download, Refresh } from '@element-plus/icons-vue'
 import request from '../api'
 import { formatDateTime } from '../utils/format'

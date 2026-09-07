@@ -7,6 +7,7 @@ import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.model.DbType
 import com.example.dq.model.TestConnectionRequest
+import com.example.dq.model.TestConnectionResult
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.SchemaStatRepository
@@ -132,9 +133,12 @@ class DataSourceService(
         repo.updateGroup(id, groupName?.trim()?.takeIf { it.isNotEmpty() })
     }
 
-    /** 测试连接(不落库,直接用请求参数);返回探测到的数据库兼容模式,无为 null */
+    /**
+     * 测试连接(不落库,直接用请求参数);返回连接详情(DBMS/驱动名称与版本、连接耗时、SSL、兼容模式)。
+     * 耗时只计首个连通候选的 DriverManager.getConnection 成功耗时(不含驱动加载/SSH 建隧)
+     */
     @Throws(SQLException::class)
-    fun testConnection(req: TestConnectionRequest): String? {
+    fun testConnection(req: TestConnectionRequest): TestConnectionResult {
         val type = DbType.fromJdbcUrl(req.jdbcUrl)
         val dialect = dialectFactory.get(type)
         try {
@@ -142,11 +146,30 @@ class DataSourceService(
         } catch (e: ClassNotFoundException) {
             throw SQLException("JDBC 驱动未加载: " + dialect.driverClassName(), e)
         }
+        var connectMs = 0L
         return withOptionalTunnel(req) { url ->
-            withFirstConnectable(dialect, url, req.username, req.password) { conn ->
-                dialect.detectDbMode(conn)
+            val ssl = detectSsl(url)
+            withFirstConnectable(dialect, url, req.username, req.password, { connectMs = it }) { conn ->
+                val meta = conn.metaData
+                TestConnectionResult(
+                    dbmsName = meta.databaseProductName,
+                    dbmsVersion = meta.databaseProductVersion,
+                    driverName = meta.driverName,
+                    driverVersion = meta.driverVersion,
+                    pingMs = connectMs,
+                    ssl = ssl,
+                    dbMode = dialect.detectDbMode(conn),
+                )
             }
         }
+    }
+
+    /** SSL 启发式判断:各驱动无统一运行时 API,仅看 JDBC URL 参数;判不出按未启用展示 */
+    private fun detectSsl(jdbcUrl: String): Boolean {
+        val u = jdbcUrl.lowercase()
+        return u.contains("usessl=true") || u.contains("ssl=true")
+            || Regex("sslmode=(require|verify-ca|verify-full)").containsMatchIn(u)
+            || u.contains("encrypt=true")
     }
 
     /** 编辑对话框「库过滤」页签:用请求中的连接参数(可经 SSH 一次性隧道)拉取目标库的库名列表,不落库 */
@@ -175,16 +198,20 @@ class DataSourceService(
 
     /**
      * 按方言候选 URL 序列依次尝试连接(URL 未指定库时的维护库回落,见 DbDialect.connectionUrlCandidates),
-     * 首个连通者执行 block;全部失败抛最后一个异常(比第一个更接近真实可用路径,如权限不足)
+     * 首个连通者执行 block;全部失败抛最后一个异常(比第一个更接近真实可用路径,如权限不足)。
+     * onConnectMs 回传首个连通候选的建连耗时(毫秒),供连接测试展示 Ping
      */
     @Throws(SQLException::class)
     private fun <T> withFirstConnectable(
-        dialect: DbDialect, url: String, username: String?, password: String?, block: (Connection) -> T,
+        dialect: DbDialect, url: String, username: String?, password: String?,
+        onConnectMs: (Long) -> Unit = {}, block: (Connection) -> T,
     ): T {
         var lastError: SQLException? = null
         for (candidate in dialect.connectionUrlCandidates(url)) {
             try {
+                val start = System.nanoTime()
                 SqlLogConnection.wrap(DriverManager.getConnection(candidate, username, password)).use { conn ->
+                    onConnectMs((System.nanoTime() - start) / 1_000_000)
                     return block(conn)
                 }
             } catch (e: SQLException) {

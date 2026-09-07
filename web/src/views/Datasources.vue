@@ -229,7 +229,8 @@
 <script setup>
 import { computed, onActivated, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { ArrowDown, ArrowRight, Connection, Delete, EditPen, Search, Star, StarFilled, UploadFilled, User, WarningFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import DbTypeIcon from '../components/DbTypeIcon.vue'

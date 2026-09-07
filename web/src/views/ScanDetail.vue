@@ -110,7 +110,8 @@
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import ExportButton from '../components/ExportButton.vue'

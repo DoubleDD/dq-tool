@@ -25,7 +25,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import request from '../api'
 import { fetchLicenseStatus, markActivated } from '../router'
 

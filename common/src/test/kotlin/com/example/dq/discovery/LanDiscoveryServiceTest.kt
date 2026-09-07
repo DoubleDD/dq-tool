@@ -12,7 +12,8 @@ import java.net.InetSocketAddress
 
 /**
  * 局域网发现:两个实例走回环单播互指(各自监听独立端口、心跳目标指向对方端口),
- * 避免同机同端口双绑定的投递不确定性;覆盖互发现、忽略自身、改名即时生效、非本协议报文忽略、stop 语义。
+ * 避免同机同端口双绑定的投递不确定性;覆盖互发现、忽略自身、改名即时生效、非本协议报文忽略、
+ * 单个广播目标失败不中断其余目标、stop 语义。
  */
 class LanDiscoveryServiceTest {
 
@@ -71,6 +72,26 @@ class LanDiscoveryServiceTest {
 
             nameA = "新名字"
             awaitTrue { b.peers().any { it.instanceId == "id-a" && it.instanceName == "新名字" } }
+        } finally {
+            a.stop()
+            b.stop()
+        }
+    }
+
+    @Test
+    fun `单个广播目标发送失败不中断其余目标的心跳`() {
+        val portA = freeUdpPort()
+        val portB = freeUdpPort()
+        // 未解析地址 send 必抛 IllegalArgumentException,模拟失效网卡广播地址(Host is down)场景
+        val bad = InetSocketAddress.createUnresolved("broken-target", portB)
+        val a = LanDiscoveryService(LanConfig(true, portA, 1),
+            listOf(bad, InetSocketAddress(loopback, portB)))
+        val b = LanDiscoveryService(LanConfig(true, portB, 1), listOf(InetSocketAddress(loopback, portA)))
+        try {
+            a.start(11001, "id-a", { "实例甲" }, "1.9.9")
+            b.start(11002, "id-b", { "实例乙" }, "1.9.8")
+            // 坏目标排在前,后续正常目标仍能收到心跳
+            awaitTrue { b.peers().any { it.instanceId == "id-a" } }
         } finally {
             a.stop()
             b.stop()

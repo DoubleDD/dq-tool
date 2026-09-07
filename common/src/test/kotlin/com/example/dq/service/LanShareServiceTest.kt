@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import java.net.DatagramSocket
 import java.nio.file.Files
 
@@ -112,6 +113,7 @@ class LanShareServiceTest {
         service.start(18080)
         assertTrue(discovery.isRunning())
         assertTrue(service.status().running)
+        assertEquals(18080, service.status().httpPort) // start 记录的 HTTP 端口随状态返回
 
         service.saveSettings(LanSettingsRequest(enabled = false))
         assertFalse(discovery.isRunning())
@@ -130,6 +132,21 @@ class LanShareServiceTest {
         service.start(18081)
         assertFalse(discovery.isRunning())
         assertNotNull(settingsRepo.get()!!.instanceId)
+        service.stop()
+    }
+
+    @Test
+    fun `手动添加本机地址(回环或本机网卡+本机端口)在 HTTP 探测前直接拒绝`() {
+        service.start(18080)
+        val e1 = assertThrows<IllegalArgumentException> { service.addManualPeer("127.0.0.1", 18080) }
+        assertTrue(e1.message!!.contains("本机实例"))
+        // 本机网卡地址同样识别——探测前拦截,不依赖该地址 HTTP 连通(虚拟网卡可能超时)
+        service.status().addresses.firstOrNull()?.let { addr ->
+            val e2 = assertThrows<IllegalArgumentException> { service.addManualPeer(addr.address, 18080) }
+            assertTrue(e2.message!!.contains("本机实例"))
+        }
+        // 拒绝后不落库
+        assertTrue(service.manualPeers().isEmpty())
         service.stop()
     }
 

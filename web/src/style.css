@@ -693,20 +693,50 @@ html.dark .sidebar-menu .el-menu-item.is-active {
 }
 
 /**
- * ElMessage 改为右上角弹出、从右向左滑入/滑出(类 macOS 通知):
- *  - 默认实现是顶部居中(left:50% + translateX(-50%)),大量错误提示会挡住界面;
- *  - 只覆盖定位与进出方向,堆叠偏移(top 内联样式 + top 过渡)仍由组件自身计算;
- *  - 限定最大宽度,避免超长错误信息横贯窗口。
+ * 全局接口反馈通知(utils/notify.js,基于 ElNotification)的 macOS 风格微调:
+ * 右上角弹出、从右向左滑入/滑出、自动堆叠均由组件自身实现,这里只调外观
+ * (圆角/阴影/宽度上限/字号/类型着色);标题+摘要两行与「展开全部」由 components/NotifyBody.vue 渲染。
+ * 类型着色用 light-9(底)/light-5(边)变量,暗色主题下这两个变量自动变深,深浅主题通用。
  */
-.el-message {
-  left: auto;
-  right: 16px;
-  transform: none;
-  max-width: min(420px, calc(100vw - 32px));
+.el-notification {
+  width: min(360px, calc(100vw - 32px));
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  /* 紧凑排版:收紧内边距、图标与正文间距、标题/正文行高 */
+  padding: 10px 26px 10px 12px;
 }
 
-.el-message-fade-enter-from,
-.el-message-fade-leave-to {
-  opacity: 0;
-  transform: translateX(calc(100% + 16px));
+.el-notification__group {
+  margin-left: 8px;
+}
+
+.el-notification__title {
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.el-notification__content {
+  font-size: 12px;
+  line-height: 17px;
+  margin-top: 4px;
+}
+
+.el-notification.dq-notify-success {
+  background-color: var(--el-color-success-light-9);
+  border-color: var(--el-color-success-light-5);
+}
+
+.el-notification.dq-notify-warning {
+  background-color: var(--el-color-warning-light-9);
+  border-color: var(--el-color-warning-light-5);
+}
+
+.el-notification.dq-notify-error {
+  background-color: var(--el-color-error-light-9);
+  border-color: var(--el-color-error-light-5);
+}
+
+.el-notification.dq-notify-info {
+  background-color: var(--el-color-info-light-9);
+  border-color: var(--el-color-info-light-5);
 }

@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { ElMessage } from '../utils/notify'
 
 const routes = [
   { path: '/', redirect: '/datasources' },
@@ -62,6 +63,24 @@ export function markActivated(newStatus) {
   // 广播授权变化:侧边栏菜单按授权功能过滤(App.vue),换码成功后需整体重算
   window.dispatchEvent(new CustomEvent('dq-license-changed'))
 }
+
+/** 懒加载资源失败后已自动刷新过一次的本会话标记(sessionStorage,随页签关闭清除) */
+const CHUNK_RELOAD_FLAG = 'dq-chunk-reload'
+
+router.onError((error) => {
+  const msg = String((error && error.message) || error)
+  // 懒加载 chunk/CSS 加载失败:多为前端发版后旧页面仍开着,旧 hash 资源在新构建中已不存在。
+  // vue-router 默认把它吞成未捕获 Promise,表现为「点按钮没反应」——自动整页刷新一次换新资源;
+  // 本会话已刷新过仍失败则改为提示,避免反复刷新
+  if (!/dynamically imported module|Unable to preload CSS|module script failed/i.test(msg)) return
+  if (sessionStorage.getItem(CHUNK_RELOAD_FLAG)) {
+    // grouping: 一次失败导航可能同时报 JS chunk 与 CSS preload 两个错,相同提示合并为一条
+    ElMessage({ type: 'error', grouping: true, message: '页面资源加载失败,请关闭窗口重新打开' })
+    return
+  }
+  sessionStorage.setItem(CHUNK_RELOAD_FLAG, '1')
+  window.location.reload()
+})
 
 router.beforeEach(async (to) => {
   if (to.path === '/activate') return true

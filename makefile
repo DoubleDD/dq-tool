@@ -17,6 +17,9 @@ JAR = server/build/libs/dq-tool-$(VERSION).jar
 
 KEY ?= license-private.key
 
+# 第二开发实例端口(make dev2 PORT=10002 可同时起多个,数据目录随端口号区分)
+PORT ?= 10001
+
 # 授权码绑定的软件版本:与安装包版本口径一致(去 0. 前缀,如 0.1.6 -> 1.6)
 LICENSE_VERSION ?= $(VERSION:0.%=%)
 
@@ -24,7 +27,7 @@ LICENSE_VERSION ?= $(VERSION:0.%=%)
 # release 打包由 :server:shadowJar 的前置任务 buildWebForRelease 保障 web/dist 最新且存在。
 
 .PHONY: help \
-	dev dev-headless dev-web tauri \
+	dev dev-headless dev2 dev-web tauri \
 	build test run run-headless \
 	package package-skip package-linux \
 	package-tauri package-tauri-skip \
@@ -36,6 +39,7 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '\n\033[1m本地运行调试\033[0m\n'
 	@printf '  make %-18s %s\n' dev            '后端 + 浏览器 app 窗口/托盘(前端有改动时先重建 web/dist)'
 	@printf '  make %-18s %s\n' dev-headless   '后端,无窗口/托盘(服务器方式调试)'
+	@printf '  make %-18s %s\n' dev2           '起第二个实例(带窗口;多实例/局域网共享调试;PORT=10001 可改,数据目录 .dev2/data-端口)'
 	@printf '  make %-18s %s\n' dev-web        '前端 5173 热更新(代理 /api 到 10000)'
 	@printf '  make %-18s %s\n' tauri          'Tauri 2 套壳版(系统 WebView + Rust 侧车拉起 java 子进程)'
 	@printf '\n\033[1m构建 / 测试 / 直接跑 jar\033[0m\n'
@@ -67,6 +71,9 @@ dev: ## 后端开发模式,带窗口/托盘(显式关闭 headless;不构建前�
 
 dev-headless: ## 后端开发模式,无窗口/托盘(服务器方式调试;只启动 server,不构建前端)
 	DQ_LICENSE_PRIVATE_KEY_FILE=$(wildcard license-private.key) ./gradlew :server:run
+
+dev2: ## 起第二个开发实例(多实例/局域网共享调试,带窗口/托盘):HTTP 端口 $(PORT),数据目录 .dev2/data-$(PORT)(日志 .dev2/logs);用 make dev2 PORT=10002 可同时起多个
+	DQ_LICENSE_PRIVATE_KEY_FILE=$(wildcard license-private.key) JAVA_TOOL_OPTIONS="-Djava.awt.headless=false -Ddq.data-dir=./.dev2/data-$(PORT)" SERVER_PORT=$(PORT) ./gradlew :server:run
 
 dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
 	cd web && npm run dev

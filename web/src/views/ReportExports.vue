@@ -73,7 +73,7 @@
 
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import request from '../api'
 import { formatBytes, formatDateTime } from '../utils/format'
 import { isTauri } from '../utils/download'

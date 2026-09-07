@@ -1,4 +1,4 @@
-import { ElMessage } from 'element-plus'
+import { ElMessage } from './notify'
 
 /** tauri 套壳环境(webview 注入 __TAURI_INTERNALS__) */
 export const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__

@@ -25,7 +25,7 @@
 
 <script setup>
 import { reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import request from '../api'
 
 // 新建成功后由父组件刷新标记列表

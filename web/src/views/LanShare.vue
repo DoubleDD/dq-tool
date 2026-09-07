@@ -7,12 +7,14 @@
     <el-card class="settings-card" shadow="never">
       <template #header>本机共享</template>
       <div class="settings-desc">
-        开启后,本机通过 UDP 广播(端口 {{ status?.discoveryPort ?? '-' }})自动发现同一局域网内运行本软件的其他电脑,
-        并可互相拉取标记、表描述与扫描记录。共享出口无鉴权,仅适合可信内网使用。
+        <ol>
+          <li>开启后,本机通过 UDP 广播(端口 {{ status?.discoveryPort ?? '-' }})自动发现同一局域网内运行本软件的其他电脑,并可互相拉取标记、表描述与扫描记录。</li>
+          <li>共享出口无鉴权,仅适合可信内网使用。</li>
+        </ol>
       </div>
       <el-form label-width="140px">
         <el-form-item label="启用局域网共享">
-          <el-switch v-model="form.enabled" />
+          <el-switch v-model="form.enabled" :loading="saving" @change="onEnabledChange" />
           <span v-if="status" class="lan-running-hint" :class="{ off: !status.running }">
             {{ status.running ? '发现服务运行中' : '发现服务未运行' }}
           </span>
@@ -26,44 +28,77 @@
             style="max-width: 360px"
           />
         </el-form-item>
+        <el-form-item label="本机地址">
+          <div class="lan-self-info">
+            <template v-if="status && status.addresses && status.addresses.length">
+              <el-tag
+                v-for="a in status.addresses" :key="a.address"
+                class="lan-addr-tag" title="点击复制"
+                @click="copyAddr(`${a.address}:${status.httpPort}`)"
+              ><span v-if="a.iface" class="lan-addr-iface">{{ a.iface }}</span>{{ a.address }}:{{ status.httpPort }}</el-tag>
+            </template>
+            <span v-else>-</span>
+            <span class="lan-addr-hint">点击复制;对方广播发现不到本机时,把地址发给同事在「在线实例」右上角手动添加</span>
+          </div>
+        </el-form-item>
       </el-form>
       <div class="card-actions">
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </div>
     </el-card>
 
-    <el-card class="settings-card" shadow="never">
+    <!-- 共享未启用时整卡隐藏,不与上面的「本机共享」设置混淆 -->
+    <el-card v-if="status?.enabled" class="settings-card" shadow="never">
       <template #header>
         <div class="lan-peers-header">
           <span>在线实例</span>
-          <el-button :icon="Refresh" text circle title="刷新" @click="loadPeers" />
+          <div class="lan-manual-add">
+            <el-input
+              v-model="manualAddr"
+              placeholder="手动添加:IP 或 IP:端口(默认 10000)"
+              size="small"
+              style="width: 280px"
+              clearable
+              @keyup.enter="addManual"
+            />
+            <el-button size="small" type="primary" :loading="addingManual" @click="addManual">添加</el-button>
+            <el-button :icon="Refresh" text circle title="刷新" @click="loadPeers" />
+          </div>
         </div>
       </template>
       <div class="settings-desc">
-        每 5 秒自动刷新;超过 15 秒未收到心跳的实例判离线。「同步标记与描述」拉取对方的标记定义、表级打标、
-        表描述与表所属系统;「导入全部数据」额外拉取对方扫描记录(数据源按名称自动匹配本机,匹配不到的任务跳过)。
-        两者都会先预览对方数据,由你勾选后再同步。
+        <ol>
+          <li>每 5 秒自动刷新;超过 15 秒未收到心跳的实例判离线。</li>
+          <li>UDP 广播跨不了子网/VLAN、部分网络存在 AP 隔离,广播发现不到时可按对方 IP 手动添加(走 HTTP 直连探测)。</li>
+          <li>「同步标记与描述」拉取对方的标记定义、表级打标、表描述与表所属系统。</li>
+          <li>「导入扫描记录」在标注数据之外额外拉取对方扫描记录(数据源按名称自动匹配本机,匹配不到的任务跳过)。</li>
+          <li>两者都会先预览对方数据,由你勾选后再同步。</li>
+        </ol>
       </div>
       <el-table :data="peers" v-loading="loadingPeers" border>
         <el-table-column prop="instanceName" label="实例名称" min-width="160" show-overflow-tooltip />
-        <el-table-column label="地址" min-width="170">
-          <template #default="{ row }">{{ row.host }}:{{ row.httpPort }}</template>
+        <el-table-column label="地址" min-width="190">
+          <template #default="{ row }">
+            {{ row.host }}:{{ row.httpPort }}
+            <el-tag v-if="row.manual" size="small" type="warning" class="lan-manual-tag">手动</el-tag>
+          </template>
         </el-table-column>
         <el-table-column prop="appVersion" label="版本" width="100">
           <template #default="{ row }">{{ row.appVersion || '-' }}</template>
         </el-table-column>
-        <el-table-column label="最后心跳" width="170">
+        <el-table-column label="最后心跳" width="200">
           <template #default="{ row }">{{ formatTime(row.lastSeenAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="290" fixed="right">
+        <el-table-column label="操作" width="330" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openPreview(row, 'annotations')">同步标记与描述</el-button>
-            <el-button size="small" type="primary" @click="openPreview(row, 'all')">导入全部数据</el-button>
+            <el-button size="small" type="primary" @click="openPreview(row, 'all')">导入扫描记录</el-button>
+            <el-button v-if="row.manual" size="small" type="danger" text @click="removeManual(row)">移除</el-button>
           </template>
         </el-table-column>
         <template #empty>
-          <span v-if="status && !status.running">共享未启用,开启后自动发现同网段实例</span>
-          <span v-else>暂未发现其他实例(确认对方已开启共享且在同一局域网)</span>
+          <span v-if="status && !status.running">发现服务未运行,请检查端口 {{ status.discoveryPort }} 是否被占用</span>
+          <span v-else>暂未发现其他实例(确认对方已开启共享;广播不可用的网络可在右上角手动添加)</span>
         </template>
       </el-table>
     </el-card>
@@ -71,8 +106,9 @@
     <!-- 同步前预览与勾选弹窗:两个操作共用;annotations 模式只显示标注段,all 模式含扫描任务段 -->
     <el-dialog
       v-model="previewVisible"
-      :title="previewMode === 'all' ? `导入全部数据 — ${previewPeerName}` : `同步标记与描述 — ${previewPeerName}`"
-      width="720px"
+      :title="previewMode === 'all' ? `导入扫描记录 — ${previewPeerName}` : `同步标记与描述 — ${previewPeerName}`"
+      width="min(1100px, 94vw)"
+      top="3vh"
       :close-on-click-modal="false"
     >
       <div v-loading="previewLoading" class="lan-preview-body">
@@ -97,61 +133,18 @@
             </el-checkbox-group>
           </div>
           <div class="lan-preview-group lan-preview-cats">
-            <el-collapse v-model="expandedCats">
-              <el-collapse-item name="tableTags">
-                <template #title>
-                  <el-checkbox v-model="sel.includeTableTags" @click.stop>
-                    表级打标({{ preview.annotations.tableTags.length }} 条,仅同步被勾选标记的关系)
-                  </el-checkbox>
-                  <span class="lan-expand-hint">点击展开明细</span>
-                </template>
-                <el-table :data="preview.annotations.tableTags" size="small" border max-height="200">
-                  <el-table-column label="表" min-width="180" show-overflow-tooltip>
-                    <template #default="{ row }">{{ row.schemaName }}.{{ row.tableName }}</template>
-                  </el-table-column>
-                  <el-table-column label="标记" width="150">
-                    <template #default="{ row }">
-                      <span :class="{ 'lan-row-dim': !selectedTagNames.includes(row.tagName) }">
-                        {{ row.tagName }}
-                        <span v-if="!selectedTagNames.includes(row.tagName)" class="lan-row-skip">(不同步)</span>
-                      </span>
-                    </template>
-                  </el-table-column>
-                  <el-table-column prop="datasourceName" label="数据源" min-width="110" show-overflow-tooltip />
-                  <template #empty>无表级打标</template>
-                </el-table>
-              </el-collapse-item>
-              <el-collapse-item name="tableDocs">
-                <template #title>
-                  <el-checkbox v-model="sel.includeDocs" @click.stop>
-                    表描述({{ preview.annotations.tableDocs.length }} 条)
-                  </el-checkbox>
-                  <span class="lan-expand-hint">点击展开明细</span>
-                </template>
-                <el-table :data="preview.annotations.tableDocs" size="small" border max-height="200">
-                  <el-table-column label="表" width="200" show-overflow-tooltip>
-                    <template #default="{ row }">{{ row.schemaName }}.{{ row.tableName }}</template>
-                  </el-table-column>
-                  <el-table-column prop="description" label="描述" min-width="260" show-overflow-tooltip />
-                  <template #empty>无表描述</template>
-                </el-table>
-              </el-collapse-item>
-              <el-collapse-item name="tableSystems">
-                <template #title>
-                  <el-checkbox v-model="sel.includeSystems" @click.stop>
-                    表所属系统({{ preview.annotations.tableSystems.length }} 条)
-                  </el-checkbox>
-                  <span class="lan-expand-hint">点击展开明细</span>
-                </template>
-                <el-table :data="preview.annotations.tableSystems" size="small" border max-height="200">
-                  <el-table-column label="表" min-width="200" show-overflow-tooltip>
-                    <template #default="{ row }">{{ row.schemaName }}.{{ row.tableName }}</template>
-                  </el-table-column>
-                  <el-table-column prop="systemName" label="所属系统" min-width="140" show-overflow-tooltip />
-                  <template #empty>无所属系统数据</template>
-                </el-table>
-              </el-collapse-item>
-            </el-collapse>
+            <div class="lan-cat-row">
+              <el-checkbox v-model="sel.includeTableTags">
+                表级打标({{ preview.annotations.tableTags.length }} 条,仅同步被勾选标记的关系)
+              </el-checkbox>
+              <el-button text type="primary" size="small" @click="openDetail('tableTags')">明细</el-button>
+            </div>
+            <div class="lan-cat-row">
+              <el-checkbox v-model="sel.includeDocs">
+                表描述({{ preview.annotations.tableDocs.length }} 条)
+              </el-checkbox>
+              <el-button text type="primary" size="small" @click="openDetail('tableDocs')">明细</el-button>
+            </div>
           </div>
           <div v-if="preview.annotations.datasources.length" class="lan-ds-hint">
             涉及数据源:<span v-for="d in preview.annotations.datasources" :key="d.datasourceName" class="lan-ds-chip">
@@ -159,10 +152,20 @@
             </span>
           </div>
 
-          <!-- 数据源映射:对方数据源与本机数据源的对应(同名预填;无对应可新建无密码副本或跳过) -->
+          <!-- 数据源映射:对方数据源与本机数据源的对应(勾选才同步,默认全选;同名预填;无对应可新建无密码副本);
+               all 模式随扫描记录勾选动态变化(只列被勾选任务涉及的数据源),annotations 模式按标注涉及数据源 -->
           <template v-if="involvedDatasources.length">
             <div class="lan-preview-section-title">数据源映射</div>
-            <el-table :data="involvedDatasources" size="small" border class="lan-ds-map-table">
+            <el-table
+              ref="dsMapTableRef"
+              :data="involvedDatasources"
+              size="small"
+              border
+              max-height="260"
+              class="lan-ds-map-table"
+              @selection-change="(rows) => (selectedDsNames = rows.map((r) => r.peerName))"
+            >
+              <el-table-column type="selection" width="42" />
               <el-table-column label="对方数据源" min-width="200">
                 <template #default="{ row }">
                   <div>{{ row.peerName }}</div>
@@ -171,22 +174,26 @@
               </el-table-column>
               <el-table-column label="映射到本机" min-width="220">
                 <template #default="{ row }">
-                  <el-select v-model="dsChoices[row.peerName]" size="small" style="width: 100%">
+                  <el-select
+                    v-model="dsChoices[row.peerName]"
+                    size="small"
+                    style="width: 100%"
+                    :disabled="!selectedDsNames.includes(row.peerName)"
+                  >
                     <el-option
                       v-for="l in preview.localDatasources" :key="l.id" :value="l.id"
                       :label="`现有:${l.name}`"
                     />
                     <el-option value="__new__" label="新建到本机(同步连接信息,与导入导出口径一致)" />
-                    <el-option value="__skip__" label="跳过(不同步该数据源的数据)" />
                   </el-select>
                 </template>
               </el-table-column>
             </el-table>
-            <div class="lan-ds-hint">「新建到本机」同步名称/连接地址/用户名/密码(密码以密文传输,与数据源导出文件同一口径);「跳过」则该数据源下的打标/描述/扫描记录都不导入。</div>
+            <div class="lan-ds-hint">勾选的数据源才会同步;「新建到本机」同步名称/连接地址/用户名/密码(密码以密文传输,与数据源导出文件同一口径);取消勾选则该数据源下的打标/描述/扫描记录都不导入。</div>
           </template>
 
           <template v-if="previewMode === 'all'">
-            <div class="lan-preview-section-title">扫描记录</div>
+            <div class="lan-preview-section-title">扫描记录({{ preview.scanJobs.length }} 条)</div>
             <el-table
               ref="jobTableRef"
               :data="preview.scanJobs"
@@ -220,20 +227,68 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 标注明细弹窗(表级打标/表描述,表头固定) -->
+    <el-dialog
+      v-model="detailVisible"
+      :title="detailType === 'tableTags' ? '表级打标明细' : '表描述明细'"
+      width="min(900px, 90vw)"
+      append-to-body
+    >
+      <el-table
+        v-if="detailType === 'tableTags'"
+        :data="preview?.annotations.tableTags || []"
+        size="small"
+        border
+        max-height="60vh"
+      >
+        <el-table-column label="表" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.schemaName }}.{{ row.tableName }}</template>
+        </el-table-column>
+        <el-table-column label="标记" width="150">
+          <template #default="{ row }">
+            <span :class="{ 'lan-row-dim': !selectedTagNames.includes(row.tagName) }">
+              {{ row.tagName }}
+              <span v-if="!selectedTagNames.includes(row.tagName)" class="lan-row-skip">(不同步)</span>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="datasourceName" label="数据源" min-width="110" show-overflow-tooltip />
+        <template #empty>无表级打标</template>
+      </el-table>
+      <el-table
+        v-else
+        :data="preview?.annotations.tableDocs || []"
+        size="small"
+        border
+        max-height="60vh"
+      >
+        <el-table-column label="表" width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.schemaName }}.{{ row.tableName }}</template>
+        </el-table-column>
+        <el-table-column prop="description" label="描述" min-width="260" show-overflow-tooltip />
+        <template #empty>无表描述</template>
+      </el-table>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { Refresh } from '@element-plus/icons-vue'
 import request from '../api'
+import { notifyDsListChanged } from '../utils/dsListChanged'
 
 const status = ref(null)
 const form = reactive({ enabled: true, instanceName: '' })
 const saving = ref(false)
 const peers = ref([])
 const loadingPeers = ref(false)
+// 手动添加实例(广播发现不可用的网络按地址直连)
+const manualAddr = ref('')
+const addingManual = ref(false)
 let timer = null
 let mounted = false
 
@@ -245,21 +300,34 @@ const previewMode = ref('annotations') // annotations | all
 const previewPeerRow = ref(null)
 const selectedTagNames = ref([])
 const sel = reactive({ includeTableTags: true, includeDocs: true, includeSystems: true })
-const expandedCats = ref([])
+// 标注明细弹窗(表级打标/表描述)
+const detailVisible = ref(false)
+const detailType = ref('tableTags')
 const selectedJobIds = ref([])
 const jobTableRef = ref(null)
 const pulling = ref(false)
-// 数据源映射选择:对方数据源名 → '__new__'(新建无密码副本)/ '__skip__'(跳过) / 本机数据源 id
+// 数据源映射选择:对方数据源名 → '__new__'(新建无密码副本) / 本机数据源 id;未勾选的行整体跳过
 const dsChoices = reactive({})
+const dsMapTableRef = ref(null)
+// 数据源映射表勾选状态(默认全选,未勾选的不同步)
+const selectedDsNames = ref([])
 
 const previewPeerName = computed(() => previewPeerRow.value?.instanceName || '')
 
-/** 预览数据实际涉及的对方数据源(标注分布 ∪ 扫描任务),映射表逐行由用户确认 */
+/**
+ * 映射表涉及的对方数据源,按模式取口径:
+ * annotations 模式 = 标注数据涉及的数据源;all 模式 = 被勾选扫描记录涉及的数据源(随勾选动态变化)。
+ * 映射表逐行由用户确认。
+ */
 const involvedDatasources = computed(() => {
   if (!preview.value) return []
   const names = new Set()
-  ;(preview.value.annotations.datasources || []).forEach((d) => names.add(d.datasourceName))
-  ;(preview.value.scanJobs || []).forEach((j) => names.add(j.datasourceName))
+  if (previewMode.value === 'all') {
+    const picked = new Set(selectedJobIds.value)
+    ;(preview.value.scanJobs || []).forEach((j) => { if (picked.has(j.jobId)) names.add(j.datasourceName) })
+  } else {
+    ;(preview.value.annotations.datasources || []).forEach((d) => names.add(d.datasourceName))
+  }
   const byName = new Map((preview.value.datasources || []).map((d) => [d.peerName, d]))
   const localByName = new Map((preview.value.localDatasources || []).map((l) => [l.name, l.id]))
   return [...names].map((name) => {
@@ -272,6 +340,25 @@ const involvedDatasources = computed(() => {
     }
   })
 })
+
+// 映射行动态增删:新出现的行补默认映射(同名 > 新建)并默认勾选;消失的行选择状态随表格数据自动失效
+watch(involvedDatasources, async (list) => {
+  list.forEach((d) => {
+    if (!(d.peerName in dsChoices)) dsChoices[d.peerName] = d.matchedLocalId ?? '__new__'
+  })
+  await nextTick()
+  const table = dsMapTableRef.value
+  if (!table) return
+  list.forEach((d) => {
+    if (!selectedDsNames.value.includes(d.peerName)) table.toggleRowSelection(d, true)
+  })
+})
+
+/** 打开标注明细弹窗(表级打标/表描述) */
+function openDetail(type) {
+  detailType.value = type
+  detailVisible.value = true
+}
 const tagCheckAll = computed({
   get: () => preview.value && selectedTagNames.value.length === preview.value.annotations.tags.length && preview.value.annotations.tags.length > 0,
   set: () => {}
@@ -307,6 +394,11 @@ async function load() {
 }
 
 async function loadPeers() {
+  // 共享未启用时在线实例卡整体隐藏,不再请求;并清空旧列表避免重开瞬间闪出过期数据
+  if (status.value && !status.value.enabled) {
+    peers.value = []
+    return
+  }
   loadingPeers.value = true
   try {
     peers.value = await request.get('/lan/peers')
@@ -329,6 +421,64 @@ async function save() {
   }
 }
 
+/** 开关即时生效:切换即保存(不动实例名),失败回滚开关 */
+let switchReverting = false
+async function onEnabledChange(val) {
+  if (switchReverting) return // 回滚触发的 change 不再发请求
+  saving.value = true
+  try {
+    status.value = await request.put('/lan/settings', { enabled: val, instanceName: null })
+    form.enabled = status.value.enabled
+    ElMessage.success(val ? '已开启局域网共享' : '已关闭局域网共享')
+    if (val) loadPeers() // 开启后立即拉一次,不等下一个 5s 轮询周期
+  } catch {
+    switchReverting = true
+    form.enabled = !val
+    nextTick(() => { switchReverting = false })
+  } finally {
+    saving.value = false
+  }
+}
+
+/** 手动添加实例:解析「IP[:端口]」,服务端直连探测成功才入库 */
+async function addManual() {
+  const raw = manualAddr.value.trim()
+  if (!raw) {
+    ElMessage.warning('请输入对方地址(IP 或 IP:端口)')
+    return
+  }
+  let host = raw
+  let port = null
+  const idx = raw.lastIndexOf(':')
+  if (idx > 0) {
+    host = raw.slice(0, idx)
+    const p = Number(raw.slice(idx + 1))
+    if (!Number.isInteger(p) || p < 1 || p > 65535) {
+      ElMessage.warning('端口不正确')
+      return
+    }
+    port = p
+  }
+  addingManual.value = true
+  try {
+    await request.post('/lan/peers/manual', { host, port })
+    manualAddr.value = ''
+    ElMessage.success('已添加')
+    loadPeers()
+  } catch { /* 拦截器已提示 */ } finally {
+    addingManual.value = false
+  }
+}
+
+/** 移除手动添加的实例 */
+async function removeManual(row) {
+  try {
+    await request.delete(`/lan/peers/manual?host=${encodeURIComponent(row.host)}&port=${row.httpPort}`)
+    ElMessage.success('已移除')
+    loadPeers()
+  } catch { /* 拦截器已提示 */ }
+}
+
 /** 打开同步前预览弹窗:拉取对方标注/扫描任务预览,默认全选 */
 async function openPreview(row, mode) {
   previewPeerRow.value = row
@@ -344,14 +494,12 @@ async function openPreview(row, mode) {
   try {
     preview.value = await request.get(`/lan/preview/${row.instanceId}`, { timeout: 60000 })
     selectedTagNames.value = preview.value.annotations.tags.map((t) => t.name)
-    // 数据源映射默认:同名匹配 > 新建无密码副本
+    selectedDsNames.value = []
+    // 数据源映射默认值与默认勾选由 involvedDatasources 的 watcher 维护(映射行随扫描记录勾选动态变化)
     Object.keys(dsChoices).forEach((k) => delete dsChoices[k])
-    involvedDatasources.value.forEach((d) => {
-      dsChoices[d.peerName] = d.matchedLocalId ?? '__new__'
-    })
-    // 扫描任务默认全选
+    // 扫描任务默认全选(触发 selection-change 后映射表随之刷新)
+    await nextTick()
     if (mode === 'all') {
-      await nextTick()
       jobTableRef.value?.toggleAllSelection()
     }
   } catch {
@@ -364,13 +512,16 @@ async function openPreview(row, mode) {
 async function submitPull() {
   const row = previewPeerRow.value
   const hasAnnSelection = selectedTagNames.value.length > 0 || sel.includeTableTags || sel.includeDocs || sel.includeSystems
-  // 数据源映射:'__skip__' → 0(强制跳过);'__new__' → 进 createDatasources;其余为本机数据源 id
+  // 数据源映射:未勾选 → 0(跳过);'__new__' → 进 createDatasources;其余为本机数据源 id
   const dsMapping = {}
   const createDatasources = []
   for (const d of involvedDatasources.value) {
+    if (!selectedDsNames.value.includes(d.peerName)) {
+      dsMapping[d.peerName] = 0
+      continue
+    }
     const choice = dsChoices[d.peerName]
     if (choice === '__new__') createDatasources.push(d.peerName)
-    else if (choice === '__skip__') dsMapping[d.peerName] = 0
     else if (choice != null) dsMapping[d.peerName] = choice
   }
   const body = {
@@ -389,6 +540,8 @@ async function submitPull() {
     const lines = []
     if ((res.datasourcesCreated || []).length > 0) {
       lines.push(`数据源已同步到本机:${res.datasourcesCreated.join('、')}`)
+      // 新建的数据源副本即时进侧边栏菜单(与数据源列表页增删改同一广播口径)
+      notifyDsListChanged()
     }
     if (res.annotations) {
       const a = res.annotations
@@ -407,6 +560,26 @@ async function submitPull() {
     })
   } catch { /* 拦截器已提示 */ } finally {
     pulling.value = false
+  }
+}
+
+/** 复制本机地址到剪贴板(clipboard API 不可用时走 textarea 兜底) */
+async function copyAddr(text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(`已复制:${text}`)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    try {
+      document.execCommand('copy')
+      ElMessage.success(`已复制:${text}`)
+    } catch {
+      ElMessage.warning('复制失败,请手动复制')
+    }
+    document.body.removeChild(ta)
   }
 }
 
@@ -454,6 +627,23 @@ onUnmounted(stopPolling)
   margin-bottom: 16px;
 }
 
+/* 说明信息块:小字号 + 浅底色块包裹,多条说明用有序列表 */
+.settings-desc {
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 16px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.settings-desc ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
 .lan-running-hint {
   margin-left: 12px;
   color: var(--el-color-success);
@@ -464,15 +654,57 @@ onUnmounted(stopPolling)
   color: var(--el-color-info);
 }
 
+.lan-self-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lan-addr-tag {
+  cursor: pointer;
+  font-family: var(--el-font-family-monospace, monospace);
+}
+
+/* 网卡名:地址前缀的小字标注 */
+.lan-addr-iface {
+  margin-right: 6px;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.lan-addr-hint {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
 .lan-peers-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 
+.lan-manual-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lan-manual-tag {
+  margin-left: 6px;
+}
+
 .lan-preview-section-title {
   font-weight: 600;
   margin: 4px 0 8px;
+}
+
+/* 弹窗内容内部滚动:扣掉头部(约 55px)/底部按钮(约 70px),避免整窗滚动 */
+.lan-preview-body {
+  max-height: calc(94vh - 130px);
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 .lan-preview-group {
@@ -515,17 +747,20 @@ onUnmounted(stopPolling)
 }
 
 .lan-preview-cats {
-  padding: 0 12px;
+  padding: 4px 12px;
 }
 
-.lan-preview-cats :deep(.el-collapse-item__header) {
-  height: 40px;
+/* 标注类别行:勾选框 + 右侧「明细」入口(明细走弹窗,不再就地展开) */
+.lan-cat-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 36px;
+  border-bottom: 1px dashed var(--el-border-color-lighter);
 }
 
-.lan-expand-hint {
-  margin-left: 10px;
-  font-size: 12px;
-  color: var(--el-color-info);
+.lan-cat-row:last-child {
+  border-bottom: none;
 }
 
 .lan-row-dim {

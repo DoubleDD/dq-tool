@@ -222,13 +222,15 @@
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { ArrowDown, QuestionFilled, Refresh } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import { setDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber, statusTagType, statusText } from '../utils/format'
 import { downloadFile } from '../utils/download'
 import { cellText, exportListToExcel } from '../utils/listExport'
+import { confirmAiUsable } from '../utils/aiCheck'
 import Breadcrumb from '../components/Breadcrumb.vue'
 const route = useRoute()
 const router = useRouter()
@@ -653,6 +655,8 @@ function openScanDialog(rows) {
 
 /** 对目标库逐个提交全库扫描任务(tables=null 即整库),失败的单独计数 */
 async function submitScans() {
+  // 勾选了 AI 功能先校验可用性,不可用由用户决定是否继续(继续则后端静默跳过 AI)
+  if (!(await confirmAiUsable(scanForm))) return
   const nullRules = scanForm.nullRules
     .filter((r) => r.column.trim() && r.valuesText.trim())
     .map((r) => ({

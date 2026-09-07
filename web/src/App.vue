@@ -126,6 +126,8 @@
             </el-tab-pane>
           </el-tabs>
         </div>
+        <!-- 通知中心:铃铛带未读角标,点击右侧抽屉看历史通知、可清除所有 -->
+        <NotificationBell />
         <el-tooltip :content="`主题:${themeModeText}(点击切换)`" placement="bottom">
           <el-button class="theme-toggle" text circle @click="cycleTheme">
             <el-icon><Monitor v-if="themeState.mode === 'auto'" /><Sunny v-else-if="themeState.mode === 'light'" /><Moon v-else /></el-icon>
@@ -157,6 +159,7 @@ import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
 import LicenseFooter from './components/LicenseFooter.vue'
+import NotificationBell from './components/NotificationBell.vue'
 import DbTypeIcon from './components/DbTypeIcon.vue'
 import { loadDsFavorites, sortDsByFavorite, DS_FAVORITES_CHANGED_EVENT } from './utils/dsFavorites'
 import { DS_LIST_CHANGED_EVENT } from './utils/dsListChanged'

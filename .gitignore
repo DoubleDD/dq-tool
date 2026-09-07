@@ -24,6 +24,7 @@ tauri/src-tauri/gen/
 # 运行时数据
 data/
 logs/
+.dev2/
 *.log
 
 # desktop 打包下载的 JBR 运行时(大体积二进制,由构建脚本拉取)

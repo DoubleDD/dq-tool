@@ -4,7 +4,8 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 // 这里只补全局基底样式与函数式组件样式(message/message-box/loading 指令)
 import 'element-plus/theme-chalk/base.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
-import 'element-plus/es/components/message/style/css'
+// 接口反馈通知走 utils/notify.js(基于 ElNotification),不再使用 ElMessage
+import 'element-plus/es/components/notification/style/css'
 import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/loading/style/css'
 import { ElLoading } from 'element-plus'

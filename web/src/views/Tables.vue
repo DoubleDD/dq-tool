@@ -324,7 +324,7 @@
 <script setup>
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { ArrowDown, QuestionFilled, Refresh, Setting } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import TableTagDialog from '../components/TableTagDialog.vue'
@@ -334,6 +334,7 @@ import ExportButton from '../components/ExportButton.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
+import { confirmAiUsable } from '../utils/aiCheck'
 
 const route = useRoute()
 const router = useRouter()
@@ -847,6 +848,8 @@ function openScanDialog() {
 }
 
 async function submitScan() {
+  // 勾选了 AI 功能先校验可用性,不可用由用户决定是否继续(继续则后端静默跳过 AI)
+  if (!(await confirmAiUsable(scanForm))) return
   const nullRules = scanForm.nullRules
     .filter((r) => r.column.trim() && r.valuesText.trim())
     .map((r) => ({

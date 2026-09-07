@@ -102,7 +102,8 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import request from '../api'
 
 const list = ref([])

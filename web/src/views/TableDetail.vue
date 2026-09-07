@@ -231,7 +231,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { Refresh } from '@element-plus/icons-vue'
 import request from '../api'
 import ExportButton from '../components/ExportButton.vue'

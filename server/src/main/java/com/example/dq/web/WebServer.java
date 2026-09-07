@@ -432,9 +432,12 @@ public class WebServer {
         // share 静态段(preview)须先于同前缀注册;pull/preview 的 {instanceId} 与 share 不同前缀,无截获问题
         routes.get("/api/lan/status", ctx -> lanCtrl.get().status(ctx));
         routes.get("/api/lan/peers", ctx -> lanCtrl.get().peers(ctx));
+        routes.post("/api/lan/peers/manual", ctx -> lanCtrl.get().addManualPeer(ctx));
+        routes.delete("/api/lan/peers/manual", ctx -> lanCtrl.get().removeManualPeer(ctx));
         routes.put("/api/lan/settings", ctx -> lanCtrl.get().saveSettings(ctx));
         routes.get("/api/lan/preview/{instanceId}", ctx -> lanCtrl.get().previewPeer(ctx));
         routes.post("/api/lan/pull/{instanceId}", ctx -> lanCtrl.get().pull(ctx));
+        routes.get("/api/lan/share/info", ctx -> lanCtrl.get().shareInfo(ctx));
         routes.get("/api/lan/share/annotations/preview", ctx -> lanCtrl.get().shareAnnotationsPreview(ctx));
         routes.get("/api/lan/share/annotations", ctx -> lanCtrl.get().shareAnnotations(ctx));
         routes.get("/api/lan/share/scans/preview", ctx -> lanCtrl.get().shareScansPreview(ctx));

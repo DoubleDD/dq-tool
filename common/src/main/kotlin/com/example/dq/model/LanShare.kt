@@ -12,6 +12,22 @@ data class LanPeer(
     val appVersion: String,
     /** 最近一次收到心跳的时间(epoch milli) */
     val lastSeenAt: Long,
+    /** 是否手动添加的实例(UDP 广播发现不可用的网络按地址直连探测) */
+    val manual: Boolean = false,
+)
+
+/** POST /api/lan/peers/manual 请求:手动添加实例(广播发现不可用的网络) */
+data class LanManualPeerRequest(
+    val host: String,
+    /** 对方 HTTP 端口;空=默认 10000 */
+    val port: Int? = null,
+)
+
+/** 共享出口实例身份(/api/lan/share/info 视图):手动添加实例时直连探测确认对方是本软件实例 */
+data class LanShareInfo(
+    val instanceId: String,
+    val instanceName: String,
+    val appVersion: String,
 )
 
 /** 本机局域网共享状态(/api/lan/status 视图) */
@@ -26,6 +42,19 @@ data class LanShareStatus(
     val discoveryPort: Int,
     /** 当前在线的其他实例数 */
     val onlinePeers: Int,
+    /** 本机 HTTP 服务端口(start 时记录;0=内核尚未就绪),供他人手动添加本实例用 */
+    val httpPort: Int = 0,
+    /** 本机局域网 IPv4 地址清单(排除回环/链路本地,内网地址在前),供页面展示「本机地址」 */
+    val addresses: List<LanLocalAddress> = emptyList(),
+    /** 本机软件版本 */
+    val appVersion: String = "",
+)
+
+/** 本机网卡地址:IPv4 地址 + 所属网卡名 */
+data class LanLocalAddress(
+    val address: String,
+    /** 网卡名(displayName,如 en0 / eth0;取不到时为空串) */
+    val iface: String = "",
 )
 
 /** PUT /api/lan/settings 请求;null=不修改该项 */

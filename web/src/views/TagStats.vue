@@ -141,7 +141,8 @@
 <script setup>
 import { onActivated, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { Delete, Edit, Plus } from '@element-plus/icons-vue'
 import request from '../api'
 import { formatNumber } from '../utils/format'

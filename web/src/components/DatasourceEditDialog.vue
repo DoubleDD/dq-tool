@@ -170,7 +170,31 @@
     </el-tabs>
     <template #footer>
       <div class="dg-footer">
-        <el-button :loading="testing" @click="onTest">测试连接</el-button>
+        <div class="dg-footer-left">
+          <el-button :loading="testing" @click="onTest">测试连接</el-button>
+          <!-- DataGrip 风格:按钮右侧状态图标,悬停弹出详细信息;测试成功后主动弹出一次,点击其他位置才消失 -->
+          <el-popover v-if="testResult" v-model:visible="testDetailVisible" placement="top" trigger="hover" :width="380" popper-class="dg-test-popper">
+            <template #reference>
+              <el-icon class="dg-test-icon" :class="testResult.ok ? 'ok' : 'fail'">
+                <CircleCheck v-if="testResult.ok" />
+                <CircleClose v-else />
+              </el-icon>
+            </template>
+            <div class="dg-test-detail">
+              <div class="dg-test-title" :class="testResult.ok ? 'ok' : 'fail'">
+                {{ testResult.ok ? '连接成功' : '连接失败' }}
+              </div>
+              <template v-if="testResult.ok">
+                <div class="dg-test-line">DBMS: {{ testResult.detail.dbmsName }} (ver. {{ testResult.detail.dbmsVersion }})</div>
+                <div class="dg-test-line">驱动: {{ testResult.detail.driverName }} (ver. {{ testResult.detail.driverVersion }})</div>
+                <div class="dg-test-line" v-if="testResult.detail.dbMode">兼容模式: {{ testResult.detail.dbMode }}</div>
+                <div class="dg-test-line">Ping: {{ testResult.detail.pingMs }} ms</div>
+                <div class="dg-test-line">SSL: {{ testResult.detail.ssl ? 'yes' : 'no' }}</div>
+              </template>
+              <div v-else class="dg-test-error">{{ testResult.message }}</div>
+            </div>
+          </el-popover>
+        </div>
         <div>
           <el-button @click="visible = false">取消</el-button>
           <el-button type="primary" :loading="saving" @click="onSave">保存</el-button>
@@ -181,8 +205,9 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { ElMessage } from '../utils/notify'
+import { CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import request from '../api'
 import DbTypeIcon from './DbTypeIcon.vue'
 import { notifyDsListChanged } from '../utils/dsListChanged'
@@ -207,6 +232,23 @@ const visible = computed({
 
 const saving = ref(false)
 const testing = ref(false)
+// 最近一次连接测试结果:{ ok, message?, detail? };null 表示尚未测试。行内图标+悬停详情展示,不弹全局通知
+const testResult = ref(null)
+// 详情浮层可见性(v-model 非受控,hover 仍生效;成功后置 true 主动弹出,点击其他位置才关闭)
+const testDetailVisible = ref(false)
+
+// 主动弹出后监听全局点击:点在浮层/图标以外才关闭
+function onDocClickHideTestDetail(e) {
+  if (e.target.closest('.dg-test-popper') || e.target.closest('.dg-test-icon')) return
+  testDetailVisible.value = false
+  document.removeEventListener('click', onDocClickHideTestDetail, true)
+}
+function autoShowTestDetail() {
+  testDetailVisible.value = true
+  document.removeEventListener('click', onDocClickHideTestDetail, true)
+  document.addEventListener('click', onDocClickHideTestDetail, true)
+}
+onBeforeUnmount(() => document.removeEventListener('click', onDocClickHideTestDetail, true))
 // 当前页签:general / ssh / schemas / advanced
 const activeTab = ref('general')
 
@@ -566,10 +608,19 @@ function initForm(row) {
 }
 
 watch(() => props.modelValue, (visible) => {
-  if (visible) initForm(props.ds)
+  if (visible) {
+    initForm(props.ds)
+  } else {
+    // 弹窗关闭时清掉测试结果与可能挂着的全局点击监听
+    testResult.value = null
+    testDetailVisible.value = false
+    document.removeEventListener('click', onDocClickHideTestDetail, true)
+  }
 })
 
 async function onTest() {
+  testResult.value = null
+  testDetailVisible.value = false
   if (!syncJdbcUrl()) return
   const jdbcUrl = composeJdbcUrl()
   if (!jdbcUrl || !form.username) {
@@ -588,12 +639,17 @@ async function onTest() {
       ...buildSshBody(),
       // 编辑态:密码/SSH 秘密留空时由服务端回落已存值
       id: form.id ?? undefined,
-    })
+    }, { _silent: true })
     if (res.success) {
-      ElMessage.success('连接成功')
+      testResult.value = { ok: true, detail: res.detail || {} }
+      // 成功后主动弹出详情一次,点击其他位置才消失
+      autoShowTestDetail()
     } else {
-      ElMessage.error(res.message || '连接失败')
+      testResult.value = { ok: false, message: res.message || '连接失败' }
     }
+  } catch (err) {
+    // 409 等错误映射(如 SSH 隧道连接失败)也走行内反馈
+    testResult.value = { ok: false, message: err.response?.data?.message || err.message || '连接失败' }
   } finally {
     testing.value = false
   }
@@ -685,6 +741,22 @@ async function onSave() {
   justify-content: space-between;
   align-items: center;
 }
+.dg-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 连接测试结果:状态图标 + 悬停详情(DataGrip 风格) */
+.dg-test-icon {
+  font-size: 16px;
+  cursor: default;
+}
+.dg-test-icon.ok {
+  color: var(--el-color-success);
+}
+.dg-test-icon.fail {
+  color: var(--el-color-danger);
+}
 /* 库过滤页签:加载按钮行 + 全选行 + 勾选列表 */
 .sf-head {
   display: flex;
@@ -743,5 +815,30 @@ async function onSave() {
 }
 .sf-current {
   line-height: 1.8;
+}
+</style>
+
+<!-- 连接测试详情弹层挂在 body 下,scoped 样式不生效,单独全局块(以 popper-class 限定范围) -->
+<style>
+.dg-test-popper .dg-test-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.dg-test-popper .dg-test-title.ok {
+  color: var(--el-color-success);
+}
+.dg-test-popper .dg-test-title.fail {
+  color: var(--el-color-danger);
+}
+.dg-test-popper .dg-test-line {
+  font-size: 12px;
+  line-height: 1.7;
+  word-break: break-all;
+}
+.dg-test-popper .dg-test-error {
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 </style>

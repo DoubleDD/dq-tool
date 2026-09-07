@@ -1,5 +1,5 @@
 import axios from 'axios'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 
 const request = axios.create({
   baseURL: '/api',
@@ -29,7 +29,10 @@ request.interceptors.response.use(
         message = JSON.parse(await error.response.data.text())?.message
       } catch { /* 非 JSON 错误体,忽略 */ }
     }
-    ElMessage.error(message || error.message || '请求失败')
+    // _silent: true 时不弹全局错误提示(由调用方自行展示,如行内状态反馈)
+    if (!error.config?._silent) {
+      ElMessage.error(message || error.message || '请求失败')
+    }
     return Promise.reject(error)
   }
 )

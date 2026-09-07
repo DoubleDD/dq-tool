@@ -101,7 +101,7 @@
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { CaretRight, Clock, Refresh } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { EditorView, keymap, lineNumbers, placeholder as cmPlaceholder, tooltips, Decoration } from '@codemirror/view'
 import { EditorState, Prec, StateEffect, StateField } from '@codemirror/state'
 import { sql, StandardSQL } from '@codemirror/lang-sql'

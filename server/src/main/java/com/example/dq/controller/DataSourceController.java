@@ -8,6 +8,7 @@ import com.example.dq.model.DbType;
 import com.example.dq.model.GroupUpdateRequest;
 import com.example.dq.model.SchemaFilterRequest;
 import com.example.dq.model.TestConnectionRequest;
+import com.example.dq.model.TestConnectionResult;
 import com.example.dq.web.Validators;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
@@ -78,12 +79,11 @@ public class DataSourceController {
         // 编辑对话框点测试:密码/SSH 秘密字段留空表示沿用已存值(id 非空时回落),与「留空不改」规则一致
         TestConnectionRequest merged = mergeStoredCredentials(req);
         try {
-            String dbMode = service.testConnection(merged);
+            TestConnectionResult r = service.testConnection(merged);
             Map<String, Object> ok = new HashMap<>();
             ok.put("success", true);
-            if (dbMode != null) {
-                ok.put("dbMode", dbMode);
-            }
+            // 前端按 DataGrip 风格在按钮旁弹出详情(DBMS/驱动版本、Ping、SSL、兼容模式)
+            ok.put("detail", r);
             ctx.json(ok);
         } catch (SQLException e) {
             log.warn("测试连接失败 {}: {}", merged.getJdbcUrl(), e.getMessage(), e);

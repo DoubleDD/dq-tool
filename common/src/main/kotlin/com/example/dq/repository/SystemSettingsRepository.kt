@@ -18,6 +18,8 @@ class SystemSettingsRepository(private val jdbc: Jdbc) {
         val instanceId: String? = null,
         /** 本机实例名称(局域网心跳广播给 peer 展示;空=用主机名兜底) */
         val instanceName: String? = null,
+        /** 手动添加的局域网实例列表(广播发现不可用的网络按地址直连;逗号分隔 host:port) */
+        val lanManualPeers: String? = null,
     ) {
         /** 是否已保存过扫描参数自定义值(任一扫描字段非空;浏览器选择不算扫描自定义) */
         val customized: Boolean
@@ -38,6 +40,7 @@ class SystemSettingsRepository(private val jdbc: Jdbc) {
                 lanEnabled = rs.getObject("lan_enabled") as Boolean?,
                 instanceId = rs.getString("instance_id"),
                 instanceName = rs.getString("instance_name"),
+                lanManualPeers = rs.getString("lan_manual_peers"),
             )
         }
 
@@ -46,21 +49,21 @@ class SystemSettingsRepository(private val jdbc: Jdbc) {
             """UPDATE system_settings
                SET scan_workers=?, scan_chunks_per_table=?, scan_row_threshold=?,
                    scan_size_threshold_bytes=?, scan_sample_rows=?, scan_statement_timeout_seconds=?,
-                   browser_app=?, lan_enabled=?, instance_id=?, instance_name=?, updated_at=CURRENT_TIMESTAMP
+                   browser_app=?, lan_enabled=?, instance_id=?, instance_name=?, lan_manual_peers=?, updated_at=CURRENT_TIMESTAMP
                WHERE id=1""",
             row.workers, row.chunksPerTable, row.rowThreshold,
             row.sizeThresholdBytes, row.sampleRows, row.statementTimeoutSeconds, row.browserApp,
-            row.lanEnabled, row.instanceId, row.instanceName)
+            row.lanEnabled, row.instanceId, row.instanceName, row.lanManualPeers)
         if (n == 0) {
             jdbc.update(
                 """INSERT INTO system_settings
                    (id, scan_workers, scan_chunks_per_table, scan_row_threshold,
                     scan_size_threshold_bytes, scan_sample_rows, scan_statement_timeout_seconds, browser_app,
-                    lan_enabled, instance_id, instance_name)
-                   VALUES (1,?,?,?,?,?,?,?,?,?,?)""",
+                    lan_enabled, instance_id, instance_name, lan_manual_peers)
+                   VALUES (1,?,?,?,?,?,?,?,?,?,?,?)""",
                 row.workers, row.chunksPerTable, row.rowThreshold,
                 row.sizeThresholdBytes, row.sampleRows, row.statementTimeoutSeconds, row.browserApp,
-                row.lanEnabled, row.instanceId, row.instanceName)
+                row.lanEnabled, row.instanceId, row.instanceName, row.lanManualPeers)
         }
     }
 

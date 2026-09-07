@@ -94,6 +94,11 @@
     <el-form-item label="连接测试">
       <el-button size="small" :loading="testing" @click="test">测试连接</el-button>
       <span class="test-hint">按当前填写内容测试接口可用性(未保存也可)</span>
+      <!-- 测试结果行内展示(同一行末尾),不走全局通知 -->
+      <span v-if="testResult" class="test-result" :class="testResult.ok ? 'ok' : 'fail'">
+        <el-icon><component :is="testResult.ok ? CircleCheck : CircleClose" /></el-icon>
+        {{ testResult.message }}
+      </span>
     </el-form-item>
   </el-form>
 </template>
@@ -106,8 +111,8 @@
  * 由父级调 load() 拉取、save() 保存(返回是否成功);保存成功 emit('saved')。
  */
 import { reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Delete, Plus } from '@element-plus/icons-vue'
+import { ElMessage } from '../utils/notify'
+import { Delete, Plus, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import request from '../api'
 
 const emit = defineEmits(['saved'])
@@ -115,6 +120,8 @@ const loading = ref(false)
 const saving = ref(false)
 const testing = ref(false)
 const hasKey = ref(false)
+// 最近一次连接测试的行内结果:{ ok, message };null 表示尚未测试
+const testResult = ref(null)
 const form = reactive({
   baseUrl: '',
   apiKey: '',
@@ -191,20 +198,25 @@ function removePeriod(i) {
   form.workPeriods.splice(i, 1)
 }
 
-/** 测试连接:按当前表单值(未保存也可)调用 POST /api/ai-config/test;失败由响应拦截器统一提示 */
+/** 测试连接:按当前表单值(未保存也可)调用 POST /api/ai-config/test;结果(含失败)行内展示,不弹全局通知 */
 async function test() {
+  testResult.value = null
   if (!form.baseUrl.trim() || !form.model.trim()) {
-    ElMessage.warning('接口地址和模型不能为空')
+    testResult.value = { ok: false, message: '接口地址和模型不能为空' }
     return
   }
   if (!hasKey.value && !form.apiKey.trim()) {
-    ElMessage.warning('请填写 API Key')
+    testResult.value = { ok: false, message: '请填写 API Key' }
     return
   }
   testing.value = true
   try {
-    const res = await request.post('/ai-config/test', { baseUrl: form.baseUrl, apiKey: form.apiKey, model: form.model })
-    ElMessage.success(res.message || '连接成功')
+    const res = await request.post('/ai-config/test',
+      { baseUrl: form.baseUrl, apiKey: form.apiKey, model: form.model },
+      { _silent: true })
+    testResult.value = { ok: true, message: res.message || '连接成功' }
+  } catch (err) {
+    testResult.value = { ok: false, message: err.response?.data?.message || err.message || '连接失败' }
   } finally {
     testing.value = false
   }
@@ -218,6 +230,19 @@ defineExpose({ load, save, test })
   margin-left: 8px;
   color: var(--el-text-color-secondary);
   font-size: 12px;
+}
+.test-result {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-size: 12px;
+}
+.test-result.ok {
+  color: var(--el-color-success);
+}
+.test-result.fail {
+  color: var(--el-color-danger);
 }
 .price-block {
   width: 100%;

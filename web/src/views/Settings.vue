@@ -144,7 +144,8 @@
 
 <script setup>
 import { reactive, ref, computed, onActivated } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import request from '../api'
 import { downloadFile } from '../utils/download'
 import { confirmImportFile } from '../utils/importFileIdentify'

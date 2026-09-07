@@ -10,12 +10,14 @@ import com.example.dq.model.LanAnnotationSelection
 import com.example.dq.model.LanAnnotationsPreview
 import com.example.dq.model.LanDataSourceItem
 import com.example.dq.model.LanDsMappingItem
+import com.example.dq.model.LanLocalAddress
 import com.example.dq.model.LanPeer
 import com.example.dq.model.LanPeerPreview
 import com.example.dq.model.LanPullRequest
 import com.example.dq.model.LanPullResult
 import com.example.dq.model.LanScanJobItem
 import com.example.dq.model.LanSettingsRequest
+import com.example.dq.model.LanShareInfo
 import com.example.dq.model.LanShareStatus
 import com.example.dq.model.ScanImportResult
 import com.example.dq.model.ScanPreviewLocalDs
@@ -32,6 +34,10 @@ import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URI
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 /**
  * 局域网共享编排:实例身份(instanceId/instanceName 持久化在 system_settings 单行)、
@@ -62,6 +68,10 @@ class LanShareService(
     @Volatile
     private var httpPort: Int = 0
 
+    /** 手动添加实例的在线表:key="host:port",由周期直连探测维护(纯内存,地址清单持久化在 system_settings) */
+    private val manualOnline = ConcurrentHashMap<String, LanPeer>()
+    private var manualProbeScheduler: ScheduledExecutorService? = null
+
     /** 有效开关:DB 自定义优先,NULL 回落配置文件默认 */
     fun lanEnabled(): Boolean = settingsRepo.get()?.lanEnabled ?: config.lan.enabled
 
@@ -79,12 +89,14 @@ class LanShareService(
             return
         }
         discovery.start(httpPort, instanceId, { effectiveInstanceName() }, config.appVersion)
+        startManualProbe()
     }
 
     /** 停止发现(幂等);ServiceEnv.shutdown 时调用 */
     @Synchronized
     fun stop() {
         discovery.stop()
+        stopManualProbe()
     }
 
     fun status(): LanShareStatus = LanShareStatus(
@@ -93,10 +105,36 @@ class LanShareService(
         instanceId = ensureInstanceId(),
         instanceName = effectiveInstanceName(),
         discoveryPort = config.lan.discoveryPort,
-        onlinePeers = discovery.peers().size,
+        onlinePeers = peers().size,
+        httpPort = httpPort,
+        addresses = localAddresses(),
+        appVersion = config.appVersion,
     )
 
-    fun peers(): List<LanPeer> = discovery.peers()
+    /** 本机局域网 IPv4 地址(页面「本机地址」展示,用户据此告知他人手动添加地址);排除回环/链路本地,内网地址在前 */
+    private fun localAddresses(): List<LanLocalAddress> = try {
+        java.net.NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { ni -> ni.inetAddresses.toList().map { ni to it } }
+            .filter { (_, addr) -> addr is java.net.Inet4Address }
+            .filter { (_, addr) -> !addr.isLoopbackAddress && !addr.isLinkLocalAddress }
+            .sortedByDescending { (_, addr) -> addr.isSiteLocalAddress }
+            .map { (ni, addr) -> LanLocalAddress(addr.hostAddress, ni.displayName ?: ni.name ?: "") }
+            .distinct()
+    } catch (e: Exception) {
+        log.warn("枚举本机网卡地址失败: {}", e.message)
+        emptyList()
+    }
+
+    /** 当前在线实例:UDP 心跳发现 ∪ 手动添加直连探测,按 instanceId 去重(手动项优先,保留 manual 标记) */
+    fun peers(): List<LanPeer> {
+        val merged = LinkedHashMap<String, LanPeer>()
+        discovery.peers().forEach { merged[it.instanceId] = it }
+        val deadline = System.currentTimeMillis() - config.lan.announceIntervalSeconds.coerceIn(1, 300) * 3_000L
+        manualOnline.entries.removeIf { it.value.lastSeenAt < deadline }
+        manualOnline.values.forEach { merged[it.instanceId] = it }
+        return merged.values.sortedWith(compareBy({ it.instanceName }, { it.host }, { it.httpPort }))
+    }
 
     /** 保存共享设置:null 字段保留已存值;开关/名称即时生效(启停发现,名称下个心跳生效) */
     @Synchronized
@@ -118,10 +156,130 @@ class LanShareService(
             if (!discovery.isRunning() && httpPort > 0) {
                 discovery.start(httpPort, ensureInstanceId(), { effectiveInstanceName() }, config.appVersion)
             }
-        } else if (discovery.isRunning()) {
-            discovery.stop()
+            startManualProbe()
+        } else {
+            if (discovery.isRunning()) {
+                discovery.stop()
+            }
+            stopManualProbe()
         }
         return status()
+    }
+
+    // ---- 手动添加实例(UDP 广播发现不可用的网络:跨子网/VLAN/AP 隔离等,按地址直连探测) ----
+
+    /** 共享出口:本机实例身份,供其他实例手动添加时直连确认 */
+    fun shareInfo(): LanShareInfo = LanShareInfo(ensureInstanceId(), effectiveInstanceName(), config.appVersion)
+
+    /** 手动添加的实例地址清单(持久化值解析) */
+    fun manualPeers(): List<Pair<String, Int>> = parseManualPeers(settingsRepo.get()?.lanManualPeers)
+
+    /**
+     * 手动添加实例:立即直连探测(/api/lan/share/info),确认对方是本软件实例才持久化;
+     * 连不上/对方版本无此端点(旧版本)/对方是本机 抛 400 语义异常(带具体原因)。重复添加同地址视为刷新。
+     */
+    @Synchronized
+    fun addManualPeer(host: String, port: Int?): LanPeer {
+        val h = host.trim()
+        require(h.isNotEmpty()) { "地址不能为空" }
+        val p = port ?: DEFAULT_HTTP_PORT
+        require(p in 1..65535) { "端口不正确: $p" }
+        require(!isSelfAddress(h, p)) { "该地址是本机实例,无需添加" }
+        val peer = probeManualPeerOrThrow(h, p)
+        val list = manualPeers().filter { !(it.first == h && it.second == p) } + (h to p)
+        persistManualPeers(list)
+        manualOnline["$h:$p"] = peer
+        startManualProbe()
+        log.info("手动添加局域网实例 {}:{}({})", h, p, peer.instanceName)
+        return peer
+    }
+
+    /** 移除手动添加的实例(持久化清单与内存在线表同步删除) */
+    @Synchronized
+    fun removeManualPeer(host: String, port: Int) {
+        persistManualPeers(manualPeers().filter { !(it.first == host && it.second == port) })
+        manualOnline.remove("$host:$port")
+    }
+
+    /**
+     * 是否本机地址:端口等于本机 HTTP 端口,且 host 解析为回环地址或本机网卡地址。
+     * 添加手动实例时在 HTTP 探测前拦截本机——经 VPN/虚拟网卡地址探测本机可能超时,
+     * 走不到探测成功后的 instanceId 判等,会误报「连不上」。
+     */
+    private fun isSelfAddress(host: String, port: Int): Boolean {
+        if (httpPort <= 0 || port != httpPort) {
+            return false
+        }
+        val resolved = try {
+            InetAddress.getByName(host)
+        } catch (e: Exception) {
+            return false // 解析不出交给直连探测报「连不上」
+        }
+        return resolved.isLoopbackAddress || localAddresses().any { it.address == resolved.hostAddress }
+    }
+
+    /** 直连探测手动实例(添加时用):成功返回 LanPeer;连不上/非本软件实例/是本机 抛带具体原因的异常 */
+    private fun probeManualPeerOrThrow(host: String, port: Int): LanPeer {
+        val info = try {
+            mapper.readValue(httpGet("http://$host:$port/api/lan/share/info"), LanShareInfo::class.java)
+        } catch (e: Exception) {
+            throw IllegalArgumentException(
+                "连不上 $host:$port(${e.message};确认对方已启动、已开启局域网共享且版本支持手动添加)")
+        }
+        require(info.instanceId.isNotBlank()) { "$host:$port 不是有效的 dq-tool 实例" }
+        require(info.instanceId != ensureInstanceId()) { "该地址是本机实例,无需添加" }
+        return LanPeer(
+            instanceId = info.instanceId,
+            instanceName = info.instanceName.ifBlank { "未命名实例" },
+            host = host,
+            httpPort = port,
+            appVersion = info.appVersion,
+            lastSeenAt = System.currentTimeMillis(),
+            manual = true,
+        )
+    }
+
+    /** 周期探测用:失败返回 null(原因记 debug,不打扰用户) */
+    private fun probeManualPeer(host: String, port: Int): LanPeer? = try {
+        probeManualPeerOrThrow(host, port)
+    } catch (e: Exception) {
+        log.debug("手动实例 {}:{} 探测失败: {}", host, port, e.message)
+        null
+    }
+
+    /** 周期探测全部手动实例(与心跳同间隔);探测失败不更新 lastSeenAt,超时后按既有规则判离线 */
+    private fun probeAllManualPeers() {
+        for ((host, port) in manualPeers()) {
+            probeManualPeer(host, port)?.let { manualOnline["$host:$port"] = it }
+        }
+    }
+
+    @Synchronized
+    private fun startManualProbe() {
+        if (manualProbeScheduler != null) {
+            return
+        }
+        val interval = config.lan.announceIntervalSeconds.coerceIn(1, 300).toLong()
+        manualProbeScheduler = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "lan-manual-probe").apply { isDaemon = true }
+        }.also { it.scheduleWithFixedDelay({ runCatching { probeAllManualPeers() } }, 0, interval, TimeUnit.SECONDS) }
+    }
+
+    @Synchronized
+    private fun stopManualProbe() {
+        manualProbeScheduler?.shutdownNow()
+        manualProbeScheduler = null
+        manualOnline.clear()
+    }
+
+    /** 持久化手动实例清单(其他设置列保持原值) */
+    private fun persistManualPeers(list: List<Pair<String, Int>>) {
+        val prev = settingsRepo.get()
+        val row = (prev ?: SystemSettingsRepository.SystemSettingsRow(
+            workers = null, chunksPerTable = null, rowThreshold = null,
+            sizeThresholdBytes = null, sampleRows = null, statementTimeoutSeconds = null,
+        )).copy(lanManualPeers = formatManualPeers(list))
+        settingsRepo.upsert(row)
     }
 
     // ---- 共享出口(供 peer 经 /api/lan/share/* 拉取) ----
@@ -179,7 +337,7 @@ class LanShareService(
 
     /** 同步前预览:拉取对方实例的标注/扫描任务/数据源预览,并与本机数据源按名预匹配;连不上抛 400/500 语义异常 */
     fun previewPeer(instanceId: String): LanPeerPreview {
-        val peer = discovery.peers().find { it.instanceId == instanceId }
+        val peer = peers().find { it.instanceId == instanceId }
             ?: throw IllegalArgumentException("实例不在线或不存在: $instanceId")
         val base = "http://${peer.host}:${peer.httpPort}"
         val annotations = mapper.readValue(
@@ -214,7 +372,7 @@ class LanShareService(
      * 再合并用户确认的 dsMapping(0=跳过);扫描记录对未映射的名按名回退自动匹配。
      */
     fun pull(instanceId: String, req: LanPullRequest): LanPullResult {
-        val peer = discovery.peers().find { it.instanceId == instanceId }
+        val peer = peers().find { it.instanceId == instanceId }
             ?: throw IllegalArgumentException("实例不在线或不存在: $instanceId")
         val base = "http://${peer.host}:${peer.httpPort}"
         val errors = mutableListOf<String>()
@@ -366,5 +524,27 @@ class LanShareService(
         } finally {
             conn.disconnect()
         }
+    }
+
+    companion object {
+        /** 手动添加未填端口时的默认 HTTP 端口(与 server application.yml 默认一致) */
+        const val DEFAULT_HTTP_PORT = 10000
+
+        /** 解析持久化的手动实例清单:逗号分隔 host:port,空白/非法项忽略 */
+        internal fun parseManualPeers(raw: String?): List<Pair<String, Int>> =
+            raw?.split(',')?.mapNotNull { item ->
+                val t = item.trim()
+                val idx = t.lastIndexOf(':')
+                if (idx <= 0 || idx == t.length - 1) {
+                    null
+                } else {
+                    val port = t.substring(idx + 1).toIntOrNull()
+                    if (port == null || port !in 1..65535) null else t.substring(0, idx) to port
+                }
+            } ?: emptyList()
+
+        /** 手动实例清单格式化回持久化串;空清单存 NULL */
+        internal fun formatManualPeers(peers: List<Pair<String, Int>>): String? =
+            peers.joinToString(",") { "${it.first}:${it.second}" }.ifEmpty { null }
     }
 }

@@ -96,7 +96,7 @@ class DiagnosticsService(
                 sshEnabled = ds.sshEnabled, sshHost = ds.sshHost, sshPort = ds.sshPort,
                 sshUsername = ds.sshUsername, sshAuthMethod = ds.sshAuthMethod,
                 sshPassword = ds.sshPassword, sshPrivateKey = ds.sshPrivateKey, sshPassphrase = ds.sshPassphrase,
-            ))
+            )).dbMode
             DatasourceCheckResult(id, ds.name, ds.dbType?.name, ds.jdbcUrl, ds.sshEnabled == true,
                 true, mode, null, (System.nanoTime() - start) / 1_000_000)
         } catch (e: Exception) {

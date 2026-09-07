@@ -12,7 +12,7 @@
     <el-table :data="tasks" v-loading="loading" border @selection-change="onSelectionChange">
       <!-- 运行中/排队中的任务不可勾选(无法删除),其余状态均可 -->
       <el-table-column type="selection" width="45" :selectable="(row) => row.status !== 'RUNNING' && row.status !== 'PENDING'" />
-      <el-table-column label="ID" width="60" prop="id" sortable />
+      <el-table-column label="ID" width="75" prop="id" sortable />
       <el-table-column label="文件名" min-width="200" prop="fileName" sortable show-overflow-tooltip>
         <template #default="{ row }">{{ row.fileName || '-' }}</template>
       </el-table-column>
@@ -38,7 +38,7 @@
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="zip 大小" width="100" align="right" prop="zipSize" sortable>
+      <el-table-column label="zip 大小" width="125" align="right" prop="zipSize" sortable>
         <template #default="{ row }">{{ row.zipSize != null ? formatBytes(row.zipSize) : '-' }}</template>
       </el-table-column>
       <el-table-column label="创建时间" width="175" prop="createdAt" sortable class-name="nowrap-cell">
@@ -241,7 +241,8 @@
 <script setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
+import { ElMessage } from '../utils/notify'
 import { UploadFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import { formatBytes, formatDateTime } from '../utils/format'
