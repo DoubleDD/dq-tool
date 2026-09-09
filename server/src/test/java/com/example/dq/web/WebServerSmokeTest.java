@@ -202,6 +202,22 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 预览全量导出路由可达且错误映射与预览一致() throws Exception {
+        activateLicense();
+        HttpResponse<String> created = send("POST", "/api/datasources",
+                "{\"name\":\"预览导出源\",\"jdbcUrl\":\"jdbc:mysql://127.0.0.1:59998/db\",\"username\":\"root\",\"password\":\"p\"}");
+        assertEquals(200, created.statusCode(), created.body());
+        long id = Long.parseLong(created.body().replaceAll(".*\"id\":(\\d+).*", "$1"));
+
+        // 目标库不可达(Hikari 池初始化失败,RuntimeException → 500 统一映射,与预览同口径);
+        // 验证路由接线:不带 where/orderBy 参数也能走到业务层,不出现 404/参数 NPE
+        HttpResponse<String> resp = get("/api/datasources/" + id + "/schemas/db/tables/t_preview/preview/export");
+        assertEquals(500, resp.statusCode(), resp.body());
+        assertTrue(resp.body().contains("message"), resp.body());
+        assertFalse(resp.body().contains("NullPointerException"), resp.body());
+    }
+
+    @Test
     void SQL控制台执行端点参数校验与不可达数据源错误映射() throws Exception {
         activateLicense();
         HttpResponse<String> created = send("POST", "/api/datasources",

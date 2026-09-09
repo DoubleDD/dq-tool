@@ -240,6 +240,7 @@ import SqlInput from '../components/SqlInput.vue'
 import TableTagDialog from '../components/TableTagDialog.vue'
 import { formatDuration, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
+import { downloadFile } from '../utils/download'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 
 const route = useRoute()
@@ -570,7 +571,7 @@ function onColumnViewChange(view) {
   if (view === 'ddl' && !ddlLoaded.value) loadDdl()
 }
 
-/** 导出当前 tab 的列表 Excel(字段明细/索引结构/数据预览当前页,列与页面一致) */
+/** 导出当前 tab 的列表 Excel(字段明细/索引结构/标签为所见数据;数据预览走服务端全量导出) */
 function exportExcel() {
   if (activeTab.value === 'columns') {
     if (columnView.value === 'ddl') return ElMessage.warning('DDL 请使用「复制 DDL」按钮')
@@ -614,10 +615,15 @@ function exportExcel() {
     const rows = filteredTableTags.value.map((t) => [cellText(t.name), tagSourceLabel(t), cellText(t.description)])
     exportListToExcel(`标签-${tableName}`, headers, rows, '标签')
   } else {
+    // 数据预览:服务端流式导出全部符合条件数据(已应用的 WHERE/ORDER BY,上限 20 万行)
     if (!previewRows.value.length) return ElMessage.warning('当前列表没有可导出的数据')
-    const headers = previewColumns.value.map((c) => (c.type ? `${c.name} ${c.type}` : c.name))
-    const rows = previewRows.value.map((r) => r.map(cellText))
-    exportListToExcel(`数据预览-${tableName}-第${previewPage.value}页`, headers, rows, '数据预览')
+    const base = `/api/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}/tables/${encodeURIComponent(tableName)}/preview/export`
+    const params = new URLSearchParams()
+    if (db.value) params.set('db', db.value)
+    if (appliedWhere.value) params.set('where', appliedWhere.value)
+    if (appliedOrderBy.value) params.set('orderBy', appliedOrderBy.value)
+    const q = params.toString()
+    downloadFile(q ? `${base}?${q}` : base)
   }
 }
 

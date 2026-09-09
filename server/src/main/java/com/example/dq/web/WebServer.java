@@ -313,6 +313,8 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/indexes", ctx -> metaCtrl.get().tableIndexes(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/ddl", ctx -> metaCtrl.get().tableDdl(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/preview", ctx -> previewCtrl.get().preview(ctx));
+        // 预览全量导出:符合条件的前 20 万行流式 xlsx(静态尾段 export,不与 /preview 冲突)
+        routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/preview/export", ctx -> previewCtrl.get().export(ctx));
         // SQL 控制台:对数据源执行任意 SQL,返回结果集或受影响行数
         routes.post("/api/datasources/{dsId}/sql/execute", ctx -> sqlConsoleCtrl.get().execute(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", ctx -> metaCtrl.get().countColumns(ctx));
