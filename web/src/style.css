@@ -630,9 +630,12 @@ html.dark .sidebar-menu .el-menu-item.is-active {
    Element 表头/表体是两棵独立的 table,th 被约束在表头表内无法 sticky,
    需钉住整个表头包裹层。sticky 只要求祖先链放开 overflow,
    表头/表体包裹层保持默认 overflow:hidden,由 EP 原生横向滚动条接管,
+   注意:EP 组件样式按需注入(unplugin-vue-components),el-table.css 随路由 chunk 晚于本文件加载,
+   同特异性下 EP 的 .el-table{overflow:hidden} 会覆盖回去,故用 .main 前缀提升特异性(0,2,0);
+   同时限定作用域,弹窗(teleport 到 body)内表格不受影响,保持 EP 默认
    表体横滚时 EP 会自动同步表头 scrollLeft */
-.el-table,
-.el-table__inner-wrapper {
+.main .el-table,
+.main .el-table .el-table__inner-wrapper {
   overflow: visible;
 }
 

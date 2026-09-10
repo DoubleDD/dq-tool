@@ -124,10 +124,72 @@
           if (t && t !== window && (t.src || t.href)) {
             var kind = t.tagName === 'SCRIPT' ? '脚本' : t.tagName === 'LINK' ? '样式' : '资源'
             addIssue(kind + '加载失败: ' + (t.src || t.href))
+            probeFailedAsset(t.src || t.href)
+            maybeReloadForMismatch()
           } else if (e.message) {
             addIssue('页面脚本错误: ' + e.message + ' (' + (e.filename || '') + ':' + (e.lineno || 0) + ')')
           }
         }, true)
+
+        /* 失败资源复核:script/link 的 error 事件拿不到失败原因,用 fetch 复核一次记录状态码,
+           再与后端现场给出的本构建资源清单(/api/assets-manifest)比对,直接给出根因判定——
+           在清单内但仍拿不到 = 疑似被杀毒软件/代理拦截;不在清单内 = 入口与后端版本错配。
+           用户截图诊断面板即可区分两类根因 */
+        var probed = {}
+        var manifestPromise = null
+        function getManifest() {
+          if (!manifestPromise) {
+            manifestPromise = fetch('/api/assets-manifest', { cache: 'no-store' })
+              .then(function (res) { return res.ok ? res.json() : null })
+              .then(function (d) { return d && d.assets ? d.assets : null })
+              .catch(function () { return null })
+          }
+          return manifestPromise
+        }
+        function probeFailedAsset(url) {
+          if (!url || probed[url]) return
+          probed[url] = true
+          var path = url
+          try { path = new URL(url, location.href).pathname } catch (ignore) {}
+          fetch(url, { cache: 'no-store' })
+            .then(function (res) {
+              addIssue('复核 ' + url + ' → HTTP ' + res.status + ' ' + (res.headers.get('Content-Type') || ''))
+              verdict(res.status)
+            })
+            .catch(function (err) {
+              addIssue('复核 ' + url + ' → 请求失败: '
+                + (err && err.message ? err.message : String(err)))
+              verdict(0)
+            })
+          function verdict(status) {
+            getManifest().then(function (assets) {
+              if (!assets) return
+              if (assets.indexOf(path) >= 0) {
+                addIssue('判定: 该资源在本版本清单内但仍'
+                  + (status ? '返回 ' + status : '无法连接')
+                  + ' → 疑似被杀毒软件/代理拦截(可将本软件加入白名单后重试)')
+              } else {
+                addIssue('判定: 该资源不在本版本清单内 → 页面与服务版本错配(刷新页面通常可恢复)')
+              }
+            })
+          }
+        }
+
+        /* 入口资源 404 自愈:入口 html 是旧构建(浏览器会话恢复/升级重启窗口期等拿到的陈旧副本,
+           no-cache 在这些场景仍可能给旧副本)而后端已是新构建时,旧 hash 的 js/css 在新包里不存在,
+           会永远卡在启动页。此时服务本身已就绪(health 200),整页强制刷新一次即可拿到匹配的新入口。
+           sessionStorage 计数防刷新死循环(包本身损坏时刷新无用,交给诊断面板);
+           应用成功挂载后(main.js 置 __bootMounted)清除计数,不影响下次真正的错配自愈 */
+        var RELOAD_KEY = 'dq-boot-reload'
+        function maybeReloadForMismatch() {
+          if (!ready || window.__bootMounted) return
+          var hasAssetFailure = issues.some(function (i) { return i.indexOf('加载失败') >= 0 })
+          if (!hasAssetFailure) return
+          var count = Number(sessionStorage.getItem(RELOAD_KEY) || 0)
+          if (count >= 1) return
+          sessionStorage.setItem(RELOAD_KEY, String(count + 1))
+          location.reload()
+        }
 
         window.addEventListener('unhandledrejection', function (e) {
           var r = e.reason
@@ -142,6 +204,7 @@
               if (res.ok) {
                 ready = true
                 healthState = '已就绪(200)'
+                maybeReloadForMismatch()
               } else {
                 healthState = '启动中(HTTP ' + res.status + ')'
                 res.json().then(function (d) {
@@ -174,6 +237,8 @@
         function render() {
           if (!panel || window.__bootMounted) {
             if (panel) panel.classList.remove('show')
+            // 挂载成功说明入口与后端匹配,清除自愈刷新计数(下次错配仍可自愈)
+            if (window.__bootMounted) sessionStorage.removeItem(RELOAD_KEY)
             return
           }
           // 有错误立即显示;无错误但超过 20s 仍未就绪也显示——长时间卡在启动页时给用户反馈抓手

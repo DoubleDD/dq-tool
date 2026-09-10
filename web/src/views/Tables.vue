@@ -38,6 +38,11 @@
       <el-button link type="primary" @click="clearTagFilter">清除筛选</el-button>
     </el-alert>
 
+    <!-- 数据源不可达降级提示:本次表清单来自本地 H2 缓存 -->
+    <el-alert v-if="cacheFallback" type="warning" :closable="false" show-icon style="margin-bottom: 12px">
+      <span>数据源当前不可达,正在展示<b>本地缓存</b>的表结构;恢复网络后点「刷新」可重新同步。</span>
+    </el-alert>
+
     <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 12px">
       <el-input v-model="keyword" placeholder="按表名或注释搜索" clearable style="width: 280px" />
       <el-select
@@ -195,7 +200,7 @@
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="250" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
           <!-- 正在扫描:显示分段进度,点击跳到任务详情;排队中的表显示 0% -->
           <el-progress
@@ -211,6 +216,7 @@
               {{ collectMap[row.name] ? '取消采集' : '采集' }}
             </el-button>
             <el-button link type="primary" @click="scanSingle(row)">扫描</el-button>
+            <el-button link type="primary" @click="openInferDialog(row)">推导关联</el-button>
           </template>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
         </template>
@@ -318,6 +324,16 @@
       :table-names="selectedTables.map((t) => t.name)"
       @saved="onBatchTagged"
     />
+
+    <!-- 关系推导弹窗(行内「推导关联」:预选当前数据源+库+schema+表,对话框自成闭环) -->
+    <RelationInferDialog
+      v-model="inferDialogVisible"
+      :ds-id="dsId"
+      :schema="schema"
+      :db="db"
+      :table-name="inferDialogTable"
+      @done="onInferDone"
+    />
   </div>
 </template>
 
@@ -329,6 +345,7 @@ import { ArrowDown, QuestionFilled, Refresh, Setting } from '@element-plus/icons
 import request, { submitReportExport } from '../api'
 import TableTagDialog from '../components/TableTagDialog.vue'
 import BatchTagDialog from '../components/BatchTagDialog.vue'
+import RelationInferDialog from '../components/RelationInferDialog.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import ExportButton from '../components/ExportButton.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
@@ -346,6 +363,8 @@ const tables = ref([])
 const loading = ref(false)
 // 手动刷新表结构缓存中状态
 const refreshing = ref(false)
+// 本次表清单是否来自「数据源不可达降级读本地缓存」(响应头 X-Dq-Cache-Fallback)
+const cacheFallback = ref(false)
 // Word 报告导出中状态(只导出当前库,未扫描时后端拦截提示)
 const exporting = ref(false)
 
@@ -488,6 +507,20 @@ const tagDialogTable = ref('')
 const tableSystems = ref({})
 // 批量打标弹窗
 const batchTagDialogVisible = ref(false)
+
+// 关系推导弹窗(行内「推导关联」按钮唤起,预选该表)
+const inferDialogVisible = ref(false)
+const inferDialogTable = ref('')
+
+function openInferDialog(row) {
+  inferDialogTable.value = row.name
+  inferDialogVisible.value = true
+}
+
+// 推导完成:对话框已提示候选数,此处引导去 ER 图页确认
+function onInferDone(job) {
+  ElMessage.success(`推导完成,发现 ${job.foundCount} 条候选关系,可在「ER 关系」页签确认`)
+}
 
 // 本库已采集表 map:表名 -> 采集记录 id(行内「采集/取消采集」按钮状态)
 const collectMap = ref({})
@@ -660,6 +693,7 @@ const filteredTables = computed(() => {
 
 async function load(refresh = false) {
   loading.value = true
+  cacheFallback.value = false
   try {
     const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
     // refresh=true 时表清单强制从业务库拉最新结构并覆盖本地缓存;其余数据为本地 H2/实时查询,不受 refresh 影响
@@ -667,16 +701,18 @@ async function load(refresh = false) {
     const tablesUrl = `${base}/tables${q}${refresh ? (q ? '&' : '?') + 'refresh=true' : ''}`
     // 最新扫描映射/表说明查的是本地 H2,失败时仅影响表名是否可点与说明展示,不阻塞表列表
     // 字段总数走业务库元数据,失败时也不阻塞表列表(显示 -)
-    const [tableList, latest, tableDocs, colCount, tagMap, collects, systemMap] = await Promise.all([
-      request.get(tablesUrl),
+    const [tablesResp, latest, tableDocs, colCount, tagMap, collects, systemMap] = await Promise.all([
+      // 取原始响应以读取降级响应头 X-Dq-Cache-Fallback(数据源不可达时后端返回本地缓存)
+      request.get(tablesUrl, { _raw: true }),
       request.get(`${base}/latest-scan-jobs${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/table-docs${dbQuery()}`).catch(() => ({})),
-      request.get(`${base}/column-count${dbQuery()}`).catch(() => null),
+      request.get(`${base}/column-count${q}${refresh ? (q ? '&' : '?') + 'refresh=true' : ''}`).catch(() => null),
       request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/manual-collects${dbQuery()}`).catch(() => ({})),
       request.get(`${base}/table-systems${dbQuery()}`).catch(() => ({}))
     ])
-    tables.value = tableList
+    tables.value = tablesResp.data || []
+    cacheFallback.value = tablesResp.headers?.['x-dq-cache-fallback'] === 'true'
     latestScans.value = latest || {}
     docs.value = tableDocs || {}
     columnCount.value = colCount
@@ -690,12 +726,16 @@ async function load(refresh = false) {
   }
 }
 
-/** 手动刷新:从业务库拉最新表结构并覆盖本地缓存 */
+/** 手动刷新:从业务库拉最新表结构并覆盖本地缓存;数据源不可达时后端降级返回本地缓存 */
 async function refreshTables() {
   refreshing.value = true
   try {
     await load(true)
-    ElMessage.success('已从数据源刷新表结构缓存')
+    if (cacheFallback.value) {
+      ElMessage.warning('数据源当前不可达,已保留本地缓存的表结构')
+    } else {
+      ElMessage.success('已从数据源刷新表结构缓存')
+    }
   } finally {
     refreshing.value = false
   }

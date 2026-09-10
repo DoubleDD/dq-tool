@@ -8,6 +8,8 @@ enum class AiScene(val label: String) {
     AUTO_TAG("自动打标"),
     /** Word 报告分析文字生成 */
     WORD_REPORT("报告分析"),
+    /** ER 关系推导·语义匹配(表级粗筛 + 字段级精判) */
+    RELATION_INFER("关系推导"),
     /** 「AI 配置」连通性测试 */
     TEST("连通测试"),
     ;

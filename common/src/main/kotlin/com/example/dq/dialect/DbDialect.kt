@@ -155,4 +155,10 @@ interface DbDialect {
     @Throws(SQLException::class)
     fun pageRowsSql(conn: Connection, schema: String, table: String, columns: List<String>,
                     where: String?, orderBy: String?, offset: Long, limit: Int): String
+
+    /** 去重采样 SQL:取某字段最多 limit 个 DISTINCT 非 NULL 值(ER 关系推导值交集验证用);标识符必须经 quote() */
+    fun distinctSampleSql(schema: String, table: String, column: String, limit: Int): String
+
+    /** 判重 SQL:某字段(排除 NULL)是否存在重复值,有首行返回即有重复(ER 关系推导基数验证用);标识符必须经 quote() */
+    fun hasDuplicateSql(schema: String, table: String, column: String): String
 }

@@ -37,30 +37,30 @@ public class MetadataController {
         this.dataSourceService = dataSourceService;
     }
 
-    /** 库清单:本地缓存优先;refresh=true 强制从业务库拉最新并覆盖本地缓存 */
+    /** 库清单:本地缓存优先;refresh=true 强制从业务库拉最新并覆盖本地缓存;数据源不可达时降级返回缓存 */
     public void listDatabases(Context ctx) throws SQLException {
-        ctx.json(service.listDatabases(dsId(ctx), unfiltered(ctx), refresh(ctx)));
+        writeJson(ctx, service.listDatabases(dsId(ctx), unfiltered(ctx), refresh(ctx)));
     }
 
-    /** schema 清单:本地缓存优先;refresh=true 强制从业务库拉最新并覆盖本地缓存 */
+    /** schema 清单:本地缓存优先;refresh=true 强制从业务库拉最新并覆盖本地缓存;数据源不可达时降级返回缓存 */
     public void listSchemas(Context ctx) throws SQLException {
-        ctx.json(service.listSchemas(dsId(ctx), ctx.queryParam("db"), unfiltered(ctx), refresh(ctx)));
+        writeJson(ctx, service.listSchemas(dsId(ctx), ctx.queryParam("db"), unfiltered(ctx), refresh(ctx)));
     }
 
     /** 库列表页概览:schema + 表数量 + 最近一次扫描 */
     /** 库列表页概览:schema + 表数量 + 占用空间 + 最近一次扫描;refresh=true 强制从业务库刷新并覆盖本地缓存 */
     public void listSchemaStats(Context ctx) throws SQLException {
-        ctx.json(service.listSchemaStats(dsId(ctx), ctx.queryParam("db"), refresh(ctx)));
+        writeJson(ctx, service.listSchemaStats(dsId(ctx), ctx.queryParam("db"), refresh(ctx)));
     }
 
-    /** 表列表:本地缓存优先;refresh=true 强制从业务库拉最新结构覆盖本地缓存 */
+    /** 表列表:本地缓存优先;refresh=true 强制从业务库拉最新结构覆盖本地缓存;数据源不可达时降级返回缓存 */
     public void listTables(Context ctx) throws SQLException {
-        ctx.json(service.listTables(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), refresh(ctx)));
+        writeJson(ctx, service.listTables(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), refresh(ctx)));
     }
 
-    /** 表列表页汇总:schema 下所有基表的字段总数 */
+    /** 表列表页汇总:schema 下所有基表的字段总数;本地缓存优先,refresh=true 回源覆盖,不可达时降级返回缓存 */
     public void countColumns(Context ctx) throws SQLException {
-        ctx.json(service.countColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema")));
+        writeJson(ctx, service.countColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), refresh(ctx)));
     }
 
     /**
@@ -70,28 +70,28 @@ public class MetadataController {
     public void schemaColumns(Context ctx) throws SQLException {
         List<String> tables = ctx.queryParams("tables");
         if (tables.isEmpty()) {
-            ctx.json(service.listSchemaColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), refresh(ctx)));
+            writeJson(ctx, service.listSchemaColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), refresh(ctx)));
         } else {
-            ctx.json(service.listSchemaColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), tables, refresh(ctx)));
+            writeJson(ctx, service.listSchemaColumns(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"), tables, refresh(ctx)));
         }
     }
 
     /** 单表字段元数据(结构明细:字段名/类型/注释/约束),未扫描的表也可查看;refresh=true 强制刷新缓存 */
     public void tableColumns(Context ctx) throws SQLException {
-        ctx.json(service.listTableColumns(dsId(ctx), ctx.queryParam("db"),
+        writeJson(ctx, service.listTableColumns(dsId(ctx), ctx.queryParam("db"),
                 ctx.pathParam("schema"), ctx.pathParam("table"), refresh(ctx)));
     }
 
     /** 单表索引结构(索引名/唯一性/索引列),未扫描的表也可查看;refresh=true 强制刷新缓存 */
     public void tableIndexes(Context ctx) throws SQLException {
-        ctx.json(service.listTableIndexes(dsId(ctx), ctx.queryParam("db"),
+        writeJson(ctx, service.listTableIndexes(dsId(ctx), ctx.queryParam("db"),
                 ctx.pathParam("schema"), ctx.pathParam("table"), refresh(ctx)));
     }
 
-    /** 单表建表 DDL(含索引),实时从业务库拉取,未扫描的表也可查看 */
+    /** 单表建表 DDL(含索引):本地缓存优先,refresh=true 回源覆盖,不可达时降级返回缓存 */
     public void tableDdl(Context ctx) throws SQLException {
-        ctx.json(Map.of("ddl", service.tableDdl(dsId(ctx), ctx.queryParam("db"),
-                ctx.pathParam("schema"), ctx.pathParam("table"))));
+        writeJson(ctx, Map.of("ddl", service.tableDdl(dsId(ctx), ctx.queryParam("db"),
+                ctx.pathParam("schema"), ctx.pathParam("table"), refresh(ctx))));
     }
 
     /** 每张表最近一次 DONE 扫描的信息(表名 -> {jobId, finishedAt}),表列表页点击表名直达最新结果、展示最近扫描时间 */
@@ -161,6 +161,18 @@ public class MetadataController {
 
     private static long dsId(Context ctx) {
         return ctx.pathParamAsClass("dsId", Long.class).get();
+    }
+
+    /**
+     * 写 JSON 响应。若本次调用因数据源连接失败降级读了本地 H2 缓存,回写响应头
+     * `X-Dq-Cache-Fallback: true`,前端据此提示「当前展示的是本地缓存数据」。
+     * 注意:body 参数会先于本方法求值(Java 实参从左到右),标志在 service 调用内已就绪
+     */
+    private void writeJson(Context ctx, Object body) {
+        if (service.consumeCacheFallback()) {
+            ctx.header("X-Dq-Cache-Fallback", "true");
+        }
+        ctx.json(body);
     }
 
     /** all=true 旁路库过滤白名单:仅供编辑对话框「库过滤」页签拉全量列表 */

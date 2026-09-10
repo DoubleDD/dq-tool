@@ -491,6 +491,18 @@ abstract class AbstractDialect : DbDialect {
         return "SELECT $cols FROM $from" + limitClause(limit.toLong())
     }
 
+    override fun distinctSampleSql(schema: String, table: String, column: String, limit: Int): String {
+        val q = quote(column)
+        val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
+        return "SELECT DISTINCT $q FROM $from WHERE $q IS NOT NULL" + limitClause(limit.toLong())
+    }
+
+    override fun hasDuplicateSql(schema: String, table: String, column: String): String {
+        val q = quote(column)
+        val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
+        return "SELECT $q FROM $from WHERE $q IS NOT NULL GROUP BY $q HAVING COUNT(*) > 1" + limitClause(1)
+    }
+
     override fun countRowsSql(schema: String, table: String, where: String?): String {
         val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
         return "SELECT COUNT(*) FROM $from" + wherePart(where)

@@ -384,6 +384,20 @@ class OracleDialect : AbstractDialect() {
         return "SELECT $cols FROM " + qualifiedTable(schema, table) + " WHERE ROWNUM <= $limit"
     }
 
+    /** ROWNUM 过滤全版本可用(同 sampleRowsSql);DISTINCT 进子查询,保证取到的是「最多 limit 个不同值」 */
+    override fun distinctSampleSql(schema: String, table: String, column: String, limit: Int): String {
+        val q = quote(column)
+        return "SELECT $q FROM (SELECT DISTINCT $q FROM " + qualifiedTable(schema, table) +
+                " WHERE $q IS NOT NULL) WHERE ROWNUM <= $limit"
+    }
+
+    /** ROWNUM 先于 GROUP BY 求值,判重必须子查询包装后外层限流 */
+    override fun hasDuplicateSql(schema: String, table: String, column: String): String {
+        val q = quote(column)
+        return "SELECT $q FROM (SELECT $q FROM " + qualifiedTable(schema, table) +
+                " WHERE $q IS NOT NULL GROUP BY $q HAVING COUNT(*) > 1) WHERE ROWNUM <= 1"
+    }
+
     override fun pageRowsSql(conn: Connection, schema: String, table: String, columns: List<String>,
                              where: String?, orderBy: String?, offset: Long, limit: Int): String {
         return pageRowsSql(qualifiedTable(schema, table), columns, where, orderBy, offset, limit, oracleMajor(conn))

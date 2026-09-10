@@ -64,8 +64,8 @@ tasks.shadowJar {
 tasks.named<JavaExec>("run") {
     // 工作目录固定为仓库根,保持 ./data 数据目录口径与 java -jar 方式一致
     workingDir = rootDir
-    // 统一使用 ZGC(JDK 25 默认即为分代模式,无需其他 GC 参数)
-    jvmArgs("-XX:+UseZGC")
+    // 统一使用 G1 + 384MB 堆上限(桌面单机小堆场景 ZGC 内部结构开销大于收益,与安装包参数一致)
+    jvmArgs("-XX:+UseG1GC", "-Xmx384m", "-XX:MaxRAMPercentage=50")
     // 原生启动画面(开发模式无 jar,走文件系统相对路径;生产由打包脚本注入 -splash:${APPDIR}/splash.png)
     // 仅桌面开发模式启用:原生 splash 由 launcher 在 main() 之前显示,main 里再设 headless=true 也收不回去,
     // headless 调试(make dev-headless)带 -splash 会常驻一张启动图并把进程变成 GUI 应用(Dock 图标/抢焦点)。

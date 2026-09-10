@@ -20,11 +20,13 @@ import com.example.dq.controller.ListExportController;
 import com.example.dq.controller.LanController;
 import com.example.dq.controller.MetadataController;
 import com.example.dq.controller.PreviewController;
+import com.example.dq.controller.RelationController;
 import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.SampleExportController;
 import com.example.dq.controller.SqlConsoleController;
 import com.example.dq.controller.LogController;
 import com.example.dq.controller.ManualCollectController;
+import com.example.dq.controller.ObjectCatalogController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.ScanTransferController;
 import com.example.dq.controller.SystemSettingsController;
@@ -37,7 +39,6 @@ import com.example.dq.model.LicenseRequiredException;
 import com.example.dq.service.LicenseService;
 import io.javalin.Javalin;
 import io.javalin.config.RoutesConfig;
-import io.javalin.http.staticfiles.Location;
 import io.javalin.json.JavalinJackson3;
 import ch.qos.logback.classic.LoggerContext;
 import org.slf4j.Logger;
@@ -50,11 +51,18 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.module.kotlin.KotlinModule;
 
 import java.io.InputStream;
+import java.net.URL;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.jar.JarEntry;
+import java.util.jar.JarFile;
+import java.util.stream.Stream;
 
 /**
  * Web 层装配与路由(去 Spring 后替代容器装配 + DispatcherServlet):
@@ -84,6 +92,10 @@ public class WebServer {
     private final TrayManager trayManager;
     /** 共享内核就绪标志:finishInit 完成建表/迁移/恢复后置 true,之前业务接口被闸门拦成 503 */
     private final AtomicBoolean ready = new AtomicBoolean(false);
+    /** 本构建内嵌静态资源(请求路径 → 内容),构造时一次性预读进内存,请求期零 jar I/O */
+    private final Map<String, byte[]> staticCache = preloadStatic();
+    /** 本构建内嵌静态资源清单(/api/assets-manifest 出口),启动诊断复核失败资源时比对用 */
+    private final List<String> staticManifest = staticCache.keySet().stream().sorted().toList();
 
     // 控制器/服务引用:路由在 create 回调里注册,内核(finishInit)构建完成后注入。
     // 就绪闸门在授权校验之前短路(未就绪一律 503),注入前不会触到空引用
@@ -96,6 +108,7 @@ public class WebServer {
     private final AtomicReference<SampleExportController> sampleExportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
     private final AtomicReference<ManualCollectController> manualCollectCtrl = new AtomicReference<>();
+    private final AtomicReference<ObjectCatalogController> objectCatalogCtrl = new AtomicReference<>();
     private final AtomicReference<AiConfigController> aiCtrl = new AtomicReference<>();
     private final AtomicReference<AiUsageController> aiUsageCtrl = new AtomicReference<>();
     private final AtomicReference<SystemSettingsController> settingsCtrl = new AtomicReference<>();
@@ -107,6 +120,7 @@ public class WebServer {
     private final AtomicReference<DiagnosticsController> diagnosticsCtrl = new AtomicReference<>();
     private final AtomicReference<ChangelogController> changelogCtrl = new AtomicReference<>();
     private final AtomicReference<LanController> lanCtrl = new AtomicReference<>();
+    private final AtomicReference<RelationController> relationCtrl = new AtomicReference<>();
     /** 实时日志 Appender 引用:LogController(SSE)与 DiagnosticsController(错误日志摘录)共用同一实例 */
     private LogStreamAppender logStreamAppender;
 
@@ -142,35 +156,15 @@ public class WebServer {
 
         this.app = Javalin.create(cfg -> {
             cfg.jsonMapper(new JavalinJackson3(objectMapper, false));
-            // dev 模式(make dev / dev-headless)不构建前端,classpath 上没有 /static;
-            // Javalin 对不存在的静态目录直接抛异常,故按资源存在与否条件注册。
-            // release 包由 buildWebForRelease 保证 web/dist 内嵌,此处一定注册成功
-            boolean hasStatic = WebServer.class.getResource("/static") != null;
-            if (hasStatic) {
-                // 指纹资源(文件名带内容 hash,内容变则文件名变):长缓存 immutable;须先注册,优先于根目录条目命中
-                cfg.staticFiles.add(files -> {
-                    files.hostedPath = "/assets";
-                    files.directory = "/static/assets";
-                    files.location = Location.CLASSPATH;
-                    files.headers = Map.of("Cache-Control", "public, max-age=31536000, immutable");
-                });
-                // 入口 index.html 等:每次重校验。不缓存是硬要求——否则升级后浏览器仍用旧 index.html,
-                // 引用已不存在的旧 hash 资源,模块脚本拿到 SPA 回退的 text/html 报 MIME 错误白屏
-                cfg.staticFiles.add(files -> {
-                    files.hostedPath = "/";
-                    files.directory = "/static";
-                    files.location = Location.CLASSPATH;
-                    files.headers = Map.of("Cache-Control", "no-cache");
-                });
-            } else {
-                StartupLog.log("  classpath 无 /static(前端未构建),跳过静态资源注册(dev 模式正常)");
+            if (staticCache.isEmpty()) {
+                StartupLog.log("  classpath 无 /static(前端未构建),静态资源为空(dev 模式正常)");
             }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
                     dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl,
-                    manualCollectCtrl, aiCtrl, aiUsageCtrl,
+                    manualCollectCtrl, objectCatalogCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
-                    changelogCtrl, lanCtrl,
+                    changelogCtrl, lanCtrl, relationCtrl,
                     new LogController(logStreamAppender), sessionRef);
         });
 
@@ -194,6 +188,7 @@ public class WebServer {
                                 AtomicReference<SampleExportController> sampleExportCtrl,
                                 AtomicReference<TagController> tagCtrl,
                                 AtomicReference<ManualCollectController> manualCollectCtrl,
+                                AtomicReference<ObjectCatalogController> objectCatalogCtrl,
                                 AtomicReference<AiConfigController> aiCtrl,
                                 AtomicReference<AiUsageController> aiUsageCtrl,
                                 AtomicReference<SystemSettingsController> settingsCtrl,
@@ -205,6 +200,7 @@ public class WebServer {
                                 AtomicReference<DiagnosticsController> diagnosticsCtrl,
                                 AtomicReference<ChangelogController> changelogCtrl,
                                 AtomicReference<LanController> lanCtrl,
+                                AtomicReference<RelationController> relationCtrl,
                                 LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
@@ -212,7 +208,7 @@ public class WebServer {
             String path = ctx.path();
             // 就绪闸门:共享内核(建表/迁移/中断恢复)未就绪前,除就绪探针与页面心跳外所有业务接口统一 503。
             // 必须在授权校验之前短路——licenseService 虽已构建,但依赖的库表可能尚未迁移完成
-            if (path.equals("/api/health") || path.equals("/api/heartbeat")) {
+            if (path.equals("/api/health") || path.equals("/api/heartbeat") || path.equals("/api/assets-manifest")) {
                 return;
             }
             if (!ready.get()) {
@@ -372,6 +368,16 @@ public class WebServer {
         routes.delete("/api/manual-collects/{id}", ctx -> manualCollectCtrl.get().delete(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/manual-collects", ctx -> manualCollectCtrl.get().tableCollectMap(ctx));
 
+        // ---- 对象管理(数据目录):目录树按数据源隔离,目录挂载表,挂载表登记关系表 ----
+        routes.get("/api/datasources/{dsId}/object-catalog", ctx -> objectCatalogCtrl.get().tree(ctx));
+        routes.post("/api/object-dirs", ctx -> objectCatalogCtrl.get().createDir(ctx));
+        routes.put("/api/object-dirs/{id}", ctx -> objectCatalogCtrl.get().renameDir(ctx));
+        routes.delete("/api/object-dirs/{id}", ctx -> objectCatalogCtrl.get().deleteDir(ctx));
+        routes.post("/api/object-dirs/{id}/tables", ctx -> objectCatalogCtrl.get().mountTable(ctx));
+        routes.delete("/api/object-tables/{id}", ctx -> objectCatalogCtrl.get().unmount(ctx));
+        routes.post("/api/object-tables/{id}/relations", ctx -> objectCatalogCtrl.get().addRelation(ctx));
+        routes.delete("/api/object-table-relations/{id}", ctx -> objectCatalogCtrl.get().removeRelation(ctx));
+
         // ---- 标记与描述数据导出/导入(跨机器迁移) ----
         routes.get("/api/annotations/export", ctx -> annotationCtrl.get().export(ctx));
         routes.post("/api/annotations/import/preview", ctx -> annotationCtrl.get().previewImport(ctx));
@@ -380,6 +386,17 @@ public class WebServer {
         // ---- 通用列表导出(前端提交所见表格数据,渲染 xlsx 一次性下载) ----
         routes.post("/api/list-exports", ctx -> listExportCtrl.get().stage(ctx));
         routes.get("/api/list-exports/{token}", ctx -> listExportCtrl.get().download(ctx));
+
+        // ---- ER 关系推导与表间关系 ----
+        routes.post("/api/relation-infer", ctx -> relationCtrl.get().submitInfer(ctx));
+        routes.get("/api/relation-infer-jobs", ctx -> relationCtrl.get().listJobs(ctx));
+        routes.get("/api/relation-infer-jobs/{id}", ctx -> relationCtrl.get().getJob(ctx));
+        routes.get("/api/relations", ctx -> relationCtrl.get().list(ctx));
+        routes.post("/api/relations", ctx -> relationCtrl.get().addManual(ctx));
+        routes.post("/api/relations/{id}/confirm", ctx -> relationCtrl.get().confirm(ctx));
+        routes.post("/api/relations/{id}/reject", ctx -> relationCtrl.get().reject(ctx));
+        routes.delete("/api/relations/{id}", ctx -> relationCtrl.get().delete(ctx));
+        routes.get("/api/relation-graph", ctx -> relationCtrl.get().graph(ctx));
 
         // ---- AI 配置 / 系统设置 / 授权 / 心跳 ----
         routes.get("/api/ai-config", ctx -> aiCtrl.get().get(ctx));
@@ -420,6 +437,15 @@ public class WebServer {
             }
         });
 
+        // 静态资源清单:启动页诊断复核失败资源时比对——失败 URL 在清单内但仍拿不到 → 疑似被杀软/
+        // 代理拦截;不在清单内 → 入口与后端版本错配(旧入口引用新包已删除的旧 hash 资源)。
+        // 与 /api/health 同批放行就绪闸门与激活检查(启动卡住/未激活恰是最需要它的场景)
+        routes.get("/api/assets-manifest", ctx -> ctx.json(Map.of("assets", staticManifest)));
+
+        // ---- 静态资源(内存缓存,请求期零 jar I/O,原因见 preloadStatic)----
+        routes.get("/", ctx -> serveStatic(ctx, "/index.html"));
+        routes.get("/assets/{name}", ctx -> serveStatic(ctx, ctx.path()));
+
         // ---- 实时日志流(SSE) ----
         routes.sse("/api/logs/stream", logCtrl::stream);
 
@@ -455,15 +481,135 @@ public class WebServer {
             boolean api = path.startsWith("/api/") || path.equals("/api");
             boolean looksLikeFile = path.substring(path.lastIndexOf('/') + 1).contains(".");
             if (!api && !looksLikeFile && "GET".equals(ctx.method().name())) {
-                InputStream index = WebServer.class.getResourceAsStream("/static/index.html");
+                byte[] index = staticCache.get("/index.html");
                 if (index != null) {
                     ctx.status(200).contentType("text/html;charset=utf-8")
-                            .header("Cache-Control", "no-cache").result(index);
+                            .header("Cache-Control", "no-store").result(index);
                     return;
                 }
             }
             ctx.json(Map.of("message", "路径不存在: " + path));
         });
+    }
+
+    /**
+     * 静态资源一次性预读进内存(web/dist 全量仅几 MB):请求期不再碰 jar 文件。
+     * 不走 Javalin CLASSPATH 静态实现的原因:其 ClasspathResource 每个请求都 openConnection
+     * 且 setUseCaches(false)——浏览器每请求一个 js/css 都要重新打开 75MB fat jar 并重析中央目录,
+     * 异常被静默吞掉按 404 处理;Windows 杀软对新装未签名 jar 的每次打开都做实时扫描,
+     * 首次安装/重启后并发资产请求易被卡住或拒绝,表现为「入口 200(走 SPA 回退)、assets 404」
+     * (2026-09 多用户实测反推,反编译 ClasspathResource 字节码证实)。
+     * 枚举:打包运行扫 fat jar 的 static/ 条目;dev/测试遍历 classpath 资源根;失败按空放行
+     * (dev 不构建前端时本就没有静态资源,仅影响启动诊断判定精度)。
+     * 加固(2026-09):杀软可能连启动期这一趟读取也拦截——失败项最多再重试 2 轮(间隔 300ms),
+     * 仍失败的资源整个会话期 404,故启动日志固定输出「静态资源 N/M」汇总,缺失时逐个列出,
+     * 便于现场对照 /api/assets-manifest 排查。
+     */
+    private static Map<String, byte[]> preloadStatic() {
+        List<String> paths = enumerateStaticPaths();
+        Map<String, byte[]> cache = new java.util.LinkedHashMap<>();
+        List<String> pending = new ArrayList<>(paths);
+        for (int round = 0; round < 3 && !pending.isEmpty(); round++) {
+            if (round > 0) {
+                log.warn("静态资源预读第 {} 轮仍有 {} 个失败,300ms 后重试", round, pending.size());
+                try {
+                    Thread.sleep(300);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            List<String> failed = new ArrayList<>();
+            for (String path : pending) {
+                // 走类加载器(getResourceAsStream,useCaches=true 共享已打开的 JarFile),启动期单趟读取
+                try (InputStream in = WebServer.class.getResourceAsStream("/static" + path)) {
+                    if (in != null) {
+                        cache.put(path, in.readAllBytes());
+                    } else {
+                        failed.add(path);
+                    }
+                } catch (Exception e) {
+                    log.warn("静态资源预读失败 {}: {}", path, e.toString());
+                    failed.add(path);
+                }
+            }
+            pending = failed;
+        }
+        if (pending.isEmpty()) {
+            StartupLog.log("  静态资源 " + cache.size() + "/" + paths.size() + " 加载完成(内存缓存)");
+        } else {
+            StartupLog.log("  静态资源 " + cache.size() + "/" + paths.size() + " 加载,缺失 "
+                    + pending.size() + " 个(会话期将 404): " + pending);
+            log.error("静态资源预读最终失败 {}/{} 个,这些资源会话期将 404: {}", pending.size(), paths.size(), pending);
+        }
+        return cache;
+    }
+
+    /** 枚举本构建内嵌静态资源路径(返回 /index.html、/assets/xxx.js 等),供预读与清单出口共用 */
+    private static List<String> enumerateStaticPaths() {
+        try {
+            URL location = WebServer.class.getProtectionDomain().getCodeSource().getLocation();
+            Path path = Path.of(location.toURI());
+            if (path.toString().endsWith(".jar")) {
+                List<String> assets = new ArrayList<>();
+                try (JarFile jar = new JarFile(path.toFile())) {
+                    java.util.Enumeration<JarEntry> entries = jar.entries();
+                    while (entries.hasMoreElements()) {
+                        String name = entries.nextElement().getName();
+                        if (name.startsWith("static/") && !name.endsWith("/")) {
+                            assets.add("/" + name.substring("static/".length()));
+                        }
+                    }
+                }
+                java.util.Collections.sort(assets);
+                return assets;
+            }
+            // dev / 测试:classes 目录,遍历 classpath 资源根下的 static
+            URL staticRoot = WebServer.class.getResource("/static");
+            if (staticRoot != null && "file".equals(staticRoot.getProtocol())) {
+                Path root = Path.of(staticRoot.toURI());
+                try (Stream<Path> walk = Files.walk(root)) {
+                    return walk.filter(Files::isRegularFile)
+                            .map(p -> "/" + root.relativize(p).toString().replace('\\', '/'))
+                            .sorted()
+                            .toList();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("静态资源清单构建失败(按空清单放行,仅影响启动诊断判定): {}", e.toString());
+        }
+        return List.of();
+    }
+
+    /** 从内存缓存服务静态资源:指纹资源长缓存 immutable,入口等其余 no-store */
+    private void serveStatic(io.javalin.http.Context ctx, String path) {
+        byte[] content = staticCache.get(path);
+        if (content == null) {
+            throw new io.javalin.http.NotFoundResponse();
+        }
+        if (path.startsWith("/assets/")) {
+            // 指纹资源(文件名带内容 hash,内容变则文件名变):长缓存 immutable
+            ctx.header("Cache-Control", "public, max-age=31536000, immutable");
+        } else {
+            // 入口 index.html 等:禁止任何缓存复用(no-cache 在会话恢复/重校验失败时仍可能给旧副本)
+            ctx.header("Cache-Control", "no-store");
+        }
+        ctx.contentType(staticContentType(path)).result(content);
+    }
+
+    private static String staticContentType(String path) {
+        String ext = path.substring(path.lastIndexOf('.') + 1);
+        return switch (ext) {
+            case "html" -> "text/html;charset=utf-8";
+            case "js" -> "text/javascript";
+            case "css" -> "text/css";
+            case "svg" -> "image/svg+xml";
+            case "png" -> "image/png";
+            case "ico" -> "image/x-icon";
+            case "json", "map" -> "application/json";
+            case "woff2" -> "font/woff2";
+            default -> "application/octet-stream";
+        };
     }
 
     public void start(int port) {
@@ -582,6 +728,7 @@ public class WebServer {
         sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
         manualCollectCtrl.set(new ManualCollectController(env.getManualCollectService()));
+        objectCatalogCtrl.set(new ObjectCatalogController(env.getObjectCatalogService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));
         aiUsageCtrl.set(new AiUsageController(env.getAiUsageService()));
         settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener));
@@ -593,6 +740,7 @@ public class WebServer {
         diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), logStreamAppender));
         changelogCtrl.set(new ChangelogController(env.getChangelogService()));
         lanCtrl.set(new LanController(env.getLanShareService()));
+        relationCtrl.set(new RelationController(env.getRelationInferService(), env.getTableRelationService()));
     }
 
     /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */

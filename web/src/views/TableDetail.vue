@@ -1,5 +1,5 @@
 <template>
-  <div class="page-card">
+  <div class="page-card" :class="{ 'er-fullheight': activeTab === 'er' || activeTab === 'graph' }">
     <div class="toolbar">
       <Breadcrumb :items="breadcrumbItems" />
       <div>
@@ -7,7 +7,7 @@
           {{ collectId ? '取消采集' : '采集' }}
         </el-button>
         <ExportButton v-if="hasJob" :job-id="jobId" label="导出扫描结果" />
-        <el-button @click="exportExcel">导出列表</el-button>
+        <el-button :loading="erExporting" @click="exportExcel">{{ activeTab === 'er' ? '导出ER表格' : '导出列表' }}</el-button>
         <el-button :icon="Refresh" :loading="refreshing" @click="refreshAll">刷新</el-button>
       </div>
     </div>
@@ -53,16 +53,19 @@
           </el-radio-group>
         </div>
 
-        <!-- DDL 视图:建表语句(含索引),懒加载实时拉取 -->
+        <!-- DDL 视图:建表语句(含索引),懒加载;本地缓存优先,数据源不可达时降级展示缓存 -->
         <template v-if="columnView === 'ddl'">
           <el-alert v-if="ddlError" type="error" :closable="false" show-icon :title="ddlError" style="margin-bottom: 12px" />
+          <el-alert v-else-if="ddlFromCache" type="warning" :closable="false" show-icon style="margin-bottom: 12px">
+            <span>数据源当前不可达,展示的是<b>本地缓存</b>的 DDL;恢复网络后点「刷新」可重新同步。</span>
+          </el-alert>
           <div v-loading="ddlLoading">
             <pre v-if="ddlText" class="ddl-view">{{ ddlText }}</pre>
             <el-empty v-if="!ddlLoading && !ddlError && ddlLoaded && !ddlText" description="未获取到 DDL" :image-size="60" />
           </div>
         </template>
 
-        <!-- 字段列表:基础结构列 + (已扫描时)统计列 -->
+        <!-- 字段列表:基础结构列 + (已扫描时)统计列;表头吸顶走全局 sticky 口径(style.css),页签内需放开 tabs content 裁剪见下方样式 -->
         <el-table v-else :data="filteredColumns" v-loading="loading" border>
           <el-table-column type="index" label="序号" width="60" />
           <el-table-column prop="name" label="字段名" min-width="140" sortable show-overflow-tooltip />
@@ -78,7 +81,7 @@
               <el-tag v-if="keyLabel(row)" size="small" :type="keyLabel(row) === 'PK' ? 'primary' : 'success'">{{ keyLabel(row) }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="可空" width="70" sortable :sort-method="(a, b) => Number(a.nullable ?? true) - Number(b.nullable ?? true)">
+          <el-table-column label="可空" width="80" sortable :sort-method="(a, b) => Number(a.nullable ?? true) - Number(b.nullable ?? true)">
             <template #default="{ row }">
               <span v-if="row.nullable === null || row.nullable === undefined">-</span>
               <span v-else>{{ row.nullable ? '是' : '否' }}</span>
@@ -91,7 +94,7 @@
             </template>
           </el-table-column>
           <template v-if="hasJob">
-            <el-table-column label="空值数(合计)" width="130" sortable :sort-method="sortByNullTotal">
+            <el-table-column label="空值数(合计)" width="150" sortable :sort-method="sortByNullTotal">
               <template #default="{ row }">
                 <span :style="{ color: nullTotal(row) > 0 ? 'var(--el-color-warning)' : 'inherit' }">{{ formatNumber(nullTotal(row)) }}</span>
               </template>
@@ -216,7 +219,167 @@
                   description="该表还没有标记,点右上角「打标」添加" :image-size="60" />
       </el-tab-pane>
 
+      <el-tab-pane label="ER 关系" name="er" class="er-pane">
+        <!-- 推导/补充按钮已收进画布顶部工具栏;空图时画布未挂载(工具栏随画布销毁),退回页面级保证可用 -->
+        <div v-if="!erGraph.nodes.length" class="er-toolbar">
+          <el-button size="small" @click="inferDialogVisible = true">推导关联</el-button>
+          <el-button size="small" @click="openAddRelation">手动补充</el-button>
+        </div>
+        <!-- 该表星型图(恒含候选边);点边看关系详情(与 ER 关系页共用抽屉组件),点表名跳对应表字段明细;ER 页签激活时画布 flex 吃满剩余高度。
+             画布仅在本页签激活时挂载(el-tab-pane 非 lazy 模式只是 v-show 隐藏,不销毁——两个 G6 实例并存于 0 尺寸的
+             隐藏容器里会相互干扰,表现为切回后画布错位/空白),切走即销毁、切回用缓存数据重建;字段展开态随之重置 -->
+        <div class="er-canvas-wrap" v-loading="erLoading">
+          <RelationGraphCanvas
+            ref="erCanvasRef"
+            v-if="activeTab === 'er' && erGraph.nodes.length"
+            v-model:level="erLevel"
+            v-model:edge-type="erEdgeType"
+            :nodes="erGraph.nodes"
+            :edges="erGraph.edges"
+            :anchor-table="tableName"
+            :columns-map="erColumnsMap"
+            :max-field-rows="erMaxFieldRows"
+            :field-name-mode="erFieldNameMode"
+            :default-zoom="1"
+            @export-drawio="exportErDrawio"
+            @edge-click="onErEdgeClick"
+            @node-open="goOtherTable"
+          >
+            <template #toolbar>
+              <!-- 全部字段档单表默认展示的字段行数(超出折叠为「+N 个字段」可点击展开);localStorage 持久化 -->
+              <span v-if="erLevel === 'all'" style="display: flex; align-items: center; gap: 6px">
+                <span style="font-size: 12px; color: var(--el-text-color-secondary)">字段数</span>
+                <el-input-number v-model="erMaxFieldRows" :min="1" :max="99" size="small"
+                                 controls-position="right" style="width: 96px" @change="onErMaxFieldRowsChange" />
+              </span>
+              <!-- 名字口径三档(表名/字段同规则):仅中文(默认,无注释回退英文)/仅英文/中英文同时显示(中文在前) -->
+              <el-select v-model="erFieldNameMode" size="small" style="width: 150px">
+                <el-option label="仅显示字段中文名" value="chinese" />
+                <el-option label="仅显示字段英文名" value="english" />
+                <el-option label="中英文同时显示" value="both" />
+              </el-select>
+              <!-- 业务操作:推导关联/手动补充(排在显示类工具最后;空图时见页面级兜底) -->
+              <el-button size="small" @click="inferDialogVisible = true">推导关联</el-button>
+              <el-button size="small" @click="openAddRelation">手动补充</el-button>
+            </template>
+          </RelationGraphCanvas>
+          <el-empty v-else-if="!erLoading && erLoaded"
+                    description="暂无关联关系,可点上方「推导关联」推导,或「手动补充」直接添加" :image-size="60" />
+        </div>
+      </el-tab-pane>
+
+      <el-tab-pane label="图谱" name="graph" class="er-pane">
+        <!-- 筛选/说明收进画布顶部工具栏的 toolbar 插槽(业务工具,随画布挂载);重绘/1:1/适应画布为底座内置默认工具 -->
+        <!-- 本表星型图谱(圆形节点,d3-force 力导向布局,与「ER 关系」页签同源数据);点节点开颜色面板,双击跳对应表字段明细。
+             与 ER 画布一样仅在本页签激活时挂载(切走销毁、切回用缓存数据重建),保证任意时刻只有一个 G6 实例存活,互不影响 -->
+        <div class="er-canvas-wrap" v-loading="graphLoading">
+          <TableGraphCanvas
+            v-if="activeTab === 'graph' && graphData.nodes.length"
+            :nodes="graphData.nodes"
+            :edges="graphData.edges"
+            :anchor-table="tableName"
+            layout="force"
+            :colors="graphColors"
+            :highlight="graphHighlight"
+            :selected="graphPanelTable"
+            @node-click="onGraphNodeClick"
+            @node-open="goOtherTable"
+            @canvas-click="graphPanelTable = ''"
+          >
+            <template #toolbar>
+              <!-- 标记筛选:选项为当前图节点上出现过的标记;命中节点保持高亮,未命中大幅降亮度 -->
+              <el-select v-model="graphFilterTags" multiple collapse-tags collapse-tags-tooltip clearable
+                         placeholder="按标记筛选" size="small" style="width: 220px">
+                <el-option v-for="t in graphTagOptions" :key="t.name" :label="t.name" :value="t.name">
+                  <span class="graph-tag-dot" :style="{ background: t.color || 'var(--el-color-primary)' }" />{{ t.name }}
+                </el-option>
+              </el-select>
+              <!-- 颜色筛选:选项为当前图节点实际用到的颜色(自定义色/标记色/默认色),只显示色块不显示颜色值 -->
+              <el-select v-model="graphFilterColors" multiple collapse-tags collapse-tags-tooltip clearable
+                         placeholder="按颜色筛选" size="small" style="width: 180px">
+                <el-option v-for="c in graphColorOptions" :key="c" :label="c" :value="c">
+                  <span class="graph-color-swatch" :style="{ background: c }" :title="c" />
+                </el-option>
+                <!-- 选中项在输入框内也只显示色块(label 槽覆盖默认的 hex 文本) -->
+                <template #label="{ value }">
+                  <span class="graph-color-swatch graph-color-swatch-sm" :style="{ background: value }" />
+                </template>
+              </el-select>
+              <span style="font-size: 12px; color: var(--el-text-color-secondary)">
+                节点颜色取自标记色,点节点可自定义;双击节点跳字段明细
+              </span>
+            </template>
+          </TableGraphCanvas>
+          <el-empty v-else-if="!graphLoading && graphLoaded"
+                    description="暂无关联关系,可在「ER 关系」页签推导或手动补充" :image-size="60" />
+          <!-- 节点点击面板:右上角悬浮卡片——表名全称(有注释时标题为注释,长注释自动换行)、字段列表(英文名/中文名/类型,
+               点开面板时按表懒拉)、节点颜色行(取色器 + 标记[点标记把标记色设为节点色,空表固定排最后] + 恢复默认) -->
+          <div v-if="graphPanelTable" class="graph-node-panel">
+            <div class="graph-node-panel-head">
+              <span class="graph-node-panel-title" :title="graphPanelComment || graphPanelTable">{{ graphPanelComment || graphPanelTable }}</span>
+              <el-icon class="graph-node-panel-close" @click="graphPanelTable = ''"><Close /></el-icon>
+            </div>
+            <!-- 全表名恒显示,长名自动换行 -->
+            <div class="graph-node-panel-sub" :title="graphPanelTable">{{ graphPanelTable }}</div>
+            <!-- 字段列表(英文名/中文名/类型):点开面板时按表懒拉元数据,超高内部滚动 -->
+            <div v-loading="graphPanelColumnsLoading" class="graph-node-panel-cols">
+              <el-table v-if="graphPanelColumns.length" :data="graphPanelColumns" size="small" border max-height="220">
+                <el-table-column prop="name" label="英文名" min-width="96" show-overflow-tooltip />
+                <el-table-column prop="comment" label="中文名" min-width="84" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    <span v-if="row.comment">{{ row.comment }}</span>
+                    <span v-else style="color: var(--el-text-color-placeholder)">-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="displayType" label="类型" min-width="76" show-overflow-tooltip />
+              </el-table>
+              <div v-else-if="!graphPanelColumnsLoading" class="graph-node-panel-cols-empty">暂无字段元数据</div>
+            </div>
+            <!-- 节点颜色行:取色器在最前,标记随后(空表标记固定排最后),恢复默认收尾 -->
+            <div class="graph-node-panel-color">
+              <el-color-picker v-model="graphPanelColor" :predefine="graphPresetColors" @change="saveGraphColor" />
+              <el-tooltip v-for="t in graphPanelTagsSorted" :key="t.name" content="点击使用此标记色作为节点颜色"
+                          placement="top" :show-after="200" :disabled="!t.color">
+                <el-tag size="small" effect="dark" class="graph-node-tag-pick"
+                        :color="t.color" :style="{ borderColor: t.color }"
+                        @click="applyGraphTagColor(t)">{{ t.name }}</el-tag>
+              </el-tooltip>
+              <el-button size="small" text type="primary" :disabled="!graphPanelHasCustom" @click="resetGraphColor">恢复默认</el-button>
+            </div>
+            <div class="graph-node-panel-actions">
+              <el-button size="small" @click="openTableDetailNewTab(graphPanelTable)">查看表详情</el-button>
+            </div>
+          </div>
+        </div>
+      </el-tab-pane>
+
     </el-tabs>
+
+    <!-- 关系详情抽屉(与 ER 关系页同一组件);操作成功后刷新星型图 -->
+    <RelationEdgeDrawer v-model="erDrawerVisible" :edge="erCurrentEdge" @changed="onErEdgeChanged" />
+
+    <!-- 推导关联对话框(预选当前数据源+库+schema+本表,对话框自成闭环) -->
+    <RelationInferDialog
+      v-if="dsId && schema"
+      v-model="inferDialogVisible"
+      :ds-id="dsId"
+      :schema="schema"
+      :db="db"
+      :table-name="tableName"
+      @done="onInferDone"
+    />
+
+    <!-- 手动补充对话框(表清单为整库表,打开时懒拉;端一锁定当前表;保存后刷新星型图) -->
+    <RelationAddDialog
+      v-if="dsId && schema"
+      v-model="addDialogVisible"
+      :ds-id="dsId"
+      :schema="schema"
+      :db="db"
+      :tables="addTables"
+      :locked-table="tableName"
+      @done="onAddDone"
+    />
 
     <!-- 打标弹窗(复用表列表页同款组件):勾选 USER 标记 + 就地新建 -->
     <TableTagDialog
@@ -232,21 +395,32 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from '../utils/notify'
-import { Refresh } from '@element-plus/icons-vue'
-import request from '../api'
+import { Close, Refresh } from '@element-plus/icons-vue'
+import request, { getRelationGraph } from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import SqlInput from '../components/SqlInput.vue'
 import TableTagDialog from '../components/TableTagDialog.vue'
+import RelationEdgeDrawer from '../components/RelationEdgeDrawer.vue'
+import RelationInferDialog from '../components/RelationInferDialog.vue'
+import RelationAddDialog from '../components/RelationAddDialog.vue'
 import { formatDuration, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
 import { downloadFile } from '../utils/download'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
+import { downloadDrawio } from '../utils/drawioExport'
+import { exportErGraphExcel } from '../utils/erGraphExport'
 
 const route = useRoute()
+const router = useRouter()
+
+// G6 画布异步加载:G6 体积大,切到「ER 关系」页签才拉 chunk(与 RelationGraph 页共享同一懒加载 chunk)
+const RelationGraphCanvas = defineAsyncComponent(() => import('../components/RelationGraphCanvas.vue'))
+// 「图谱」页签圆形节点画布(与上图共享受懒加载 chunk 依赖,不切页签不加载)
+const TableGraphCanvas = defineAsyncComponent(() => import('../components/TableGraphCanvas.vue'))
 const tableName = route.params.tableName
 // 兼容旧路由 /scans/:jobId/tables/:tableName:数据源上下文从任务接口回填
 const isScanRoute = route.path.startsWith('/scans/')
@@ -277,6 +451,7 @@ const ddlText = ref('')           // 建表 DDL 文本(含索引)
 const ddlLoading = ref(false)
 const ddlLoaded = ref(false)      // DDL 是否已加载(懒加载)
 const ddlError = ref('')          // DDL 加载失败的内联错误提示
+const ddlFromCache = ref(false)   // DDL 是否来自「数据源不可达降级读本地缓存」(响应头 X-Dq-Cache-Fallback)
 const appliedWhere = ref('')      // 已应用的过滤条件(翻页用,输入未应用不影响)
 const appliedOrderBy = ref('')    // 已应用的排序
 // 过滤栏补全字段清单(复用字段明细的元数据,无需额外请求)
@@ -297,6 +472,36 @@ const tagsLoaded = ref(false)     // 标记是否已加载(懒加载)
 const tagKeyword = ref('')        // 标记名过滤
 const tagSourceFilter = ref('')   // 打标类型过滤:MANUAL 人工打标 / SYSTEM 系统打标(含 AI 自动打标与空表联动),空=全部
 const tagDialogVisible = ref(false)
+// 「ER 关系」页签:该表星型图(恒含候选边),懒加载(首次切入才拉图数据)
+const erGraph = ref({ nodes: [], edges: [] })
+const erLoading = ref(false)
+const erLoaded = ref(false)       // ER 图是否已加载(懒加载)
+const erLevel = ref('all')         // 显示档位:name 仅表名 / related 关联字段 / all 全部字段(默认全部字段)
+// erLevel=all 时各表字段清单(表名 -> [{name, type, comment}]),按库只拉一次
+const erColumnsMap = ref({})
+let erColumnsLoaded = false
+// 全部字段档单表默认展示的字段行数(超出折叠为「+N 个字段」可点击展开),localStorage 持久化
+const erMaxFieldRows = ref(Math.min(99, Math.max(1, Number(localStorage.getItem('dq-er-max-field-rows')) || 10)))
+function onErMaxFieldRowsChange(v) {
+  if (!Number.isFinite(v)) erMaxFieldRows.value = 10 // 清空输入失焦时回退默认
+  localStorage.setItem('dq-er-max-field-rows', String(erMaxFieldRows.value))
+}
+// 连线线型:curve 曲线 / orth 直角 / orth-round 圆角;localStorage 持久化(与 ER 关系页同 key 共享)
+const erEdgeType = ref(localStorage.getItem('dq-er-edge-type') || 'curve')
+watch(erEdgeType, (v) => localStorage.setItem('dq-er-edge-type', v))
+// 名字口径三档(表名/字段同规则):chinese=仅中文(默认,无注释回退英文)/english=仅英文/both=中英文同时显示(中文在前);
+// 与 ER 关系页/对象管理图同名开关同语义,不持久化
+const erFieldNameMode = ref('chinese')
+// 点边详情抽屉(与 ER 关系页共用 RelationEdgeDrawer)
+const erDrawerVisible = ref(false)
+const erCurrentEdge = ref(null)
+// 「推导关联」对话框(预选当前数据源+库+schema+本表)
+const inferDialogVisible = ref(false)
+// 「手动补充」对话框:整库表清单打开时懒拉(与表列表页同一 API),会话内缓存
+const addDialogVisible = ref(false)
+const addTables = ref([])
+// 画布实例引用(导出 drawio 时取 G6 实测布局中心与当前档位字段行)
+const erCanvasRef = ref(null)
 
 const hasJob = computed(() => !!jobId.value)
 
@@ -464,18 +669,22 @@ async function loadIndexes(force = false) {
   }
 }
 
-/** DDL 懒加载:首次切到 DDL 视图或刷新时调用(实时拉取,接口本身不落缓存,无 refresh 参数) */
-async function loadDdl() {
+/** DDL 懒加载:首次切到 DDL 视图或刷新时调用;本地缓存优先,refresh=true 强制回源覆盖 */
+async function loadDdl(refresh = false) {
   if (!dsId.value || !schema.value) return
   ddlLoading.value = true
   ddlError.value = ''
+  ddlFromCache.value = false
   try {
     const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
     const params = new URLSearchParams()
     if (db.value) params.set('db', db.value)
+    if (refresh) params.set('refresh', 'true')
     const q = params.toString() ? `?${params.toString()}` : ''
-    const data = await request.get(`${base}/tables/${encodeURIComponent(tableName)}/ddl${q}`)
-    ddlText.value = data?.ddl || ''
+    // 取原始响应读降级响应头:数据源不可达时后端返回本地缓存 DDL
+    const resp = await request.get(`${base}/tables/${encodeURIComponent(tableName)}/ddl${q}`, { _raw: true })
+    ddlFromCache.value = resp.headers?.['x-dq-cache-fallback'] === 'true'
+    ddlText.value = resp.data?.ddl || ''
     ddlLoaded.value = true
   } catch (e) {
     // 拦截器已弹出错误消息,这里留内联提示;不置 loaded,允许重试
@@ -567,15 +776,338 @@ function onTabChange(name) {
   if (name === 'indexes') loadIndexes()
   if (name === 'preview' && !previewLoaded.value) loadPreview(1)
   if (name === 'tags' && !tagsLoaded.value) loadTags()
+  if (name === 'er') loadErGraph()
+  if (name === 'graph') loadGraph()
 }
 
-/** 字段明细内 表格/DDL 切换:首次切到 DDL 时懒加载 */
+// ---------- 「ER 关系」页签(该表星型图,懒加载) ----------
+
+/** 拉星型图数据(table 参数=本表,恒含候选边);force 强制重拉(刷新/抽屉内状态变更后) */
+async function loadErGraph(force = false) {
+  if (!dsId.value || !schema.value) return
+  if (erLoaded.value && !force) return
+  erLoading.value = true
+  try {
+    // 默认档位为「全部字段」:先拉整库字段清单,首帧即带字段行(内部去重,整库只拉一次);
+    // watch(erLevel) 对初始默认值不触发,故在此主动补拉
+    if (erLevel.value === 'all') await loadErColumnsMap()
+    erGraph.value = await getRelationGraph({
+      datasourceId: dsId.value,
+      dbName: db.value || undefined,
+      schemaName: schema.value,
+      table: tableName,
+      includeCandidate: true
+    })
+    erLoaded.value = true
+  } finally {
+    erLoading.value = false
+  }
+}
+
+/** erLevel=all 时拉整库字段清单并按表分组(与 ER 关系页同一接口,只拉一次) */
+async function loadErColumnsMap() {
+  if (erColumnsLoaded || !dsId.value || !schema.value) return
+  erColumnsLoaded = true
+  const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
+  const q = db.value ? `?db=${encodeURIComponent(db.value)}` : ''
+  const list = await request.get(`${base}/columns${q}`).catch(() => [])
+  const map = {}
+  for (const c of list || []) {
+    if (!c || !c.table || !c.name) continue
+    if (!map[c.table]) map[c.table] = []
+    map[c.table].push({ name: c.name, type: c.type || '', comment: c.comment || '' })
+  }
+  erColumnsMap.value = map
+}
+
+watch(erLevel, (v) => {
+  if (v === 'all') loadErColumnsMap()
+})
+
+
+/** 导出星型图 .drawio:与 ER 关系页同一导出工具(档位所见即所得,前端拼装 mxfile XML 下载) */
+function exportErDrawio() {
+  const data = erCanvasRef.value?.exportData()
+  if (!data || !data.nodes.length) return ElMessage.warning('当前图没有可导出的节点')
+  downloadDrawio(data, `ER 星型图-${schema.value}-${tableName}`)
+}
+
+/** 「ER 关系」页签导出 Excel(工具栏「导出ER表格」):与 ER 关系页「导出ER关系」同口径,
+ *  行 = 星型图内每张表 × 该表作为关系端点的去重级联字段,逻辑见 erGraphExport.js;
+ *  字段注释清单可能未加载(仅 erLevel=all 时才拉),导出前先确保已加载 */
+const erExporting = ref(false)
+async function exportErExcel() {
+  if (!erGraph.value.nodes.length) return ElMessage.warning('当前图没有可导出的数据')
+  erExporting.value = true
+  try {
+    await loadErColumnsMap()
+    await exportErGraphExcel({
+      dsId: dsId.value,
+      db: db.value,
+      schema: schema.value,
+      filename: `ER 星型图-${schema.value}-${tableName}`,
+      graph: erGraph.value,
+      columnsMap: erColumnsMap.value
+    })
+  } finally {
+    erExporting.value = false
+  }
+}
+/** query tab=er 时激活「ER 关系」页签(推导对话框 DONE「查看」的跳转落点);
+ *  激活即触发懒加载(loadErGraph 内部已加载守卫不重复拉);无该参数行为不变 */
+function applyQueryTab() {
+  if (route.query.tab !== 'er') return
+  activeTab.value = 'er'
+  loadErGraph()
+}
+// keep-alive 复用时带 tab 参数新 push 进来(fullPath 变化通常伴随重挂载,watch 兜住同挂载内 query 变化的场景)
+watch(() => route.query.tab, applyQueryTab)
+
+/** 点边:打开关系详情抽屉(确认/否决/删除由抽屉组件承载,changed 后刷新星型图) */
+function onErEdgeClick(rel) {
+  erCurrentEdge.value = rel
+  erDrawerVisible.value = true
+}
+
+/** 抽屉内操作成功:确认就地更新状态标签并整图回源刷新;
+ *  否决/删除的边不再进图——先更新内存中的关系数据(剔除该边;星型图节点口径=锚点+边两端,
+ *  失去全部连线的邻表节点一并摘除,与服务端 graph() 口径一致),画布 watch 到变化后整体重绘(不回源重拉) */
+function onErEdgeChanged({ action }) {
+  if (action === 'confirm') {
+    if (erCurrentEdge.value) erCurrentEdge.value = { ...erCurrentEdge.value, status: 'CONFIRMED' }
+    loadErGraph(true)
+    return
+  }
+  const id = erCurrentEdge.value?.id
+  if (id == null) return
+  const edges = (erGraph.value.edges || []).filter((e) => e.id !== id)
+  const keep = new Set([tableName])
+  for (const e of edges) { keep.add(e.oneTable); keep.add(e.manyTable) }
+  const nodes = (erGraph.value.nodes || []).filter((n) => keep.has(n.name))
+  erGraph.value = { ...erGraph.value, nodes, edges }
+}
+
+/** 点节点表名:跳对应表字段明细(本表即当前页,路由相同不跳转) */
+function goOtherTable(table) {
+  if (table === tableName) return
+  const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}/tables/${encodeURIComponent(table)}`
+  router.push(db.value ? `${base}?db=${encodeURIComponent(db.value)}` : base)
+}
+
+/** 推导完成:提示候选数;ER 页签已加载则刷新星型图 */
+async function onInferDone(job) {
+  ElMessage.success(`推导完成,发现 ${job.foundCount} 条候选关系`)
+  if (erLoaded.value) await loadErGraph(true)
+}
+
+/** 打开手动补充:懒拉整库表清单(失败由拦截器提示,对话框仍可用手输不了表名则等下次) */
+async function openAddRelation() {
+  addDialogVisible.value = true
+  if (addTables.value.length) return
+  try {
+    const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}/tables`
+    const q = db.value ? `?db=${encodeURIComponent(db.value)}` : ''
+    const list = await request.get(base + q)
+    addTables.value = (list || []).map((t) => t.name)
+  } catch { /* 单次失败维持空清单,下次打开重试 */ }
+}
+
+/** 手动补充完成:命中唯一键的已存在关系后端转 CONFIRMED 返回原 id(existing=true) */
+async function onAddDone(res) {
+  if (res?.existing) ElMessage.success('该关系已存在,已转为确认')
+  else ElMessage.success('已添加确认关系')
+  await loadErGraph(true)
+}
+
+// ---------- 「图谱」页签(圆形节点星型图,懒加载;与「ER 关系」页签同一图数据) ----------
+
+// 图数据与加载标记(懒加载,首次切入才拉)
+const graphData = ref({ nodes: [], edges: [] })
+const graphLoading = ref(false)
+const graphLoaded = ref(false)
+// 本库打标 map(表名 -> 标记数组,与「标签」页签同一接口),节点取首个标记色
+const graphTagsMap = ref({})
+// 筛选:标记多选 / 颜色多选;任一维度有选中即生效,命中节点高亮、未命中降亮度
+const graphFilterTags = ref([])
+const graphFilterColors = ref([])
+// 节点点击面板(自定义颜色)
+const graphPanelTable = ref('')
+const graphPanelColor = ref('')
+// 面板字段列表(点开面板时按表懒拉元数据,与字段明细页同一接口)
+const graphPanelColumns = ref([])
+const graphPanelColumnsLoading = ref(false)
+// 颜色选择器预设色板(与标记新建表单 TagCreateForm 同一套)
+const graphPresetColors = ['#409EFF', '#67C23A', '#E6A23C', '#F56C6C', '#909399', '#9B59B6', '#16A085', '#D35400']
+// 自定义节点颜色:{ "dsId|db|schema|table": "#hex" },localStorage 持久化(本机偏好,同侧边栏宽度/主题口径)
+const GRAPH_COLOR_KEY = 'dq-graph-node-colors'
+const graphCustomColors = ref(loadGraphCustomColors())
+
+function loadGraphCustomColors() {
+  try {
+    const obj = JSON.parse(localStorage.getItem(GRAPH_COLOR_KEY) || '{}')
+    return obj && typeof obj === 'object' ? obj : {}
+  } catch {
+    return {}
+  }
+}
+
+function persistGraphColors() {
+  localStorage.setItem(GRAPH_COLOR_KEY, JSON.stringify(graphCustomColors.value))
+}
+
+/** 自定义颜色的存储键:四元组(数据源|库|schema|表) */
+function graphColorKey(table) {
+  return `${dsId.value}|${db.value}|${schema.value}|${table}`
+}
+
+/** 主题色兜底(默认节点色):跟随亮/暗主题 */
+function graphDefaultColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue('--el-color-primary').trim() || '#409eff'
+}
+
+/** 节点颜色解析:自定义 > 首个标记色 > 主题默认色 */
+function graphNodeColor(table) {
+  const custom = graphCustomColors.value[graphColorKey(table)]
+  if (custom) return custom
+  const tags = graphTagsMap.value[table] || []
+  return tags[0]?.color || graphDefaultColor()
+}
+
+/** 各节点已解析颜色:{ 表名: '#hex' },画布直接消费 */
+const graphColors = computed(() => {
+  const m = {}
+  for (const n of graphData.value.nodes || []) m[n.name] = graphNodeColor(n.name)
+  return m
+})
+
+/** 标记筛选项:当前图节点上出现过的标记(去重,带颜色) */
+const graphTagOptions = computed(() => {
+  const map = new Map()
+  for (const n of graphData.value.nodes || []) {
+    for (const t of graphTagsMap.value[n.name] || []) {
+      if (t?.name && !map.has(t.name)) map.set(t.name, t.color || '')
+    }
+  }
+  return [...map.entries()].map(([name, color]) => ({ name, color })).sort((a, b) => a.name.localeCompare(b.name))
+})
+
+/** 颜色筛选项:当前图节点实际用到的颜色(去重) */
+const graphColorOptions = computed(() =>
+  [...new Set((graphData.value.nodes || []).map((n) => graphNodeColor(n.name)))])
+
+/** 筛选命中的表名数组:null=无筛选;维度内 OR、维度间 AND */
+const graphHighlight = computed(() => {
+  const tagSel = graphFilterTags.value
+  const colorSel = graphFilterColors.value
+  if (!tagSel.length && !colorSel.length) return null
+  const names = []
+  for (const n of graphData.value.nodes || []) {
+    const tagOk = !tagSel.length || (graphTagsMap.value[n.name] || []).some((t) => tagSel.includes(t.name))
+    const colorOk = !colorSel.length || colorSel.includes(graphNodeColor(n.name))
+    if (tagOk && colorOk) names.push(n.name)
+  }
+  return names
+})
+
+const graphPanelComment = computed(() =>
+  (graphData.value.nodes || []).find((n) => n.name === graphPanelTable.value)?.comment || '')
+const graphPanelTags = computed(() => graphTagsMap.value[graphPanelTable.value] || [])
+/** 面板标记排序:空表标记(系统维护,kind=EMPTY)固定排最后,其余保持原顺序 */
+const graphPanelTagsSorted = computed(() =>
+  [...graphPanelTags.value].sort((a, b) => Number(a.kind === 'EMPTY') - Number(b.kind === 'EMPTY')))
+const graphPanelHasCustom = computed(() => !!graphCustomColors.value[graphColorKey(graphPanelTable.value)])
+
+/** 拉图谱数据(table 参数=本表,恒含候选边;与 ER 页签同接口)+ 本库打标 map;force 强制重拉 */
+async function loadGraph(force = false) {
+  if (!dsId.value || !schema.value) return
+  if (graphLoaded.value && !force) return
+  graphLoading.value = true
+  try {
+    const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}`
+    const q = db.value ? `?db=${encodeURIComponent(db.value)}` : ''
+    const [g, tags] = await Promise.all([
+      getRelationGraph({
+        datasourceId: dsId.value,
+        dbName: db.value || undefined,
+        schemaName: schema.value,
+        table: tableName,
+        includeCandidate: true
+      }),
+      request.get(`${base}/table-tags${q}`).catch(() => ({}))
+    ])
+    graphData.value = g
+    graphTagsMap.value = tags || {}
+    graphLoaded.value = true
+  } finally {
+    graphLoading.value = false
+  }
+}
+
+/** 点节点:开颜色面板,取色器回填当前已解析颜色,并懒拉该表字段列表 */
+function onGraphNodeClick(table) {
+  graphPanelTable.value = table
+  graphPanelColor.value = graphNodeColor(table)
+  loadGraphPanelColumns(table)
+}
+
+/** 面板字段列表:按表拉元数据字段(与字段明细页同一接口);连点不同节点时只回填最后一次点击的表 */
+async function loadGraphPanelColumns(table) {
+  graphPanelColumns.value = []
+  graphPanelColumnsLoading.value = true
+  try {
+    const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}/tables/${encodeURIComponent(table)}/columns`
+    const q = db.value ? `?db=${encodeURIComponent(db.value)}` : ''
+    const cols = await request.get(base + q).catch(() => [])
+    if (graphPanelTable.value === table) graphPanelColumns.value = cols || []
+  } finally {
+    if (graphPanelTable.value === table) graphPanelColumnsLoading.value = false
+  }
+}
+
+/** 面板「查看表详情」:新页签打开该表字段明细(query newTab 让页签解析为独占页签,不顶替本页签下钻) */
+function openTableDetailNewTab(table) {
+  if (!table) return
+  const base = `/datasources/${dsId.value}/schemas/${encodeURIComponent(schema.value)}/tables/${encodeURIComponent(table)}`
+  const params = new URLSearchParams()
+  if (db.value) params.set('db', db.value)
+  params.set('newTab', '1')
+  router.push(`${base}?${params.toString()}`)
+}
+
+/** 取色器选定即保存(写 localStorage),画布随 graphColors computed 重建 */
+function saveGraphColor(color) {
+  if (!color || !graphPanelTable.value) return
+  graphCustomColors.value = { ...graphCustomColors.value, [graphColorKey(graphPanelTable.value)]: color }
+  persistGraphColors()
+}
+
+/** 恢复默认:清掉自定义色,回落到标记色/主题色 */
+function resetGraphColor() {
+  const m = { ...graphCustomColors.value }
+  delete m[graphColorKey(graphPanelTable.value)]
+  graphCustomColors.value = m
+  persistGraphColors()
+  graphPanelColor.value = graphNodeColor(graphPanelTable.value)
+}
+
+/** 面板内点标记:把该标记色设为节点颜色(等同取色器选色,写 localStorage) */
+function applyGraphTagColor(tag) {
+  if (!tag?.color) return
+  graphPanelColor.value = tag.color
+  saveGraphColor(tag.color)
+}
+
+/** 字段明细内 表格/DDL 切换:首次切到 DDL 时懒加载;切回表格时表格重挂载,重算视口高度 */
 function onColumnViewChange(view) {
   if (view === 'ddl' && !ddlLoaded.value) loadDdl()
 }
 
-/** 导出当前 tab 的列表 Excel(字段明细/索引结构/标签为所见数据;数据预览走服务端全量导出) */
-function exportExcel() {
+/** 导出当前 tab 的列表 Excel(字段明细/索引结构/标签为所见数据;ER 关系为星型图表格;数据预览走服务端全量导出) */
+async function exportExcel() {
+  if (activeTab.value === 'er') {
+    await exportErExcel()
+    return
+  }
   if (activeTab.value === 'columns') {
     if (columnView.value === 'ddl') return ElMessage.warning('DDL 请使用「复制 DDL」按钮')
     if (!filteredColumns.value.length) return ElMessage.warning('当前列表没有可导出的数据')
@@ -634,17 +1166,22 @@ function exportExcel() {
 async function refreshAll() {
   refreshing.value = true
   try {
-    // 重置索引/预览/DDL/标签 加载标记,若当前正在展示则强制重新拉取
+    // 重置索引/预览/DDL/标签/ER图/图谱 加载标记,若当前正在展示则强制重新拉取
     indexesLoaded.value = false
     previewLoaded.value = false
     ddlLoaded.value = false
     tagsLoaded.value = false
+    erLoaded.value = false
+    graphLoaded.value = false
+    graphPanelTable.value = ''
     await load(true)
     await loadCollectStatus()
     if (activeTab.value === 'indexes') await loadIndexes(true)
     if (activeTab.value === 'preview') await loadPreview(previewPage.value)
     if (activeTab.value === 'tags') await loadTags()
-    if (activeTab.value === 'columns' && columnView.value === 'ddl') await loadDdl()
+    if (activeTab.value === 'er') await loadErGraph(true)
+    if (activeTab.value === 'graph') await loadGraph(true)
+    if (activeTab.value === 'columns' && columnView.value === 'ddl') await loadDdl(true)
     ElMessage.success('已刷新结构与扫描信息')
   } finally {
     refreshing.value = false
@@ -671,6 +1208,8 @@ const breadcrumbItems = computed(() => {
 onMounted(async () => {
   await load()
   loadCollectStatus()
+  // query tab=er(推导对话框「查看」跳转):定位激活「ER 关系」页签(须在 load 后,dsId/schema 可能由任务接口回填)
+  applyQueryTab()
   // 数据源名兜底解析:刷新/直达 URL 无 ?name= 时也能恢复真名,并刷新页签标题
   // (dsId 在 load 内由任务接口回填,须在 load 之后解析)
   if (dsId.value) ensureDsName(dsId.value).then(() => syncTab(route))
@@ -678,6 +1217,13 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+
+/* 表头吸顶适配:全局 sticky 表头(style.css)要求祖先链无 overflow 裁剪,
+   EP 的 .el-tabs__content 默认 overflow:hidden 会打断,本页页签内容放开;
+   非激活页签为 display:none,放开不影响其余页签 */
+:deep(.el-tabs__content) {
+  overflow: visible;
+}
 .pagination-wrapper {
   display: flex;
   justify-content: flex-end;
@@ -722,5 +1268,160 @@ onMounted(async () => {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ER 页签激活时整卡铺满 .main 可视高度(同 Logs/SqlConsole 口径:100% 只减 page-card 上下 margin,
+   授权页脚/页签栏高度天然计入),页签区 flex 纵向撑满、画布吃剩余高度——不再溢出滚动条遮住图例 */
+.page-card.er-fullheight {
+  display: flex;
+  flex-direction: column;
+  height: calc(100% - 40px);
+  box-sizing: border-box;
+  overflow: auto;
+}
+.er-fullheight :deep(.el-tabs) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.er-fullheight :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.er-fullheight :deep(.er-pane) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+/* ER 页签工具栏:紧凑统一间距;消除 el-button 相邻默认 margin-left,交给 flex gap */
+.er-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.er-toolbar .el-button + .el-button {
+  margin-left: 0;
+}
+/* ER 页签:星型图画布(flex 吃满页签剩余高度) */
+.er-canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 320px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  overflow: hidden;
+}
+/* 图谱页签:筛选下拉选项内的颜色圆点 */
+.graph-tag-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+/* 图谱页签:颜色筛选项的色块(下拉选项内大块,输入框选中标签内小块) */
+.graph-color-swatch {
+  display: inline-block;
+  width: 48px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid var(--el-border-color);
+  vertical-align: middle;
+}
+.graph-color-swatch-sm {
+  width: 24px;
+  height: 12px;
+}
+/* 图谱页签:面板内可点击的标记(点击把标记色设为节点色) */
+.graph-node-tag-pick {
+  cursor: pointer;
+}
+/* 图谱页签:节点点击面板(画布右上角悬浮卡片,与 ER 关系页 node-panel 同款);
+   半透明毛玻璃底与工具栏缩放控制条同口径(55% 底色 + 12px 背景模糊),图元素压到面板下不挡阅读 */
+.graph-node-panel {
+  position: absolute;
+  /* 顶部工具栏(约 44px)之下,避免压住右侧缩放控制条 */
+  top: 52px;
+  right: 12px;
+  width: 360px;
+  background: color-mix(in srgb, var(--el-bg-color) 55%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-light);
+  padding: 12px;
+  z-index: 10;
+}
+/* 面板内字段表格去底色:el-table 默认白底会盖住毛玻璃,表格各行/表头/单元格全部透明 */
+.graph-node-panel :deep(.el-table),
+.graph-node-panel :deep(.el-table__inner-wrapper),
+.graph-node-panel :deep(.el-table tr),
+.graph-node-panel :deep(.el-table th.el-table__cell),
+.graph-node-panel :deep(.el-table td.el-table__cell) {
+  background: transparent;
+}
+/* 透明底下默认边框色对比度不够(图元素透到背面更看不清),边框/表头文字各加深一档 */
+.graph-node-panel :deep(.el-table) {
+  --el-table-border-color: var(--el-border-color-darker);
+  --el-table-header-text-color: var(--el-text-color-primary);
+}
+.graph-node-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+/* 标题(中文注释优先)完整显示:长文本自动换行,不截断 */
+.graph-node-panel-title {
+  font-weight: 600;
+  word-break: break-all;
+  line-height: 1.4;
+}
+.graph-node-panel-close {
+  cursor: pointer;
+  color: var(--el-text-color-secondary);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.graph-node-panel-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  word-break: break-all;
+}
+/* 字段列表区:固定最小高度承载 loading,空数据居中提示;单元格 padding 收紧让三列更紧凑 */
+.graph-node-panel-cols {
+  margin-top: 10px;
+  min-height: 40px;
+}
+.graph-node-panel-cols :deep(.el-table .el-table__cell) {
+  padding: 4px 0;
+}
+.graph-node-panel-cols :deep(.el-table .cell) {
+  padding: 0 6px;
+  line-height: 1.4;
+}
+.graph-node-panel-cols-empty {
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  text-align: center;
+  padding: 12px 0;
+}
+/* 节点颜色行:取色器 + 标记 + 恢复默认同行,标记多了自动换行 */
+.graph-node-panel-color {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.graph-node-panel-actions {
+  margin-top: 10px;
 }
 </style>

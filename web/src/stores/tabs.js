@@ -84,6 +84,8 @@ const PAGE_TABS = {
   '/ai-usage': '模型用量统计',
   '/report-exports': '报告列表',
   '/sample-exports': '抽样导出',
+  '/relations': 'ER 关系',
+  '/object-manage': '对象管理',
   '/sql-console': 'SQL 控制台',
   '/lan-share': '局域网共享',
   '/settings': '系统设置',
@@ -103,7 +105,11 @@ function resolveTab(route) {
     const dsName = route.query.name || dsNames[id] || `数据源 ${id}`
     let title = `${dsName} - 库列表`
     if (p.endsWith('/tables')) title = `${schemaLabel(route)} - 表列表`
-    else if (p.includes('/tables/')) title = `${route.params.tableName} - 字段明细`
+    else if (p.includes('/tables/')) {
+      title = `${route.params.tableName} - 字段明细`
+      // 带 newTab 标记(图谱节点面板「查看表详情」):该表字段明细独占页签,不顶替数据源下钻页签
+      if (route.query.newTab) return { key: `ds-${id}-table-${route.params.tableName}`, title, closable: true }
+    }
     else if (p.endsWith('/scans')) title = `${schemaLabel(route)} - 扫描记录`
     return { key: `ds-${id}`, title, closable: true }
   }

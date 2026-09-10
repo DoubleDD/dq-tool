@@ -56,7 +56,9 @@ jpackage \
   --main-class com.example.dq.DqApplication \
   --java-options '-Ddq.data-dir=${user.home}/.dq-tool/data' \
   --java-options '-Djava.awt.headless=false' \
-  --java-options '-XX:+UseZGC' \
+  --java-options '-XX:+UseG1GC' \
+  --java-options '-Xmx384m' \
+  --java-options '-XX:MaxRAMPercentage=50' \
   --java-options '-splash:${APPDIR}/splash.png' \
   --dest "$DIST"
 

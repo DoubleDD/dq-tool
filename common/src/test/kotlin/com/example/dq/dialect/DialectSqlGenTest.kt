@@ -516,4 +516,58 @@ class DialectSqlGenTest {
         assertNull(PreviewService.stripKeyword(null, "where"))
         assertNull(PreviewService.stripKeyword("WHERE", "where"))
     }
+
+    // ---------- ER 关系推导:distinctSampleSql / hasDuplicateSql 八方言 ----------
+
+    @Test
+    fun `去重采样与判重SQL LIMIT系方言`() {
+        // MySQL/PG/Kingbase/HighGo/OceanBase/DM 共用 AbstractDialect 默认实现(LIMIT 系)
+        val mysql = MySqlDialect()
+        assertEquals("SELECT DISTINCT `code` FROM `db1`.`t` WHERE `code` IS NOT NULL LIMIT 1000",
+            mysql.distinctSampleSql("db1", "t", "code", 1000))
+        assertEquals("SELECT `code` FROM `db1`.`t` WHERE `code` IS NOT NULL GROUP BY `code` HAVING COUNT(*) > 1 LIMIT 1",
+            mysql.hasDuplicateSql("db1", "t", "code"))
+        assertEquals("SELECT DISTINCT `code` FROM `db1`.`t` WHERE `code` IS NOT NULL LIMIT 1000",
+            OceanBaseDialect().distinctSampleSql("db1", "t", "code", 1000))
+        assertEquals("SELECT `code` FROM `db1`.`t` WHERE `code` IS NOT NULL GROUP BY `code` HAVING COUNT(*) > 1 LIMIT 1",
+            OceanBaseDialect().hasDuplicateSql("db1", "t", "code"))
+
+        val pg = PostgresDialect()
+        assertEquals("SELECT DISTINCT \"code\" FROM \"public\".\"t\" WHERE \"code\" IS NOT NULL LIMIT 1000",
+            pg.distinctSampleSql("public", "t", "code", 1000))
+        assertEquals("SELECT \"code\" FROM \"public\".\"t\" WHERE \"code\" IS NOT NULL GROUP BY \"code\" HAVING COUNT(*) > 1 LIMIT 1",
+            pg.hasDuplicateSql("public", "t", "code"))
+        assertEquals(pg.distinctSampleSql("public", "t", "code", 1000),
+            KingbaseDialect().distinctSampleSql("public", "t", "code", 1000))
+        assertEquals(pg.hasDuplicateSql("public", "t", "code"), HighGoDialect().hasDuplicateSql("public", "t", "code"))
+
+        val dm = DmDialect()
+        assertEquals("SELECT DISTINCT \"code\" FROM \"S\".\"t\" WHERE \"code\" IS NOT NULL LIMIT 1000",
+            dm.distinctSampleSql("S", "t", "code", 1000))
+        assertEquals("SELECT \"code\" FROM \"S\".\"t\" WHERE \"code\" IS NOT NULL GROUP BY \"code\" HAVING COUNT(*) > 1 LIMIT 1",
+            dm.hasDuplicateSql("S", "t", "code"))
+        // 标识符经 quote 转义
+        assertEquals("SELECT DISTINCT `a``b` FROM `db1`.`t` WHERE `a``b` IS NOT NULL LIMIT 5",
+            mysql.distinctSampleSql("db1", "t", "a`b", 5))
+    }
+
+    @Test
+    fun `去重采样与判重SQL Oracle用ROWNUM包装`() {
+        val oracle = OracleDialect()
+        // DISTINCT 进子查询,外层 ROWNUM 限流(全版本可用,不依赖 12c FETCH FIRST)
+        assertEquals("SELECT \"code\" FROM (SELECT DISTINCT \"code\" FROM \"S\".\"t\" WHERE \"code\" IS NOT NULL) WHERE ROWNUM <= 1000",
+            oracle.distinctSampleSql("S", "t", "code", 1000))
+        // ROWNUM 先于 GROUP BY 求值,判重必须子查询包装
+        assertEquals("SELECT \"code\" FROM (SELECT \"code\" FROM \"S\".\"t\" WHERE \"code\" IS NOT NULL GROUP BY \"code\" HAVING COUNT(*) > 1) WHERE ROWNUM <= 1",
+            oracle.hasDuplicateSql("S", "t", "code"))
+    }
+
+    @Test
+    fun `去重采样与判重SQL SqlServer用TOP`() {
+        val mssql = SqlServerDialect()
+        assertEquals("SELECT DISTINCT TOP 1000 [code] FROM [dbo].[t] WHERE [code] IS NOT NULL",
+            mssql.distinctSampleSql("dbo", "t", "code", 1000))
+        assertEquals("SELECT TOP 1 [code] FROM [dbo].[t] WHERE [code] IS NOT NULL GROUP BY [code] HAVING COUNT(*) > 1",
+            mssql.hasDuplicateSql("dbo", "t", "code"))
+    }
 }

@@ -11,6 +11,8 @@ import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.LicenseRepository
 import com.example.dq.repository.ManualCollectRepository
+import com.example.dq.repository.ObjectCatalogRepository
+import com.example.dq.repository.RelationInferJobRepository
 import com.example.dq.repository.ReportExportRepository
 import com.example.dq.repository.SampleExportRepository
 import com.example.dq.repository.ScanRepository
@@ -19,6 +21,7 @@ import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.SystemSettingsRepository
 import com.example.dq.repository.TableDocRepository
+import com.example.dq.repository.TableRelationRepository
 import com.example.dq.repository.TableSystemRepository
 import com.example.dq.repository.TagRepository
 import com.example.dq.scan.ChunkRunner
@@ -40,8 +43,10 @@ import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
 import com.example.dq.service.LanShareService
 import com.example.dq.service.ManualCollectService
+import com.example.dq.service.ObjectCatalogService
 import com.example.dq.service.MetadataService
 import com.example.dq.service.PreviewService
+import com.example.dq.service.RelationInferService
 import com.example.dq.service.SampleExportService
 import com.example.dq.service.ScanDocService
 import com.example.dq.service.SqlConsoleService
@@ -51,6 +56,7 @@ import com.example.dq.service.ScanWordExportService
 import com.example.dq.service.SshTunnelService
 import com.example.dq.service.SystemSettingsService
 import com.example.dq.service.TableDocService
+import com.example.dq.service.TableRelationService
 import com.example.dq.service.TableSystemService
 import com.example.dq.service.TagService
 import com.example.dq.service.WordReportExportService
@@ -103,6 +109,9 @@ class ServiceEnv(val config: AppConfig) {
     val reportExportRepo = ReportExportRepository(jdbc)
     val sampleExportRepo = SampleExportRepository(jdbc)
     val manualCollectRepo = ManualCollectRepository(jdbc)
+    val objectCatalogRepo = ObjectCatalogRepository(jdbc)
+    val tableRelationRepo = TableRelationRepository(jdbc)
+    val relationInferJobRepo = RelationInferJobRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -115,6 +124,7 @@ class ServiceEnv(val config: AppConfig) {
     val dataSourceTransferService = DataSourceTransferService(dataSourceRepo, crypto, dataSourceService)
     val tagService = TagService(tagRepo, dataSourceRepo)
     val manualCollectService = ManualCollectService(manualCollectRepo, dataSourceRepo)
+    val objectCatalogService = ObjectCatalogService(objectCatalogRepo, dataSourceRepo, metaCacheRepo)
     /** 扫描标签解析:记录用量时快照数据源名/库/schema(主库查询,任务被删返回 null 兜底) */
     private val scanLabelResolver: (Long) -> AiUsageRepository.ScanJobLabel? = { jobId ->
         scanRepo.findJob(jobId)?.let { job ->
@@ -160,6 +170,9 @@ class ServiceEnv(val config: AppConfig) {
     val diagnosticsService = DiagnosticsService(config, dataSourceService, dataSourceRepo, licenseService,
         aiConfigService, scanRepo, reportExportRepo)
     val changelogService = ChangelogService(config)
+    val tableRelationService = TableRelationService(tableRelationRepo, metaCacheRepo)
+    val relationInferService = RelationInferService(tableRelationRepo, relationInferJobRepo, metaCacheRepo,
+        dataSourceService, systemSettingsService, dialectFactory, aiConfigService, tableDocRepo, aiService)
 
     /**
      * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的
@@ -174,6 +187,7 @@ class ServiceEnv(val config: AppConfig) {
         InterruptRecovery(scanService).recover()
         wordReportExportService.recoverUnfinished()
         sampleExportService.recoverUnfinished()
+        relationInferJobRepo.failRunningOnStartup()
     }
 
     fun shutdown() {

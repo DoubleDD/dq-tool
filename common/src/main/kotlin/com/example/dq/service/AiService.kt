@@ -17,6 +17,8 @@ import java.time.LocalDateTime
  * 表说明场景只发送表结构元数据,不涉及业务数据;
  * 扫描后自动打标场景在表无任何注释/描述时会发送抽样业务数据(前 20 列、100 行、单元格截断 100 字符)。
  * 调用成功后解析响应里的 usage 并回调 [usageRecorder](Token/费用统计),解析失败不影响主流程。
+ * 每次调用都会打印 info 日志,记录 HTTP 协议原始报文(请求行/状态行 + 头 + 体);
+ * Authorization 头脱敏后落日志(保留 Bearer 前缀与密钥首尾各几位,中间 **** 代替),scene 打印中文场景名。
  */
 class AiService(private val usageRecorder: UsageRecorder? = null) {
 
@@ -50,15 +52,18 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
             "max_tokens" to 1,
             "messages" to listOf(mapOf("role" to "user", "content" to "ping")),
         )
+        val requestJson = objectMapper.writeValueAsString(body)
         try {
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(config.baseUrl + "/chat/completions"))
                 .timeout(Duration.ofMillis(30_000))
                 .header("Authorization", "Bearer " + config.apiKey)
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build()
+            log.info("AI 请求原始报文[scene={}]:\n{}", AiScene.TEST.label, rawRequestText(request, requestJson))
             val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            log.info("AI 响应原始报文[scene={}]:\n{}", AiScene.TEST.label, rawResponseText(response))
             if (response.statusCode() !in 200..299) {
                 throw IllegalStateException(
                     "大模型接口测试失败:HTTP " + response.statusCode() + " " + abbreviate(response.body())
@@ -85,15 +90,18 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
         )
         val resp: Map<*, *>
         val bodyText: String
+        val requestJson = objectMapper.writeValueAsString(body)
         try {
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(config.baseUrl + "/chat/completions"))
                 .timeout(Duration.ofMillis(120_000))
                 .header("Authorization", "Bearer " + config.apiKey)
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build()
+            log.info("AI 请求原始报文[scene={}]:\n{}", scene.label, rawRequestText(request, requestJson))
             val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            log.info("AI 响应原始报文[scene={}]:\n{}", scene.label, rawResponseText(response))
             if (response.statusCode() !in 200..299) {
                 throw IllegalStateException(
                     "大模型接口调用失败:HTTP " + response.statusCode() + " " + abbreviate(response.body())
@@ -141,6 +149,50 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
     /** 拼请求内容存档:[system] + [user] 两段,供 prompt 调优时回看完整输入 */
     private fun buildRequestContent(systemPrompt: String, userPrompt: String): String =
         "[system]\n$systemPrompt\n\n[user]\n$userPrompt"
+
+    /**
+     * 把请求还原成 HTTP/1.1 协议报文文本(请求行 + 头 + 体)。
+     * Authorization 头脱敏后落日志(保留 Bearer 前缀与密钥首 8 位/末 4 位,中间 **** 代替),防止 apiKey 明文泄漏;
+     * 日志只落本地 logs/,不进诊断报告(只聚合 warn/error)。
+     */
+    private fun rawRequestText(request: HttpRequest, body: String): String {
+        val uri = request.uri()
+        val sb = StringBuilder()
+        sb.append(request.method()).append(' ').append(uri.rawPath).append(" HTTP/1.1\n")
+        sb.append("Host: ").append(uri.host)
+        if (uri.port > 0) {
+            sb.append(':').append(uri.port)
+        }
+        sb.append('\n')
+        request.headers().map().forEach { (name, values) ->
+            values.forEach {
+                val shown = if (name.equals("Authorization", ignoreCase = true)) maskAuthorization(it) else it
+                sb.append(name).append(": ").append(shown).append('\n')
+            }
+        }
+        sb.append('\n').append(body)
+        return sb.toString()
+    }
+
+    /** Authorization 头脱敏:保留认证方案(如 Bearer)与密钥首 8 位/末 4 位,中间以 **** 代替;过短直接整体隐藏 */
+    private fun maskAuthorization(value: String): String {
+        val idx = value.indexOf(' ')
+        val scheme = if (idx > 0) value.substring(0, idx + 1) else ""
+        val key = if (idx > 0) value.substring(idx + 1) else value
+        return if (key.length > 12) scheme + key.take(8) + "****" + key.takeLast(4) else scheme + "****"
+    }
+
+    /** 把响应还原成 HTTP 协议报文文本(状态行 + 头 + 体) */
+    private fun rawResponseText(response: HttpResponse<String>): String {
+        val sb = StringBuilder()
+        sb.append(if (response.version() == HttpClient.Version.HTTP_2) "HTTP/2" else "HTTP/1.1")
+            .append(' ').append(response.statusCode()).append('\n')
+        response.headers().map().forEach { (name, values) ->
+            values.forEach { sb.append(name).append(": ").append(it).append('\n') }
+        }
+        sb.append('\n').append(response.body())
+        return sb.toString()
+    }
 
     companion object {
         private val log = LoggerFactory.getLogger(AiService::class.java)

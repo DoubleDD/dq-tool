@@ -102,9 +102,28 @@ class DataSourceService(
         }
         repo.update(c, updatePassword, updateSshPassword, updateSshPrivateKey, updateSshPassphrase)
         evictPool(id)
-        // 连接信息被编辑后,抽样导出留下的连接状态标记即过时:三列清零回到「未检测」,
-        // 下次检测/导出前会重新实测(conn_status 只由抽样导出功能与这里写入,其他 CRUD 路径不动)
+        // 连接信息被编辑后,连接状态标记即过时:四列清零回到「未检测」,
+        // 下次检测/浏览回源前会重新实测(conn_status 由抽样导出与元数据浏览降级路径写入,其他 CRUD 路径不动)
         repo.clearConnStatus(id)
+    }
+
+    /**
+     * 元数据浏览/刷新回源失败时写连接状态标记(由 MetadataService→CacheFallback 调用)。
+     * kind 见 ConnectionFailureClassifier:UNREACHABLE/AUTH/OTHER
+     */
+    fun markConnFailure(id: Long, error: String, kind: String) {
+        repo.updateConnStatus(id, "ERROR", error.take(2048), kind)
+    }
+
+    /**
+     * 元数据回源成功:此前被标记为连接失败则恢复 OK(旧错误文案原样保留作历史,与抽样导出口径一致);
+     * 未标记或已 OK 时不写库,避免每次回源都产生一次 UPDATE
+     */
+    fun markConnRecovered(id: Long) {
+        val c = repo.findById(id) ?: return
+        if (c.connStatus == "ERROR") {
+            repo.updateConnStatus(id, "OK", c.connError, null)
+        }
     }
 
     fun delete(id: Long) {

@@ -202,6 +202,26 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 元数据浏览失败标记数据源网络不可达且列表回传分类() throws Exception {
+        activateLicense();
+        HttpResponse<String> created = send("POST", "/api/datasources",
+                "{\"name\":\"离线元数据源\",\"jdbcUrl\":\"jdbc:mysql://127.0.0.1:59998/db\",\"username\":\"root\",\"password\":\"p\"}");
+        assertEquals(200, created.statusCode(), created.body());
+        long id = Long.parseLong(created.body().replaceAll(".*\"id\":(\\d+).*", "$1"));
+
+        // 首次访问无本地缓存:回源失败原样抛出(池初始化失败 RuntimeException → 500 统一映射),但应写数据源标记
+        HttpResponse<String> tables = get("/api/datasources/" + id + "/schemas/db/tables");
+        assertEquals(500, tables.statusCode(), tables.body());
+
+        // 列表回传连接状态与错误分类:网络不可达(Hikari/RuntimeException cause 链里的 ConnectException)
+        HttpResponse<String> list = get("/api/datasources");
+        assertEquals(200, list.statusCode(), list.body());
+        assertTrue(list.body().contains("\"connStatus\":\"ERROR\""), list.body());
+        assertTrue(list.body().contains("\"connKind\":\"UNREACHABLE\""), list.body());
+        assertTrue(list.body().contains("\"connError\""), list.body());
+    }
+
+    @Test
     void 预览全量导出路由可达且错误映射与预览一致() throws Exception {
         activateLicense();
         HttpResponse<String> created = send("POST", "/api/datasources",
@@ -307,6 +327,11 @@ class WebServerSmokeTest {
                     String.valueOf(health.headers().map()));
             assertEquals(503, bootGet.apply("/api/datasources").statusCode());
 
+            // 静态资源清单与就绪探针同批放行闸门:启动卡住时启动页复核判定(错配/拦截)依赖它
+            HttpResponse<String> manifest = bootGet.apply("/api/assets-manifest");
+            assertEquals(200, manifest.statusCode(), manifest.body());
+            assertTrue(manifest.body().contains("/assets/"), manifest.body());
+
             // 静态页面不受闸门影响(首页秒出,等待后端就绪的占位)
             HttpResponse<String> index = bootGet.apply("/");
             assertEquals(200, index.statusCode());
@@ -326,19 +351,20 @@ class WebServerSmokeTest {
 
     @Test
     void 静态资源缓存策略与SPA回退边界() throws Exception {
-        // 入口 index.html:no-cache 每次重校验,防止升级后浏览器拿旧入口引用已不存在的旧 hash 资源(白屏)
+        // 入口 index.html:no-store 禁止任何缓存复用(no-cache 在会话恢复/重校验失败时仍可能给旧副本),
+        // 防止升级后浏览器拿旧入口引用已不存在的旧 hash 资源(入口 js/css 404 卡死启动页)
         HttpResponse<String> index = get("/");
         assertEquals(200, index.statusCode());
         assertTrue(index.headers().firstValue("Content-Type").orElse("").startsWith("text/html"),
                 String.valueOf(index.headers().map()));
-        assertEquals("no-cache", index.headers().firstValue("Cache-Control").orElse(""),
+        assertEquals("no-store", index.headers().firstValue("Cache-Control").orElse(""),
                 String.valueOf(index.headers().map()));
 
-        // 前端路由(无扩展名):SPA 回退 index.html,同样 no-cache
+        // 前端路由(无扩展名):SPA 回退 index.html,同样 no-store
         HttpResponse<String> route = get("/datasources");
         assertEquals(200, route.statusCode());
         assertTrue(route.headers().firstValue("Content-Type").orElse("").startsWith("text/html"));
-        assertEquals("no-cache", route.headers().firstValue("Cache-Control").orElse(""));
+        assertEquals("no-store", route.headers().firstValue("Cache-Control").orElse(""));
 
         // 缺失的静态文件(带扩展名):必须真实 404,绝不回退成 text/html(否则模块脚本 MIME 报错)
         HttpResponse<String> missing = get("/assets/not-exists-deadbeef.js");
@@ -351,6 +377,13 @@ class WebServerSmokeTest {
         assertEquals(200, asset.statusCode());
         assertTrue(asset.headers().firstValue("Cache-Control").orElse("").contains("immutable"),
                 String.valueOf(asset.headers().map()));
+
+        // 静态资源清单(/api/assets-manifest):包含真实指纹资源、不含缺失资源——
+        // 启动页据此裁决「URL 错配(不在清单)」与「疑似被拦截(在清单但拿不到)」
+        HttpResponse<String> manifest = get("/api/assets-manifest");
+        assertEquals(200, manifest.statusCode(), manifest.body());
+        assertTrue(manifest.body().contains("\"" + jsPath + "\""), manifest.body());
+        assertFalse(manifest.body().contains("not-exists-deadbeef"), manifest.body());
     }
 
     @Test

@@ -89,7 +89,7 @@
           @drop.prevent="onGroupDrop(g.key)">
           <el-card v-for="row in g.items" :key="row.id" shadow="hover" class="ds-card"
             :class="{ 'ds-no-password': row.hasPassword === false, 'ds-conn-error': row.connStatus === 'ERROR', 'is-dragging': draggingId === row.id }"
-            :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : (row.connStatus === 'ERROR' ? `连接失败:${row.connError || '请检查连接信息'}` : row.jdbcUrl)"
+            :title="row.hasPassword === false ? '未设置密码,请先编辑补充密码' : (row.connStatus === 'ERROR' ? `${connErrorLabel(row)}:${row.connError || '请检查连接信息'}` : row.jdbcUrl)"
             draggable="true"
             @dragstart="onDragStart($event, row)"
             @dragend="onDragEnd"
@@ -100,15 +100,15 @@
                 <el-tooltip v-if="row.hasPassword === false" content="未设置密码,请先编辑补充密码" placement="top">
                   <el-icon class="ds-error-icon"><WarningFilled /></el-icon>
                 </el-tooltip>
-                <!-- 表格批量导入时连不上的数据源:与未设密码的红框同款警示,两个提示可并存 -->
+                <!-- 元数据浏览/刷新或表格批量导入时连不上的数据源:与未设密码的红框同款警示,两个提示可并存 -->
                 <el-tooltip v-if="row.connStatus === 'ERROR'" placement="top">
                   <template #content>
-                    <div>{{ row.connError || '连接失败' }}</div>
-                    <div>表格批量导入时无法连接,请检查连接信息</div>
+                    <div>{{ row.connError || row.connStatus }}</div>
+                    <div>{{ connErrorLabel(row) }},请检查网络与连接信息</div>
                   </template>
                   <span class="ds-conn-error-tag">
                     <el-icon class="ds-error-icon"><WarningFilled /></el-icon>
-                    <span class="ds-conn-error-text">连接失败</span>
+                    <span class="ds-conn-error-text">{{ connErrorLabel(row) }}</span>
                   </span>
                 </el-tooltip>
                 {{ row.name }}
@@ -393,6 +393,12 @@ function goSchemas(row) {
   // 未设密码的数据源不可浏览(卡片点击与浏览库按钮同一路径)
   if (row.hasPassword === false) return
   router.push(`/datasources/${row.id}/schemas?name=${encodeURIComponent(row.name)}`)
+}
+/** 连接失败分类文案:元数据浏览/刷新或表格批量导入探测写入的 conn_kind */
+function connErrorLabel(row) {
+  if (row.connKind === 'UNREACHABLE') return '网络不可达'
+  if (row.connKind === 'AUTH') return '认证失败'
+  return '连接失败'
 }
 /** 从 JDBC URL 提取主机名用于卡片摘要(仅展示,完整地址悬停卡片可见) */
 function dbHost(jdbcUrl) {

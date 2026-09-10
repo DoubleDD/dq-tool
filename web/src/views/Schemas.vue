@@ -27,6 +27,10 @@
         </el-dropdown>
       </div>
     </div>
+    <!-- 数据源不可达降级提示:本次库/架构清单来自本地 H2 缓存 -->
+    <el-alert v-if="cacheFallback" type="warning" :closable="false" show-icon style="margin-bottom: 12px">
+      <span>数据源当前不可达,正在展示<b>本地缓存</b>的库/架构清单;恢复网络后点「刷新」可重新同步。</span>
+    </el-alert>
     <!-- SQL Server 跨库列表:搜索框同时匹配数据库名与架构名 -->
     <el-input v-model="keyword" :placeholder="isMultiDb ? '按数据库/架构名搜索' : '按库名搜索'" clearable style="width: 280px; margin-bottom: 12px" />
     <el-table :data="filteredSchemas" v-loading="loading" border :row-key="(row) => rowKeyOf(row.database, row.name)" @selection-change="onSelectionChange">
@@ -242,6 +246,8 @@ const databases = ref([])
 const loading = ref(false)
 const statsLoaded = ref(false)
 const refreshing = ref(false)
+// 本次库/schema 清单是否来自「数据源不可达降级读本地缓存」(响应头 X-Dq-Cache-Fallback)
+const cacheFallback = ref(false)
 const keyword = ref('')
 const selected = ref([])
 const submitting = ref(false)
@@ -481,7 +487,7 @@ async function loadSchemaStats(refresh = false) {
   }
 }
 
-/** 手动刷新:从业务库拉最新库清单/库结构统计并覆盖本地缓存 */
+/** 手动刷新:从业务库拉最新库清单/库结构统计并覆盖本地缓存;数据源不可达时后端降级返回本地缓存 */
 async function refreshStats() {
   refreshing.value = true
   try {
@@ -490,7 +496,11 @@ async function refreshStats() {
       databases.value = await request.get(`/datasources/${dsId}/databases?refresh=true`).catch(() => databases.value)
     }
     await loadSchemas(true)
-    ElMessage.success('已从数据源刷新库结构缓存')
+    if (cacheFallback.value) {
+      ElMessage.warning('数据源当前不可达,已保留本地缓存的库/架构清单')
+    } else {
+      ElMessage.success('已从数据源刷新库结构缓存')
+    }
   } finally {
     refreshing.value = false
   }
@@ -498,16 +508,19 @@ async function refreshStats() {
 
 async function loadSchemas(refresh = false) {
   statsLoaded.value = false
+  cacheFallback.value = false
   if (isMultiDb.value && databases.value.length) {
-    // 跨库模式:逐库拉取 schema 清单合并,行内携带所属数据库
+    // 跨库模式:逐库拉取 schema 清单合并,行内携带所属数据库;取原始响应读降级响应头
     const perDb = await Promise.all(databases.value.map(async (db) => {
-      const list = await request.get(`/datasources/${dsId}/schemas?db=${encodeURIComponent(db)}${refresh ? '&refresh=true' : ''}`).catch(() => [])
-      return (list || []).map((name) => ({ name, database: db }))
+      const resp = await request.get(`/datasources/${dsId}/schemas?db=${encodeURIComponent(db)}${refresh ? '&refresh=true' : ''}`, { _raw: true }).catch(() => null)
+      if (resp?.headers?.['x-dq-cache-fallback'] === 'true') cacheFallback.value = true
+      return ((resp?.data) || []).map((name) => ({ name, database: db }))
     }))
     schemas.value = perDb.flat()
   } else {
-    const schemaList = await request.get(`/datasources/${dsId}/schemas${refresh ? '?refresh=true' : ''}`)
-    schemas.value = (schemaList || []).map((name) => ({ name, database: '' }))
+    const resp = await request.get(`/datasources/${dsId}/schemas${refresh ? '?refresh=true' : ''}`, { _raw: true })
+    cacheFallback.value = resp.headers?.['x-dq-cache-fallback'] === 'true'
+    schemas.value = (resp.data || []).map((name) => ({ name, database: '' }))
   }
   loadSchemaStats(refresh)
 }

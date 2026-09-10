@@ -392,6 +392,18 @@ class SqlServerDialect : AbstractDialect() {
         return "SELECT TOP $limit $cols FROM " + qualifiedTable(schema, table)
     }
 
+    /** TOP 语法全版本可用(同 sampleRowsSql);DISTINCT 与 TOP 同句合法 */
+    override fun distinctSampleSql(schema: String, table: String, column: String, limit: Int): String {
+        val q = quote(column)
+        return "SELECT DISTINCT TOP $limit $q FROM " + qualifiedTable(schema, table) + " WHERE $q IS NOT NULL"
+    }
+
+    override fun hasDuplicateSql(schema: String, table: String, column: String): String {
+        val q = quote(column)
+        return "SELECT TOP 1 $q FROM " + qualifiedTable(schema, table) +
+                " WHERE $q IS NOT NULL GROUP BY $q HAVING COUNT(*) > 1"
+    }
+
     override fun pageRowsSql(conn: Connection, schema: String, table: String, columns: List<String>,
                              where: String?, orderBy: String?, offset: Long, limit: Int): String {
         return pageRowsSql(qualifiedTable(schema, table), columns, where, orderBy, offset, limit, sqlServerMajor(conn))

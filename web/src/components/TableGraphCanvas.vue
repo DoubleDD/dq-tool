@@ -1,0 +1,419 @@
+<template>
+  <!-- 图谱画布(G6 圆形节点星型图):通用画布底座 BaseGraphCanvas 承载交互(滚轮平移/Ctrl+滚轮与触摸板捏合缩放/
+       Alt+滚轮水平平移/双击坐标反查补发)、顶部工具栏(默认工具:重绘/1:1/适应画布 + toolbar 插槽业务工具[标记/颜色筛选],
+       右侧缩放控制条[−/+、比例输入、全屏])、右下角鸟瞰图、视口定位(内容居中+100%)与首帧隐藏;
+       本组件只负责星型图专属部分:静态坐标、圆形节点样式(颜色/光晕/选中态)、边样式。
+       容器需显式高度(由父级布局保证) -->
+  <BaseGraphCanvas ref="baseRef" :data="graphData" :options="graphOptions" fit="center" :default-zoom="1"
+    :refit-on-data-change="false" :animated="layout === 'force'" @node-click="(id) => emit('node-click', id)"
+    @node-dblclick="(id) => emit('node-open', id)" @canvas-click="emit('canvas-click')" @rendered="applyOverlay">
+    <!-- 业务工具透传:标记/颜色筛选等由调用方按需给 -->
+    <template #toolbar>
+      <slot name="toolbar" />
+    </template>
+  </BaseGraphCanvas>
+</template>
+
+<script setup>
+import { computed, ref, watch } from 'vue'
+import BaseGraphCanvas from './canvas/BaseGraphCanvas.vue'
+import { themeState } from '../stores/theme'
+
+// 表关系图谱画布(G6 v5 圆形节点星型图,与 RelationGraphCanvas 的乌鸦脚 ER 图并列的另一种可视化;
+// 通用能力见底座 BaseGraphCanvas):
+//  节点 = 表(圆形,锚点表居中、邻表按表名排序环绕排布(或按 levels 分层;levels+parentOf 同传时走径向分层,
+//    一圈一个层级、子节点聚在父节点外侧同侧扇区;layout='force' 时不预设坐标,由 d3-force 力导向自动编排),
+//    节点多时分多个同心圈;颜色由父级按「自定义色 > 首个标记色 > 主题色」解析后经
+//    colors prop 传入;只显示表名——中文注释优先、无注释回退英文表名,超长截断);
+//  边 = 关系(候选虚线灰色 / 确认实线主题色 / 疑似多对多红色,连线上不标基数,关系详情去 ER 页签看);
+//  筛选高亮:highlight 非空时命中的节点保持原色并加光晕,未命中的节点/关联边大幅降低透明度;
+//  高亮/选中态不进结构数据——变化时走 repaint 原地刷样式(setData+draw,不跑布局、不动力导仿真),
+//  结构重建(数据/颜色/尺寸)才经底座整体 render,重建后借 rendered 事件补刷覆盖层;
+//  静态模式下坐标算完统一过一遍碰撞消解(resolveOverlaps):重叠节点先在原圈向两侧错开角度,
+//  整圈放不下再逐档外扩半径(延长连接线)直到不重叠;力导模式由 collide 力承担防重叠
+const props = defineProps({
+  // 图节点:[{ name, comment }]
+  nodes: { type: Array, default: () => [] },
+  // 图边:TableRelation 列表(id/oneTable/oneColumn/manyTable/manyColumn/cardinality/status/...);
+  // 力导模式按边 id 回查 distance 字段做边长分档(语义 = 可见连线长度/两圆边缘间距,缺省 60;
+  // 注意 distance 不能靠 G6 图数据传进布局回调——模型转换会剥掉自定义字段)
+  edges: { type: Array, default: () => [] },
+  // 锚点表名(星型图中心节点)
+  anchorTable: { type: String, default: '' },
+  // 各节点颜色:{ 表名: '#hex' }(父级已按 自定义 > 标记 > 默认 解析)
+  colors: { type: Object, default: () => ({}) },
+  // 节点直径分档:{ 节点名: px };缺省回退 锚点=ANCHOR_SIZE / 其他=NODE_SIZE。
+  // 知识图谱口径(目录大节点下挂小节点表)由父级按层级给:锚点目录 > 子目录 > 挂载表 > 关系表
+  sizes: { type: Object, default: null },
+  // 节点层级:{ 节点名: 圈号(1 起,锚点为 0 居中) };非空时同层节点占同一圈、层数即圈序
+  // (某层超单圈容量自动顺延占圈,后续层整体后移);缺层级的节点排到最后;不传则回退全部按名排序混排
+  levels: { type: Object, default: null },
+  // 节点父子关系:{ 节点名: 父节点名 };与 levels 同传时启用径向分层布局:
+  // 叶子节点等分整圈角度,内部节点取子树扇区中心角——子节点聚在父节点外侧同侧,而非本层各自均布整圈
+  parentOf: { type: Object, default: null },
+  // 筛选命中的表名数组;null=无筛选(全部正常显示),非 null 时未命中节点/边降透明度
+  highlight: { type: Array, default: null },
+  // 当前选中节点表名(父级点击面板打开的节点),画布上加深描边呈现选中态
+  selected: { type: String, default: '' },
+  // 布局方式:static=静态星型/径向(坐标算死,关动画一次渲染到位);force=d3-force 力导向
+  // (不预设坐标自动编排,边长按边上的 distance 分档、长边弱短边强、叶子斥力更大、collide 防重叠)
+  layout: { type: String, default: 'static' }
+})
+
+// node-click:单击节点(传表名,父级开颜色设置面板);node-open:双击节点(传表名,跳字段明细);
+// canvas-click:点击画布空白(父级可用来取消选中/关面板)
+const emit = defineEmits(['node-click', 'node-open', 'canvas-click'])
+
+const baseRef = ref(null)
+
+/** 主题色:跟随 Element Plus CSS 变量(亮/暗主题自适应),取不到用兜底值 */
+function themeColors() {
+  const cs = getComputedStyle(document.documentElement)
+  const get = (k, fb) => cs.getPropertyValue(k).trim() || fb
+  return {
+    primary: get('--el-color-primary', '#409eff'),
+    danger: get('--el-color-danger', '#f56c6c'),
+    borderDarker: get('--el-border-color-darker', '#cdd0d6'),
+    bg: get('--el-bg-color', '#ffffff'),
+    text: get('--el-text-color-primary', '#303133'),
+    textSecondary: get('--el-text-color-secondary', '#909399')
+  }
+}
+
+// 节点直径:锚点(中心节点)明显最大,普通节点次之;sizes prop 可按节点名单独分档(优先级最高)
+const ANCHOR_SIZE = 72
+const NODE_SIZE = 42
+/** 节点直径解析:sizes 分档 > 锚点/普通默认 */
+const sizeOf = (name) => props.sizes?.[name] ?? (name === props.anchorTable ? ANCHOR_SIZE : NODE_SIZE)
+
+/** 节点显示名:中文注释优先,无注释回退英文表名;显示全名(超长自动换行,labelWordWrap 控制) */
+function displayName(n) {
+  return n.comment || n.name
+}
+
+// 星型布局常量:首圈半径/圈间距/每节点最小弧距(标签在节点下方且会自动换行,弧距过小相邻标签会轻微叠字;
+// 取值偏紧凑,优先把连线缩短——节点多了宁可多开一圈也不把单圈撑大)
+const RING_BASE_R = 160
+const RING_GAP = 110
+const ARC_SPACING = 95
+
+/** 静态星型布局:锚点表居中(0,0)。三种口径:
+ *   1. levels+parentOf 同传 → 径向分层(一圈一个层级,子节点聚在父节点外侧同侧扇区);
+ *   2. 仅 levels → 同层节点占同一圈,层内按名排序均布(超单圈容量顺延占圈,后续层后移);
+ *   3. 都不传 → 全部邻表按名排序,由内向外逐圈填满。
+ *  每圈弧距不小于 ARC_SPACING 的约束只在 2/3 口径生效;径向分层靠叶子等分角度天然摊开 */
+function nodePositions() {
+  const pos = new Map()
+  const neighbors = props.nodes.filter((n) => n.name !== props.anchorTable)
+  const anchor = props.nodes.find((n) => n.name === props.anchorTable)
+  if (anchor) pos.set(anchor.name, [0, 0])
+  if (!neighbors.length) return pos
+  if (props.levels && props.parentOf) {
+    placeRadial(pos, neighbors)
+    return pos
+  }
+  /** 把 list 从第 ring 圈起逐圈排布,返回排完后的下一圈号 */
+  const placeRings = (list, ring) => {
+    let idx = 0
+    while (idx < list.length) {
+      const r = RING_BASE_R + ring * RING_GAP
+      // 本圈容量:周长按最小弧距切分;剩得少时全放本圈(半径兜底 RING_BASE_R 防小圈子挤作一团)
+      const capacity = Math.max(1, Math.floor((2 * Math.PI * r) / ARC_SPACING))
+      const count = Math.min(capacity, list.length - idx)
+      const offset = ring % 2 === 1 ? Math.PI / count : 0 // 奇数圈错开半格,相邻圈节点不叠在同一条半径上
+      for (let i = 0; i < count; i++) {
+        const angle = -Math.PI / 2 + offset + (i * 2 * Math.PI) / count // 从正上方起顺时针排布
+        pos.set(list[idx + i].name, [r * Math.cos(angle), r * Math.sin(angle)])
+      }
+      idx += count
+      ring++
+    }
+    return ring
+  }
+  if (props.levels) {
+    const groups = new Map()
+    for (const nb of neighbors) {
+      const lv = props.levels[nb.name] ?? Number.MAX_SAFE_INTEGER // 缺层级的排最后
+      if (!groups.has(lv)) groups.set(lv, [])
+      groups.get(lv).push(nb)
+    }
+    let ring = 0
+    for (const lv of [...groups.keys()].sort((a, b) => a - b)) {
+      ring = placeRings(groups.get(lv).sort((a, b) => a.name.localeCompare(b.name)), ring)
+    }
+    return pos
+  }
+  const sorted = [...neighbors].sort((a, b) => a.name.localeCompare(b.name))
+  placeRings(sorted, 0)
+  return pos
+}
+
+/** 径向分层:parentOf 建父子树(挂不到有效父级的挂锚点下),叶子等分整圈角度(从正上方起顺时针),
+ *  父节点扇区大小 = 其子树叶子数占比,父节点取扇区中心角——子节点排在父节点角度正外侧;
+ *  半径按层级(圈号 = levels,缺省沿父链 +1) */
+function placeRadial(pos, neighbors) {
+  const names = new Set(neighbors.map((nb) => nb.name))
+  const childrenOf = new Map()
+  for (const nb of neighbors) {
+    let p = props.parentOf[nb.name]
+    if (p == null || (p !== props.anchorTable && !names.has(p))) p = props.anchorTable
+    if (!childrenOf.has(p)) childrenOf.set(p, [])
+    childrenOf.get(p).push(nb.name)
+  }
+  for (const list of childrenOf.values()) list.sort((a, b) => a.localeCompare(b))
+  // 层级(圈号):levels 优先,缺省沿父链 +1(带 memo)
+  const lvMemo = new Map()
+  const levelOf = (name) => {
+    if (lvMemo.has(name)) return lvMemo.get(name)
+    let lv = props.levels[name]
+    if (lv == null) {
+      const p = props.parentOf[name]
+      lv = (p && names.has(p) ? levelOf(p) : 0) + 1
+    }
+    lvMemo.set(name, lv)
+    return lv
+  }
+  // 权重 = 子树叶子数(无子=1):叶子等分角度,子孙多的父级占更大扇区(带环保护)
+  const wMemo = new Map()
+  const weightOf = (name, stack = []) => {
+    if (wMemo.has(name)) return wMemo.get(name)
+    if (stack.includes(name)) return 1
+    const kids = childrenOf.get(name) || []
+    const w = kids.length ? kids.reduce((s, k) => s + weightOf(k, [...stack, name]), 0) : 1
+    wMemo.set(name, w)
+    return w
+  }
+  const assign = (name, a0, a1) => {
+    const kids = childrenOf.get(name) || []
+    if (!kids.length) return
+    const total = kids.reduce((s, k) => s + weightOf(k), 0)
+    let a = a0
+    for (const k of kids) {
+      const span = ((a1 - a0) * weightOf(k)) / total
+      const mid = a + span / 2
+      const r = RING_BASE_R + (levelOf(k) - 1) * RING_GAP
+      pos.set(k, [r * Math.cos(mid), r * Math.sin(mid)])
+      assign(k, a, a + span)
+      a += span
+    }
+  }
+  assign(props.anchorTable, -Math.PI / 2, Math.PI * 1.5) // 整圈
+}
+
+/** 边样式:候选虚线灰色 / 确认实线主题色 / 疑似多对多红色;连线不标基数(关系详情在 ER 页点边看) */
+function edgeStyle(r, dimmed) {
+  const c = themeColors()
+  const suspect = r.cardinality === 'SUSPECT_MANY_TO_MANY'
+  const color = suspect ? c.danger : (r.status === 'CONFIRMED' ? c.primary : c.borderDarker)
+  return {
+    stroke: color,
+    lineWidth: r.status === 'CONFIRMED' ? 1.8 : 1.4,
+    lineDash: r.status === 'CANDIDATE' ? [6, 4] : 0,
+    opacity: dimmed ? 0.06 : 1
+  }
+}
+
+/** 碰撞消解:由内向外(同圈按名序,确定性)逐节点检查与已放置节点是否重叠;
+ *  重叠时在附近搜索空位——先在原圈向两侧按「节点直径弧距」错开角度小范围搜索,
+ *  整圈都放不下再逐档外扩半径(延长连接线)继续搜,直到不重叠为止;极端密集兜底保持原位 */
+function resolveOverlaps(pos) {
+  const rad = (name) => sizeOf(name) / 2
+  const GAP = 8 // 节点间最小净距
+  const placed = []
+  const names = [...pos.keys()].sort((a, b) => {
+    if (a === props.anchorTable) return -1
+    if (b === props.anchorTable) return 1
+    const pa = pos.get(a)
+    const pb = pos.get(b)
+    return Math.hypot(pa[0], pa[1]) - Math.hypot(pb[0], pb[1]) || a.localeCompare(b)
+  })
+  for (const name of names) {
+    const [x0, y0] = pos.get(name)
+    const collides = (x, y) =>
+      placed.some((p) => Math.hypot(x - p.x, y - p.y) < rad(name) + rad(p.name) + GAP)
+    if (name === props.anchorTable || !collides(x0, y0)) {
+      placed.push({ name, x: x0, y: y0 })
+      continue
+    }
+    const r0 = Math.hypot(x0, y0)
+    const t0 = Math.atan2(y0, x0)
+    let done = false
+    for (let dr = 0; dr <= 4 * RING_GAP && !done; dr += 16) {
+      const r = r0 + dr
+      const dt = (NODE_SIZE + GAP * 2) / r // 角步长:弧距 ≈ 节点直径 + 两倍净距
+      for (let i = 1; i * dt <= Math.PI && !done; i++) {
+        for (const s of [1, -1]) {
+          const t = t0 + s * i * dt
+          const x = r * Math.cos(t)
+          const y = r * Math.sin(t)
+          if (!collides(x, y)) {
+            pos.set(name, [x, y])
+            placed.push({ name, x, y })
+            done = true
+            break
+          }
+        }
+      }
+    }
+    if (!done) placed.push({ name, x: x0, y: y0 })
+  }
+}
+
+/** props -> G6 数据;静态坐标直接放节点 style(不跑布局,渲染一次到位);
+ *  force 模式不预设坐标(种子会让仿真收敛到种子附近,放不开),交由 d3-force 从零自动编排,
+ *  碰撞消解/径向分层等静态逻辑全部跳过。
+ *  hl/sel 默认取当前 props;传 null/'' 可剥离高亮/选中态(结构数据用——见 graphData) */
+function buildData(hl, sel) {
+  const c = themeColors()
+  const force = props.layout === 'force'
+  const pos = force ? new Map() : nodePositions()
+  if (!force) resolveOverlaps(pos)
+  const hlSet = hl === undefined ? (props.highlight ? new Set(props.highlight) : null) : hl
+  const selectedName = sel === undefined ? props.selected : sel
+  const nodes = props.nodes.map((n) => {
+    const isAnchor = n.name === props.anchorTable
+    const isSelected = n.name === selectedName
+    const matched = !hlSet || hlSet.has(n.name)
+    const color = props.colors[n.name] || c.primary
+    const [x, y] = pos.get(n.name) || []
+    return {
+      id: n.name,
+      data: { table: n.name, comment: n.comment || '' },
+      style: {
+        // force 模式不落坐标(由力导自动编排);静态模式坐标算死
+        ...(x === undefined ? {} : { x, y }),
+        size: sizeOf(n.name),
+        // 节点中心显示半径数字(调尺寸分档/边长时直观对照;白色小字压在彩色圆心上)
+        icon: true,
+        iconText: String(sizeOf(n.name) / 2),
+        iconFontSize: 10,
+        iconFill: '#fff',
+        fill: color,
+        // 选中态:正文色深描边;锚点描边用主题色但较细
+        stroke: isSelected ? c.text : isAnchor ? c.primary : color,
+        lineWidth: isSelected ? 3 : isAnchor ? 2 : 1.5,
+        cursor: 'pointer',
+        opacity: matched ? 1 : 0.12,
+        // 筛选命中的节点加同色光晕突出显示(锚点描边语义不变)
+        halo: !!(hlSet && matched),
+        haloStroke: color,
+        haloStrokeOpacity: 0.3,
+        haloLineWidth: 12,
+        label: true,
+        labelText: displayName(n),
+        labelPlacement: 'bottom',
+        labelFontSize: 12,
+        labelFontWeight: isAnchor ? 600 : 400,
+        labelFill: matched ? c.text : c.textSecondary,
+        labelOffsetY: 4,
+        // 全名换行展示(不截断):超 140px 宽自动折行;行数上限放大到 20(约等于不限,G6 label 默认
+        // maxLines=1 会打省略号,必须显式放大;长注释完整显示,节点弧距已为多行标签预留)
+        labelWordWrap: true,
+        labelMaxWidth: 140,
+        labelMaxLines: 20,
+        labelOpacity: matched ? 1 : 0.25
+      }
+    }
+  })
+  const edges = props.edges.map((r) => ({
+    id: String(r.id),
+    source: r.oneTable,
+    target: r.manyTable,
+    style: {
+      ...edgeStyle(r, !!hlSet && !(hlSet.has(r.oneTable) && hlSet.has(r.manyTable))),
+      // 带 distance 分档的边在连线中点上显示距离数字(调边长分档参数时直观看 S1/S2)
+      ...(r.distance != null
+        ? { label: true, labelText: String(r.distance), labelFontSize: 10, labelFill: c.textSecondary, labelBackground: true, labelBackgroundFill: c.bg, labelBackgroundOpacity: 0.7, labelPadding: [1, 3] }
+        : {})
+    }
+  }))
+  return { nodes, edges }
+}
+
+// 力导回调不能从图数据上读自定义字段:G6→@antv/layout 的模型转换(layoutAdapter)只保留
+// 边 id/source/target、节点 id/坐标,其余字段全被剥掉——边长/叶子判定只能在这里按 id 闭包回查
+/** 边 id → 可见边长分档(供 link.distance/strength 回调) */
+const edgeDistanceById = computed(
+  () => new Map(props.edges.filter((e) => e.distance != null).map((e) => [String(e.id), e.distance]))
+)
+/** 叶子节点名集合(供 manyBody 分档):优先按父子树(parentOf)出度,未传则按边的一端出度兜底 */
+const leafNames = computed(() => {
+  const hasChild = new Set()
+  if (props.parentOf) {
+    for (const n of props.nodes) {
+      const p = props.parentOf[n.name]
+      if (p) hasChild.add(p)
+    }
+  } else {
+    for (const e of props.edges) hasChild.add(e.oneTable)
+  }
+  return new Set(props.nodes.map((n) => n.name).filter((name) => !hasChild.has(name)))
+})
+
+/** d3-force 力导向布局(参考官方 demo,知识图谱 hub 口径:目录大节点下挂小节点表):
+ *  边长按调用方给的分档(如 目录↔目录长边 = 3 × 目录→表短边),缺省 60;注意 G6→layout 的模型转换会剥掉
+ *  边上/节点上的自定义字段,分档只能按边 id(edgeDistanceById)/节点名(leafNames)闭包回查;
+ *  distance 语义 = 可见连线长度(两圆边缘间距)——d3-force 的 link 距离是圆心距,
+ *  这里换算加回两端半径,否则大节点半径吃掉边长、且会被 collide 最小圆心距顶开导致长短边一样长;
+ *  长边弱(主干摊开)、短边强(卫星节点向目录聚拢);
+ *  叶子节点斥力大、内部节点斥力小;collide 半径按节点尺寸分档 + 16px 净距防节点重叠
+ *  (padding 不能太大,否则会盖过短边 link 目标);布局动画保持开启(默认):仿真逐帧收敛,drag-element-force 依赖它 */
+function forceLayoutOptions() {
+  const idOf = (x) => (typeof x === 'object' ? x.id : x)
+  const distOf = (e) => edgeDistanceById.value.get(String(e.id)) ?? 60
+  return {
+    type: 'd3-force',
+    // 收敛提速:d3 仿真要跑到 alpha < alphaMin 才算完(默认 0.001 + alphaDecay≈0.0228 ≈ 300 tick ≈ 5s,
+    // G6 render 全程等待、画布一直隐藏——切页签长时间空白的根因);提高 alphaMin/加快衰减压到 ~50 tick(<1s)。
+    // 仿真精度略降,但强 link 力下结构成型很早,视觉无损;拖拽回温(alphaTarget 0.3)不受影响
+    alphaMin: 0.05,
+    alphaDecay: 0.06,
+    link: {
+      distance: (e) => distOf(e) + (sizeOf(idOf(e.source)) + sizeOf(idOf(e.target))) / 2,
+      strength: (e) => (distOf(e) >= 120 ? 0.15 : 0.8)
+    },
+    manyBody: {
+      strength: (d) => (leafNames.value.has(d.id) ? -220 : -80)
+    },
+    collide: {
+      radius: (d) => sizeOf(d.id) / 2 + 16,
+      strength: 0.9
+    }
+  }
+}
+
+// 底座输入:结构数据(节点/边集合、坐标、颜色、尺寸)变化 → 底座整体重建(力导会重新仿真,尽量少触发);
+// 高亮/选中态不进结构数据——它们走下方 applyOverlay 原地刷样式,避免每点一下节点就重建+重跑仿真;
+// 触碰 themeState.dark:亮/暗主题切换时重算(节点/边颜色取自主题变量),底座整体重建换色(不动视口)
+const graphData = computed(() => {
+  void themeState.dark
+  return buildData(null, '')
+})
+
+// 高亮/选中态覆盖层:变化时经底座 repaint(setData+draw,不跑布局、不动仿真)原地刷透明度/光晕/描边;
+// 结构重建(力导重排)后样式被 graphData 重置,借底座 rendered 事件补刷;签名判重防 rendered↔repaint 循环
+let appliedOverlay = ''
+function applyOverlay() {
+  const sig = JSON.stringify([props.highlight, props.selected])
+  if (sig === appliedOverlay) return
+  if (!baseRef.value?.getGraph()) return // 图未就绪,等 rendered 事件补刷
+  appliedOverlay = sig
+  baseRef.value.repaint(buildData())
+}
+watch(() => [props.highlight, props.selected], applyOverlay)
+const graphOptions = {
+  node: { type: 'circle' },
+  edge: { type: 'line' },
+  // 同表对多条平行边按曲率分开(bundle 会把 line 边改写为 quadratic,本图无字段对齐诉求,直接可用)
+  transforms: [{ type: 'process-parallel-edges', mode: 'bundle', distance: 24 }],
+  // 力导模式换 drag-element-force(拖拽时仿真回温,松手自动归位);静态模式 drag-element
+  behaviors: [props.layout === 'force' ? 'drag-element-force' : 'drag-element'], // 底座内置 drag-canvas 拖画布
+  ...(props.layout === 'force' ? { layout: forceLayoutOptions() } : {}),
+  // 静态模式关掉元素入场动画:render() 会等 draw 动画 finished 才 resolve,关掉后 render/重建都是瞬时完成;
+  // 力导模式必须保留动画——仿真收敛与 drag-element-force 都依赖 tick 渲染,关动画会导致节点拖不动
+  ...(props.layout === 'force' ? {} : { animation: false })
+}
+
+// 高级操作(视口观测/导出等)经底座拿原始 Graph 实例
+defineExpose({ getGraph: () => baseRef.value?.getGraph() })
+</script>

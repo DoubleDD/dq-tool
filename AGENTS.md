@@ -38,8 +38,10 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [扫描与 Excel 导出](docs/wiki/扫描与Excel导出.md) — 表级/字段级检测、分段扫描与断点续扫、采样估算、Oracle 空串/段视图降级、Excel sheet 结构、扫描结果 Word 表结构文档导出
 - [AI 功能与表标记](docs/wiki/AI功能与表标记.md) — AI 表说明、AI 自动打标(AutoTagService)、全局表标记与标记统计页
 - [人工采集](docs/wiki/人工采集.md) — 收藏重点关注的表:表列表页批量/行内采集,人工采集页跨数据源清单(数据源/库过滤、全列排序、Excel 导出)
+- [ER 关系推导](docs/wiki/ER关系推导.md) — 无外键库程序推导表间关联(名字/语义双通道 + 值交集/基数验证,候选/确认/否决三态),G6 乌鸦脚 ER 图:全库总图/星型图/手动补充,表列表/独立页/字段明细三处入口
+- [对象管理(数据目录)](docs/wiki/对象管理.md) — 按数据源隔离的目录树:左侧目录树常驻 + 右侧 列表/关系图(根=选中目录)/图谱(目录内表 ER 关系,只读)三页签联动;目录挂载表(四元组,可带包含/关联关系类型,展示在目录图连线上)+ 挂载表登记关系表,注释从 meta_table 补,删目录 tx 级联,挂载/关系幂等
 - [Word 报告导出](docs/wiki/Word报告导出.md) — poi-tl 数据调研报告:封面+四章正文、DONE 快照口径、409 前置校验、模板改造脚本
-- [数据源](docs/wiki/数据源.md) — 连接信息加密存储、SSH 隧道、库过滤白名单、JSON/Navicat/DataGrip 导入导出
+- [数据源](docs/wiki/数据源.md) — 连接信息加密存储、SSH 隧道、库过滤白名单、JSON/Navicat/DataGrip 导入导出、连接状态标记(网络不可达分类)与断网降级本地 H2 缓存
 - [表格批量导入与抽样导出](docs/wiki/批量导入与抽样导出.md) — 上传 Excel(每行一张表)的两步流程:先数据源检测(去重导入,连不上标记错误待人工处理),任务停在「待导出」由用户决策;可就地编辑数据源(独立弹窗组件 DatasourceEditDialog,多页面复用)或重新导入表格修复,点「继续导出」后每表抽 50 行按 数据源×类别 出 xlsx、类别目录归档打 zip;1s 轮询
 - [系统诊断](docs/wiki/系统诊断.md) — 排错中心:环境/授权/AI/数据源连通实测/失败记录/错误日志聚合,Markdown 诊断报告导出
 - [SQL 控制台](docs/wiki/SQL控制台.md) — 类 DataGrip 执行 SQL:选数据源、执行选中片段、结果集上限 1000 行/单元格截断同数据预览、受影响行数、localStorage 历史(不落服务端)
@@ -51,7 +53,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 
 - [技术栈与项目结构](docs/wiki/技术栈与项目结构.md) — Gradle 模块划分、Javalin 薄壳 + common 内核、前端栈、目录树逐层注释
 - [前端页面与按钮逻辑](docs/wiki/前端页面与按钮逻辑.md) — 路由/页签体系、页面导航全景、各页面按钮触发逻辑与 API、轮询与只读模式等交互机制
-- [构建运行与测试](docs/wiki/构建运行与测试.md) — 开发/交付构建、Makefile、ZGC、JUnit+Testcontainers 测试矩阵与无覆盖区
+- [构建运行与测试](docs/wiki/构建运行与测试.md) — 开发/交付构建、Makefile、GC 参数、JUnit+Testcontainers 测试矩阵与无覆盖区
 - [代码约定与安全](docs/wiki/代码约定与安全.md) — 分层与装配约定、配置/迁移新增流程、错误日志纪律、加密与敏感信息边界
 - [桌面版与数据目录](docs/wiki/桌面版与数据目录.md) — 托盘/心跳看门狗生命周期、headless 行为、数据目录与日志滚动
 - [打包与发布](docs/wiki/打包与发布.md) — jpackage/tauri 安装包、内嵌完整 JRE、版本号映射、CI release.yml 启停状态、.bat 坑

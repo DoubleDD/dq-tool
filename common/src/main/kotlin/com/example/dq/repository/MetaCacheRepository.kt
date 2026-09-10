@@ -132,6 +132,9 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         private const val KIND_SCOLUMN = "SCOLUMN"
         private const val KIND_DATABASE = "DATABASE"
         private const val KIND_SCHEMA = "SCHEMA"
+        /** 仅用于条纹锁键(meta_ddl / meta_column_count 用行存在与否判就绪,不写 flag) */
+        private const val KIND_DDL = "DDL"
+        private const val KIND_CCOUNT = "CCOUNT"
         private const val STRIPE_COUNT = 64
     }
 
@@ -239,6 +242,9 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
                     ps.executeBatch()
                 }
                 writeFlag(conn, datasourceId, dbName, schema, "", KIND_TABLE)
+                // 表集合变化 → 该 schema 的字段总数与全部单表 DDL 可能过时,按粒度失效
+                deleteColumnCount(conn, datasourceId, dbName, schema)
+                deleteDdl(conn, datasourceId, dbName, schema, null)
             }
         }
     }
@@ -285,6 +291,9 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
                     ps.executeBatch()
                 }
                 writeFlag(conn, datasourceId, dbName, schema, table, KIND_COLUMN)
+                // 字段变化 → 该表 DDL 与该 schema 字段总数过时
+                deleteDdl(conn, datasourceId, dbName, schema, table)
+                deleteColumnCount(conn, datasourceId, dbName, schema)
             }
         }
     }
@@ -323,6 +332,8 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
                     ps.executeBatch()
                 }
                 writeFlag(conn, datasourceId, dbName, schema, table, KIND_INDEX)
+                // 索引变化 → 该表 DDL(含索引)过时
+                deleteDdl(conn, datasourceId, dbName, schema, table)
             }
         }
     }
@@ -368,6 +379,8 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
                 }
                 insertSchemaColumns(conn, datasourceId, dbName, schema, rows)
                 writeFlag(conn, datasourceId, dbName, schema, "", KIND_SCOLUMN)
+                // 整库字段清单覆盖 → schema 字段总数可能过时
+                deleteColumnCount(conn, datasourceId, dbName, schema)
             }
         }
     }
@@ -404,6 +417,78 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         }
     }
 
+    // ---------- 单表 DDL 与 schema 字段总数(断网降级补齐;行存在即就绪,不写 flag) ----------
+
+    /** 读单表 DDL 缓存;无缓存返回 null(与「缓存了空 DDL」区分) */
+    fun getDdl(datasourceId: Long, dbName: String, schema: String, table: String): String? =
+        jdbc.queryOne(
+            "SELECT ddl FROM meta_ddl WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?",
+            datasourceId, dbName, schema, table
+        ) { it.getString(1) }
+
+    /** 整粒度覆盖单表 DDL 缓存 */
+    fun replaceDdl(datasourceId: Long, dbName: String, schema: String, table: String, ddl: String) {
+        synchronized(lockKey(KIND_DDL, datasourceId, dbName, schema, table)) {
+            jdbc.tx { conn ->
+                deleteDdl(conn, datasourceId, dbName, schema, table)
+                conn.prepareStatement(
+                    "INSERT INTO meta_ddl(datasource_id, db_name, schema_name, table_name, ddl) VALUES (?,?,?,?,?)"
+                ).use { ps ->
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                    ps.setString(4, table); ps.setString(5, ddl)
+                    ps.executeUpdate()
+                }
+            }
+        }
+    }
+
+    /** 读 schema 字段总数缓存;无缓存返回 null(0 是合法值) */
+    fun getColumnCount(datasourceId: Long, dbName: String, schema: String): Long? =
+        jdbc.queryOne(
+            "SELECT column_count FROM meta_column_count WHERE datasource_id=? AND db_name=? AND schema_name=?",
+            datasourceId, dbName, schema
+        ) { rs -> val v = rs.getLong(1); if (rs.wasNull()) null else v }
+
+    /** 整粒度覆盖 schema 字段总数缓存 */
+    fun replaceColumnCount(datasourceId: Long, dbName: String, schema: String, count: Long) {
+        synchronized(lockKey(KIND_CCOUNT, datasourceId, dbName, schema, "")) {
+            jdbc.tx { conn ->
+                deleteColumnCount(conn, datasourceId, dbName, schema)
+                conn.prepareStatement(
+                    "INSERT INTO meta_column_count(datasource_id, db_name, schema_name, column_count) VALUES (?,?,?,?)"
+                ).use { ps ->
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                    ps.setLong(4, count)
+                    ps.executeUpdate()
+                }
+            }
+        }
+    }
+
+    /** 失效单表 DDL(table=null 表示整 schema) */
+    private fun deleteDdl(conn: java.sql.Connection, datasourceId: Long, dbName: String, schema: String, table: String?) {
+        val sql = if (table == null) {
+            "DELETE FROM meta_ddl WHERE datasource_id=? AND db_name=? AND schema_name=?"
+        } else {
+            "DELETE FROM meta_ddl WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
+        }
+        conn.prepareStatement(sql).use { ps ->
+            ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+            if (table != null) ps.setString(4, table)
+            ps.executeUpdate()
+        }
+    }
+
+    /** 失效 schema 字段总数 */
+    private fun deleteColumnCount(conn: java.sql.Connection, datasourceId: Long, dbName: String, schema: String) {
+        conn.prepareStatement(
+            "DELETE FROM meta_column_count WHERE datasource_id=? AND db_name=? AND schema_name=?"
+        ).use { ps ->
+            ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+            ps.executeUpdate()
+        }
+    }
+
     // ---------- 级联清理 ----------
 
     fun deleteByDatasource(datasourceId: Long) {
@@ -412,6 +497,8 @@ class MetaCacheRepository(private val jdbc: Jdbc) {
         jdbc.update("DELETE FROM meta_column WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_index WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_schema_column WHERE datasource_id=?", datasourceId)
+        jdbc.update("DELETE FROM meta_ddl WHERE datasource_id=?", datasourceId)
+        jdbc.update("DELETE FROM meta_column_count WHERE datasource_id=?", datasourceId)
         jdbc.update("DELETE FROM meta_cache_flag WHERE datasource_id=?", datasourceId)
-}
+    }
 }
