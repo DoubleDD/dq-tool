@@ -74,7 +74,6 @@ function themeColors() {
     primary: get('--el-color-primary', '#409eff'),
     danger: get('--el-color-danger', '#f56c6c'),
     borderDarker: get('--el-border-color-darker', '#cdd0d6'),
-    bg: get('--el-bg-color', '#ffffff'),
     text: get('--el-text-color-primary', '#303133'),
     textSecondary: get('--el-text-color-secondary', '#909399')
   }
@@ -283,11 +282,11 @@ function buildData(hl, sel) {
         // force 模式不落坐标(由力导自动编排);静态模式坐标算死
         ...(x === undefined ? {} : { x, y }),
         size: sizeOf(n.name),
-        // 节点中心显示半径数字(调尺寸分档/边长时直观对照;白色小字压在彩色圆心上)
-        icon: true,
-        iconText: String(sizeOf(n.name) / 2),
-        iconFontSize: 10,
-        iconFill: '#fff',
+        // 层级:节点恒定压过连线(边 zIndex=0)。必须显式给值——drag-element-force 拖拽开始时
+        // G6 会 frontElement 把被拖节点置顶(zIndex=max+1 且不归位),此后新增边若依赖默认计算
+        // (相连节点 zIndex 最大值 -1),沾到被拖节点的边会升到 0 与节点同级,后插入渲染压过节点,
+        // 表现为「连线盖住节点、点名称选不中」(边在上吞掉点击)
+        zIndex: 1,
         fill: color,
         // 选中态:正文色深描边;锚点描边用主题色但较细
         stroke: isSelected ? c.text : isAnchor ? c.primary : color,
@@ -321,10 +320,8 @@ function buildData(hl, sel) {
     target: r.manyTable,
     style: {
       ...edgeStyle(r, !!hlSet && !(hlSet.has(r.oneTable) && hlSet.has(r.manyTable))),
-      // 带 distance 分档的边在连线中点上显示距离数字(调边长分档参数时直观看 S1/S2)
-      ...(r.distance != null
-        ? { label: true, labelText: String(r.distance), labelFontSize: 10, labelFill: c.textSecondary, labelBackground: true, labelBackgroundFill: c.bg, labelBackgroundOpacity: 0.7, labelPadding: [1, 3] }
-        : {})
+      // 层级:连线恒定在节点之下(节点 zIndex=1,理由见节点样式注释);distance 仅入力导回调,不在连线上标数字
+      zIndex: 0
     }
   }))
   return { nodes, edges }
