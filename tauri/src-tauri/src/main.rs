@@ -38,11 +38,18 @@ fn main() {
     let jar = find_server_jar().unwrap_or_else(|e| fatal(&format!("定位 server fat jar 失败:{e}")));
     let java = find_java().unwrap_or_else(|e| fatal(&format!("定位 java 运行时失败:{e}")));
     let packaged = is_packaged();
+    let portable = is_portable();
     eprintln!(
         "[dq-tool-tauri] 后端 jar: {}(java: {},{}模式)",
         jar.display(),
         java.display(),
-        if packaged { "安装" } else { "开发" }
+        if portable {
+            "绿色"
+        } else if packaged {
+            "安装"
+        } else {
+            "开发"
+        }
     );
 
     // 取一个空闲端口后释放;竞态窗口内被抢注时 DqApplication 会向后避让,
@@ -51,14 +58,19 @@ fn main() {
     let actual_port = Arc::new(Mutex::new(probed_port));
 
     let mut cmd = Command::new(&java);
-    cmd.arg("-XX:+UseZGC");
+    cmd.arg("-XX:+UseG1GC");
+    cmd.arg("-Xmx384m");
+    cmd.arg("-XX:MaxRAMPercentage=50");
     // JDK 25 AOT 类缓存:jar 同目录存在 dq-tool.aot 才启用,开发模式/未训练环境静默跳过。
     // 打包脚本不生成(2026-08 实测 macOS 收益≈0,启动大头是 H2+Flyway 真实初始化而非类加载,
     // 详见 tauri/AGENTS.md);需要时手动 record→create 训练后放到 jar 同目录即可生效
     if let Some(cache) = find_aot_cache(&jar) {
         cmd.arg(format!("-XX:AOTCache={}", cache.display()));
     }
-    if packaged {
+    if portable {
+        // 绿色免安装版:数据目录固定 exe 同目录 data/(解压即用、删除即净,不写用户目录)
+        cmd.arg(format!("-Ddq.data-dir={}", exe_dir().join("data").display()));
+    } else if packaged {
         // 安装版数据目录固定 ~/.dq-tool/data(与 jpackage 安装版口径一致);
         // 开发模式不传,走后端默认 ./data(cwd 已切到仓库根)
         let home = home_dir();
@@ -171,8 +183,9 @@ fn main() {
                 }
                 Err(e) => fatal(&format!("后端未在 {} 秒内就绪:{e}", READY_TIMEOUT.as_secs())),
             });
-            // 自动更新:仅安装模式;后台线程预下载,完事后弹窗确认(开发模式不检查)
-            if packaged {
+            // 自动更新:仅安装模式;后台线程预下载,完事后弹窗确认(开发模式不检查;
+            // 绿色免安装版也禁用 —— 更新包是 NSIS 安装包,会装进 Programs 目录破坏绿色形态)
+            if packaged && !portable {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || auto_update(handle, child_on_update));
             }
@@ -346,9 +359,33 @@ fn is_packaged() -> bool {
         .unwrap_or(false)
 }
 
-/// 数据目录(与后端 -Ddq.data-dir 口径一致):安装版 ~/.dq-tool/data;
+/// 是否绿色免安装版:release 构建且 exe 同目录存在 PORTABLE.txt 标记文件
+/// (由 scripts\package-tauri-win-portable.bat 写入)。绿色版数据目录在 exe 同目录
+/// data/、不启用自动更新,其余与安装版一致(内嵌资源 backend/jre 照常消费)
+fn is_portable() -> bool {
+    if cfg!(debug_assertions) {
+        return false;
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("PORTABLE.txt").is_file()))
+        .unwrap_or(false)
+}
+
+/// exe 所在目录(绿色版数据目录的锚点)
+fn exe_dir() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 数据目录(与后端 -Ddq.data-dir 口径一致):绿色版 <exe>/data;安装版 ~/.dq-tool/data;
 /// 开发模式 $DQ_DATA_DIR 或仓库根 ./data
 fn data_dir() -> PathBuf {
+    if is_portable() {
+        return exe_dir().join("data");
+    }
     if is_packaged() {
         return home_dir().join(".dq-tool").join("data");
     }

@@ -33,6 +33,7 @@ LICENSE_VERSION ?= $(VERSION:0.%=%)
 	package-tauri package-tauri-skip \
 	package-win package-win-skip \
 	package-tauri-win package-tauri-win-skip \
+	package-tauri-win-portable package-tauri-win-portable-skip \
 	license-keypair license clean
 
 help: ## 显示全部可用命令(按用途分组)
@@ -58,6 +59,8 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '  make %-18s %s\n' package-tauri-skip 'macOS dmg(跳过构建)'
 	@printf '  make %-22s %s\n' package-tauri-win      'Windows 版(仅 Windows 可用)'
 	@printf '  make %-22s %s\n' package-tauri-win-skip 'Windows 版(跳过构建)'
+	@printf '  make %-30s %s\n' package-tauri-win-portable      'Windows 绿色免安装 zip(仅 Windows 可用)'
+	@printf '  make %-30s %s\n' package-tauri-win-portable-skip  'Windows 绿色免安装 zip(跳过构建)'
 	@printf '\n\033[1m授权码 / 清理\033[0m\n'
 	@printf '  make %-18s %s\n' license-keypair '生成授权密钥对(只需一次,公钥写入 license-public.key 并拷入 server/src/main/resources/)'
 	@printf '  make %-18s %s\n' license         '签发授权码(交互式;也可 customer=... expires=... 传参)[KEY=私钥文件]'
@@ -91,10 +94,10 @@ test: ## 全部测试(含 Testcontainers,需要 Docker)
 	./gradlew :common:test :server:test
 
 run: build ## 构建并运行 fat jar,带窗口/托盘(原生 -splash 启动画面;注意 -jar 模式下 -splash 按文件系统相对路径找)
-	java -XX:+UseZGC -Djava.awt.headless=false -splash:server/src/main/resources/splash.png -jar $(JAR)
+	java -XX:+UseG1GC -Xmx384m -XX:MaxRAMPercentage=50 -Djava.awt.headless=false -splash:server/src/main/resources/splash.png -jar $(JAR)
 
 run-headless: build ## 构建并运行 fat jar,无窗口/托盘(服务器方式)
-	java -XX:+UseZGC -jar $(JAR)
+	java -XX:+UseG1GC -Xmx384m -XX:MaxRAMPercentage=50 -jar $(JAR)
 
 # ── 打包:浏览器 app 模式(server 安装版,jpackage 内嵌 JRE)─────────────────────
 
@@ -128,6 +131,12 @@ package-tauri-win: ## Windows:构建并打 Tauri 2 套壳版(仅 Windows 可用)
 
 package-tauri-win-skip: ## Windows:跳过构建,重打 Tauri 2 套壳版(仅 Windows 可用)
 	cmd //c "scripts\\package-tauri-win.bat --skip-build"
+
+package-tauri-win-portable: ## Windows:构建并打 Tauri 2 绿色免安装 zip(exe 旁 PORTABLE.txt 标记,数据目录 exe 同级 data/,无自动更新;仅 Windows 可用)
+	cmd //c scripts\\package-tauri-win-portable.bat
+
+package-tauri-win-portable-skip: ## Windows:跳过构建,重打 Tauri 2 绿色免安装 zip(仅 Windows 可用)
+	cmd //c "scripts\\package-tauri-win-portable.bat --skip-build"
 
 # ── 授权码 / 清理 ────────────────────────────────────────────────────────────
 

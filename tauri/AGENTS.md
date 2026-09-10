@@ -37,6 +37,8 @@ cd tauri && pnpm install && npm run dev
 scripts/package-tauri-mac.sh          # macOS dmg + 自动更新包 .app.tar.gz(Linux 未实现,见脚本内 TODO)
 scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-tauri job 用)
                                         # 快捷命令:make package-tauri / make package-tauri-skip(--skip-build)
+scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle 出裸 exe + resources 组装)
+                                        # 快捷命令:make package-tauri-win-portable(/-skip)
 ```
 
 - 不是 Gradle 模块(pnpm + cargo 工程,同 web/ 的管理方式),`settings.gradle.kts` 不包含它
@@ -45,7 +47,7 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
   `tauri/package.json` 的 `packageManager` 固定 `pnpm@11.7.0`,npm 的 `package-lock.json` 已删除;
   变更依赖用 `pnpm add -D`,lock 一并提交 —— CI/打包脚本走 `pnpm install --frozen-lockfile`,
   失同步即报错。脚本执行仍可用 `npm run <script>`(pnpm 装的 node_modules 不受影响)
-- 开发模式数据目录 `./data`(cwd 切到仓库根,可用 `DQ_DATA_DIR` 环境变量覆盖);安装版 `~/.dq-tool/data`(由 Rust 侧传 `-Ddq.data-dir`)
+- 开发模式数据目录 `./data`(cwd 切到仓库根,可用 `DQ_DATA_DIR` 环境变量覆盖);安装版 `~/.dq-tool/data`(由 Rust 侧传 `-Ddq.data-dir`);**绿色免安装版 `<exe>/data`**(exe 同目录存在 `PORTABLE.txt` 标记即绿色模式,见 `is_portable()`;解压即用、删除即净)
 - **改了前端/后端代码要重新调试时,先彻底退出旧实例再 `make tauri`**:常驻+单实例模型下,重跑只会唤起已有窗口,旧 java 后端不重启,看到的还是旧 jar 内容 —— 退出走托盘菜单「退出」或 Cmd+Q(直接关窗只是隐藏,不算退出)
 
 ## 侧车协议(src-tauri/src/main.rs)
@@ -100,7 +102,7 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 
 ## 自动更新(tauri-plugin-updater)
 
-- 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式不检查);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime;**启动时立即检查一次,之后每 `UPDATE_CHECK_INTERVAL`(30 分钟)轮询一次**(loop + `std::thread::sleep`,失败后间隔照常、下一轮继续;下载完成后的确认对话框阻塞期间该线程停住,下一轮检查顺延)
+- 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式与绿色免安装版不检查 —— 更新包是 NSIS 安装包,会装进 Programs 目录,破坏绿色形态);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime;**启动时立即检查一次,之后每 `UPDATE_CHECK_INTERVAL`(30 分钟)轮询一次**(loop + `std::thread::sleep`,失败后间隔照常、下一轮继续;下载完成后的确认对话框阻塞期间该线程停住,下一轮检查顺延)
 - 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,webview 是远程 URL 不适合做更新 UI)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
 
 - 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 与本地统一由 package-tauri-win.bat / package-tauri-mac.sh 未配置环境变量时自动读该文件(tauri CLI 只认内容、不认 `_PATH` 变体——但会把变量值当路径探测,指向文件路径亦可);**密码变量 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 存在(私钥无密码即为空值)时 CLI 直接使用;缺失时走 `--ci`/`CI` 环境变量兜底按空密码处理,都没有则交互式询问密码、无终端环境签名失败**——mac 脚本直接 export 空值;win bat 因 cmd 无法定义空值环境变量(且空值经 npm 多层子进程传递不可靠),未配置密码变量时改置 `CI=true` 让 CLI 按空密码签名(行为见 tauri-cli `bundle.rs` sign_updaters);**丢私钥 = 更新链断裂,需换密钥对并发全量包**。注意:tauri CLI 对「配了 pubkey 但无私钥」直接报错失败(sign_updaters 的 "A public key has been found, but no private key"),win bat 仍在密钥读不到时提前 exit 1 给出更明确的报错;另:tauri CLI 2.11+ 的 v2 updater 模式对 NSIS **不再产出 .nsis.zip**(自包含安装包,直接签 `setup.exe` 得 `setup.exe.sig`,tauri-plugin-updater 2.x 支持裸 exe 下载安装),bat 构建后以 `*-setup.exe.sig` 存在作为签名成功的快速失败判据(2026-08 v1.6 曾误按 .nsis.zip 判,CI 必挂)
@@ -118,6 +120,13 @@ scripts\package-tauri-win.bat         # Windows NSIS 安装包(CI 的 windows-ta
 - mac 脚本复制 JRE 后必须 `chmod -R u+w`:JDK 源文件大量只读(legal/ 等 r--r--r--),
   tauri-build 会把 resources 复制到 `target/release/resources` 且保留权限,
   再次构建覆盖只读旧文件即报 EACCES(Permission denied),2026-08 踩过
+- **Windows 绿色免安装 zip**(`scripts\package-tauri-win-portable.bat`):资源组装与 NSIS 版相同,
+  但 `tauri build --no-bundle` 只出裸 exe,随后把 `dq-tool.exe` + `resources/` + 空 `data/` +
+  `PORTABLE.txt` 标记文件组装成 `dq-tool/` 目录,PowerShell `Compress-Archive` 打成
+  `dq-tool_<version>_windows-portable.zip`(落在 `tauri/src-tauri/target/release/`)。
+  运行时 `is_portable()` 检测 exe 同目录 `PORTABLE.txt`:命中则数据目录用 `<exe>/data`、
+  自动更新禁用;**删掉该标记文件会回落成安装版口径(数据写 `~/.dq-tool/data`),勿删**。
+  注意:绿色包无安装器引导,目标机器需自带 WebView2(Win10 1803+/Win11 一般已装)
 - `tauri.conf.json` 的 `version` 与项目版本保持 `0.x.y → x.y.0` 映射(安装包主版本号 ≥ 1,且必须是三段 semver),升级需手动同步
 - `resources/` 是打包产物,已 gitignore;`tauri build` 不带 resources 也能跑(开发模式)
 - 图标源图 `src-tauri/icons-source.png`(占位图,**TODO: 换正式 logo**),改后用 `npm run icon -- src-tauri/icons-source.png -o src-tauri/icons` 重新生成
