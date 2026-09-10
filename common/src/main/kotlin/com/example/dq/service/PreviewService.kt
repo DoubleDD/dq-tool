@@ -11,7 +11,7 @@ import java.sql.SQLException
  * 支持 DataGrip 风格的 WHERE / ORDER BY 用户原文过滤(本地单机工具,与 DataGrip 同口径原文透传;
  * 宽容处理:剥离用户误带的前导 WHERE/ORDER BY 关键字,空白视为未填);
  * 无 ORDER BY 时页间顺序不保证稳定;总数为 COUNT(*) 实时查询,驱动前端翻页;
- * 列结构取自 listColumns 元数据,显式列名查询保证列序与元数据一致;
+ * 列结构取自 listColumns 元数据(含字段注释,前端表头展示),显式列名查询保证列序与元数据一致;
  * 行值统一 getObject().toString(),NULL 保持 null;单元格截断 1000 字符防大字段撑爆响应。
  * exportTable:同过滤/排序口径的全量导出(SXSSF 流式写 xlsx),复用 pageRowsSql(offset=0,
  * limit=MAX_EXPORT_ROWS)取符合条件的前 20 万行,超上限静默截断;不做 COUNT(*)。
@@ -22,7 +22,8 @@ class PreviewService(
     private val systemSettingsService: SystemSettingsService,
 ) {
 
-    data class PreviewColumn(val name: String, val type: String)
+    /** 预览列定义:name 列名 / type 展示类型 / comment 字段注释(取自列元数据,可为空) */
+    data class PreviewColumn(val name: String, val type: String, val comment: String?)
 
     data class PreviewResult(
         val columns: List<PreviewColumn>,
@@ -44,7 +45,7 @@ class PreviewService(
         val dialect = dialectFactory.get(ds.dbType!!)
         dataSourceService.getConnection(datasourceId, database).use { conn ->
             val columns = dialect.listColumns(conn, schema, table)
-                .map { PreviewColumn(it.name, it.displayType) }
+                .map { PreviewColumn(it.name, it.displayType, it.comment) }
             conn.createStatement().use { stmt ->
                 // 与分段扫描同口径的单条 SQL 超时(系统设置可改,回落配置文件默认值)
                 stmt.queryTimeout = systemSettingsService.scanSettings().statementTimeoutSeconds
@@ -73,7 +74,8 @@ class PreviewService(
 
     /**
      * 全量导出:按预览同一 where/orderBy 口径查询符合条件的前 MAX_EXPORT_ROWS 行(保持排序),
-     * SXSSF 流式写单 sheet xlsx 到 out;表头与前端预览导出一致(列名+类型);
+     * SXSSF 流式写单 sheet xlsx 到 out;两行表头——第一行字段中文名称(取注释,缺失回退英文列名),
+     * 第二行字段英文名称(列名),不含数据类型;
      * 行值序列化/截断同预览;不需要总数,省略 COUNT(*)。
      */
     @Throws(SQLException::class)
@@ -85,7 +87,7 @@ class PreviewService(
         val dialect = dialectFactory.get(ds.dbType!!)
         dataSourceService.getConnection(datasourceId, database).use { conn ->
             val columns = dialect.listColumns(conn, schema, table)
-                .map { PreviewColumn(it.name, it.displayType) }
+                .map { PreviewColumn(it.name, it.displayType, it.comment) }
             conn.createStatement().use { stmt ->
                 // 与分段扫描同口径的单条 SQL 超时(系统设置可改,回落配置文件默认值)
                 stmt.queryTimeout = systemSettingsService.scanSettings().statementTimeoutSeconds
@@ -94,11 +96,14 @@ class PreviewService(
                 ).use { rs ->
                     SXSSFWorkbook(200).use { wb ->
                         val sheet = wb.createSheet("数据预览")
-                        val head = sheet.createRow(0)
+                        // 两行表头:第一行字段中文名称(取列注释,缺失回退英文列名),第二行字段英文名称
+                        val headZh = sheet.createRow(0)
+                        val headEn = sheet.createRow(1)
                         columns.forEachIndexed { i, c ->
-                            head.createCell(i).setCellValue(if (c.type.isBlank()) c.name else "${c.name} ${c.type}")
+                            headZh.createCell(i).setCellValue(c.comment?.takeIf { it.isNotBlank() } ?: c.name)
+                            headEn.createCell(i).setCellValue(c.name)
                         }
-                        var r = 1
+                        var r = 2
                         val colCount = rs.metaData.columnCount
                         while (rs.next()) {
                             val row = sheet.createRow(r++)

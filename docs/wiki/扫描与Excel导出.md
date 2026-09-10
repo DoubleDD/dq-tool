@@ -62,7 +62,7 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 - **机制**(`ListExportService` common + `ListExportController` server):前端把当前表格的表头与行(展示口径字符串,空单元格传空串)POST `/api/list-exports` → 后端 POI 渲染 xlsx 内存暂存并返回一次性 token → 前端 `utils/listExport.js` 的 `exportListToExcel` 拿 token 后走既有 `downloadFile` GET `/api/list-exports/{token}` 下载(桌面端 Tauri 原生保存对话框零改动);token 取走即删,5 分钟过期
 - **与扫描结果导出的分工**:扫描结果 Excel(`ExportService`)是含业务查询的多 sheet 定制结构;通用列表导出不含任何业务查询,数据完全由前端按展示口径组装,因此各列表页可直接复用
-- 数据预览 tab 为服务端分页(每页固定 20 条),导出的是当前页;rows 集合元素不建模为可空——Jackson 3 Kotlin 模块(NewStrictNullChecks)对嵌套集合内的 null 一律 400
+- 数据预览 tab 例外:不走通用列表导出,改走服务端流式导出 `GET .../tables/:name/preview/export`(符合 WHERE 条件的全部行,保持 ORDER BY;两行表头——第一行字段中文名称(取列注释,缺失回退英文列名)、第二行字段英文名称,不含数据类型,见 `PreviewService.exportTable` 与 [前端页面与按钮逻辑](前端页面与按钮逻辑.md));通用列表导出的 rows 集合元素不建模为可空——Jackson 3 Kotlin 模块(NewStrictNullChecks)对嵌套集合内的 null 一律 400
 
 ## 扫描记录导出/导入(跨机器迁移)
 

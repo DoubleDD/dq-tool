@@ -155,8 +155,11 @@
           <el-table-column type="index" label="#" width="50" :index="(previewPage - 1) * previewSize + 1" />
           <el-table-column v-for="col in previewColumns" :key="col.key" :prop="col.key" min-width="140" show-overflow-tooltip>
             <template #header>
-              <div>{{ col.name }}</div>
-              <div style="font-size: 12px; font-weight: normal; color: var(--el-text-color-placeholder)">{{ col.type }}</div>
+              <div class="pv-h-name">{{ col.name }}</div>
+              <div class="pv-h-sub">{{ col.type }}</div>
+              <div class="pv-h-sub pv-h-comment" :title="col.comment || undefined">
+                {{ col.comment || '—' }}
+              </div>
             </template>
             <template #default="{ row }">
               <span v-if="row[col.key] !== null && row[col.key] !== undefined">{{ row[col.key] }}</span>
@@ -260,7 +263,7 @@ const jobTable = ref(null)    // 任务中该表的统计概览
 const loading = ref(false)
 const indexesLoading = ref(false)
 const indexesLoaded = ref(false)  // 索引是否已加载(懒加载)
-const previewColumns = ref([])    // 预览列定义 [{key, name, type}],key 为 c+序号 映射行数组
+const previewColumns = ref([])    // 预览列定义 [{key, name, type, comment}],key 为 c+序号 映射行数组
 const previewRows = ref([])       // 预览行(原始数组,元素为字符串/null)
 const previewLoading = ref(false)
 const previewLoaded = ref(false)  // 预览是否已加载(懒加载)
@@ -501,7 +504,7 @@ async function loadPreview(page = previewPage.value || 1) {
     params.set('size', String(previewSize.value))
     const url = `${base}/tables/${encodeURIComponent(tableName)}/preview?${params.toString()}`
     const data = await request.get(url)
-    previewColumns.value = (data.columns || []).map((c, i) => ({ key: 'c' + i, name: c.name, type: c.type }))
+    previewColumns.value = (data.columns || []).map((c, i) => ({ key: 'c' + i, name: c.name, type: c.type, comment: c.comment || '' }))
     previewRows.value = data.rows || []
     previewTotal.value = data.total ?? 0
     previewPage.value = data.page ?? page
@@ -685,6 +688,22 @@ onMounted(async () => {
 .preview-table {
   --el-table-text-color: var(--el-text-color-primary);
   --el-table-header-text-color: var(--el-text-color-primary);
+}
+
+/* 数据预览表头:三行依次为 字段名 / 类型 / 注释;后两行次级小字,
+   注释(或缺失占位 —)超长省略,悬停 title 看全文 */
+.preview-table .pv-h-name {
+  line-height: 1.5;
+}
+.preview-table .pv-h-sub {
+  font-size: 12px;
+  font-weight: normal;
+  color: var(--el-text-color-placeholder);
+  line-height: 1.5;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 单元格点击可复制,用 copy 光标提示可交互 */
