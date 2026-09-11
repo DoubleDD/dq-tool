@@ -92,7 +92,12 @@ set STAGE=tauri\src-tauri\target\release\portable
 set ZIP=tauri\src-tauri\target\release\dq-tool_%VERSION%_windows-portable.zip
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%\dq-tool\data"
-copy "tauri\src-tauri\target\release\dq-tool.exe" "%STAGE%\dq-tool\" >nul || exit /b 1
+rem --no-bundle keeps the cargo binary name (dq-tool-tauri.exe): only the bundle step
+rem renames it to productName (dq-tool). Copy whichever exists and always ship it as
+rem dq-tool.exe so the portable folder matches the installed layout and PORTABLE.txt
+set EXE_SRC=tauri\src-tauri\target\release\dq-tool-tauri.exe
+if not exist "%EXE_SRC%" set EXE_SRC=tauri\src-tauri\target\release\dq-tool.exe
+copy "%EXE_SRC%" "%STAGE%\dq-tool\dq-tool.exe" >nul || exit /b 1
 xcopy "%RES%" "%STAGE%\dq-tool\resources\" /E /I /Q >nul || exit /b 1
 
 rem PORTABLE.txt is the marker is_portable() checks: when present next to the exe the

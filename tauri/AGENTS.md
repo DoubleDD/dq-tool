@@ -121,7 +121,10 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   tauri-build 会把 resources 复制到 `target/release/resources` 且保留权限,
   再次构建覆盖只读旧文件即报 EACCES(Permission denied),2026-08 踩过
 - **Windows 绿色免安装 zip**(`scripts\package-tauri-win-portable.bat`):资源组装与 NSIS 版相同,
-  但 `tauri build --no-bundle` 只出裸 exe,随后把 `dq-tool.exe` + `resources/` + 空 `data/` +
+  但 `tauri build --no-bundle` 只出裸 exe,**产物是 cargo 包名 `dq-tool-tauri.exe`**(`--no-bundle`
+  跳过 bundle 阶段的 productName 重命名,`target/release/` 下始终没有 `dq-tool.exe`),
+  脚本按 `dq-tool-tauri.exe` 优先、`dq-tool.exe` 兜底取源并统一复制成 `dq-tool.exe`,
+  随后把 `dq-tool.exe` + `resources/` + 空 `data/` +
   `PORTABLE.txt` 标记文件组装成 `dq-tool/` 目录,PowerShell `Compress-Archive` 打成
   `dq-tool_<version>_windows-portable.zip`(落在 `tauri/src-tauri/target/release/`)。
   运行时 `is_portable()` 检测 exe 同目录 `PORTABLE.txt`:命中则数据目录用 `<exe>/data`、
