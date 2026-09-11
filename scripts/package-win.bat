@@ -38,6 +38,11 @@ copy "%JAR%" "%INPUT%\" >nul
 rem 原生启动画面:打包进 app 镜像,启动时经 -splash:${APPDIR}/splash.png 立即显示(见下方 jpackage 参数)
 copy "server\src\main\resources\splash.png" "%INPUT%\" >nul
 
+rem Frontend assets are on disk now (the fat jar no longer embeds static/): stage web\dist
+rem into the app image and serve it at runtime via -Ddq.web.static-dir=${APPDIR}/static
+rmdir /s /q "%INPUT%\static" 2>nul
+xcopy "web\dist" "%INPUT%\static\" /E /I /Q >nul || exit /b 1
+
 rem 免安装绿色目录(app-image),解压后双击 dq-tool.exe 即用
 rem 数据目录固定为 %%USERPROFILE%%\.dq-tool\data(${user.home} 由应用启动时展开,见 ConfigLoader)
 rem 内嵌完整 JRE 而非 jdeps/jlink 裁剪:JDBC 驱动大量反射/按名加载(实测:达梦驱动初始化要
@@ -63,6 +68,7 @@ jpackage ^
   --main-jar dq-tool-%APP_VERSION%.jar ^
   --main-class com.example.dq.DqApplication ^
   --java-options "-Ddq.data-dir=${user.home}/.dq-tool/data" ^
+  --java-options "-Ddq.web.static-dir=${APPDIR}/static" ^
   --java-options "-Djava.awt.headless=false" ^
   --java-options "-XX:+UseG1GC" ^
   --java-options "-Xmx384m" ^

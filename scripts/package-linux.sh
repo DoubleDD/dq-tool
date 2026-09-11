@@ -33,6 +33,9 @@ rm -rf "$INPUT" && mkdir -p "$INPUT"
 cp "$JAR" "$INPUT/"
 # 原生启动画面:打包进 app 镜像,经 -splash:${APPDIR}/splash.png 点击图标即显示(见下方 jpackage 参数)
 cp server/src/main/resources/splash.png "$INPUT/"
+# 前端产物(jar 已不含 static):拷到 app 镜像 static/ 子目录,运行时经 -Ddq.web.static-dir=${APPDIR}/static 从磁盘发
+rm -rf "$INPUT/static" && mkdir -p "$INPUT/static"
+cp -R web/dist/. "$INPUT/static/"
 
 # 数据目录存到 ~/.dq-tool/data(${user.home} 由应用启动时展开,见 ConfigLoader)
 # 内嵌完整 JRE 而非 jdeps/jlink 裁剪:JDBC 驱动大量反射/按名加载(实测:达梦驱动初始化要
@@ -55,6 +58,7 @@ jpackage \
   --main-jar "dq-tool-${APP_VERSION}.jar" \
   --main-class com.example.dq.DqApplication \
   --java-options '-Ddq.data-dir=${user.home}/.dq-tool/data' \
+  --java-options '-Ddq.web.static-dir=${APPDIR}/static' \
   --java-options '-Djava.awt.headless=false' \
   --java-options '-XX:+UseG1GC' \
   --java-options '-Xmx384m' \
