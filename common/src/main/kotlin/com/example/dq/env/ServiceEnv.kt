@@ -9,6 +9,7 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.MetaCacheRepository
+import com.example.dq.repository.MetaSyncRepository
 import com.example.dq.repository.LicenseRepository
 import com.example.dq.repository.ManualCollectRepository
 import com.example.dq.repository.ObjectCatalogRepository
@@ -42,9 +43,11 @@ import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
 import com.example.dq.service.LanShareService
+import com.example.dq.service.LocalH2ConsoleService
 import com.example.dq.service.ManualCollectService
 import com.example.dq.service.ObjectCatalogService
 import com.example.dq.service.MetadataService
+import com.example.dq.service.MetaSyncService
 import com.example.dq.service.PreviewService
 import com.example.dq.service.RelationInferService
 import com.example.dq.service.SampleExportService
@@ -112,6 +115,7 @@ class ServiceEnv(val config: AppConfig) {
     val objectCatalogRepo = ObjectCatalogRepository(jdbc)
     val tableRelationRepo = TableRelationRepository(jdbc)
     val relationInferJobRepo = RelationInferJobRepository(jdbc)
+    val metaSyncRepo = MetaSyncRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -148,8 +152,11 @@ class ServiceEnv(val config: AppConfig) {
     val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
         dialectFactory, systemSettingsService, executor, chunkRunner, autoTagService, scanDocService, scanAiTracker)
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
+    val metaSyncService = MetaSyncService(metaSyncRepo, metadataService, dataSourceService, dialectFactory)
     val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
     val sqlConsoleService = SqlConsoleService(dataSourceService, systemSettingsService, dialectFactory)
+    /** 本地 H2 库(应用自身配置库)只读查询:SQL 控制台「本地 H2 库」入口,复用主库连接池 */
+    val localH2ConsoleService = LocalH2ConsoleService(dataSource, systemSettingsService)
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, tableSystemRepo, dataSourceRepo)
     val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
     /** 局域网共享:UDP 发现(纯网络,不做持久化)+ 拉取导入编排;start(httpPort) 由壳层在内核就绪后调用 */
@@ -188,6 +195,7 @@ class ServiceEnv(val config: AppConfig) {
         wordReportExportService.recoverUnfinished()
         sampleExportService.recoverUnfinished()
         relationInferJobRepo.failRunningOnStartup()
+        metaSyncService.recoverUnfinished()
     }
 
     fun shutdown() {

@@ -66,7 +66,10 @@
         </template>
 
         <!-- 字段列表:基础结构列 + (已扫描时)统计列;表头吸顶走全局 sticky 口径(style.css),页签内需放开 tabs content 裁剪见下方样式 -->
-        <el-table v-else :data="filteredColumns" v-loading="loading" border>
+        <template v-else>
+        <!-- 字段结构加载失败(断网且无缓存):行内错误提示,其余区块照常渲染 -->
+        <el-alert v-if="columnsError" type="error" :closable="false" show-icon :title="columnsError" style="margin-bottom: 12px" />
+        <el-table :data="filteredColumns" v-loading="loading" border>
           <el-table-column type="index" label="序号" width="60" />
           <el-table-column prop="name" label="字段名" min-width="140" sortable show-overflow-tooltip />
           <el-table-column prop="comment" label="注释" min-width="140" sortable show-overflow-tooltip>
@@ -122,6 +125,7 @@
             </el-table-column>
           </template>
         </el-table>
+        </template>
       </el-tab-pane>
 
       <el-tab-pane label="索引结构" name="indexes">
@@ -275,18 +279,29 @@
         <div class="er-canvas-wrap" v-loading="graphLoading">
           <TableGraphCanvas
             v-if="activeTab === 'graph' && graphData.nodes.length"
+            ref="tableGraphRef"
             :nodes="graphData.nodes"
-            :edges="graphData.edges"
+            :edges="graphEdges"
             :anchor-table="tableName"
             layout="force"
+            :sizes="graphSizes"
             :colors="graphColors"
             :highlight="graphHighlight"
             :selected="graphPanelTable"
+            :edge-width="graphEdgeWidth"
+            :label-opacity="graphLabelOpacity"
+            :center-strength="graphCenterStrength"
+            :charge-strength="graphChargeStrength"
+            :link-strength="graphLinkStrength"
             @node-click="onGraphNodeClick"
             @node-open="goOtherTable"
             @canvas-click="graphPanelTable = ''"
           >
             <template #toolbar>
+              <!-- 样式/力导参数设置:紧跟底座三个内置工具图标(重绘/1:1/适应画布)之后 -->
+              <el-tooltip content="图谱样式与力导参数" placement="bottom">
+                <el-button size="small" :icon="Setting" @click="graphDebugVisible = !graphDebugVisible" />
+              </el-tooltip>
               <!-- 标记筛选:选项为当前图节点上出现过的标记;命中节点保持高亮,未命中大幅降亮度 -->
               <el-select v-model="graphFilterTags" multiple collapse-tags collapse-tags-tooltip clearable
                          placeholder="按标记筛选" size="small" style="width: 220px">
@@ -305,13 +320,49 @@
                   <span class="graph-color-swatch graph-color-swatch-sm" :style="{ background: value }" />
                 </template>
               </el-select>
-              <span style="font-size: 12px; color: var(--el-text-color-secondary)">
-                节点颜色取自标记色,点节点可自定义;双击节点跳字段明细
-              </span>
             </template>
           </TableGraphCanvas>
           <el-empty v-else-if="!graphLoading && graphLoaded"
                     description="暂无关联关系,可在「ER 关系」页签推导或手动补充" :image-size="60" />
+          <!-- 调试面板(左下角悬浮卡片,与对象管理「图谱」页签同款):边长/节点尺寸/连线粗细/文本透明度/力导三力实时调节,重置恢复默认 -->
+          <div v-if="graphDebugVisible" class="graph-debug">
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">连线边长</span>
+              <el-input-number v-model="graphLinkDist" :min="20" :max="300" :step="10" size="small" />
+            </div>
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">中心节点</span>
+              <el-input-number v-model="graphAnchorSize" :min="24" :max="160" :step="4" size="small" />
+            </div>
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">表节点</span>
+              <el-input-number v-model="graphNodeSize" :min="12" :max="120" :step="2" size="small" />
+            </div>
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">连线粗细</span>
+              <el-input-number v-model="graphEdgeWidth" :min="0.5" :max="6" :step="0.2" :precision="1" size="small" />
+            </div>
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">文本透明度</span>
+              <el-input-number v-model="graphLabelOpacity" :min="0.1" :max="1" :step="0.05" :precision="2" size="small" />
+            </div>
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">图谱向心力</span>
+              <el-input-number v-model="graphCenterStrength" :min="0" :max="1" :step="0.05" :precision="2" size="small" />
+            </div>
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">节点排斥力</span>
+              <el-input-number v-model="graphChargeStrength" :min="0" :max="3" :step="0.1" :precision="1" size="small" />
+            </div>
+            <div class="graph-debug-row">
+              <span class="graph-debug-label">连线吸引力</span>
+              <el-input-number v-model="graphLinkStrength" :min="0" :max="2" :step="0.1" :precision="1" size="small" />
+            </div>
+            <div class="graph-debug-footer">
+              <el-button size="small" @click="resetGraphDebug">重置</el-button>
+              <el-button size="small" :icon="Refresh" @click="redrawGraph">刷新</el-button>
+            </div>
+          </div>
           <!-- 节点点击面板:右上角悬浮卡片——表名全称(有注释时标题为注释,长注释自动换行)、字段列表(英文名/中文名/类型,
                点开面板时按表懒拉)、节点颜色行(取色器 + 标记[点标记把标记色设为节点色,空表固定排最后] + 恢复默认) -->
           <div v-if="graphPanelTable" class="graph-node-panel">
@@ -398,7 +449,7 @@
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from '../utils/notify'
-import { Close, Refresh } from '@element-plus/icons-vue'
+import { Close, Refresh, Setting } from '@element-plus/icons-vue'
 import request, { getRelationGraph } from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
@@ -431,6 +482,7 @@ const db = ref(isScanRoute ? '' : (route.query.db || ''))
 const jobId = ref(isScanRoute ? route.params.jobId : (route.query.jobId || ''))
 
 const metaColumns = ref([])   // 结构字段(元数据)
+const columnsError = ref('')  // 字段结构加载失败提示(断网且无本地缓存时置字段列表为空)
 const indexes = ref([])       // 索引结构
 const statsColumns = ref([])  // 扫描统计字段(有扫描时)
 const jobTable = ref(null)    // 任务中该表的统计概览
@@ -582,13 +634,20 @@ async function load(refresh = false) {
     const url = `${base}/tables/${encodeURIComponent(tableName)}`
 
     // 结构 + 扫描统计并行拉取(索引懒加载,切到索引 tab 时才请求)
+    // columns 兜底:断网且无本地缓存时请求失败,字段列表置空并给出错误提示,其余区块(扫描统计/索引/标签)照常渲染
     const [cols, stats] = await Promise.all([
-      request.get(`${url}/columns${q}`),
+      request.get(`${url}/columns${q}`).catch(() => null),
       jobId.value
         ? request.get(`/scans/${jobId.value}/tables/${encodeURIComponent(tableName)}/columns`).catch(() => [])
         : Promise.resolve([])
     ])
-    metaColumns.value = cols
+    if (cols) {
+      metaColumns.value = cols
+      columnsError.value = ''
+    } else {
+      metaColumns.value = []
+      columnsError.value = '字段结构加载失败,数据源可能不可达;恢复网络后点「刷新」重试'
+    }
     statsColumns.value = stats || []
   } finally {
     loading.value = false
@@ -930,6 +989,57 @@ const graphTagsMap = ref({})
 // 筛选:标记多选 / 颜色多选;任一维度有选中即生效,命中节点高亮、未命中降亮度
 const graphFilterTags = ref([])
 const graphFilterColors = ref([])
+// 调试面板(工具栏设置图标展开,左下角悬浮):边长/节点尺寸/力导三力 → 图数据重建、仿真重排;
+// 连线粗细/文本透明度为纯渲染口径 → 画布 repaint 原地刷样式(不重建不重跑仿真,规则见底座 BaseGraphCanvas 注释)
+// 默认值 = 用户调定口径(只影响本页;画布组件 prop 缺省不变,对象管理「图谱」仍吃组件缺省)
+const GRAPH_DIST_DEFAULT = 120
+const GRAPH_ANCHOR_SIZE_DEFAULT = 70
+const GRAPH_NODE_SIZE_DEFAULT = 25
+// 连线粗细(px,候选边基准;确认边 +0.4)与文本透明度(0~1)
+const GRAPH_EDGE_WIDTH_DEFAULT = 0.5
+const GRAPH_LABEL_OPACITY_DEFAULT = 0.8
+// 力导三力:向心力 = d3 forceX/forceY 强度(0~1);排斥力/吸引力为倍率(乘在画布内部分档 叶子-220/内部-80、短边0.8/长边0.15 上)
+const GRAPH_CENTER_STRENGTH_DEFAULT = 0.05
+const GRAPH_CHARGE_STRENGTH_DEFAULT = 2
+const GRAPH_LINK_STRENGTH_DEFAULT = 0.2
+const graphLinkDist = ref(GRAPH_DIST_DEFAULT)
+const graphAnchorSize = ref(GRAPH_ANCHOR_SIZE_DEFAULT)
+const graphNodeSize = ref(GRAPH_NODE_SIZE_DEFAULT)
+const graphEdgeWidth = ref(GRAPH_EDGE_WIDTH_DEFAULT)
+const graphLabelOpacity = ref(GRAPH_LABEL_OPACITY_DEFAULT)
+const graphCenterStrength = ref(GRAPH_CENTER_STRENGTH_DEFAULT)
+const graphChargeStrength = ref(GRAPH_CHARGE_STRENGTH_DEFAULT)
+const graphLinkStrength = ref(GRAPH_LINK_STRENGTH_DEFAULT)
+const graphDebugVisible = ref(false)
+const tableGraphRef = ref(null)
+/** 调试面板「重置」:全部参数恢复默认 + 强制整体重绘——redraw 与参数变更走同一条重建路径,
+ *  一次 setData+render 到位(力导按默认配置重跑仿真),不做「先原地刷默认样式再重排」的两段式 */
+function resetGraphDebug() {
+  graphLinkDist.value = GRAPH_DIST_DEFAULT
+  graphAnchorSize.value = GRAPH_ANCHOR_SIZE_DEFAULT
+  graphNodeSize.value = GRAPH_NODE_SIZE_DEFAULT
+  graphEdgeWidth.value = GRAPH_EDGE_WIDTH_DEFAULT
+  graphLabelOpacity.value = GRAPH_LABEL_OPACITY_DEFAULT
+  graphCenterStrength.value = GRAPH_CENTER_STRENGTH_DEFAULT
+  graphChargeStrength.value = GRAPH_CHARGE_STRENGTH_DEFAULT
+  graphLinkStrength.value = GRAPH_LINK_STRENGTH_DEFAULT
+  tableGraphRef.value?.redraw()
+}
+/** 调试面板「刷新」:参数不动,按当前配置强制整体重绘(力导重跑仿真,带动画) */
+function redrawGraph() {
+  tableGraphRef.value?.redraw()
+}
+// 图边:补上 distance 分档字段(语义 = 可见连线长度/两圆边缘间距,画布按边 id 回查入力导 link 回调)
+const graphEdges = computed(() =>
+  (graphData.value.edges || []).map((e) => ({ ...e, distance: graphLinkDist.value })))
+// 节点尺寸分档:锚点(本表)中心大节点 > 邻表小节点(sizes prop 优先级高于画布默认值)
+const graphSizes = computed(() => {
+  const m = {}
+  for (const n of graphData.value.nodes || []) {
+    m[n.name] = n.name === tableName ? graphAnchorSize.value : graphNodeSize.value
+  }
+  return m
+})
 // 节点点击面板(自定义颜色)
 const graphPanelTable = ref('')
 const graphPanelColor = ref('')
@@ -1314,6 +1424,45 @@ onMounted(async () => {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
   overflow: hidden;
+}
+/* 图谱页签:调试面板(左下角悬浮卡片,毛玻璃底与节点面板同口径,与对象管理「图谱」odg-debug 同款) */
+.graph-debug {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  /* 按内容收缩(行 = 标签 96 + 间距 10 + 小号数字框 120),不写死宽度防右侧留白 */
+  width: max-content;
+  background: color-mix(in srgb, var(--el-bg-color) 55%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-light);
+  padding: 10px 12px;
+  z-index: 10;
+}
+.graph-debug-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.graph-debug-row + .graph-debug-row {
+  margin-top: 4px;
+}
+.graph-debug-label {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  width: 96px;
+}
+.graph-debug-footer {
+  margin-top: 8px;
+  /* 相邻 el-button 的默认 12px 左 margin 去掉,用 gap 控制「重置/刷新」间距 */
+  display: flex;
+  gap: 8px;
+}
+.graph-debug-footer .el-button + .el-button {
+  margin-left: 0;
 }
 /* 图谱页签:筛选下拉选项内的颜色圆点 */
 .graph-tag-dot {

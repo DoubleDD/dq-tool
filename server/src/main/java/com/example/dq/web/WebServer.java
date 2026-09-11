@@ -19,6 +19,7 @@ import com.example.dq.controller.LicenseController;
 import com.example.dq.controller.ListExportController;
 import com.example.dq.controller.LanController;
 import com.example.dq.controller.MetadataController;
+import com.example.dq.controller.MetadataSyncController;
 import com.example.dq.controller.PreviewController;
 import com.example.dq.controller.RelationController;
 import com.example.dq.controller.ReportExportController;
@@ -104,6 +105,7 @@ public class WebServer {
     private final AtomicReference<ScanController> scanCtrl = new AtomicReference<>();
     private final AtomicReference<ScanTransferController> scanTransferCtrl = new AtomicReference<>();
     private final AtomicReference<MetadataController> metaCtrl = new AtomicReference<>();
+    private final AtomicReference<MetadataSyncController> metaSyncCtrl = new AtomicReference<>();
     private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
     private final AtomicReference<SampleExportController> sampleExportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
@@ -161,7 +163,7 @@ public class WebServer {
             }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
-                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, reportCtrl, sampleExportCtrl, tagCtrl,
+                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, metaSyncCtrl, reportCtrl, sampleExportCtrl, tagCtrl,
                     manualCollectCtrl, objectCatalogCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     changelogCtrl, lanCtrl, relationCtrl,
@@ -184,6 +186,7 @@ public class WebServer {
                                 AtomicReference<ScanController> scanCtrl,
                                 AtomicReference<ScanTransferController> scanTransferCtrl,
                                 AtomicReference<MetadataController> metaCtrl,
+                                AtomicReference<MetadataSyncController> metaSyncCtrl,
                                 AtomicReference<ReportExportController> reportCtrl,
                                 AtomicReference<SampleExportController> sampleExportCtrl,
                                 AtomicReference<TagController> tagCtrl,
@@ -313,6 +316,11 @@ public class WebServer {
         routes.get("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/preview/export", ctx -> previewCtrl.get().export(ctx));
         // SQL 控制台:对数据源执行任意 SQL,返回结果集或受影响行数
         routes.post("/api/datasources/{dsId}/sql/execute", ctx -> sqlConsoleCtrl.get().execute(ctx));
+        // SQL 控制台「本地 H2 库」:应用自身配置库只读查询(写语句 400),schema/表/字段供智能提示
+        routes.post("/api/sql-console/local-h2/execute", ctx -> sqlConsoleCtrl.get().executeLocalH2(ctx));
+        routes.get("/api/sql-console/local-h2/schemas", ctx -> sqlConsoleCtrl.get().localH2Schemas(ctx));
+        routes.get("/api/sql-console/local-h2/tables", ctx -> sqlConsoleCtrl.get().localH2Tables(ctx));
+        routes.get("/api/sql-console/local-h2/columns", ctx -> sqlConsoleCtrl.get().localH2Columns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/column-count", ctx -> metaCtrl.get().countColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/columns", ctx -> metaCtrl.get().schemaColumns(ctx));
         routes.get("/api/datasources/{dsId}/schemas/{schema}/latest-scan-jobs", ctx -> metaCtrl.get().latestScanJobs(ctx));
@@ -348,6 +356,13 @@ public class WebServer {
         routes.post("/api/sample-exports/{id}/reimport", ctx -> sampleExportCtrl.get().reimport(ctx));
         // 批量删除刻意避开 /api/sample-exports/ 前缀注册(同前缀静态段会被 {id} 吃掉报 400,见上方 template 注释)
         routes.post("/api/sample-exports-delete", ctx -> sampleExportCtrl.get().delete(ctx));
+
+        // ---- 元数据批量同步(数据源页「刷新」)----
+        routes.post("/api/metadata-sync", ctx -> metaSyncCtrl.get().submit(ctx));
+        // 静态段 latest 须先于 {id} 注册,避免被路径参数路由截获(同 /api/scans/transfer 先例)
+        routes.get("/api/metadata-sync/latest", ctx -> metaSyncCtrl.get().latest(ctx));
+        routes.get("/api/metadata-sync/{id}", ctx -> metaSyncCtrl.get().detail(ctx));
+        routes.post("/api/metadata-sync/{id}/cancel", ctx -> metaSyncCtrl.get().cancel(ctx));
 
         // ---- 表标记与统计 ----
         routes.get("/api/tags", ctx -> tagCtrl.get().list(ctx));
@@ -724,6 +739,7 @@ public class WebServer {
         scanTransferCtrl.set(new ScanTransferController(env.getScanTransferService()));
         metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService(),
                 env.getTableSystemService(), env.getDbStructExportService(), env.getDataSourceService()));
+        metaSyncCtrl.set(new MetadataSyncController(env.getMetaSyncService()));
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
         tagCtrl.set(new TagController(env.getTagService()));
@@ -734,7 +750,7 @@ public class WebServer {
         settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener));
         licenseCtrl.set(new LicenseController(env.getLicenseService()));
         previewCtrl.set(new PreviewController(env.getPreviewService()));
-        sqlConsoleCtrl.set(new SqlConsoleController(env.getSqlConsoleService()));
+        sqlConsoleCtrl.set(new SqlConsoleController(env.getSqlConsoleService(), env.getLocalH2ConsoleService()));
         annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
         listExportCtrl.set(new ListExportController(env.getListExportService()));
         diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), logStreamAppender));

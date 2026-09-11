@@ -5,8 +5,8 @@
        本组件只负责星型图专属部分:静态坐标、圆形节点样式(颜色/光晕/选中态)、边样式。
        容器需显式高度(由父级布局保证) -->
   <BaseGraphCanvas ref="baseRef" :data="graphData" :options="graphOptions" fit="center" :default-zoom="1"
-    :refit-on-data-change="false" :animated="layout === 'force'" @node-click="(id) => emit('node-click', id)"
-    @node-dblclick="(id) => emit('node-open', id)" @canvas-click="emit('canvas-click')" @rendered="applyOverlay">
+    :refit-on-data-change="false" :animated="layout === 'force'" @node-click="onNodeClick"
+    @node-dblclick="(id) => emit('node-open', id)" @canvas-click="emit('canvas-click')" @rendered="onRendered">
     <!-- 业务工具透传:标记/颜色筛选等由调用方按需给 -->
     <template #toolbar>
       <slot name="toolbar" />
@@ -27,10 +27,15 @@ import { themeState } from '../stores/theme'
 //    colors prop 传入;只显示表名——中文注释优先、无注释回退英文表名,超长截断);
 //  边 = 关系(候选虚线灰色 / 确认实线主题色 / 疑似多对多红色,连线上不标基数,关系详情去 ER 页签看);
 //  筛选高亮:highlight 非空时命中的节点保持原色并加光晕,未命中的节点/关联边大幅降低透明度;
-//  高亮/选中态不进结构数据——变化时走 repaint 原地刷样式(setData+draw,不跑布局、不动力导仿真),
-//  结构重建(数据/颜色/尺寸)才经底座整体 render,重建后借 rendered 事件补刷覆盖层;
+//  高亮/选中态与渲染口径样式(连线粗细/文本透明度)不进结构数据——变化时走 repaint 原地刷样式
+//  (setData+draw,不跑布局、不动力导仿真),结构重建(数据/颜色/尺寸/力导参数)才经底座整体 render,
+//  重建后借 rendered 事件补刷覆盖层;
 //  静态模式下坐标算完统一过一遍碰撞消解(resolveOverlaps):重叠节点先在原圈向两侧错开角度,
 //  整圈放不下再逐档外扩半径(延长连接线)直到不重叠;力导模式由 collide 力承担防重叠
+// 渲染口径样式默认值:连线粗细基准(px)/文本透明度;props 缺省与结构数据(见 graphData 的 STRUCT_STYLE)共用
+const EDGE_WIDTH_DEFAULT = 1.4
+const LABEL_OPACITY_DEFAULT = 1
+
 const props = defineProps({
   // 图节点:[{ name, comment }]
   nodes: { type: Array, default: () => [] },
@@ -55,14 +60,48 @@ const props = defineProps({
   highlight: { type: Array, default: null },
   // 当前选中节点表名(父级点击面板打开的节点),画布上加深描边呈现选中态
   selected: { type: String, default: '' },
+  // 连线粗细基准(px,候选/未确认边的线宽;确认边在此基础上 +0.4 加粗)。
+  // 纯渲染口径(不进布局输入):实时调节走 applyOverlay 的 repaint 原地刷,不重建不重跑仿真
+  edgeWidth: { type: Number, default: EDGE_WIDTH_DEFAULT },
+  // 节点标签文本透明度(0~1;筛选未命中态在此基础上再打 0.25 折)。纯渲染口径,同 edgeWidth 走 repaint
+  labelOpacity: { type: Number, default: LABEL_OPACITY_DEFAULT },
+  // 向心力强度(d3 forceX/forceY 的 strength,0~1,把节点向画布中心拉;0.1 与 d3 默认一致)。布局输入,调节即重排
+  centerStrength: { type: Number, default: 0.1 },
+  // 节点排斥力倍率(乘在 manyBody 分档[叶子 -220 / 内部 -80]上)。布局输入,调节即重排
+  chargeStrength: { type: Number, default: 1 },
+  // 相连节点吸引力倍率(乘在 link strength 分档[短边 0.8 / 长边 0.15]上)。布局输入,调节即重排
+  linkStrength: { type: Number, default: 1 },
   // 布局方式:static=静态星型/径向(坐标算死,关动画一次渲染到位);force=d3-force 力导向
   // (不预设坐标自动编排,边长按边上的 distance 分档、长边弱短边强、叶子斥力更大、collide 防重叠)
   layout: { type: String, default: 'static' }
 })
 
-// node-click:单击节点(传表名,父级开颜色设置面板);node-open:双击节点(传表名,跳字段明细);
-// canvas-click:点击画布空白(父级可用来取消选中/关面板)
-const emit = defineEmits(['node-click', 'node-open', 'canvas-click'])
+// node-click:单击节点圆形本体(传表名,父级开颜色设置面板);
+// node-label-click:单击节点标签文本(与节点点击拆开捕捉——G6 节点是 DisplayObject 组,文本是组内
+//   label 子图形,事件 e.target 恒为节点元素,实际命中图形在 e.originalTarget,沿其祖先链判 className 即可区分);
+// node-open:双击节点(传表名,跳字段明细);canvas-click:点击画布空白(父级可用来取消选中/关面板)
+const emit = defineEmits(['node-click', 'node-label-click', 'node-open', 'canvas-click'])
+
+/** 事件命中的子图形是否属于节点内指定 className(key/label/halo...)的图形:
+ *  从 e.originalTarget(实际命中的叶子图形,如 label 组内的 text)沿祖先链找到 e.target(节点元素)为止 */
+function hitShape(e, className) {
+  let s = e?.originalTarget
+  const stop = e?.target
+  while (s && s !== stop) {
+    if (s.className === className) return true
+    s = s.parentElement
+  }
+  return false
+}
+
+/** 单击分发:命中标签文本 → 独立的 node-label-click(不触发节点点击);命中圆形本体/光晕 → node-click */
+function onNodeClick(id, _data, e) {
+  if (hitShape(e, 'label')) {
+    emit('node-label-click', id)
+    return
+  }
+  emit('node-click', id)
+}
 
 const baseRef = ref(null)
 
@@ -199,14 +238,15 @@ function placeRadial(pos, neighbors) {
   assign(props.anchorTable, -Math.PI / 2, Math.PI * 1.5) // 整圈
 }
 
-/** 边样式:候选虚线灰色 / 确认实线主题色 / 疑似多对多红色;连线不标基数(关系详情在 ER 页点边看) */
-function edgeStyle(r, dimmed) {
+/** 边样式:候选虚线灰色 / 确认实线主题色 / 疑似多对多红色;连线不标基数(关系详情在 ER 页点边看);
+ *  width = 连线粗细基准(确认边 +0.4 加粗),由 buildData 按渲染口径传入 */
+function edgeStyle(r, dimmed, width) {
   const c = themeColors()
   const suspect = r.cardinality === 'SUSPECT_MANY_TO_MANY'
   const color = suspect ? c.danger : (r.status === 'CONFIRMED' ? c.primary : c.borderDarker)
   return {
     stroke: color,
-    lineWidth: r.status === 'CONFIRMED' ? 1.8 : 1.4,
+    lineWidth: r.status === 'CONFIRMED' ? width + 0.4 : width,
     lineDash: r.status === 'CANDIDATE' ? [6, 4] : 0,
     opacity: dimmed ? 0.06 : 1
   }
@@ -261,10 +301,18 @@ function resolveOverlaps(pos) {
 /** props -> G6 数据;静态坐标直接放节点 style(不跑布局,渲染一次到位);
  *  force 模式不预设坐标(种子会让仿真收敛到种子附近,放不开),交由 d3-force 从零自动编排,
  *  碰撞消解/径向分层等静态逻辑全部跳过。
- *  hl/sel 默认取当前 props;传 null/'' 可剥离高亮/选中态(结构数据用——见 graphData) */
-function buildData(hl, sel) {
+ *  hl/sel 默认取当前 props;传 null/'' 可剥离高亮/选中态(结构数据用——见 graphData);
+ *  style(连线粗细/文本透明度)同理:默认取 live props,结构数据显式传 STRUCT_STYLE 剥离依赖,
+ *  让这两个纯渲染口径参数的实时调节走 applyOverlay 的 repaint 原地刷,不触发重建+重跑仿真 */
+function buildData(hl, sel, style) {
   const c = themeColors()
   const force = props.layout === 'force'
+  // 力导参数(向心力/排斥力/吸引力)只进布局回调不进图数据,这里显式触碰建立依赖:
+  // 变化时 graphData 重建 → 底座整体重渲 → 仿真按新参数重排(与「连线边长」同口径)
+  void props.centerStrength
+  void props.chargeStrength
+  void props.linkStrength
+  const { edgeWidth, labelOpacity } = style ?? { edgeWidth: props.edgeWidth, labelOpacity: props.labelOpacity }
   const pos = force ? new Map() : nodePositions()
   if (!force) resolveOverlaps(pos)
   const hlSet = hl === undefined ? (props.highlight ? new Set(props.highlight) : null) : hl
@@ -310,7 +358,7 @@ function buildData(hl, sel) {
         labelWordWrap: true,
         labelMaxWidth: 140,
         labelMaxLines: 20,
-        labelOpacity: matched ? 1 : 0.25
+        labelOpacity: matched ? labelOpacity : 0.25 * labelOpacity
       }
     }
   })
@@ -319,7 +367,7 @@ function buildData(hl, sel) {
     source: r.oneTable,
     target: r.manyTable,
     style: {
-      ...edgeStyle(r, !!hlSet && !(hlSet.has(r.oneTable) && hlSet.has(r.manyTable))),
+      ...edgeStyle(r, !!hlSet && !(hlSet.has(r.oneTable) && hlSet.has(r.manyTable)), edgeWidth),
       // 层级:连线恒定在节点之下(节点 zIndex=1,理由见节点样式注释);distance 仅入力导回调,不在连线上标数字
       zIndex: 0
     }
@@ -354,7 +402,9 @@ const leafNames = computed(() => {
  *  这里换算加回两端半径,否则大节点半径吃掉边长、且会被 collide 最小圆心距顶开导致长短边一样长;
  *  长边弱(主干摊开)、短边强(卫星节点向目录聚拢);
  *  叶子节点斥力大、内部节点斥力小;collide 半径按节点尺寸分档 + 16px 净距防节点重叠
- *  (padding 不能太大,否则会盖过短边 link 目标);布局动画保持开启(默认):仿真逐帧收敛,drag-element-force 依赖它 */
+ *  (padding 不能太大,否则会盖过短边 link 目标);
+ *  向心力(forceX/forceY)与 link/manyBody 强度倍率均可由父级经 props 实时调节(回调读 live prop,重建即生效);
+ *  布局动画保持开启(默认):仿真逐帧收敛,drag-element-force 依赖它 */
 function forceLayoutOptions() {
   const idOf = (x) => (typeof x === 'object' ? x.id : x)
   const distOf = (e) => edgeDistanceById.value.get(String(e.id)) ?? 60
@@ -367,11 +417,15 @@ function forceLayoutOptions() {
     alphaDecay: 0.06,
     link: {
       distance: (e) => distOf(e) + (sizeOf(idOf(e.source)) + sizeOf(idOf(e.target))) / 2,
-      strength: (e) => (distOf(e) >= 120 ? 0.15 : 0.8)
+      strength: (e) => (distOf(e) >= 120 ? 0.15 : 0.8) * props.linkStrength
     },
     manyBody: {
-      strength: (d) => (leafNames.value.has(d.id) ? -220 : -80)
+      strength: (d) => (leafNames.value.has(d.id) ? -220 : -80) * props.chargeStrength
     },
+    // 向心力:d3 forceX/forceY 把各节点向布局中心拉(位置缺省取视口中心,与现状一致);
+    // strength 传函数——d3 在仿真初始化时逐节点求值,读 live prop 保证调节后重排生效
+    x: { strength: () => props.centerStrength },
+    y: { strength: () => props.centerStrength },
     collide: {
       radius: (d) => sizeOf(d.id) / 2 + 16,
       strength: 0.9
@@ -379,25 +433,69 @@ function forceLayoutOptions() {
   }
 }
 
-// 底座输入:结构数据(节点/边集合、坐标、颜色、尺寸)变化 → 底座整体重建(力导会重新仿真,尽量少触发);
-// 高亮/选中态不进结构数据——它们走下方 applyOverlay 原地刷样式,避免每点一下节点就重建+重跑仿真;
+// 底座输入:结构数据(节点/边集合、坐标、颜色、尺寸、力导参数)变化 → 底座整体重建(力导会重新仿真,尽量少触发);
+// 高亮/选中态与渲染口径样式(连线粗细/文本透明度)不进结构数据——它们走下方 applyOverlay 原地刷样式,
+// 避免每点一下节点/拖一下样式滑杆就重建+重跑仿真;结构数据携带的渲染口径样式固定为默认值(STRUCT_STYLE);
+// redrawTick = 强制整体重绘计数(父级「刷新」/「重置」按钮):递增即重建,与参数变更同一条 refresh 路径,天然合并成一次;
 // 触碰 themeState.dark:亮/暗主题切换时重算(节点/边颜色取自主题变量),底座整体重建换色(不动视口)
+const STRUCT_STYLE = { edgeWidth: EDGE_WIDTH_DEFAULT, labelOpacity: LABEL_OPACITY_DEFAULT }
+const redrawTick = ref(0)
 const graphData = computed(() => {
   void themeState.dark
-  return buildData(null, '')
+  void redrawTick.value
+  return buildData(null, '', STRUCT_STYLE)
 })
 
-// 高亮/选中态覆盖层:变化时经底座 repaint(setData+draw,不跑布局、不动仿真)原地刷透明度/光晕/描边;
-// 结构重建(力导重排)后样式被 graphData 重置,借底座 rendered 事件补刷;签名判重防 rendered↔repaint 循环
+// 覆盖层(高亮/选中态/渲染口径样式):变化时经底座 repaint(setData+draw,不跑布局、不动仿真)原地刷透明度/
+// 光晕/描边/线宽/标签透明度;结构重建(力导重排)后元素样式被 graphData 重置回 STRUCT_STYLE,
+// 借底座 rendered 事件补刷;签名判重防 rendered↔repaint 循环
 let appliedOverlay = ''
+// 强制重绘(redraw())进行中标记:此期间跳过覆盖层 watch 触发的中间 repaint——
+// 「重置」批量改参数时,避免「旧布局上先原地刷一遍默认样式、再整体重排」的两段跳变,rendered 后统一补刷收尾
+let pendingRedraw = false
 function applyOverlay() {
-  const sig = JSON.stringify([props.highlight, props.selected])
+  const sig = JSON.stringify([props.highlight, props.selected, props.edgeWidth, props.labelOpacity])
   if (sig === appliedOverlay) return
   if (!baseRef.value?.getGraph()) return // 图未就绪,等 rendered 事件补刷
+  if (pendingRedraw) return // 强制重绘会整体重渲,等 rendered 后补刷(见 onRendered)
   appliedOverlay = sig
   baseRef.value.repaint(buildData())
 }
-watch(() => [props.highlight, props.selected], applyOverlay)
+watch(() => [props.highlight, props.selected, props.edgeWidth, props.labelOpacity], applyOverlay)
+// 结构数据一重建就置空签名:rendered 后的补刷不被判重跳过,覆盖层(含用户调过的样式)才能重新刷上
+watch(graphData, () => { appliedOverlay = '' })
+/** 底座 rendered:强制重绘完成后清标记并补刷覆盖层(重建把元素样式重置回了 STRUCT_STYLE) */
+function onRendered() {
+  pendingRedraw = false
+  applyOverlay()
+  bindHoverEvents()
+}
+
+// hover 置顶:悬停节点临时抬到最上层(普通节点 zIndex=1、边=0、悬停=2),移开恢复——
+// 密集图中被压住的节点/标签 hover 即可完整看清;zIndex 写进图数据(updateNodeData 浅合并 style,
+// 只覆盖 zIndex 不动其余样式),力导 tick 重绘不会冲掉
+let hoverBoundGraph = null
+/** 给图实例绑定 hover 置顶(幂等:按实例判重,画布销毁重建/换实例后由 rendered 补绑) */
+function bindHoverEvents() {
+  const g = baseRef.value?.getGraph()
+  if (!g || g === hoverBoundGraph) return
+  hoverBoundGraph = g
+  g.on('node:pointerenter', (e) => setNodeZIndex(e?.target?.id, 2))
+  g.on('node:pointerleave', (e) => setNodeZIndex(e?.target?.id, 1))
+}
+/** 改单个节点 zIndex 并重绘(不跑布局) */
+async function setNodeZIndex(id, z) {
+  const g = baseRef.value?.getGraph()
+  if (!g || !id) return
+  g.updateNodeData([{ id, style: { zIndex: z } }])
+  await g.draw()
+}
+/** 强制整体重绘(父级调试图谱「刷新」/「重置」按钮):递增 redrawTick 触发底座一次 setData+render,
+ *  力导按当前配置重跑仿真(动画由 animated 决定,force 模式恒开);视口不动(底座 refitOnDataChange=false) */
+function redraw() {
+  pendingRedraw = true
+  redrawTick.value++
+}
 const graphOptions = {
   node: { type: 'circle' },
   edge: { type: 'line' },
@@ -411,6 +509,6 @@ const graphOptions = {
   ...(props.layout === 'force' ? {} : { animation: false })
 }
 
-// 高级操作(视口观测/导出等)经底座拿原始 Graph 实例
-defineExpose({ getGraph: () => baseRef.value?.getGraph() })
+// 高级操作(视口观测/导出等)经底座拿原始 Graph 实例;redraw = 强制整体重绘(调试图谱「刷新」/「重置」按钮)
+defineExpose({ getGraph: () => baseRef.value?.getGraph(), redraw })
 </script>

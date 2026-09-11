@@ -140,4 +140,29 @@ export function deleteObjectTableRelation(id) {
   return request.delete(`/object-table-relations/${id}`)
 }
 
+// ---------- 元数据批量同步 ----------
+// 任务结构:{ id, status(PENDING/RUNNING/DONE/FAILED/CANCELED), totalDs, doneDs, failedDs, error,
+//   items: [{ datasourceId, datasourceName, status, dbCount, schemaCount, tableCount, progress, error }] }
+
+/** 启动元数据批量同步;datasourceIds 为数据源 id 数组,返回 { jobId };已有运行中任务时 409(静默,由调用方接管提示) */
+export function startMetadataSync(datasourceIds) {
+  return request.post('/metadata-sync', { datasourceIds }, { _silent: true })
+}
+
+/** 最近一次同步任务;无任务返回 null(204/空响应体归一为 null),静默不弹全局错误 */
+export async function getLatestMetadataSync() {
+  const data = await request.get('/metadata-sync/latest', { _silent: true })
+  return data && typeof data === 'object' ? data : null
+}
+
+/** 同步任务详情(进度视图 1s 轮询;静默,轮询失败由调用方下个周期重试) */
+export function getMetadataSyncJob(id) {
+  return request.get(`/metadata-sync/${id}`, { _silent: true })
+}
+
+/** 取消同步任务 */
+export function cancelMetadataSync(id) {
+  return request.post(`/metadata-sync/${id}/cancel`)
+}
+
 export default request

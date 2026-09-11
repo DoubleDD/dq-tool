@@ -175,6 +175,11 @@ class ScanRepository(private val jdbc: Jdbc) {
         insertJobEvent(jobId, ScanStatus.RUNNING)
     }
 
+    /** 续扫进入后遇连接级失败时把任务状态还原为进入前状态(断网不算任务失败,恢复网络后可再续扫;不写事件) */
+    fun restoreJobStatus(jobId: Long, status: ScanStatus) {
+        jdbc.update("UPDATE scan_job SET status=? WHERE id=?", status.name, jobId)
+    }
+
     fun finishJob(jobId: Long, status: ScanStatus, error: String?) {
         jdbc.update("UPDATE scan_job SET status=?, finished_at=CURRENT_TIMESTAMP, error=? WHERE id=?",
             status.name, error, jobId)

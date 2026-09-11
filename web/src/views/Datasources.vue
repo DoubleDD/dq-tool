@@ -13,6 +13,7 @@
         </el-select>
       </div>
       <div class="toolbar-right">
+        <el-button @click="syncVisible = true">刷新</el-button>
         <el-button @click="openExportDialog()">导出配置(JSON)</el-button>
         <el-button @click="openImportDialog()">导入配置</el-button>
         <el-button type="primary" @click="openDialog()">新增数据源</el-button>
@@ -143,6 +144,9 @@
     <!-- 新增/编辑数据源弹窗(独立组件,抽样导出页等处复用);编辑态由 openDialog(row) 传入数据源行 -->
     <DatasourceEditDialog v-model="editVisible" :ds="editRow" :groups="groupOptions" @saved="loadList" />
 
+    <!-- 元数据批量同步弹窗:任务终态后刷新列表(连接状态标记可能变化) -->
+    <MetadataSyncDialog v-model="syncVisible" @done="loadList" />
+
     <!-- 导出数据源:勾选后通过 window.open 直接下载 JSON 文件 -->
     <el-dialog v-model="exportVisible" title="导出数据源" width="560px" destroy-on-close :close-on-press-escape="false">
       <template v-if="list.length">
@@ -235,6 +239,7 @@ import { ArrowDown, ArrowRight, Connection, Delete, EditPen, Search, Star, StarF
 import request from '../api'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
 import DatasourceEditDialog from '../components/DatasourceEditDialog.vue'
+import MetadataSyncDialog from '../components/MetadataSyncDialog.vue'
 import { tabState } from '../stores/tabs'
 import { loadDsFavorites, saveDsFavorites, sortDsByFavorite } from '../utils/dsFavorites'
 import { notifyDsListChanged } from '../utils/dsListChanged'
@@ -366,6 +371,8 @@ const filteredList = computed(() => {
 // 新增/编辑数据源弹窗(独立组件 DatasourceEditDialog,抽样导出页等处复用):editRow 为要编辑的数据源行,新增传 null
 const editVisible = ref(false)
 const editRow = ref(null)
+// 元数据批量同步弹窗(「刷新」按钮)
+const syncVisible = ref(false)
 
 function openDialog(row) {
   editRow.value = row || null

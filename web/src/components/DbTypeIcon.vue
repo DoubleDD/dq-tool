@@ -19,7 +19,9 @@ const DB_MAP = {
   DM: { letters: 'DM', color: '#D9001B' },
   KINGBASE: { letters: 'KB', color: '#2B5AED' },
   OCEANBASE: { letters: 'OB', color: '#1E6FFF' },
-  HIGHGO: { letters: 'HG', color: '#005BAC' }
+  HIGHGO: { letters: 'HG', color: '#005BAC' },
+  // 本地 H2 库(SQL 控制台「本地 H2 库(只读)」伪数据源)用字母徽标兜底
+  H2: { letters: 'H2', color: '#1E4C82' }
 }
 const FALLBACK = { letters: 'DB', color: '#909399' }
 

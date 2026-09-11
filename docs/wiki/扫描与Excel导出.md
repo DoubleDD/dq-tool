@@ -14,6 +14,7 @@
 - 非数值分段键(如 varchar 主键)的边界规划用 seek(keyset)+固定步进:每段从上一段边界之后按步进取边界,避免 OFFSET 深分页每次从索引头扫 N 行(O(N²),大表 varchar 键会把 MySQL 服务器 IO 打满导致新连接握手超时)
 - 业务库执行的 SQL 全部打日志(独立 logger `com.example.dq.sql`,默认 INFO):`DataSourceService` 连接出口统一 JDK 代理包装(`SqlLogConnection`),拦截 Statement/PreparedStatement 的 execute 类调用打印完整 SQL 与绑定参数;排查慢 SQL/深分页等场景用,日志文件按天滚动可回溯。本地 H2(repository 包)不走该出口,不打日志;不需要时把 logback 中 `com.example.dq.sql` 调为 WARN/OFF。代理反射调用会拆包 `InvocationTargetException` 原样透出底层 `SQLException`(否则被包成 `UndeclaredThrowableException`,方言层 catch(SQLException) 的降级逻辑会失效)
 - 扫描的调度单元是"分段(chunk)",不是表:分段状态持久化在 `scan_chunk` 表,断点续扫只重跑未完成分段
+- 续扫(`resume`)开始先校验结构,若失败为**连接级**(断网/数据源不可达,`ConnectionFailureClassifier.isConnectionFailure`)不再把任务置 FAILED,而是还原为进入前状态并提示「数据源连接失败,请恢复网络后再续扫」;非连接级失败(如分段键变化)维持原 FAILED 行为
 - 规划阶段(`planTable`)发现表不存在或没有字段(`listColumns` 为空)不算失败:直接按空表置 DONE、结果全 0(`ChunkRunner.completeEmptyTable`),联动「空表」标记但不触发 AI 后续(无字段无可分析);续扫(`resume`)同样按此跳过——旧行为是抛错让整个任务 FAILED,现已改为只跳过该表(FAILED 表翻转为 DONE 时不重复计入完成数)
 - 无字段标记(`meta_table.no_columns`,V22):扫描规划/续扫或字段明细页访问发现表没有字段(如 Oracle IOT 溢出段 SYS_IOT_OVER_%)时置 TRUE,供识别「可跳过」的表;表有字段时清除。强制刷新表结构(`replaceTables` 整粒度覆盖)后标记随旧行自动还原——重新同步后字段有无未知,待下次访问字段列表或扫描时按实测重新标定
 - 大表默认采样估算(行数 > 100 万或体积 > 10GB,阈值可在数据源级别覆盖);MySQL/达梦/OB 的采样是 LIMIT 顺序采样,结果有偏,UI 需标注"估算值"

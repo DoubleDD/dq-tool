@@ -3,6 +3,7 @@ package com.example.dq.service
 import com.example.dq.dialect.DbDialect
 import com.example.dq.dialect.DialectFactory
 import java.sql.Connection
+import java.sql.ResultSet
 import java.sql.SQLException
 
 /**
@@ -60,37 +61,11 @@ class SqlConsoleService(
                     // 与分段扫描/数据预览同口径的单条 SQL 超时(系统设置可改,回落配置文件默认值)
                     stmt.queryTimeout = systemSettingsService.scanSettings().statementTimeoutSeconds
                     val hasResultSet = stmt.execute(trimmed)
-                    if (hasResultSet) {
-                        stmt.resultSet.use { rs ->
-                            val meta = rs.metaData
-                            val colCount = meta.columnCount
-                            val columns = (1..colCount).map { meta.getColumnLabel(it) }
-                            val rows = ArrayList<List<String?>>(MAX_ROWS)
-                            var truncated = false
-                            while (rs.next()) {
-                                // 超出上限即停:剩余行丢弃,由 truncated 告知前端结果被截断
-                                if (rows.size >= MAX_ROWS) {
-                                    truncated = true
-                                    break
-                                }
-                                val row = ArrayList<String?>(colCount)
-                                for (i in 1..colCount) {
-                                    row.add(truncate(rs.getObject(i)?.toString()))
-                                }
-                                rows.add(row)
-                            }
-                            return SqlExecuteResult(
-                                query = true, columns = columns, rows = rows, total = rows.size,
-                                truncated = truncated, updateCount = -1,
-                                durationMs = System.currentTimeMillis() - start,
-                            )
-                        }
+                    return if (hasResultSet) {
+                        stmt.resultSet.use { rs -> collectResult(rs, System.currentTimeMillis() - start) }
+                    } else {
+                        updateResult(stmt.updateCount, System.currentTimeMillis() - start)
                     }
-                    return SqlExecuteResult(
-                        query = false, columns = emptyList(), rows = emptyList(), total = 0,
-                        truncated = false, updateCount = stmt.updateCount,
-                        durationMs = System.currentTimeMillis() - start,
-                    )
                 }
             } finally {
                 // 归还池化连接前恢复会话默认库,避免后续借用方(含控制台不选库时)串库
@@ -115,6 +90,43 @@ class SqlConsoleService(
 
         /** 单元格截断长度:防 CLOB/大字段撑爆响应(与 PreviewService 同口径) */
         const val MAX_CELL_CHARS = 1000
+
+        /**
+         * 结果集 → 响应模型(与 PreviewService 同口径):列名取 getColumnLabel,
+         * 行值 getObject().toString()、NULL 保 null、单元格截断 MAX_CELL_CHARS;
+         * 行数超 MAX_ROWS 即停并标记 truncated。
+         * 供本地 H2 只读查询复用,两条入口的序列化口径保持一致。
+         */
+        fun collectResult(rs: ResultSet, durationMs: Long): SqlExecuteResult {
+            val meta = rs.metaData
+            val colCount = meta.columnCount
+            val columns = (1..colCount).map { meta.getColumnLabel(it) }
+            val rows = ArrayList<List<String?>>(MAX_ROWS)
+            var truncated = false
+            while (rs.next()) {
+                // 超出上限即停:剩余行丢弃,由 truncated 告知前端结果被截断
+                if (rows.size >= MAX_ROWS) {
+                    truncated = true
+                    break
+                }
+                val row = ArrayList<String?>(colCount)
+                for (i in 1..colCount) {
+                    row.add(truncate(rs.getObject(i)?.toString()))
+                }
+                rows.add(row)
+            }
+            return SqlExecuteResult(
+                query = true, columns = columns, rows = rows, total = rows.size,
+                truncated = truncated, updateCount = -1, durationMs = durationMs,
+            )
+        }
+
+        /** 非查询语句(更新/DDL)响应模型;DDL 的 updateCount 可能为 -1 */
+        fun updateResult(updateCount: Int, durationMs: Long): SqlExecuteResult =
+            SqlExecuteResult(
+                query = false, columns = emptyList(), rows = emptyList(), total = 0,
+                truncated = false, updateCount = updateCount, durationMs = durationMs,
+            )
 
         private fun truncate(s: String?): String? =
             if (s == null || s.length <= MAX_CELL_CHARS) s else s.substring(0, MAX_CELL_CHARS)

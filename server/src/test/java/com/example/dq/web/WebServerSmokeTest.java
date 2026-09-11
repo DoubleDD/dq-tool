@@ -263,6 +263,54 @@ class WebServerSmokeTest {
     }
 
     @Test
+    void 本地H2库只读端点可查本地配置库且写语句被拒() throws Exception {
+        activateLicense();
+
+        // schema / 表 / 字段清单:直接读应用自身配置库(H2 自身 schema + 已迁移的业务表)
+        HttpResponse<String> schemas = get("/api/sql-console/local-h2/schemas");
+        assertEquals(200, schemas.statusCode(), schemas.body());
+        assertTrue(schemas.body().contains("\"PUBLIC\""), schemas.body());
+        HttpResponse<String> tables = get("/api/sql-console/local-h2/tables?schema=PUBLIC");
+        assertEquals(200, tables.statusCode(), tables.body());
+        assertTrue(tables.body().contains("\"name\":\"TAG_DEF\""), tables.body());
+        HttpResponse<String> columns = get("/api/sql-console/local-h2/columns?schema=PUBLIC");
+        assertEquals(200, columns.statusCode(), columns.body());
+        assertTrue(columns.body().contains("\"table\":\"TAG_DEF\""), columns.body());
+
+        // 查询:只读入口返回结果集(口径与业务库控制台一致)
+        HttpResponse<String> before = send("POST", "/api/sql-console/local-h2/execute",
+                "{\"sql\":\"SELECT COUNT(*) AS C FROM TAG_DEF\"}");
+        assertEquals(200, before.statusCode(), before.body());
+        assertTrue(before.body().contains("\"query\":true"), before.body());
+        String rows = before.body().replaceAll("(?s).*(\"rows\":\\[\\[[^\\]]*\\]\\]).*", "$1");
+
+        // 选 schema 执行:未限定名 TABLES 只在 INFORMATION_SCHEMA 下可解析
+        assertEquals(200, send("POST", "/api/sql-console/local-h2/execute",
+                "{\"sql\":\"SELECT TABLE_NAME FROM TABLES\",\"schema\":\"INFORMATION_SCHEMA\"}").statusCode());
+
+        // 写语句一律 400:含会被真实执行的 EXPLAIN ANALYZE 与拼接写语句
+        for (String sql : new String[]{
+                "DELETE FROM TAG_DEF",
+                "DROP TABLE TAG_DEF",
+                "SET SCHEMA INFORMATION_SCHEMA",
+                "EXPLAIN ANALYZE DELETE FROM TAG_DEF",
+                "SELECT 1; DELETE FROM TAG_DEF"}) {
+            HttpResponse<String> rejected = send("POST", "/api/sql-console/local-h2/execute",
+                    "{\"sql\":\"" + sql + "\"}");
+            assertEquals(400, rejected.statusCode(), sql + " 应被拒但返回:" + rejected.body());
+            assertTrue(rejected.body().contains("只读"), rejected.body());
+        }
+        // 空白 SQL:请求体 @NotBlank 校验失败 → 400
+        assertEquals(400, send("POST", "/api/sql-console/local-h2/execute", "{\"sql\":\"  \"}").statusCode());
+
+        // 拒绝一轮后本地库数据未被改动
+        HttpResponse<String> after = send("POST", "/api/sql-console/local-h2/execute",
+                "{\"sql\":\"SELECT COUNT(*) AS C FROM TAG_DEF\"}");
+        assertEquals(200, after.statusCode(), after.body());
+        assertEquals(rows, after.body().replaceAll("(?s).*(\"rows\":\\[\\[[^\\]]*\\]\\]).*", "$1"));
+    }
+
+    @Test
     void 更新日志端点未激活可访问且回传当前版本() throws Exception {
         // /api/changelog 在授权前置校验白名单内(与 /api/diagnostics 同理),未激活也应 200
         HttpResponse<String> resp = get("/api/changelog");

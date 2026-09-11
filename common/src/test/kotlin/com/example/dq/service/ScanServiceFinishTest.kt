@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 class ScanServiceFinishTest {
 
     private lateinit var scanRepo: ScanRepository
+    private lateinit var dsRepo: DataSourceRepository
     private lateinit var scanService: ScanService
     private lateinit var aiTracker: ScanAiTracker
     private var dsId: Long = 0
@@ -45,7 +46,7 @@ class ScanServiceFinishTest {
         SchemaInit.run(ds)
         val jdbc = Jdbc(ds)
         scanRepo = ScanRepository(jdbc)
-        val dsRepo = DataSourceRepository(jdbc)
+        dsRepo = DataSourceRepository(jdbc)
         val schemaStatRepo = SchemaStatRepository(jdbc)
         val metaCacheRepo = MetaCacheRepository(jdbc)
         val tableDocRepo = TableDocRepository(jdbc)
@@ -138,6 +139,31 @@ class ScanServiceFinishTest {
         scanService.finish(jobId) // 不应抛异常,也不改变状态
 
         assertEquals(ScanStatus.DONE, scanRepo.findJob(jobId)!!.status)
+    }
+
+    @Test
+    fun `续扫时数据源连接失败还原为进入前状态而不置FAILED`() {
+        // 离线数据源(127.0.0.1:1 立即 ECONNREFUSED,不真等超时;同 MetadataOfflineFallbackTest 手法)
+        val offDsId = dsRepo.insert(DataSourceConfig().apply {
+            name = "离线库"
+            dbType = DbType.MYSQL
+            jdbcUrl = "jdbc:mysql://127.0.0.1:1/nodb"
+        })
+        val jobId = scanRepo.insertJob(offDsId, null, "s1", false, "[]", 1, false, null, false)
+        scanRepo.markJobRunning(jobId)
+        scanRepo.insertScanTable(jobId, "t1", 100L, null, null, null)
+        scanRepo.finishJob(jobId, ScanStatus.CANCELED, null) // 模拟断网前任务已被取消
+
+        val e = try {
+            scanService.resume(jobId)
+            throw AssertionError("断网续扫应抛异常")
+        } catch (expected: IllegalStateException) {
+            expected
+        }
+        assertNotNull(e.message)
+        org.junit.jupiter.api.Assertions.assertTrue(e.message!!.contains("数据源连接失败"), e.message)
+        // 关键断言:任务状态还原为进入前的 CANCELED(可再次续扫),而不是被翻成 FAILED
+        assertEquals(ScanStatus.CANCELED, scanRepo.findJob(jobId)!!.status)
     }
 
     @Test

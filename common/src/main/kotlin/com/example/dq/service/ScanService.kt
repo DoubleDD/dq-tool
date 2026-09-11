@@ -18,6 +18,7 @@ import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.scan.ChunkRunner
 import com.example.dq.scan.ScanAiTracker
 import com.example.dq.scan.ScanExecutor
+import com.example.dq.util.ConnectionFailureClassifier
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
@@ -393,6 +394,11 @@ class ScanService(
                 repo.finishJob(jobId, ScanStatus.FAILED, e.message)
                 throw e
             } catch (e: Exception) {
+                if (ConnectionFailureClassifier.isConnectionFailure(e)) {
+                    // 连接级失败(断网等)不算扫描失败:任务状态还原为进入前状态,恢复网络后可再续扫
+                    repo.restoreJobStatus(jobId, job.status)
+                    throw IllegalStateException("数据源连接失败,请恢复网络后再续扫: " + e.message, e)
+                }
                 repo.finishJob(jobId, ScanStatus.FAILED, e.message)
                 throw IllegalStateException("续扫校验失败: " + e.message, e)
             }

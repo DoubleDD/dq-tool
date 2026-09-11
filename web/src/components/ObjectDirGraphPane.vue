@@ -2,7 +2,7 @@
   <!-- 对象管理「图谱」页签:选中目录(含全部子目录)目录 + 挂载表 + 登记关系表的关系图。
        节点 = 目录(选中目录为锚点居中,主题 warning 色) + 挂载表(圆形,主题色) + 关系表(圆形,success 色区分);
        布局 = d3-force 力导向(知识图谱口径:目录大节点下挂小节点表。不预设坐标,仿真从零自动编排;
-           节点尺寸分档 锚点目录 72 > 子目录 48 > 表 32(挂载表与关系表同尺寸,仅颜色区分:关系表 success 色);边长分档 目录↔目录 S1=180 = 3 × 目录→表/表→关系表 S2=60,
+           节点尺寸分档 锚点目录 = 1.5 × 目录节点 > 表节点(挂载表与关系表同尺寸,仅颜色区分:关系表 success 色;两档默认 50/30 可在工具栏「调试」面板实时调节);边长分档 目录↔目录 S1=150 = 3 × 目录→表/表→关系表 S2=50,
            长边弱短边强、叶子斥力大,collide 按节点尺寸防重叠,节点可拖拽自动归位);
        边 = 挂载/归属边(父目录→子目录、目录→挂载表、挂载表→登记关系表,status=MOUNT 灰色实线) + ER 推导关系边
            (listRelations 按 (库,schema) 分组拉取,过滤两端都在目录表集合(含关系表)内的边);
@@ -10,6 +10,7 @@
   <div class="odg-pane" v-loading="loading">
     <TableGraphCanvas
       v-if="dir && dirTables.length"
+      ref="graphCanvasRef"
       :nodes="nodes"
       :edges="visibleEdges"
       :anchor-table="anchorTable"
@@ -20,17 +21,23 @@
       :colors="colors"
       :selected="selectedId"
       :highlight="highlight"
+      :edge-width="edgeWidth"
+      :label-opacity="labelOpacity"
+      :center-strength="centerStrength"
+      :charge-strength="chargeStrength"
+      :link-strength="linkStrength"
       @node-click="onNodeClick"
       @node-open="goTable"
       @canvas-click="closePanel"
     >
       <template #toolbar>
-        <el-tooltip content="调试参数(力导边长分档)" placement="bottom">
+        <el-tooltip content="图谱样式与力导参数" placement="bottom">
           <el-button size="small" :icon="Setting" @click="debugVisible = !debugVisible" />
         </el-tooltip>
       </template>
     </TableGraphCanvas>
-    <!-- 调试面板:力导边长分档实时调节(改 distance → 图数据重建 → 仿真重排);重置恢复默认值 -->
+    <!-- 调试面板(左下角悬浮卡片,与表详情「图谱」页签同款):边长/节点尺寸分档/力导三力 → 图数据重建、仿真重排;
+         连线粗细/文本透明度为纯渲染口径 → 画布 repaint 原地刷样式;「重置」恢复默认并强制整体重绘一步到位,「刷新」按当前配置重绘(带动画) -->
     <div v-if="debugVisible" class="odg-debug">
       <div class="odg-debug-row">
         <span class="odg-debug-label">目录↔目录 S1</span>
@@ -40,7 +47,38 @@
         <span class="odg-debug-label">目录→表 S2</span>
         <el-input-number v-model="linkS2" :min="20" :max="300" :step="5" size="small" />
       </div>
-      <el-button size="small" class="odg-debug-reset" @click="resetLinkDistance">重置</el-button>
+      <div class="odg-debug-row">
+        <span class="odg-debug-label">目录节点</span>
+        <el-input-number v-model="dirNodeSize" :min="16" :max="160" :step="4" size="small" />
+      </div>
+      <div class="odg-debug-row">
+        <span class="odg-debug-label">表节点</span>
+        <el-input-number v-model="tableNodeSize" :min="12" :max="120" :step="2" size="small" />
+      </div>
+      <div class="odg-debug-row">
+        <span class="odg-debug-label">连线粗细</span>
+        <el-input-number v-model="edgeWidth" :min="0.5" :max="6" :step="0.2" :precision="1" size="small" />
+      </div>
+      <div class="odg-debug-row">
+        <span class="odg-debug-label">文本透明度</span>
+        <el-input-number v-model="labelOpacity" :min="0.1" :max="1" :step="0.05" :precision="2" size="small" />
+      </div>
+      <div class="odg-debug-row">
+        <span class="odg-debug-label">图谱向心力</span>
+        <el-input-number v-model="centerStrength" :min="0" :max="1" :step="0.05" :precision="2" size="small" />
+      </div>
+      <div class="odg-debug-row">
+        <span class="odg-debug-label">节点排斥力</span>
+        <el-input-number v-model="chargeStrength" :min="0" :max="3" :step="0.1" :precision="1" size="small" />
+      </div>
+      <div class="odg-debug-row">
+        <span class="odg-debug-label">连线吸引力</span>
+        <el-input-number v-model="linkStrength" :min="0" :max="2" :step="0.1" :precision="1" size="small" />
+      </div>
+      <div class="odg-debug-footer">
+        <el-button size="small" @click="resetDebugParams">重置</el-button>
+        <el-button size="small" :icon="Refresh" @click="redrawGraph">刷新</el-button>
+      </div>
     </div>
     <el-empty v-else-if="!loading" :description="emptyText" :image-size="80" />
     <!-- 节点点击面板:右上角悬浮卡片(与表详情「图谱」页签节点面板同款)——
@@ -79,7 +117,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { Close, Setting } from '@element-plus/icons-vue'
+import { Close, Refresh, Setting } from '@element-plus/icons-vue'
 import request, { listRelations } from '../api'
 import TableGraphCanvas from './TableGraphCanvas.vue'
 
@@ -167,16 +205,23 @@ const levels = computed(() => {
   return m
 })
 
-// 力导节点尺寸分档(知识图谱口径:目录大节点下挂小节点表):锚点目录 72 > 子目录 48 > 表 32
-// (挂载表与登记关系表同尺寸,仅靠颜色区分;同名节点已被目录/挂载表占位时保留更大档,与节点去重口径一致)
+// 力导节点尺寸分档(知识图谱口径:目录大节点下挂小节点表):锚点目录 = 1.5 × 目录节点 > 表节点
+// (挂载表与登记关系表同尺寸,仅靠颜色区分;同名节点已被目录/挂载表占位时保留更大档,与节点去重口径一致;
+//  目录/表节点尺寸由工具栏「调试」面板实时调节,默认值 50/30 → 锚点目录 75)
+const DIR_SIZE_DEFAULT = 50
+const TABLE_SIZE_DEFAULT = 30
+const dirNodeSize = ref(DIR_SIZE_DEFAULT)
+const tableNodeSize = ref(TABLE_SIZE_DEFAULT)
 const sizes = computed(() => {
   const m = {}
-  for (const { dir } of dirList.value) m[dirNodeId(dir)] = dir === props.dir ? 72 : 48
+  for (const { dir } of dirList.value) {
+    m[dirNodeId(dir)] = dir === props.dir ? Math.round(dirNodeSize.value * 1.5) : dirNodeSize.value
+  }
   for (const t of dirTables.value) {
-    if (m[t.tableName] == null) m[t.tableName] = 32
+    if (m[t.tableName] == null) m[t.tableName] = tableNodeSize.value
   }
   for (const { rel } of dirRels.value) {
-    if (m[rel.tableName] == null) m[rel.tableName] = 32
+    if (m[rel.tableName] == null) m[rel.tableName] = tableNodeSize.value
   }
   return m
 })
@@ -211,15 +256,43 @@ const colors = computed(() => {
 // 挂载/归属边:父目录→子目录、目录→挂载表、挂载表→登记关系表(status=MOUNT:画布按灰色实线渲染,与 ER 关系边区分)
 // 力导边长分档(distance 由画布 link 力按边 id 回查,语义 = 可见连线长度/两圆边缘间距):
 // 目录↔目录 S1 拉开簇间距,目录→挂载表/挂载表→关系表 S2;两档可由工具栏「调试」面板实时调节
-const LINK_S1_DEFAULT = 120
-const LINK_S2_DEFAULT = 60
+const LINK_S1_DEFAULT = 150
+const LINK_S2_DEFAULT = 50
 const linkS1 = ref(LINK_S1_DEFAULT)
 const linkS2 = ref(LINK_S2_DEFAULT)
 const debugVisible = ref(false)
-/** 调试面板「重置」:S1/S2 恢复默认值 */
-function resetLinkDistance() {
+const graphCanvasRef = ref(null)
+// 样式/力导参数(默认值 = 调试面板调定固化,不再取画布组件缺省——画布缺省 连线 1.4/向心 0.1/排斥 1/吸引 1
+// 偏稀疏,图谱口径偏紧凑聚拢):
+// 连线粗细(px,候选/MOUNT 边基准;确认边 +0.4)、文本透明度(0~1)、向心力(d3 forceX/forceY 强度 0~1)、
+// 排斥力/吸引力倍率(乘在画布 manyBody/link strength 分档上)
+const EDGE_WIDTH_DEFAULT = 1.0
+const LABEL_OPACITY_DEFAULT = 1
+const CENTER_STRENGTH_DEFAULT = 0.05
+const CHARGE_STRENGTH_DEFAULT = 2.0
+const LINK_STRENGTH_DEFAULT = 0.5
+const edgeWidth = ref(EDGE_WIDTH_DEFAULT)
+const labelOpacity = ref(LABEL_OPACITY_DEFAULT)
+const centerStrength = ref(CENTER_STRENGTH_DEFAULT)
+const chargeStrength = ref(CHARGE_STRENGTH_DEFAULT)
+const linkStrength = ref(LINK_STRENGTH_DEFAULT)
+/** 调试面板「重置」:全部参数恢复默认 + 强制整体重绘——redraw 与参数变更走同一条重建路径,
+ *  一次 setData+render 到位(力导按默认配置重跑仿真),不做「先原地刷默认样式再重排」的两段式 */
+function resetDebugParams() {
   linkS1.value = LINK_S1_DEFAULT
   linkS2.value = LINK_S2_DEFAULT
+  dirNodeSize.value = DIR_SIZE_DEFAULT
+  tableNodeSize.value = TABLE_SIZE_DEFAULT
+  edgeWidth.value = EDGE_WIDTH_DEFAULT
+  labelOpacity.value = LABEL_OPACITY_DEFAULT
+  centerStrength.value = CENTER_STRENGTH_DEFAULT
+  chargeStrength.value = CHARGE_STRENGTH_DEFAULT
+  linkStrength.value = LINK_STRENGTH_DEFAULT
+  graphCanvasRef.value?.redraw()
+}
+/** 调试面板「刷新」:参数不动,按当前配置强制整体重绘(力导重跑仿真,带动画) */
+function redrawGraph() {
+  graphCanvasRef.value?.redraw()
 }
 const mountEdges = computed(() => {
   const edges = []
@@ -480,12 +553,13 @@ function goTable(table) {
 .graph-node-panel-actions {
   margin-top: 10px;
 }
-/* 调试面板(左下角悬浮卡片,毛玻璃底与节点面板同口径):力导边长分档滑杆 */
+/* 调试面板(左下角悬浮卡片,毛玻璃底与节点面板同口径):力导边长/尺寸分档 + 样式/力导参数 */
 .odg-debug {
   position: absolute;
   left: 12px;
   bottom: 12px;
-  width: 320px;
+  /* 按内容收缩(行 = 标签 96 + 间距 10 + 小号数字框 120),不写死宽度防右侧留白 */
+  width: max-content;
   background: color-mix(in srgb, var(--el-bg-color) 55%, transparent);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -509,7 +583,13 @@ function goTable(table) {
   color: var(--el-text-color-secondary);
   width: 96px;
 }
-.odg-debug-reset {
+.odg-debug-footer {
   margin-top: 8px;
+  /* 相邻 el-button 的默认 12px 左 margin 去掉,用 gap 控制「重置/刷新」间距 */
+  display: flex;
+  gap: 8px;
+}
+.odg-debug-footer .el-button + .el-button {
+  margin-left: 0;
 }
 </style>

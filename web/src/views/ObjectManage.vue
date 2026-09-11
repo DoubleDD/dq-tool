@@ -19,7 +19,7 @@
     <template v-else>
       <!-- 左侧目录树常驻 + 右侧三页签(列表/关系图/图谱),页签内容随选中目录实时联动 -->
       <div class="om-body" v-loading="loading">
-        <div class="om-tree-pane">
+        <div class="om-tree-pane" :style="{ width: treeWidth + 'px' }">
           <!-- 树操作栏:刷新 + 新建根目录 -->
           <div class="om-tree-head">
             <el-button size="small" :icon="Refresh" :loading="loading" @click="loadCatalog()">刷新</el-button>
@@ -32,11 +32,12 @@
             :props="{ children: 'children', label: 'name' }"
             highlight-current
             default-expand-all
+            :expand-on-click-node="false"
             @node-click="onDirClick"
           >
-            <template #default="{ data }">
+            <template #default="{ node, data }">
               <div class="om-tree-node">
-                <el-icon class="om-tree-icon"><Folder /></el-icon>
+                <el-icon class="om-tree-icon" title="展开/收起" @click.stop="toggleNode(node)"><Folder /></el-icon>
                 <span class="om-tree-label" :title="data.name">{{ data.name }}</span>
                 <span class="om-tree-count" title="本目录及子目录挂载表总数">{{ countTables(data) }}</span>
                 <span class="om-tree-ops" @click.stop>
@@ -49,6 +50,8 @@
           </el-tree>
           <el-empty v-if="!loading && !catalog.length" description="暂无目录,点击上方「新建根目录」开始" :image-size="70" />
         </div>
+        <!-- 宽度拖拽手柄:骑跨两栏缝隙,左右拖动调整目录树宽度(口径同全局侧边栏) -->
+        <div class="om-tree-resizer" :class="{ resizing: treeResizing }" title="拖动调整宽度" @mousedown="startTreeResize" />
         <div class="om-main-pane">
           <el-tabs v-model="activeTab" class="om-tabs">
             <!-- 列表:当前目录直接挂载的表(行内展开关系表子表) -->
@@ -256,6 +259,35 @@ const fieldNameMode = ref('chinese')
 const treeRef = ref(null)
 const selectedDirId = ref('')
 
+// 目录树宽度(可拖拽调整,持久化;口径同 App.vue 全局侧边栏)
+const TREE_MIN_WIDTH = 200
+const TREE_MAX_WIDTH = 480
+const treeWidth = ref(Number(localStorage.getItem('dq-om-tree-width')) || 240)
+const treeResizing = ref(false)
+
+/** 目录树宽度拖拽:命中手柄后全局跟踪 mousemove,松手持久化;拖拽期间禁止文本选中、统一光标 */
+function startTreeResize(e) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startWidth = treeWidth.value
+  treeResizing.value = true
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'col-resize'
+  const onMove = (ev) => {
+    treeWidth.value = Math.min(TREE_MAX_WIDTH, Math.max(TREE_MIN_WIDTH, startWidth + ev.clientX - startX))
+  }
+  const onUp = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+    treeResizing.value = false
+    localStorage.setItem('dq-om-tree-width', String(treeWidth.value))
+  }
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
 /** 递归按 id 找目录节点 */
 function findDir(nodes, id) {
   for (const n of nodes || []) {
@@ -305,6 +337,12 @@ async function loadCatalog(autoSelectRoot = false) {
 
 function onDirClick(data) {
   selectedDirId.value = data.id
+}
+
+/** 点击文件夹图标展开/收起该目录(等价于点击三角箭头,不触发选中) */
+function toggleNode(node) {
+  if (node.expanded) node.collapse()
+  else node.expand()
 }
 
 // ---------- 目录增删改 ----------
@@ -467,20 +505,43 @@ onMounted(loadDatasources)
   font-size: 12px;
   color: var(--el-text-color-regular);
 }
-/* 目录视图左右分栏 */
+/* 目录视图左右分栏:缝隙即拖拽手柄命中区,不再用 gap */
 .om-body {
   flex: 1;
   min-height: 0;
   display: flex;
-  gap: 16px;
 }
 .om-tree-pane {
-  width: 300px;
   flex-shrink: 0;
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 6px;
   padding: 8px;
   overflow: auto;
+}
+/* 目录树宽度拖拽手柄:占满两栏缝隙,悬停/拖拽时中间竖条高亮(口径同 .sidebar-resizer) */
+.om-tree-resizer {
+  flex-shrink: 0;
+  width: 16px;
+  cursor: col-resize;
+  position: relative;
+}
+.om-tree-resizer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 7px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+}
+.om-tree-resizer:hover::after,
+.om-tree-resizer.resizing::after {
+  background: var(--el-color-primary-light-7);
+}
+html.dark .om-tree-resizer:hover::after,
+html.dark .om-tree-resizer.resizing::after {
+  background: var(--el-color-primary-dark-2);
 }
 /* 右侧主区:三页签(列表/关系图/图谱),页签区 flex 纵向撑满、内容吃剩余高度(参考表详情页 er-fullheight 口径) */
 .om-main-pane {
@@ -551,6 +612,7 @@ onMounted(loadDatasources)
 .om-tree-icon {
   color: var(--el-color-warning);
   flex-shrink: 0;
+  cursor: pointer;
 }
 .om-tree-label {
   overflow: hidden;

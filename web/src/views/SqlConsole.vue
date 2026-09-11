@@ -5,7 +5,7 @@
       <h3 style="margin: 0">SQL 控制台</h3>
       <div class="toolbar-actions">
         <el-select v-model="selectedDsId" filterable placeholder="选择数据源" class="ds-select" :loading="dsLoading">
-          <el-option v-for="ds in datasources" :key="ds.id" :value="ds.id" :label="ds.name">
+          <el-option v-for="ds in dsOptions" :key="ds.id" :value="ds.id" :label="ds.name">
             <div class="ds-option">
               <DbTypeIcon :type="ds.dbType" :size="14" />
               <span>{{ ds.name }}</span>
@@ -19,7 +19,8 @@
         </el-select>
         <el-tooltip content="从源库刷新表/字段提示(覆盖本地缓存)" placement="bottom">
           <span>
-            <el-button :icon="Refresh" :loading="metaRefreshing" :disabled="!selectedDsId" @click="refreshMeta" />
+            <!-- 本地 H2 库是应用自身配置库,无源库/缓存概念,刷新无意义故禁用 -->
+            <el-button :icon="Refresh" :loading="metaRefreshing" :disabled="!selectedDsId || isLocalH2" @click="refreshMeta" />
           </span>
         </el-tooltip>
         <el-button :icon="Clock" @click="historyVisible = true">历史</el-button>
@@ -97,6 +98,8 @@
  * 转义为可见符号(\n \r \xNN)加底色展示,避免控制字符在表格里塌陷看不出来。
  * 按住 Cmd/Ctrl 悬停在语句内 FROM/JOIN/INTO/UPDATE 等表位关键字后的表名上时出现下划线,
  * 点击跳转到该表的字段明细页(限定名/引号包裹均可识别,schema 从已加载表清单反查)。
+ * 数据源下拉首项「本地 H2 库(只读)」是应用自身配置库:走 /sql-console/local-h2/* 只读接口,
+ * 后端做语句级只读校验(写语句 400),补全元数据直接读本地库(无缓存/refresh 概念),不支持表名跳转。
  */
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -117,6 +120,16 @@ import { splitStatements, statementAt } from '../utils/sqlStatements'
 const datasources = ref([])
 const dsLoading = ref(false)
 const selectedDsId = ref('')
+
+/**
+ * 本地 H2 库(应用自身配置库)伪数据源:只出现在 SQL 控制台下拉,不进数据源管理页,
+ * 后端走独立的 /api/sql-console/local-h2/* 路由,只读(写语句直接 400)。
+ */
+const LOCAL_H2_ID = '__local_h2__'
+const LOCAL_H2_OPTION = { id: LOCAL_H2_ID, name: '本地 H2 库(只读)', dbType: 'H2' }
+/** 下拉选项 = 本地 H2 库 + 业务数据源 */
+const dsOptions = computed(() => [LOCAL_H2_OPTION, ...datasources.value])
+const isLocalH2 = computed(() => selectedDsId.value === LOCAL_H2_ID)
 
 async function loadDatasources() {
   dsLoading.value = true
@@ -143,6 +156,17 @@ watch(selectedDsId, (id) => {
     return
   }
   schemasReady = (async () => {
+    // 本地 H2 库:库下拉列的是本地库自身的 schema(PUBLIC / INFORMATION_SCHEMA 等)
+    if (id === LOCAL_H2_ID) {
+      schemaLoading.value = true
+      try {
+        schemas.value = await api.get('/sql-console/local-h2/schemas').catch(() => [])
+      } finally {
+        schemaLoading.value = false
+      }
+      await loadTableCompletions()
+      return
+    }
     const ds = datasources.value.find((d) => d.id === id)
     schemaLoading.value = true
     try {
@@ -248,6 +272,20 @@ function toTableOption(label, comment) {
   return { label, type: 'class', detail: comment }
 }
 
+/** 拉本地 H2 库某 schema 的表/视图清单(应用自身库,结构量小:不分批、无服务端缓存、无 refresh);失败按空处理 */
+async function fetchLocalTables(schema) {
+  const q = schema ? `?schema=${encodeURIComponent(schema)}` : ''
+  const list = await api.get(`/sql-console/local-h2/tables${q}`).catch(() => [])
+  return (list || []).filter((t) => t && t.name).map((t) => toTableOption(t.name, t.comment || undefined))
+}
+
+/** 拉本地 H2 库某 schema 的整库字段清单;失败按空处理 */
+async function fetchLocalColumns(schema) {
+  const q = schema ? `?schema=${encodeURIComponent(schema)}` : ''
+  const list = await api.get(`/sql-console/local-h2/columns${q}`).catch(() => [])
+  return (list || []).filter((c) => c && c.name).map((c) => toColumnOption(c))
+}
+
 /** 字段行 → 补全项(property=列图标,detail 为「类型 · 归属表 · 备注」,跨表同名字段靠它区分) */
 function toColumnOption(col, tableLabel) {
   const detail = [col.type, tableLabel || col.table, col.comment].filter(Boolean).join(' · ')
@@ -255,7 +293,8 @@ function toColumnOption(col, tableLabel) {
 }
 
 /** 按当前数据源+库下拉装配补全项:选中库拉表+字段;非多库方言未选库时只跨库枚举表;多库方言未选库只补关键字。
-    refresh=true 时强制从源库拉取(透传到接口),仍先上 localStorage 缓存秒出,拉取完成后覆盖 */
+    refresh=true 时强制从源库拉取(透传到接口),仍先上 localStorage 缓存秒出,拉取完成后覆盖。
+    本地 H2 库直接读本地库结构(应用自身配置库,无源库/缓存/refresh 概念)。 */
 async function loadTableCompletions(refresh = false) {
   const id = selectedDsId.value
   if (!id) {
@@ -265,6 +304,16 @@ async function loadTableCompletions(refresh = false) {
   const atStart = { id, schema: selectedSchema.value }
   // 异步拉取期间用户又切换了数据源/库时丢弃过期结果,防止旧补全盖掉新的
   const stale = () => atStart.id !== selectedDsId.value || atStart.schema !== selectedSchema.value
+  // 本地 H2 库:结构量小,一次性拉表与字段(先上表名,字段到了再补齐),不走 localStorage/服务端缓存
+  if (id === LOCAL_H2_ID) {
+    const ts = await fetchLocalTables(atStart.schema)
+    if (stale()) return
+    tableOptions.value = [...ts, ...KEYWORD_OPTIONS]
+    const cs = await fetchLocalColumns(atStart.schema)
+    if (stale()) return
+    tableOptions.value = [...ts, ...cs, ...KEYWORD_OPTIONS]
+    return
+  }
   // 先上 localStorage 缓存秒出提示,后台拉新完成后覆盖
   const cacheKey = `${id}|${atStart.schema}`
   const cached = readMetaCache()[cacheKey]
@@ -478,7 +527,8 @@ function matchTable(name, schemaHint) {
  * 返回 { from, to, schema, table, db }(from/to 供悬停装饰),不满足返回 null。
  */
 function resolveTableRefAt(pos) {
-  if (!view || !selectedDsId.value) return null
+  // 本地 H2 库是应用自身配置库,没有对应的数据源字段明细页,不支持跳转
+  if (!view || !selectedDsId.value || isLocalH2.value) return null
   const docText = view.state.doc.toString()
   const stmt = splitStatements(docText).find((s) => pos >= s.from && pos <= s.to)
   if (!stmt) return null
@@ -705,8 +755,11 @@ async function doExecute() {
   execError.value = ''
   result.value = null
   try {
-    const res = await api.post(`/datasources/${selectedDsId.value}/sql/execute`,
-      { sql: sqlText, schema: selectedSchema.value || undefined })
+    // 本地 H2 库走只读专用入口(后端语句级只读校验,写语句 400)
+    const url = isLocalH2.value
+      ? '/sql-console/local-h2/execute'
+      : `/datasources/${selectedDsId.value}/sql/execute`
+    const res = await api.post(url, { sql: sqlText, schema: selectedSchema.value || undefined })
     result.value = res
     resultPage.value = 1
     pushHistory(sqlText)
@@ -732,9 +785,9 @@ function readHistory() {
   } catch { return [] }
 }
 
-/** 历史条目里数据源 id → 显示名(已删除的数据源给个兜底文案) */
+/** 历史条目里数据源 id → 显示名(本地 H2 库与已删除的数据源走各自兜底文案) */
 function dsNameOf(dsId) {
-  return datasources.value.find((d) => d.id === dsId)?.name || '已删除数据源'
+  return dsOptions.value.find((d) => d.id === dsId)?.name || '已删除数据源'
 }
 
 function pushHistory(sqlText) {
@@ -754,7 +807,7 @@ function pushHistory(sqlText) {
 async function useHistory(item) {
   historyVisible.value = false
   if (item.dsId) {
-    if (!datasources.value.some((d) => d.id === item.dsId)) {
+    if (!dsOptions.value.some((d) => d.id === item.dsId)) {
       ElMessage.warning('历史中的数据源已删除,仅回填 SQL')
     } else {
       if (item.dsId !== selectedDsId.value) {
