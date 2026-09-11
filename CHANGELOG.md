@@ -7,6 +7,16 @@
 - 图谱:修复连线盖住节点的问题——拖拽节点后 G6 会把被拖节点永久置顶,此后异步追加的关系边默认层级被抬上节点层,导致线压节点、点节点名称选不中;现在节点/连线显式固定层级,节点恒定在线之上,点名称即可选中
 - 图谱:去掉节点中心与连线上的调试数字(尺寸/边长数值),图面更干净
 
+### 变更
+
+- 交付形态调整:fat jar 变为**纯 API 服务**(`shadowJar` 排除 `static/**`,不再内嵌前端资源),Tauri 桌面端从本地 `web/dist` 直载页面(秒开,不再 navigate),API 走 `127.0.0.1` 动态端口;前端资源不再需要反复打开 75MB fat jar,缓解 Windows 杀软实时扫描导致的 assets 404
+- jpackage 分发线(Windows 免安装 zip / macOS dmg / Linux)保留页面能力:打包脚本把 `web/dist` 放到应用镜像 `static/`,运行时经新增的 `-Ddq.web.static-dir` 从磁盘发前端
+
+### 安全
+
+- 新增浏览器访问管控 `dq.access-token`:配置后浏览器直接访问后端端口须携带令牌(请求头 `X-Dq-Token` / `?token=` query / Cookie 三选一命中),仅 `/api/health`、`/api/license/status`、`/api/lan/share/**` 免令牌;Tauri 每次启动随机生成并经 `-D` 注入,用户无感;令牌值不落日志、不回传接口
+- 后端接入 CORS(`/api/*` 任意来源),仅用于 Tauri webview 跨域访问本机 API,配合上面的令牌门禁;`allowCredentials=false`
+
 ## 2.0.0 (2026-09-10)
 
 ### 变更

@@ -5,11 +5,11 @@
 
 ## 项目定位
 
-dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据质量检测(表级行数/体积、字段级空值统计、大表并发分段扫描、Excel/Word 报告导出、AI 表说明与自动打标、表标记)。
+dq-tool 是一个轻量级单体应用:交付的 fat jar 是**纯 API 服务**(不含前端资源,只有 `/api/**` 与桌面/托盘能力),同时提供 Tauri 2 桌面壳(webview 从本地 `web/dist` 直载,API 走 `127.0.0.1` 动态端口)与 jpackage 浏览器形态(同一 jar 加 `-Ddq.web.static-dir` 从磁盘发页面)。用于对关系型数据库做数据质量检测(表级行数/体积、字段级空值统计、大表并发分段扫描、Excel/Word 报告导出、AI 表说明与自动打标、表标记)。
 
 支持 8 种数据库:MySQL、PostgreSQL、SQL Server、Oracle、达梦 DM8、人大金仓 KingbaseES、OceanBase(仅 MySQL 模式)、瀚高 HighGo。驱动全部来自 Maven 中央仓库。
 
-无登录/权限控制,**仅适合内网单机部署**;任何能访问端口的人都能操作所有数据源,不要暴露到公网。
+无登录/权限控制,**仅适合内网单机部署**;任何能访问端口的人都能操作所有数据源,不要暴露到公网。配置 `dq.access-token` 后开启浏览器访问门禁(header/query/Cookie 三选一命中才放行),Tauri 每次启动随机生成注入,用于挡住同机浏览器里的恶意网页读取本地 API——它是门闩而非鉴权,豁免清单保持最小。
 
 ## 关键红线
 
@@ -17,14 +17,15 @@ dq-tool 是一个轻量级单体 Web 应用,用于对关系型数据库做数据
 - **业务代码只在 common 模块(Kotlin)写一份**,server 壳层(Javalin)只消费;所有数据库差异收敛在 `dialect/` 包
 - 库表结构变更一律新增 Flyway 迁移脚本,**已发布的迁移文件禁止修改**
 - **导入导出格式向后兼容是铁律**:旧版本导出的文件必须能被新版本导入(客户拿到导出文件后的处理方式不可控);格式演进优先在同版本内追加可选字段(导入忽略未知字段+缺省值兜底),确需破坏性变更时在导出文件升 `version` 并在导入端做版本检测、分版本解析,禁止让旧文件静默报错(细则见 代码约定与安全)
-- 前端构建与后端运行解耦:`make dev` / `make dev-headless`(`:server:run`)不构建前端,前端开发走 `make dev-web`(vite 5173);release 打包正确性由 Gradle `buildWebForRelease`(依赖增量 `buildWeb` 并校验 `web/dist` 存在)作为 `:server:shadowJar` 的前置保障,`processResources` 仅在有 `web/dist` 时拷入 static,不再存在"旧版/缺失"的静默坏包
+- 前端构建与后端运行解耦:`make dev` / `make dev-headless`(`:server:run`,走 classpath 静态)不构建前端,前端开发走 `make dev-web`(vite 5173);`:server:shadowJar` **排除 `static/**`**,交付 jar 是纯 API 服务;`processResources` 仍把 `web/dist` 拷入 dev/测试 classpath;前端产物由 Tauri(`frontendDist` 直载 `web/dist`)与 jpackage(脚本 xcopy `web/dist` + `-Ddq.web.static-dir`)各自构建
+- Tauri 交付形态:webview 从本地 `frontendDist` 直载,跨域访问 `127.0.0.1:<动态端口>`;后端 `dq.access-token` 由 Rust 每次启动随机生成并经 `-Ddq.access-token` 注入,前端从 IPC `api_base()` 取 `{base,token}` 后走 `X-Dq-Token` 头(SSE 走 `?token=`);CORS 用 `anyHost()` 只对 `/api/*` 开放,门禁豁免清单固定为 `/api/health`、`/api/license/status`、`/api/lan/share/**`,不得扩大
 - `data/`(H2 数据文件)不应提交或外发;功能性 `.bat` 注释一律用英文且必须保持 CRLF 行尾
 
 ## 快速命令
 
 ```bash
 make dev          # 开发:后端 10000(不构建前端);前端开发另起 make dev-web(5173)
-make build        # 交付 fat jar(前端由 Gradle buildWebForRelease 自动构建内嵌)
+make build        # 交付 fat jar(纯 API 服务,不含前端;前端由 tauri/各打包脚本构建)
 make test         # ./gradlew :common:test :server:test
 make package      # macOS dmg 安装包(其他平台见 打包与发布)
 ```
@@ -51,7 +52,8 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 
 ### 架构与开发
 
-- [技术栈与项目结构](docs/wiki/技术栈与项目结构.md) — Gradle 模块划分、Javalin 薄壳 + common 内核、前端栈、目录树逐层注释
+- [技术栈与项目结构](docs/wiki/技术栈与项目结构.md) — Gradle 模块划分、Javalin 纯 API 壳 + common 内核、前端栈、目录树逐层注释
+- [Tauri 直载前端 · jar 转纯 API 服务实施计划](docs/plans/Tauri直载前端-jar转纯API服务-实施计划.md) — 交付形态调整的目标架构、改动清单与任务表(现场交接见同目录交接说明)
 - [前端页面与按钮逻辑](docs/wiki/前端页面与按钮逻辑.md) — 路由/页签体系、页面导航全景、各页面按钮触发逻辑与 API、轮询与只读模式等交互机制
 - [构建运行与测试](docs/wiki/构建运行与测试.md) — 开发/交付构建、Makefile、GC 参数、JUnit+Testcontainers 测试矩阵与无覆盖区
 - [代码约定与安全](docs/wiki/代码约定与安全.md) — 分层与装配约定、配置/迁移新增流程、错误日志纪律、加密与敏感信息边界

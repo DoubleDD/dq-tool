@@ -5,8 +5,9 @@
 ## 模块定位
 
 tauri 用 Tauri 2(系统 WebView:macOS WKWebView / Windows WebView2 / Linux WebKitGTK)把
-server 模块的 Web UI 套壳成桌面应用。tauri 进程本身不含 Java:**Rust 侧拉起 `java -jar` server fat jar
-作为子进程**,轮询就绪后 webview 加载 `http://127.0.0.1:<port>`。
+server 模块的纯 API 后端套壳成桌面应用。tauri 进程本身不含 Java:**Rust 侧拉起 `java -jar` server fat jar
+作为子进程**;前端页面由 webview 从 Tauri 的 `frontendDist`(即 `web/dist`)本地直载(秒开,不再 navigate),
+API 经 CORS + 每次启动随机 token 走 `http://127.0.0.1:<port>/api`。
 
 **常驻 + 托盘模型(2026-08,极速启动方案)**:窗口关闭只隐藏不退出,Java 后端常驻,
 再次打开 = 显示已有窗口(毫秒级,不重复付 JVM 启动成本);托盘菜单「打开窗口/退出」,
@@ -57,12 +58,16 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 - **端口**:`TcpListener::bind(127.0.0.1:0)` 取空闲端口后释放传给 `--server.port=`;
   竞态被抢注时 DqApplication 向后避让,Rust 读线程解析 stdout 的「端口 N 被占用,避让到 M」回填实际端口
   (**改 DqApplication 该输出格式时请同步 main.rs 的解析**)
+- **访问令牌**:main 开头用 `getrandom` 生成 16 字节随机数转 32 位 hex,作为 `-Ddq.access-token=<token>`
+  注入 java(开发/安装/绿色三态都加);前端经 IPC `api_base()` 取回后请求带 `X-Dq-Token` 头(SSE 走 `?token=`);
+  浏览器直接打开同一后端则被门禁 403。token 只存在于进程内存与 java argv,不进任何日志 / URL
 - **就绪探针**:轮询 `GET /api/license/status` 直到 200(该端点不受授权拦截),超时 60 秒;
   子进程提前退出立即报错。探针用裸 TcpStream 手写 HTTP/1.0(响应小且格式固定,够用;
   流式下载场景不可靠,`save_download_as` 已引 ureq,见「自定义 IPC 命令」)
-- **窗口**:后端子进程拉起后立即创建 webview 加载本地启动页 `ui/index.html`(frontendDist 内容,
-  不再是占位),后台线程就绪轮询通过后 `window.navigate` 到 `http://127.0.0.1:<port>` ——
-  消除「双击后数秒无窗口」的等待;就绪失败仍 fatal 退出
+- **窗口**:后端子进程拉起后立即创建 webview,从 `WebviewUrl::App("index.html")` 加载 `frontendDist`
+  即 `web/dist/index.html`(原 `tauri/ui/` 启动占位页已作废删除);后台线程就绪轮询通过后**不再 navigate**,
+  只把 `AtomicBool` ready 置位,由前端轮询 IPC `api_base()` 拿动态端口/token —— 页面全程来自本地资源,
+  停掉后端也能出壳;就绪失败仍 fatal 退出
 - **常驻与退出**:关窗 `CloseRequested` → `prevent_close` + 隐藏(后端继续跑);托盘
   (TrayIconBuilder,菜单「打开窗口/退出」)承载真正的退出 —— 「退出」显式杀子进程后
   `app.exit(0)`;Cmd+Q 等系统退出走 `RunEvent::ExitRequested|Exit` 杀子进程;macOS 窗口隐藏后
@@ -75,15 +80,16 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   缓存仅 16MB,若日后验证 Windows(Defender 实时扫描大 jar)有收益再接入打包脚本
 - **退出联动**:关窗/退出 → `RunEvent::ExitRequested|Exit` 杀子进程;Ctrl+C/SIGTERM 由
   libc 信号处理器兜底(杀子进程后 `_exit`),不留孤儿 java 进程
-- **自定义 IPC 命令**:webview 加载的是远程 URL(`http://127.0.0.1:<port>`),前端通过
-  `window.__TAURI_INTERNALS__.invoke`(原始 IPC,无需 npm 依赖)调用,远程来源经
-  `capabilities/default.json` 的 `remote.urls`(`http://127.0.0.1:*`)放行。**远程来源调用自定义
-  app 命令被 Tauri 2 强制 ACL 校验**(webview.rs on_message:非本地来源时 `invoke.acl` 必须有命中),
-  每个命令须在 `permissions/*.toml` 声明 `allow-<命令名-连字符>` 权限并列入 capability 的
+- **自定义 IPC 命令**:webview 加载本地来源(`frontendDist`),前端通过
+  `window.__TAURI_INTERNALS__.invoke`(原始 IPC,无需 npm 依赖)调用。**Tauri 2 对自定义
+  app 命令强制 ACL 校验**,每个命令须在 `permissions/*.toml` 声明 `allow-<命令名-连字符>` 权限并列入 capability 的
   `permissions`,否则 IPC 层直接拒绝(报 `<cmd> not allowed. Plugin not found`,不进 Rust 命令、
   后端日志无记录,错误只 toast 在前端)。坑:`permissions/` 目录不存在时 build.rs 不会对其发
   `cargo:rerun-if-changed`,**首次新增权限文件后要 `touch build.rs` 触发重跑构建脚本**。
+  `capabilities/default.json` 原有 `remote.urls`(`http://127.0.0.1:*`)已删除(本地来源不需要)。
   现有命令:
+  `api_base()` —— 前端初始化:返回 `{ base: "http://127.0.0.1:<port>/api", token }`,后端未就绪返回 null
+  (前端轮询);端口读被 stdout 避让回填过的 Arc,token 取自托管状态
   `save_report_as(name, sourceName)` —— 导出任务「另存为」:原生保存对话框 + 从数据目录
   (`data_dir()`,与后端 `-Ddq.data-dir` 同口径)复制产物到目标位置;`sourceName` 由前端传后端
   返回的真实文件名(磁盘 basename,如「数据源名-数据调研报告-任务id.docx」),**不要按 `report-{id}.docx`
@@ -91,7 +97,7 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   Windows 另存为必报「报告文件不存在或已被移动」;不引 HTTP client / fs 插件;前端检测
   `__TAURI_INTERNALS__` 存在才显示「另存为」,浏览器环境显示「下载」
   `save_download_as(path)` —— 通用下载「另存为」(数据源/标记 JSON、扫描 Excel 等流式导出接口):
-  产物不落盘,Rust 侧自己 `ureq` GET `http://127.0.0.1:<port><path>`(端口从托管状态读,含避让回填),
+  产物不落盘,Rust 侧自己 `ureq` GET `http://127.0.0.1:<port><path>`(端口从托管状态读,含避让回填;请求带 `X-Dq-Token` 头),
   原生保存对话框默认文件名取后端 `Content-Disposition`(filename*=UTF-8'',不猜命名),
   `std::io::copy` 流式写盘(大文件不经内存/IPC);返回保存路径供前端 toast,取消返回 null。
   **ureq 是唯一 HTTP client**(阻塞式,不引 async runtime),仅为本命令引入;
@@ -103,7 +109,7 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 ## 自动更新(tauri-plugin-updater)
 
 - 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式与绿色免安装版不检查 —— 更新包是 NSIS 安装包,会装进 Programs 目录,破坏绿色形态);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime;**启动时立即检查一次,之后每 `UPDATE_CHECK_INTERVAL`(30 分钟)轮询一次**(loop + `std::thread::sleep`,失败后间隔照常、下一轮继续;下载完成后的确认对话框阻塞期间该线程停住,下一轮检查顺延)
-- 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,webview 是远程 URL 不适合做更新 UI)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
+- 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,更新 UI 用原生对话框不与页面耦合)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
 
 - 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 与本地统一由 package-tauri-win.bat / package-tauri-mac.sh 未配置环境变量时自动读该文件(tauri CLI 只认内容、不认 `_PATH` 变体——但会把变量值当路径探测,指向文件路径亦可);**密码变量 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 存在(私钥无密码即为空值)时 CLI 直接使用;缺失时走 `--ci`/`CI` 环境变量兜底按空密码处理,都没有则交互式询问密码、无终端环境签名失败**——mac 脚本直接 export 空值;win bat 因 cmd 无法定义空值环境变量(且空值经 npm 多层子进程传递不可靠),未配置密码变量时改置 `CI=true` 让 CLI 按空密码签名(行为见 tauri-cli `bundle.rs` sign_updaters);**丢私钥 = 更新链断裂,需换密钥对并发全量包**。注意:tauri CLI 对「配了 pubkey 但无私钥」直接报错失败(sign_updaters 的 "A public key has been found, but no private key"),win bat 仍在密钥读不到时提前 exit 1 给出更明确的报错;另:tauri CLI 2.11+ 的 v2 updater 模式对 NSIS **不再产出 .nsis.zip**(自包含安装包,直接签 `setup.exe` 得 `setup.exe.sig`,tauri-plugin-updater 2.x 支持裸 exe 下载安装),bat 构建后以 `*-setup.exe.sig` 存在作为签名成功的快速失败判据(2026-08 v1.6 曾误按 .nsis.zip 判,CI 必挂)
 - `createUpdaterArtifacts: true` 产出带签名的安装包本身:`dq-tool_<v>_x64-setup.exe` + `.exe.sig`(v2 updater 直接下载运行 NSIS 安装包,不再打 zip;macOS 对应 `.app.tar.gz` + `.sig`);CI 生成 `latest.json`(version/signature/url)挂 Release
@@ -112,8 +118,9 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 
 ## 打包
 
-- `scripts/package-tauri-mac.sh` / `scripts\package-tauri-win.bat`:web/dist + shadowJar → 组装 `tauri/src-tauri/resources/`
-  (jar → `backend/dq-tool.jar`;完整 JRE → `jre/`:复制本机 JDK 后只删开发工具 bin 启动器与 jmods,
+- `scripts/package-tauri-mac.sh` / `scripts\package-tauri-win.bat`:`cd web && npm run build` 产出 `web/dist`
+  (喂 `tauri.conf.json` 的 `frontendDist`,前端**不进 resources**)+ `:server:shadowJar` 产出纯 API jar →
+  组装 `tauri/src-tauri/resources/`(jar → `backend/dq-tool.jar`;完整 JRE → `jre/`:复制本机 JDK 后只删开发工具 bin 启动器与 jmods,
   运行库模块不裁剪 —— JDBC 驱动大量反射/按名加载,jdeps/jlink 静态裁剪覆盖不全,
   实测达梦驱动初始化要 jdk.charsets 的 EUC-KR,裁剪后运行时才炸)
   → `npm run tauri build`(mac 打 dmg + app 更新包,Windows 打 NSIS `dq-tool_<版本>_x64-setup.exe`)

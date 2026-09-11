@@ -37,15 +37,16 @@
 cd web && npm install && npm run dev
 ```
 
-打包交付(单 jar 内嵌前端;前端由 Gradle 的 shadowJar 前置任务 buildWebForRelease 自动构建,无需手动 build):
+打包交付(交付 fat jar 是**纯 API 服务**,不含前端;前端产物由 Tauri `frontendDist` 与 jpackage `static-dir` 各自构建):
 
 ```bash
-cd web && npm install                 # 首次需装前端依赖(仅构建前端时需要 Node)
-cd .. && ./gradlew :server:shadowJar  # 自动构建 web/dist 并拷进 jar
-java -jar server/build/libs/dq-tool-0.1.6.jar
+cd web && npm install && npm run build   # 前端产物 web/dist(浏览器/jpackage 与 Tauri 形态需要)
+cd .. && ./gradlew :server:shadowJar     # 纯 API jar(shadowJar 排除 static/**,不含前端)
+# 浏览器/jpackage 形态:从磁盘目录发前端;不配 static-dir 时 / 与 /assets/* 为 404
+java -Ddq.web.static-dir=web/dist -jar server/build/libs/dq-tool-<version>.jar
 ```
 
-> 访问 http://localhost:10000 即可使用(开发模式前端在 5173)。10000 被占用时会自动向后探测可用端口;也可用 `--server.port=` 参数或 `SERVER_PORT` 环境变量指定。
+> 访问 http://localhost:10000 即可使用(开发模式前端在 5173)。10000 被占用时会自动向后探测可用端口;也可用 `--server.port=` 参数或 `SERVER_PORT` 环境变量指定。Tauri 形态每次启动随机生成访问令牌(浏览器直接打开后端会被 403,详见 `docs/wiki/代码约定与安全.md`)。
 
 原生安装包(jpackage,内嵌 JRE,目标机器无需安装 Java):
 
