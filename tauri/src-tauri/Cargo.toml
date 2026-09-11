@@ -20,6 +20,8 @@ tauri-plugin-single-instance = "2"
 # 通用下载「另存为」:Rust 侧 GET 本地后端流式导出接口(产物不落盘,只能自己发请求);
 # 阻塞式 API,不引 async runtime
 ureq = "3"
+# 浏览器访问管控 token 生成(每次启动随机 16 字节);Cargo.lock 已有 0.4.x 传递依赖,复用不增新条目
+getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

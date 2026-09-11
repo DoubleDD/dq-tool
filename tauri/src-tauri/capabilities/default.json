@@ -1,10 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口默认能力:本地启动页之外,远程后端页面(http://127.0.0.1 动态端口)也放行 core IPC,供「另存为」等自定义命令使用",
+  "description": "主窗口默认能力:前端已改由 Tauri 从 frontendDist(web/dist)本地加载,不再需要 remote.urls;自定义命令 api_base/save_* 均在本文件 permissions 放行",
   "windows": ["main"],
-  "remote": {
-    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
-  },
-  "permissions": ["core:default", "allow-save-report-as", "allow-save-download-as"]
+  "permissions": ["core:default", "allow-save-report-as", "allow-save-download-as", "allow-api-base"]
 }

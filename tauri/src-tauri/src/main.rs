@@ -19,7 +19,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -39,6 +39,10 @@ fn main() {
     let java = find_java().unwrap_or_else(|e| fatal(&format!("定位 java 运行时失败:{e}")));
     let packaged = is_packaged();
     let portable = is_portable();
+    // 浏览器访问管控令牌:每次启动随机 16 字节(32 位 hex),经 -Ddq.access-token 注入 java。
+    // 前端从 IPC api_base() 取到后加 X-Dq-Token 头,webview 无感;浏览器直接访问同一后端则被拒。
+    // token 绝不写进日志与 URL(仅存于进程内存与 java argv,argv 可被 ps 看到的取舍见文档)。
+    let access_token = generate_access_token();
     eprintln!(
         "[dq-tool-tauri] 后端 jar: {}(java: {},{}模式)",
         jar.display(),
@@ -56,6 +60,8 @@ fn main() {
     // 由 stdout 读线程解析「避让到 N」回填实际端口
     let probed_port = pick_free_port().unwrap_or_else(|e| fatal(&format!("探测空闲端口失败:{e}")));
     let actual_port = Arc::new(Mutex::new(probed_port));
+    // 后端 HTTP 就绪标志:就绪线程置位,IPC api_base() 未就绪时返回 null(前端轮询)
+    let ready = Arc::new(AtomicBool::new(false));
 
     let mut cmd = Command::new(&java);
     cmd.arg("-XX:+UseG1GC");
@@ -83,6 +89,8 @@ fn main() {
             cmd.arg(format!("-Ddq.data-dir={dir}"));
         }
     }
+    // 纯 API 后端默认无浏览器管控;注入随机 token 后,浏览器直接打开 Tauri 拉起的后端被门禁拒绝
+    cmd.arg(format!("-Ddq.access-token={access_token}"));
     cmd.arg("-jar")
         .arg(&jar)
         .arg(format!("--server.port={probed_port}"))
@@ -116,8 +124,8 @@ fn main() {
         }
     });
 
-    // 窗口先出:立即创建 webview 显示本地加载页(ui/index.html),后台线程等后端
-    // 就绪后 navigate 到 http://127.0.0.1:<port> —— 消除「双击后数秒无窗口」的等待
+    // 窗口先出:立即创建 webview 从 frontendDist(web/dist)加载页面,后台线程等后端;
+    // 就绪后只置 ready 标志,页面不 navigate —— 消除「双击后数秒无窗口」的等待
     let child = Arc::new(Mutex::new(child));
     let child_on_exit = Arc::clone(&child);
     let child_on_update = Arc::clone(&child);
@@ -134,7 +142,9 @@ fn main() {
         }))
         // 自定义命令:导出任务「另存为」/通用下载「另存为」(webview 经 __TAURI_INTERNALS__.invoke 调用)
         .manage(port_state)
-        .invoke_handler(tauri::generate_handler![save_report_as, save_download_as])
+        .manage(access_token)
+        .manage(Arc::clone(&ready))
+        .invoke_handler(tauri::generate_handler![api_base, save_report_as, save_download_as])
         .setup(move |app| {
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -173,13 +183,13 @@ fn main() {
                 })
                 .build(app)?;
             let child = Arc::clone(&child);
+            let ready_flag = Arc::clone(&ready);
+            // 前端已由 frontendDist 本地直载:就绪后不再 navigate 到后端页面,只置 ready 标志,
+            // 由前端轮询 IPC api_base() 拿到动态端口/token 后走 X-Dq-Token 头访问 API
             std::thread::spawn(move || match wait_ready(&child, &actual_port) {
                 Ok(port) => {
                     eprintln!("[dq-tool-tauri] 后端已就绪: http://127.0.0.1:{port}");
-                    let url = format!("http://127.0.0.1:{port}").parse().expect("合法 URL");
-                    if let Err(e) = window.navigate(url) {
-                        fatal(&format!("导航到后端页面失败:{e}"));
-                    }
+                    ready_flag.store(true, Ordering::SeqCst);
                 }
                 Err(e) => fatal(&format!("后端未在 {} 秒内就绪:{e}", READY_TIMEOUT.as_secs())),
             });
@@ -396,6 +406,31 @@ fn data_dir() -> PathBuf {
     repo_root().join("data")
 }
 
+/// 前端初始化用 IPC:返回后端 API 基址(含动态端口)与访问令牌;后端未就绪返回 null(前端轮询)。
+/// 端口读被 stdout 解析线程回填过的 Arc,端口避让后自然是最新值;token 不落日志、不回显。
+#[tauri::command]
+fn api_base(
+    port: tauri::State<'_, Arc<Mutex<u16>>>,
+    token: tauri::State<'_, String>,
+    ready: tauri::State<'_, Arc<AtomicBool>>,
+) -> Option<serde_json::Value> {
+    if !ready.load(Ordering::SeqCst) {
+        return None;
+    }
+    let port = *port.lock().ok()?;
+    Some(serde_json::json!({
+        "base": format!("http://127.0.0.1:{port}/api"),
+        "token": token.inner().clone(),
+    }))
+}
+
+/// 生成 16 字节随机 token(32 位 hex);系统随机源不可用时启动失败(绝不退化为可预测值)
+fn generate_access_token() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).expect("系统随机源不可用");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// 导出任务「另存为」:原生保存对话框 + 从数据目录复制产物文件。
 /// 产物本就落在本机数据目录,直接复制——不引 HTTP client,也不需要 fs 插件权限。
 /// 返回 Ok(false) 表示用户在对话框中取消。
@@ -440,12 +475,15 @@ async fn save_report_as(app: tauri::AppHandle, name: String, source_name: String
 async fn save_download_as(
     app: tauri::AppHandle,
     port: tauri::State<'_, Arc<Mutex<u16>>>,
+    token: tauri::State<'_, String>,
     path: String,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
     let port = *port.lock().map_err(|e| e.to_string())?;
     let url = format!("http://127.0.0.1:{port}{path}");
+    // 门禁令牌:后端配置了 dq.access-token 时 Rust 自发请求也必须带头(未配置时该头无影响)
+    let token = token.inner().clone();
     // 阻塞式 HTTP 放线程池,不占 async runtime worker;http_status_as_error(false)
     // 以便读出非 2xx 的错误体给前端 toast
     let mut resp = tauri::async_runtime::spawn_blocking(move || {
@@ -454,6 +492,7 @@ async fn save_download_as(
             .build();
         ureq::Agent::new_with_config(config)
             .get(&url)
+            .header("X-Dq-Token", &token)
             .call()
             .map_err(|e| format!("请求后端失败:{e}"))
     })

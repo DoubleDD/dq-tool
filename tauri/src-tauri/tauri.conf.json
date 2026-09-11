@@ -4,7 +4,7 @@
   "version": "2.0.1",
   "identifier": "com.example.dqtool",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../../web/dist"
   },
   "app": {
     "windows": [],
