@@ -83,7 +83,8 @@ data class RelationInferRequest(
     @field:NotBlank val table: String?,
     @field:NotEmpty val fields: List<AnchorFieldRequest>?,
     val useSemantic: Boolean = false,
-    /** 仅映射名匹配:true 时搜索名集合只含 aliases(锚点字段本名不参与,避免 id 等通用名全库命中;缺省 false 向后兼容) */
+    /** 仅映射名匹配:true 时只对填了 aliases 的锚点字段生效(这些字段只用映射名、本名不参与,避免 id 等通用名全库命中);
+     *  未填 aliases 的字段不受影响,仍按本名搜索;缺省 false 向后兼容 */
     val aliasOnly: Boolean = false,
 )
 

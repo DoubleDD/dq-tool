@@ -14,7 +14,9 @@ import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.TableDocRepository
 import com.example.dq.repository.TableRelationRepository
 import io.mockk.every
+import io.mockk.justRun
 import io.mockk.mockk
+import io.mockk.verify
 import com.sun.net.httpserver.HttpServer
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -27,7 +29,9 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
 import java.sql.DriverManager
+import java.sql.SQLTransientConnectionException
 import java.sql.Statement
+import java.time.LocalDateTime
 
 /**
  * ER 关系推导(H2 内存库,SchemaInit 到 V35 + 真实 Repo/Service 组装):
@@ -73,6 +77,9 @@ class RelationInferFlowTest {
         every { dataSourceService.get(any()) } returns DataSourceConfig().apply { dbType = DbType.POSTGRESQL }
         // 每次调用给一条新连接(用例内共享同一业务库,DDL/DML/SELECT 跨调用可见)
         every { dataSourceService.getConnection(any<Long>(), null) } answers { DriverManager.getConnection(bizUrl) }
+        // 连接状态标记是辅助观测:默认打桩为空操作,各用例按需覆盖为「不可达」并 verify 调用
+        justRun { dataSourceService.markConnFailure(any(), any(), any()) }
+        justRun { dataSourceService.markConnRecovered(any()) }
         systemSettingsService = mockk()
         every { systemSettingsService.scanSettings() } returns ScanConfig(statementTimeoutSeconds = 30)
         // 默认无 AI 配置:useSemantic=true 提交被拒;语义用例另行 stub 或注入 fake chat
@@ -96,6 +103,16 @@ class RelationInferFlowTest {
     private fun biz(block: (Statement) -> Unit) {
         DriverManager.getConnection(bizUrl).use { conn ->
             conn.createStatement().use { st -> block(st) }
+        }
+    }
+
+    /** 数据源打桩:POSTGRESQL + 连接状态标记(conn_status=ERROR,checkedAt 决定是否落在新鲜窗口内) */
+    private fun stubDatasourceError(checkedAt: LocalDateTime) {
+        every { dataSourceService.get(any()) } returns DataSourceConfig().apply {
+            dbType = DbType.POSTGRESQL
+            connStatus = "ERROR"
+            connKind = "UNREACHABLE"
+            connCheckedAt = checkedAt
         }
     }
 
@@ -218,6 +235,108 @@ class RelationInferFlowTest {
     }
 
     @Test
+    fun `数据源不可达时降级用本地结构缓存推导 候选未验证且写连接状态标记`() {
+        // 场景:只浏览过部分表(per-table 字段缓存有、schema 级就绪标记没有),此时数据源已不可达
+        metaCacheRepo.replaceSchemaTableColumns(DS_ID, "", SCHEMA, "reservoir",
+            listOf(MetaCacheRepository.CachedSchemaColumn("reservoir", 0, "res_code", "varchar(50)", "")))
+        metaCacheRepo.replaceSchemaTableColumns(DS_ID, "", SCHEMA, "basin",
+            listOf(MetaCacheRepository.CachedSchemaColumn("basin", 0, "res_code", "varchar(50)", "")))
+        assertFalse(metaCacheRepo.isSchemaColumnsReady(DS_ID, "", SCHEMA))
+        every { dataSourceService.getConnection(any<Long>(), null) } throws
+            SQLTransientConnectionException("ds-1 - Connection is not available, request timed out after 30005ms")
+
+        val job = submitAndAwait("reservoir", listOf("res_code"))
+        assertEquals("DONE", job.status) { "任务失败: " + job.error }
+        assertEquals(1, job.foundCount)
+        // 只在回源取字段清单时试一次连接;验证阶段不再重试(省一次连接池超时等待)
+        verify(exactly = 1) { dataSourceService.getConnection(DS_ID, null) }
+        // 连不上→写数据源连接状态标记(UNREACHABLE),并在任务附注里说明本轮是缓存降级
+        verify(exactly = 1) { dataSourceService.markConnFailure(DS_ID, any(), "UNREACHABLE") }
+        assertTrue(jobRepo.findById(job.id)!!.error!!.contains("数据源连接不可达"))
+
+        val rel = relationService.list(DS_ID, null, SCHEMA, null, null).single()
+        assertTrue(rel.remark!!.contains("数据源连接不可达"), rel.remark)
+        assertNull(rel.confidence) // 未做值交集 → 交集率/置信度留空
+        assertNull(rel.overlapRatio)
+        assertEquals("reservoir", rel.oneTable) // 无索引佐证暂按锚点侧为「一」
+    }
+
+    @Test
+    fun `数据源不可达且本地无结构缓存时任务失败`() {
+        every { dataSourceService.getConnection(any<Long>(), null) } throws
+            SQLTransientConnectionException("ds-1 - Connection is not available, request timed out after 30005ms")
+
+        val job = submitAndAwait("reservoir", listOf("res_code"))
+        assertEquals("FAILED", job.status)
+        assertTrue(job.error!!.contains("Connection is not available"), job.error)
+        verify(exactly = 1) { dataSourceService.markConnFailure(DS_ID, any(), "UNREACHABLE") }
+        assertTrue(relationService.list(DS_ID, null, SCHEMA, null, null).isEmpty())
+    }
+
+    @Test
+    fun `已知不可达窗口内不重试连接 直接用本地结构缓存推导`() {
+        // 只浏览过部分表(per-table 缓存有、schema 级就绪标记没有),且数据源刚实测失败过(标记在 TTL 内)
+        metaCacheRepo.replaceSchemaTableColumns(DS_ID, "", SCHEMA, "reservoir",
+            listOf(MetaCacheRepository.CachedSchemaColumn("reservoir", 0, "res_code", "varchar(50)", "")))
+        metaCacheRepo.replaceSchemaTableColumns(DS_ID, "", SCHEMA, "basin",
+            listOf(MetaCacheRepository.CachedSchemaColumn("basin", 0, "res_code", "varchar(50)", "")))
+        stubDatasourceError(LocalDateTime.now().minusMinutes(1))
+
+        val job = submitAndAwait("reservoir", listOf("res_code"))
+        assertEquals("DONE", job.status) { "任务失败: " + job.error }
+        assertEquals(1, job.foundCount)
+        // 新鲜窗口内一次连接都不取:既不回源取字段清单,也不取验证连接(免得白等连接池超时)
+        verify(exactly = 0) { dataSourceService.getConnection(any<Long>(), null) }
+        verify(exactly = 0) { dataSourceService.markConnFailure(any(), any(), any()) }
+
+        val rel = relationService.list(DS_ID, null, SCHEMA, null, null).single()
+        assertTrue(rel.remark!!.contains("数据源连接不可达"), rel.remark)
+        assertNull(rel.confidence)
+    }
+
+    @Test
+    fun `字段清单缓存已就绪且处于不可达窗口 验证阶段也不连库`() {
+        seedBase() // schema 级字段缓存就绪:正常路径本会为验证取一次连接
+        stubDatasourceError(LocalDateTime.now())
+
+        val job = submitAndAwait()
+        assertEquals("DONE", job.status) { "任务失败: " + job.error }
+        assertEquals(4, job.foundCount)
+        verify(exactly = 0) { dataSourceService.getConnection(any<Long>(), null) }
+        // 全部候选未验证入库:交集率/置信度留空,remark 注明不可达
+        relationService.list(DS_ID, null, SCHEMA, null, null).forEach {
+            assertTrue(it.remark!!.contains("数据源连接不可达"), "${it.oneTable}.${it.oneColumn} remark=${it.remark}")
+            assertNull(it.confidence)
+            assertNull(it.overlapRatio)
+        }
+    }
+
+    @Test
+    fun `不可达标记超出 TTL 后重新实测并刷新标记`() {
+        seedBase()
+        stubDatasourceError(LocalDateTime.now().minusMinutes(RelationInferService.KNOWN_DOWN_TTL.toMinutes() + 5))
+        every { dataSourceService.getConnection(any<Long>(), null) } throws
+            SQLTransientConnectionException("ds-1 - Connection is not available, request timed out after 30005ms")
+
+        val job = submitAndAwait()
+        assertEquals("DONE", job.status) { "任务失败: " + job.error }
+        // 超窗后照常实测一次(失败即重写标记时间,标记不会永久生效)
+        verify(exactly = 1) { dataSourceService.getConnection(any<Long>(), null) }
+        verify(exactly = 1) { dataSourceService.markConnFailure(DS_ID, any(), "UNREACHABLE") }
+        relationService.list(DS_ID, null, SCHEMA, null, null).forEach { assertNull(it.confidence) }
+    }
+
+    @Test
+    fun `窗口内已知不可达且本地无缓存时快速失败`() {
+        stubDatasourceError(LocalDateTime.now().minusMinutes(2))
+
+        val job = submitAndAwait("reservoir", listOf("res_code"))
+        assertEquals("FAILED", job.status)
+        assertTrue(job.error!!.contains("无字段结构缓存可兜"), job.error)
+        verify(exactly = 0) { dataSourceService.getConnection(any<Long>(), null) }
+    }
+
+    @Test
     fun `两端互换推导命中唯一键幂等不重复`() {
         biz { st ->
             st.execute("""CREATE TABLE "zebra" ("code" VARCHAR(50) PRIMARY KEY)""")
@@ -294,7 +413,7 @@ class RelationInferFlowTest {
     }
 
     @Test
-    fun `confirm reject 互转与仅候选可删`() {
+    fun `confirm reject 互转与删除不限状态`() {
         seedBase()
         submitAndAwait()
         val rel = relationService.list(DS_ID, null, SCHEMA, null, null).first { it.manyTable == "flood_ctrl" }
@@ -306,8 +425,9 @@ class RelationInferFlowTest {
         relationService.confirm(rel.id)
         assertEquals("CONFIRMED", relationRepo.findById(rel.id)!!.status)
 
-        // 非候选删除抛错;不存在的 id 也抛错
-        assertThrows(IllegalArgumentException::class.java) { relationService.delete(rel.id) }
+        // 删除不限状态(确认关系也可删,误删可重新推导找回);不存在的 id 抛错
+        relationService.delete(rel.id)
+        assertNull(relationRepo.findById(rel.id))
         assertThrows(IllegalArgumentException::class.java) { relationService.delete(9999L) }
 
         val candidate = relationService.list(DS_ID, null, SCHEMA, "CANDIDATE", null).first()
@@ -337,9 +457,9 @@ class RelationInferFlowTest {
     }
 
     @Test
-    fun `仅映射名匹配 本名不参与搜索`() {
+    fun `仅映射名匹配 填了映射名的字段本名不参与搜索`() {
         seedBase()
-        // res_code 本名本可命中 flood_ctrl/basin/empty_tbl/no_overlap;aliasOnly 后只剩映射名 basin_code 命中 basin
+        // res_code 填了映射名 → 只用映射名 basin_code 命中 basin;本名不参与,故不再命中 flood_ctrl/empty_tbl/no_overlap
         val job = submitAndAwaitFields("reservoir",
             listOf(AnchorFieldRequest("res_code", listOf("basin_code"))), aliasOnly = true)
         assertEquals("DONE", job.status) { "任务失败: " + job.error }
@@ -354,13 +474,39 @@ class RelationInferFlowTest {
     }
 
     @Test
-    fun `仅映射名匹配且未填映射名 零命中`() {
+    fun `仅映射名匹配 未填映射名的字段不受影响仍按本名搜索`() {
         seedBase()
+        // res_code 未填映射名 → 无别名可依赖,开关不影响它,本名照常参与,结果与 aliasOnly=false 一致(4 对)
         val job = submitAndAwaitFields("reservoir", listOf(AnchorFieldRequest("res_code")), aliasOnly = true)
         assertEquals("DONE", job.status) { "任务失败: " + job.error }
-        assertEquals(0, job.totalSteps)
-        assertEquals(0, job.foundCount)
-        assertTrue(relationService.list(DS_ID, null, SCHEMA, null, null).isEmpty())
+        assertEquals(4, job.totalSteps)
+        assertEquals(4, job.foundCount)
+        assertEquals(4, relationService.list(DS_ID, null, SCHEMA, null, null).size)
+    }
+
+    @Test
+    fun `仅映射名匹配 逐字段生效 有映射名只用映射名无映射名按本名`() {
+        biz { st ->
+            st.execute("""CREATE TABLE "reservoir" ("res_code" VARCHAR(50) PRIMARY KEY, "rname" VARCHAR(50))""")
+            st.execute("""CREATE TABLE "basin" ("basin_code" VARCHAR(50), "rname" VARCHAR(50))""")
+            st.execute("""CREATE TABLE "flood_ctrl" ("res_code" VARCHAR(50))""")
+        }
+        cacheColumns("reservoir" to listOf("res_code", "rname"),
+            "basin" to listOf("basin_code", "rname"), "flood_ctrl" to listOf("res_code"))
+
+        val job = submitAndAwaitFields("reservoir", listOf(
+            AnchorFieldRequest("res_code", listOf("basin_code")), // 填了映射名 → 只用映射名,本名 res_code 不参与
+            AnchorFieldRequest("rname"),                          // 未填映射名 → 不受开关影响,仍按本名
+        ), aliasOnly = true)
+        assertEquals("DONE", job.status) { "任务失败: " + job.error }
+        val pairs = relationService.list(DS_ID, null, SCHEMA, null, null).map {
+            setOf(it.oneTable, it.oneColumn) to setOf(it.manyTable, it.manyColumn)
+        }
+        assertEquals(2, pairs.size)
+        assertTrue(pairs.contains(setOf("reservoir", "res_code") to setOf("basin", "basin_code")))
+        assertTrue(pairs.contains(setOf("reservoir", "rname") to setOf("basin", "rname")))
+        // 本名被映射名顶掉的字段不会再与 flood_ctrl.res_code 建关系
+        assertTrue(relationService.list(DS_ID, null, SCHEMA, null, null).none { it.oneTable == "flood_ctrl" || it.manyTable == "flood_ctrl" })
     }
 
     @Test
@@ -441,7 +587,9 @@ class RelationInferFlowTest {
         assertThrows(IllegalArgumentException::class.java) {
             relationService.addManual(DS_ID, null, SCHEMA, "a", "x", "a", "x", "ONE_TO_ONE", null)
         }
-        assertThrows(IllegalArgumentException::class.java) { relationService.delete(id) } // 非候选不可删
+        // 删除不限状态:确认关系也可删(误删可重新推导找回)
+        relationService.delete(id)
+        assertNull(relationRepo.findById(id))
     }
 
     @Test

@@ -22,6 +22,8 @@
         </el-select>
         <el-button :icon="Refresh" :loading="loading" :disabled="!dsId || !schema" @click="loadGraph">刷新</el-button>
         <el-button :disabled="!dsId || !schema" @click="addVisible = true">手动补充</el-button>
+        <!-- 候选管理:整库关系列表批量确认/否决/删除(图上逐条点边操作慢,批量场景走这里) -->
+        <el-button :disabled="!dsId || !schema" @click="batchVisible = true">关系管理</el-button>
         <!-- 导出 drawio 已收进画布顶部工具栏(底座可选工具 export-drawio,第 5 个图标位) -->
         <el-button :icon="Download" :loading="exporting" :disabled="!dsId || !schema || !graphData.nodes.length" @click="exportExcel">导出ER关系</el-button>
         <!-- 星型图标识:query 带 table 时只看该表的一度关系 -->
@@ -57,6 +59,7 @@
         @edge-click="onEdgeClick"
         @node-click="onNodeClick"
         @node-open="goTableDetail"
+        @changed="onCanvasBatchReject"
       >
         <template #toolbar>
           <!-- 名字口径三档(表名/字段同规则):仅中文(默认,无注释回退英文)/仅英文/中英文同时显示(中文在前) -->
@@ -98,6 +101,17 @@
       @done="onAddDone"
     />
 
+    <!-- 关系批量处理对话框(整库清单,默认仅候选;批量确认/否决/删除后刷新图;星型图预填当前表过滤) -->
+    <RelationBatchDialog
+      v-if="dsId && schema"
+      v-model="batchVisible"
+      :ds-id="dsId"
+      :db="db"
+      :schema="schema"
+      :initial-table="starTable"
+      @done="loadGraph"
+    />
+
     <!-- 推导对话框(预选当前数据源/库/被点表) -->
     <RelationInferDialog
       v-if="dsId && schema"
@@ -122,6 +136,7 @@ import { exportErGraphExcel } from '../utils/erGraphExport'
 import RelationGraphCanvas from '../components/RelationGraphCanvas.vue'
 import RelationEdgeDrawer from '../components/RelationEdgeDrawer.vue'
 import RelationAddDialog from '../components/RelationAddDialog.vue'
+import RelationBatchDialog from '../components/RelationBatchDialog.vue'
 import RelationInferDialog from '../components/RelationInferDialog.vue'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
 
@@ -366,8 +381,26 @@ function onEdgeChanged({ action }) {
   graphData.value = { ...graphData.value, nodes, edges }
 }
 
+/** 画布选中批量否决成功:与单条否决同口径——按 ids 剔除这些边(不回源重拉);
+ *  星型图同步摘除失去全部连线的邻表节点;全库总图节点含孤儿表不摘(与服务端 graph() 口径一致) */
+function onCanvasBatchReject({ ids = [] } = {}) {
+  if (!ids.length) return
+  const idSet = new Set(ids.map(String))
+  const edges = (graphData.value.edges || []).filter((e) => !idSet.has(String(e.id)))
+  let nodes = graphData.value.nodes || []
+  if (starTable.value) {
+    const keep = new Set([starTable.value])
+    for (const e of edges) { keep.add(e.oneTable); keep.add(e.manyTable) }
+    nodes = nodes.filter((n) => keep.has(n.name))
+  }
+  graphData.value = { ...graphData.value, nodes, edges }
+}
+
 // ---------- 手动补充 ----------
 const addVisible = ref(false)
+
+// ---------- 候选管理(关系批量处理) ----------
+const batchVisible = ref(false)
 
 /** 手动补充完成:命中唯一键的已存在关系后端转 CONFIRMED 返回原 id(existing=true) */
 async function onAddDone(res) {

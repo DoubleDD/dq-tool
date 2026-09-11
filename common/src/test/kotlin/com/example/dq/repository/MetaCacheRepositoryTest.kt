@@ -68,6 +68,40 @@ class MetaCacheRepositoryTest {
         assertFalse(repo.isColumnCacheReady(1, "", "db1", "t2"))
     }
 
+    // ---------- 超长源库文本(回归:MySQL ENUM 的完整枚举列表可达数百字符,原列宽会让整批刷新失败) ----------
+
+    @Test
+    fun `超长类型与注释完整写入 不再整批失败也不截断`() {
+        // MySQL COLUMN_TYPE 对 ENUM 会带出完整枚举列表,远超原 display_type/col_type 的 128
+        val longEnum = "enum(" + (1..40).joinToString(",") { "'VALUE_$it'" } + ")"
+        assertTrue(longEnum.length > 128, "测试值须超过原 display_type 列宽")
+        val longDefault = "d".repeat(2000)
+        val longComment = "c".repeat(2000)
+        repo.replaceColumns(1, "", "db1", "t1", listOf(
+            MetaCacheRepository.CachedColumn(
+                0, "c1", "ENUM", longEnum, 12, true, longDefault, longComment, true, 0, false
+            )
+        ))
+        val c = repo.listColumns(1, "", "db1", "t1").single()
+        assertEquals(longEnum, c.displayType)       // 完整保留(V42 已放宽为 CLOB)
+        assertEquals(longDefault, c.defaultValue)
+        assertEquals(longComment, c.comment)
+
+        // 表注释(V1 原 1024)与整库字段清单的 col_type/comment(V27 原 128/1024)同样完整保留
+        val longTableComment = "x".repeat(3000)
+        repo.replaceTables(1, "", "db1", listOf(
+            MetaCacheRepository.CachedTable("t1", longTableComment, "InnoDB", 1L, 2L)
+        ))
+        assertEquals(longTableComment, repo.listTables(1, "", "db1").single().comment)
+
+        repo.replaceSchemaColumns(1, "", "db1", listOf(
+            MetaCacheRepository.CachedSchemaColumn("t1", 0, "c1", longEnum, longComment)
+        ))
+        val sc = repo.listSchemaColumns(1, "", "db1").single()
+        assertEquals(longEnum, sc.colType)
+        assertEquals(longComment, sc.comment)
+    }
+
     // ---------- 索引缓存(含空索引场景:flag 区分「未缓存」与「已缓存但为空」) ----------
 
     @Test

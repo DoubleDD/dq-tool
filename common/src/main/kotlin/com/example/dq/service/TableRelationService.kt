@@ -19,6 +19,11 @@ class TableRelationService(
     private val metaCacheRepo: MetaCacheRepository,
 ) {
 
+    companion object {
+        /** 批量操作单次上限(防误传超大 id 列表拖垮本地 H2) */
+        private const val MAX_BATCH = 1000
+    }
+
     /** 关系列表:status/table 可选过滤;status 非法值抛 400 */
     fun list(datasourceId: Long, dbName: String?, schemaName: String, status: String?, table: String?): List<TableRelation> {
         val db = dbName?.trim().orEmpty()
@@ -42,11 +47,27 @@ class TableRelationService(
         }
     }
 
-    /** 删除:仅候选态;确认/否决的关系只能流转状态,不能删(防误删权威关系) */
+    /** 删除(任意状态;误删的关系重新推导即可找回) */
     fun delete(id: Long) {
-        if (relationRepo.deleteCandidate(id) == 0) {
-            throw IllegalArgumentException("仅候选状态的关系可删除: $id")
+        if (relationRepo.deleteById(id) == 0) {
+            throw IllegalArgumentException("关系不存在: $id")
         }
+    }
+
+    /** 批量确认(同单条口径:候选/否决均可转确认),返回实际更新数(不存在的 id 忽略) */
+    fun confirmBatch(ids: List<Long>): Int = relationRepo.updateStatusBatch(validateBatchIds(ids), RelationStatus.CONFIRMED.name)
+
+    /** 批量否决(同单条口径:候选/确认均可转否决),返回实际更新数 */
+    fun rejectBatch(ids: List<Long>): Int = relationRepo.updateStatusBatch(validateBatchIds(ids), RelationStatus.REJECTED.name)
+
+    /** 批量删除(任意状态,误删可重新推导找回),返回实际删除数 */
+    fun deleteBatch(ids: List<Long>): Int = relationRepo.deleteByIds(validateBatchIds(ids))
+
+    /** 批量入参校验:非空、数量上限、去重(保持原顺序) */
+    private fun validateBatchIds(ids: List<Long>): List<Long> {
+        require(ids.isNotEmpty()) { "ids 不能为空" }
+        require(ids.size <= MAX_BATCH) { "单次最多处理 $MAX_BATCH 条关系" }
+        return ids.distinct()
     }
 
     /**

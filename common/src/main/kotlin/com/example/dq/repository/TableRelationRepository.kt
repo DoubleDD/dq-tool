@@ -138,7 +138,25 @@ class TableRelationRepository(private val jdbc: Jdbc) {
     fun updateStatus(id: Long, status: String): Int =
         jdbc.update("UPDATE table_relation SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", status, id)
 
-    /** 仅候选态可删除,返回影响行数(0=不存在或非候选,service 层转 400) */
-    fun deleteCandidate(id: Long): Int =
-        jdbc.update("DELETE FROM table_relation WHERE id=? AND status='CANDIDATE'", id)
+    /**
+     * 批量状态流转(批量确认/否决),返回实际更新行数(不存在的 id 忽略);
+     * ids 非空由 service 层保证,空集合兜底直接返回 0(避免拼出非法 IN ())
+     */
+    fun updateStatusBatch(ids: Collection<Long>, status: String): Int {
+        if (ids.isEmpty()) return 0
+        val marks = ids.joinToString(",") { "?" }
+        return jdbc.update("UPDATE table_relation SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id IN ($marks)",
+            status, *ids.toTypedArray())
+    }
+
+    /** 批量删除(任意状态,误删可重新推导找回),返回实际删除行数 */
+    fun deleteByIds(ids: Collection<Long>): Int {
+        if (ids.isEmpty()) return 0
+        val marks = ids.joinToString(",") { "?" }
+        return jdbc.update("DELETE FROM table_relation WHERE id IN ($marks)", *ids.toTypedArray())
+    }
+
+    /** 删除单条(任意状态,误删可重新推导找回),返回影响行数(0=记录不存在) */
+    fun deleteById(id: Long): Int =
+        jdbc.update("DELETE FROM table_relation WHERE id=?", id)
 }

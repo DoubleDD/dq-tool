@@ -228,6 +228,7 @@
         <div v-if="!erGraph.nodes.length" class="er-toolbar">
           <el-button size="small" @click="inferDialogVisible = true">推导关联</el-button>
           <el-button size="small" @click="openAddRelation">手动补充</el-button>
+          <el-button size="small" @click="batchDialogVisible = true">关系管理</el-button>
         </div>
         <!-- 该表星型图(恒含候选边);点边看关系详情(与 ER 关系页共用抽屉组件),点表名跳对应表字段明细;ER 页签激活时画布 flex 吃满剩余高度。
              画布仅在本页签激活时挂载(el-tab-pane 非 lazy 模式只是 v-show 隐藏,不销毁——两个 G6 实例并存于 0 尺寸的
@@ -248,6 +249,7 @@
             @export-drawio="exportErDrawio"
             @edge-click="onErEdgeClick"
             @node-open="goOtherTable"
+            @changed="onErCanvasChanged"
           >
             <template #toolbar>
               <!-- 全部字段档单表默认展示的字段行数(超出折叠为「+N 个字段」可点击展开);localStorage 持久化 -->
@@ -262,9 +264,10 @@
                 <el-option label="仅显示字段英文名" value="english" />
                 <el-option label="中英文同时显示" value="both" />
               </el-select>
-              <!-- 业务操作:推导关联/手动补充(排在显示类工具最后;空图时见页面级兜底) -->
+              <!-- 业务操作:推导关联/手动补充/候选管理(排在显示类工具最后;空图时见页面级兜底) -->
               <el-button size="small" @click="inferDialogVisible = true">推导关联</el-button>
               <el-button size="small" @click="openAddRelation">手动补充</el-button>
+              <el-button size="small" @click="batchDialogVisible = true">关系管理</el-button>
             </template>
           </RelationGraphCanvas>
           <el-empty v-else-if="!erLoading && erLoaded"
@@ -278,16 +281,16 @@
              与 ER 画布一样仅在本页签激活时挂载(切走销毁、切回用缓存数据重建),保证任意时刻只有一个 G6 实例存活,互不影响 -->
         <div class="er-canvas-wrap" v-loading="graphLoading">
           <TableGraphCanvas
-            v-if="activeTab === 'graph' && graphData.nodes.length"
+            v-if="activeTab === 'graph' && graphFilteredData.nodes.length"
             ref="tableGraphRef"
-            :nodes="graphData.nodes"
+            :nodes="graphFilteredData.nodes"
             :edges="graphEdges"
             :anchor-table="tableName"
             layout="force"
             :sizes="graphSizes"
             :colors="graphColors"
-            :highlight="graphHighlight"
             :selected="graphPanelTable"
+            :selected-list="graphSelectedTables"
             :edge-width="graphEdgeWidth"
             :label-opacity="graphLabelOpacity"
             :center-strength="graphCenterStrength"
@@ -295,23 +298,26 @@
             :link-strength="graphLinkStrength"
             @node-click="onGraphNodeClick"
             @node-open="goOtherTable"
-            @canvas-click="graphPanelTable = ''"
+            @canvas-click="onGraphCanvasClick"
+            @lasso-select="onGraphLassoSelect"
           >
             <template #toolbar>
               <!-- 样式/力导参数设置:紧跟底座三个内置工具图标(重绘/1:1/适应画布)之后 -->
               <el-tooltip content="图谱样式与力导参数" placement="bottom">
                 <el-button size="small" :icon="Setting" @click="graphDebugVisible = !graphDebugVisible" />
               </el-tooltip>
-              <!-- 标记筛选:选项为当前图节点上出现过的标记;命中节点保持高亮,未命中大幅降亮度 -->
+              <!-- 标记筛选:选项为当前图节点上出现过的标记;命中节点留在图谱,未命中直接出图(不降亮度)。
+                   宽度按「已选折叠标签 + 箭头」的实需给,不留大段空白(collapse-tags-tooltip 看全量) -->
               <el-select v-model="graphFilterTags" multiple collapse-tags collapse-tags-tooltip clearable
-                         placeholder="按标记筛选" size="small" style="width: 220px">
+                         placeholder="按标记筛选" size="small" style="width: 150px">
                 <el-option v-for="t in graphTagOptions" :key="t.name" :label="t.name" :value="t.name">
                   <span class="graph-tag-dot" :style="{ background: t.color || 'var(--el-color-primary)' }" />{{ t.name }}
                 </el-option>
               </el-select>
-              <!-- 颜色筛选:选项为当前图节点实际用到的颜色(自定义色/标记色/默认色),只显示色块不显示颜色值 -->
+              <!-- 颜色筛选:选项为当前图节点实际用到的颜色(自定义色/标记色/默认色),只显示色块不显示颜色值;
+                   选中项本身只是个色块,宽度比标记筛选更省(同样按实需给宽,不留空白) -->
               <el-select v-model="graphFilterColors" multiple collapse-tags collapse-tags-tooltip clearable
-                         placeholder="按颜色筛选" size="small" style="width: 180px">
+                         placeholder="按颜色筛选" size="small" style="width: 120px">
                 <el-option v-for="c in graphColorOptions" :key="c" :label="c" :value="c">
                   <span class="graph-color-swatch" :style="{ background: c }" :title="c" />
                 </el-option>
@@ -322,8 +328,9 @@
               </el-select>
             </template>
           </TableGraphCanvas>
-          <el-empty v-else-if="!graphLoading && graphLoaded"
-                    description="暂无关联关系,可在「ER 关系」页签推导或手动补充" :image-size="60" />
+          <!-- 空图兜底:筛选态下为空只提示筛选结果,无筛选时才引导去 ER 页签补关系 -->
+          <el-empty v-else-if="!graphLoading && graphLoaded" :image-size="60"
+                    :description="graphFiltering ? '当前筛选条件下没有匹配的表' : '暂无关联关系,可在「ER 关系」页签推导或手动补充'" />
           <!-- 调试面板(左下角悬浮卡片,与对象管理「图谱」页签同款):边长/节点尺寸/连线粗细/文本透明度/力导三力实时调节,重置恢复默认 -->
           <div v-if="graphDebugVisible" class="graph-debug">
             <div class="graph-debug-row">
@@ -386,20 +393,51 @@
               </el-table>
               <div v-else-if="!graphPanelColumnsLoading" class="graph-node-panel-cols-empty">暂无字段元数据</div>
             </div>
-            <!-- 节点颜色行:取色器在最前,标记随后(空表标记固定排最后),恢复默认收尾 -->
+            <!-- 节点颜色行:取色器在最前,标记随后(空表标记固定排最后),恢复默认收尾;
+                 中心节点(本表)颜色固定主题蓝,不提供改色(替换为说明文字) -->
             <div class="graph-node-panel-color">
-              <el-color-picker v-model="graphPanelColor" :predefine="graphPresetColors" @change="saveGraphColor" />
-              <el-tooltip v-for="t in graphPanelTagsSorted" :key="t.name" content="点击使用此标记色作为节点颜色"
-                          placement="top" :show-after="200" :disabled="!t.color">
-                <el-tag size="small" effect="dark" class="graph-node-tag-pick"
-                        :color="t.color" :style="{ borderColor: t.color }"
-                        @click="applyGraphTagColor(t)">{{ t.name }}</el-tag>
-              </el-tooltip>
-              <el-button size="small" text type="primary" :disabled="!graphPanelHasCustom" @click="resetGraphColor">恢复默认</el-button>
+              <span v-if="graphPanelIsAnchor" class="graph-node-panel-hint">中心节点固定为主题色,不可改色</span>
+              <template v-else>
+                <el-color-picker v-model="graphPanelColor" :predefine="graphPresetColors" @change="saveGraphColor" />
+                <el-tooltip v-for="t in graphPanelTagsSorted" :key="t.name" content="点击使用此标记色作为节点颜色"
+                            placement="top" :show-after="200" :disabled="!t.color">
+                  <el-tag size="small" effect="dark" class="graph-node-tag-pick"
+                          :color="t.color" :style="{ borderColor: t.color }"
+                          @click="applyGraphTagColor(t)">{{ t.name }}</el-tag>
+                </el-tooltip>
+                <el-button size="small" text type="primary" :disabled="!graphPanelHasCustom" @click="resetGraphColor">恢复默认</el-button>
+              </template>
             </div>
             <div class="graph-node-panel-actions">
               <el-button size="small" @click="openTableDetailNewTab(graphPanelTable)">查看表详情</el-button>
             </div>
+          </div>
+          <!-- 套索多选面板:与单节点面板互斥(有选中时单表自动收起)。多选场景不看字段详情,
+               只做批量操作——改颜色/改尺寸;中心节点固定主题色与锚点尺寸,批量操作跳过它 -->
+          <div v-else-if="graphSelectedTables.length" class="graph-node-panel">
+            <div class="graph-node-panel-head">
+              <span class="graph-node-panel-title">已选 {{ graphSelectedTables.length }} 张表</span>
+              <el-icon class="graph-node-panel-close" @click="graphSelectedTables = []"><Close /></el-icon>
+            </div>
+            <div class="graph-multi-list">
+              <div v-for="t in graphSelectedTables" :key="t" class="graph-multi-item">
+                <span class="graph-multi-dot" :style="{ background: graphNodeColor(t) }" />
+                <span class="graph-multi-name" :title="t">{{ t }}</span>
+                <span v-if="t === tableName" class="graph-multi-anchor">中心节点</span>
+              </div>
+            </div>
+            <div class="graph-node-panel-color">
+              <el-color-picker v-model="graphMultiColor" :predefine="graphPresetColors" @change="applyMultiColor" />
+              <el-button size="small" text type="primary" :disabled="!graphMultiHasCustom"
+                         @click="resetMultiColor">恢复默认色</el-button>
+            </div>
+            <div class="graph-node-panel-color">
+              <el-input-number v-model="graphMultiSize" :min="12" :max="160" :step="2" size="small" style="width: 96px" />
+              <el-button size="small" @click="applyMultiSize">应用尺寸</el-button>
+              <el-button size="small" text type="primary" :disabled="!graphMultiHasSize"
+                         @click="resetMultiSize">恢复默认尺寸</el-button>
+            </div>
+            <div class="graph-node-panel-hint">批量操作只作用于选中的邻表(中心节点固定主题色与尺寸)</div>
           </div>
         </div>
       </el-tab-pane>
@@ -432,6 +470,17 @@
       @done="onAddDone"
     />
 
+    <!-- 关系批量处理对话框(整库清单,默认仅候选,预填本表过滤;批量确认/否决/删除后刷新星型图) -->
+    <RelationBatchDialog
+      v-if="dsId && schema"
+      v-model="batchDialogVisible"
+      :ds-id="dsId"
+      :schema="schema"
+      :db="db"
+      :initial-table="tableName"
+      @done="loadErGraph(true)"
+    />
+
     <!-- 打标弹窗(复用表列表页同款组件):勾选 USER 标记 + 就地新建 -->
     <TableTagDialog
       v-model="tagDialogVisible"
@@ -458,6 +507,7 @@ import TableTagDialog from '../components/TableTagDialog.vue'
 import RelationEdgeDrawer from '../components/RelationEdgeDrawer.vue'
 import RelationInferDialog from '../components/RelationInferDialog.vue'
 import RelationAddDialog from '../components/RelationAddDialog.vue'
+import RelationBatchDialog from '../components/RelationBatchDialog.vue'
 import { formatDuration, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
 import { downloadFile } from '../utils/download'
@@ -552,6 +602,8 @@ const inferDialogVisible = ref(false)
 // 「手动补充」对话框:整库表清单打开时懒拉(与表列表页同一 API),会话内缓存
 const addDialogVisible = ref(false)
 const addTables = ref([])
+// 「候选管理」对话框(关系批量处理):整库清单默认仅候选,预填本表过滤
+const batchDialogVisible = ref(false)
 // 画布实例引用(导出 drawio 时取 G6 实测布局中心与当前档位字段行)
 const erCanvasRef = ref(null)
 
@@ -946,6 +998,18 @@ function onErEdgeChanged({ action }) {
   erGraph.value = { ...erGraph.value, nodes, edges }
 }
 
+/** 画布选中批量否决成功:与抽屉单条否决同口径——按 ids 剔除这些边(不回源重拉),
+ *  星型图失去全部连线的邻表节点一并摘除(节点口径=锚点+边两端) */
+function onErCanvasChanged({ ids = [] } = {}) {
+  if (!ids.length) return
+  const idSet = new Set(ids.map(String))
+  const edges = (erGraph.value.edges || []).filter((e) => !idSet.has(String(e.id)))
+  const keep = new Set([tableName])
+  for (const e of edges) { keep.add(e.oneTable); keep.add(e.manyTable) }
+  const nodes = (erGraph.value.nodes || []).filter((n) => keep.has(n.name))
+  erGraph.value = { ...erGraph.value, nodes, edges }
+}
+
 /** 点节点表名:跳对应表字段明细(本表即当前页,路由相同不跳转) */
 function goOtherTable(table) {
   if (table === tableName) return
@@ -986,7 +1050,7 @@ const graphLoading = ref(false)
 const graphLoaded = ref(false)
 // 本库打标 map(表名 -> 标记数组,与「标签」页签同一接口),节点取首个标记色
 const graphTagsMap = ref({})
-// 筛选:标记多选 / 颜色多选;任一维度有选中即生效,命中节点高亮、未命中降亮度
+// 筛选:标记多选 / 颜色多选;任一维度有选中即生效,命中节点留在图谱、未命中直接出图(见 graphFilteredData)
 const graphFilterTags = ref([])
 const graphFilterColors = ref([])
 // 调试面板(工具栏设置图标展开,左下角悬浮):边长/节点尺寸/力导三力 → 图数据重建、仿真重排;
@@ -1029,20 +1093,54 @@ function resetGraphDebug() {
 function redrawGraph() {
   tableGraphRef.value?.redraw()
 }
-// 图边:补上 distance 分档字段(语义 = 可见连线长度/两圆边缘间距,画布按边 id 回查入力导 link 回调)
+/** 节点是否命中当前筛选:维度内 OR(标记/颜色各自多选任一命中即可)、维度间 AND(两维度都命中);
+ *  颜色维度按节点显示色(graphNodeColor)判定——与颜色筛选项同口径;
+ *  颜色维度为空时短路不读显示色:标记类筛选下改色不改命中结果,也就不会触发画布重建 */
+function graphMatchNode(n) {
+  const tagSel = graphFilterTags.value
+  const colorSel = graphFilterColors.value
+  if (tagSel.length && !(graphTagsMap.value[n.name] || []).some((t) => tagSel.includes(t.name))) return false
+  if (colorSel.length && !colorSel.includes(graphNodeColor(n.name))) return false
+  return true
+}
+
+/** 是否处于筛选态(任一维度有选中项) */
+const graphFiltering = computed(() => graphFilterTags.value.length > 0 || graphFilterColors.value.length > 0)
+
+/** 筛选后的图数据:纯内存裁剪(标记/颜色都已在前端,不额外走接口)——只保留命中节点与两端都命中的边;
+ *  中心节点(本表)不受筛选影响恒在图上(哪怕标记/颜色都不匹配),其余未命中节点直接出图(不再变暗/高亮),
+ *  画布拿到的节点集合变化即重建力导并实时更新节点数量;
+ *  无筛选时原样返回 graphData(同一对象引用,props 不变 → 画布不触发重建) */
+const graphFilteredData = computed(() => {
+  if (!graphFiltering.value) return graphData.value
+  const nodes = (graphData.value.nodes || []).filter((n) => n.name === tableName || graphMatchNode(n))
+  const names = new Set(nodes.map((n) => n.name))
+  const edges = (graphData.value.edges || []).filter((e) => names.has(e.oneTable) && names.has(e.manyTable))
+  return { nodes, edges }
+})
+
+// 图边:按筛选结果裁剪后补上 distance 分档字段(语义 = 可见连线长度/两圆边缘间距,画布按边 id 回查入力导 link 回调)
 const graphEdges = computed(() =>
-  (graphData.value.edges || []).map((e) => ({ ...e, distance: graphLinkDist.value })))
-// 节点尺寸分档:锚点(本表)中心大节点 > 邻表小节点(sizes prop 优先级高于画布默认值)
+  (graphFilteredData.value.edges || []).map((e) => ({ ...e, distance: graphLinkDist.value })))
+// 节点尺寸分档:锚点(本表)中心大节点 > 邻表小节点(sizes prop 优先级高于画布默认值);
+// 邻表尺寸可被多选面板单独覆盖(本地持久化),未覆盖时回落调试面板的全局档位值
 const graphSizes = computed(() => {
   const m = {}
   for (const n of graphData.value.nodes || []) {
-    m[n.name] = n.name === tableName ? graphAnchorSize.value : graphNodeSize.value
+    m[n.name] = n.name === tableName
+      ? graphAnchorSize.value
+      : (graphCustomSizes.value[graphColorKey(n.name)] ?? graphNodeSize.value)
   }
   return m
 })
 // 节点点击面板(自定义颜色)
 const graphPanelTable = ref('')
 const graphPanelColor = ref('')
+// 套索多选:框中的表名集合(与单节点面板互斥)
+const graphSelectedTables = ref([])
+// 刚结束一次套索框选的时间戳:框选松手后浏览器可能紧跟着补一个 canvas click,
+// 不忽略的话刚框中的节点会被「点空白取消选中」立刻清空(见 onGraphCanvasClick)
+let lassoJustFinished = 0
 // 面板字段列表(点开面板时按表懒拉元数据,与字段明细页同一接口)
 const graphPanelColumns = ref([])
 const graphPanelColumnsLoading = ref(false)
@@ -1065,35 +1163,74 @@ function persistGraphColors() {
   localStorage.setItem(GRAPH_COLOR_KEY, JSON.stringify(graphCustomColors.value))
 }
 
+// 自定义节点尺寸:{ "dsId|db|schema|table": px },localStorage 持久化(多选面板批量设置用,同颜色口径)
+const GRAPH_SIZE_KEY = 'dq-graph-node-sizes'
+const graphCustomSizes = ref(loadGraphCustomSizes())
+
+function loadGraphCustomSizes() {
+  try {
+    const obj = JSON.parse(localStorage.getItem(GRAPH_SIZE_KEY) || '{}')
+    return obj && typeof obj === 'object' ? obj : {}
+  } catch {
+    return {}
+  }
+}
+
+function persistGraphSizes() {
+  localStorage.setItem(GRAPH_SIZE_KEY, JSON.stringify(graphCustomSizes.value))
+}
+
 /** 自定义颜色的存储键:四元组(数据源|库|schema|表) */
 function graphColorKey(table) {
   return `${dsId.value}|${db.value}|${schema.value}|${table}`
 }
 
-/** 主题色兜底(默认节点色):跟随亮/暗主题 */
+/** 中心节点专用主题色(读 CSS 变量,跟随亮/暗主题):除中心节点外不再作为兜底色,无标记邻表走伪随机色池 */
 function graphDefaultColor() {
   return getComputedStyle(document.documentElement).getPropertyValue('--el-color-primary').trim() || '#409eff'
 }
 
-/** 节点颜色解析:自定义 > 首个标记色 > 主题默认色 */
-function graphNodeColor(table) {
-  const custom = graphCustomColors.value[graphColorKey(table)]
-  if (custom) return custom
-  const tags = graphTagsMap.value[table] || []
-  return tags[0]?.color || graphDefaultColor()
+/** 无标记节点的兜底色池:主题蓝留给中心节点,这里只用蓝以外的颜色(取自面板预设色板,体系一致) */
+const GRAPH_FALLBACK_COLORS = graphPresetColors.filter((c) => c.toLowerCase() !== '#409eff')
+
+/** 表名 → 稳定伪随机下标:同表恒同色(筛选裁剪/重建都不跳色,颜色筛选才有意义) */
+function stableColorIndex(name, n) {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
+  return h % n
 }
 
-/** 各节点已解析颜色:{ 表名: '#hex' },画布直接消费 */
+/** 节点显示色 = 颜色筛选的判定色,取色优先级:
+ *  1. 中心节点(本表)固定主题蓝——视觉锚点,不随标记色/自定义色变动;
+ *  2. 用户自定义色(面板改色,localStorage 持久化);
+ *  3. 标记色:优先「空表」以外的标记——空表标记 kind=EMPTY 是系统兜底标记,颜色不代表业务分类,
+ *     只有该表仅有空表标记时才用它(多标记时务必让位给业务标记);
+ *  4. 完全无标记:按表名稳定伪随机取一个蓝以外的颜色,避免与中心节点的主题蓝混淆;
+ *  面板改色即改这里,故有颜色筛选时改色结果随之变化(需重建) */
+function graphNodeColor(table) {
+  if (table === tableName) return graphDefaultColor()
+  const custom = graphCustomColors.value[graphColorKey(table)]
+  if (custom) return custom
+  const tags = (graphTagsMap.value[table] || []).filter((t) => t?.color)
+  const biz = tags.find((t) => t.kind !== 'EMPTY')
+  if (biz) return biz.color
+  if (tags.length) return tags[0].color
+  return GRAPH_FALLBACK_COLORS[stableColorIndex(table, GRAPH_FALLBACK_COLORS.length)]
+}
+
+/** 各节点填充色:{ 表名: '#hex' },画布直接消费。属画布渲染口径(不参与结构数据)——
+ *  改色时画布只走覆盖层 repaint 原地刷填充色,不重建、不重跑力导(见 TableGraphCanvas 的 colors 层) */
 const graphColors = computed(() => {
   const m = {}
   for (const n of graphData.value.nodes || []) m[n.name] = graphNodeColor(n.name)
   return m
 })
 
-/** 标记筛选项:当前图节点上出现过的标记(去重,带颜色) */
+/** 标记筛选项:当前图节点上出现过的标记(去重,带颜色);中心节点不参与筛选,不贡献选项 */
 const graphTagOptions = computed(() => {
   const map = new Map()
   for (const n of graphData.value.nodes || []) {
+    if (n.name === tableName) continue
     for (const t of graphTagsMap.value[n.name] || []) {
       if (t?.name && !map.has(t.name)) map.set(t.name, t.color || '')
     }
@@ -1101,23 +1238,10 @@ const graphTagOptions = computed(() => {
   return [...map.entries()].map(([name, color]) => ({ name, color })).sort((a, b) => a.name.localeCompare(b.name))
 })
 
-/** 颜色筛选项:当前图节点实际用到的颜色(去重) */
+/** 颜色筛选项:当前图节点用到的显示色(同 graphNodeColor)去重;
+ *  中心节点恒为主题蓝且不参与筛选,故不计入选项 */
 const graphColorOptions = computed(() =>
-  [...new Set((graphData.value.nodes || []).map((n) => graphNodeColor(n.name)))])
-
-/** 筛选命中的表名数组:null=无筛选;维度内 OR、维度间 AND */
-const graphHighlight = computed(() => {
-  const tagSel = graphFilterTags.value
-  const colorSel = graphFilterColors.value
-  if (!tagSel.length && !colorSel.length) return null
-  const names = []
-  for (const n of graphData.value.nodes || []) {
-    const tagOk = !tagSel.length || (graphTagsMap.value[n.name] || []).some((t) => tagSel.includes(t.name))
-    const colorOk = !colorSel.length || colorSel.includes(graphNodeColor(n.name))
-    if (tagOk && colorOk) names.push(n.name)
-  }
-  return names
-})
+  [...new Set((graphData.value.nodes || []).filter((n) => n.name !== tableName).map((n) => graphNodeColor(n.name)))])
 
 const graphPanelComment = computed(() =>
   (graphData.value.nodes || []).find((n) => n.name === graphPanelTable.value)?.comment || '')
@@ -1126,6 +1250,8 @@ const graphPanelTags = computed(() => graphTagsMap.value[graphPanelTable.value] 
 const graphPanelTagsSorted = computed(() =>
   [...graphPanelTags.value].sort((a, b) => Number(a.kind === 'EMPTY') - Number(b.kind === 'EMPTY')))
 const graphPanelHasCustom = computed(() => !!graphCustomColors.value[graphColorKey(graphPanelTable.value)])
+/** 面板当前是否为中心节点(本表):中心节点颜色固定主题蓝,面板不提供改色 */
+const graphPanelIsAnchor = computed(() => graphPanelTable.value === tableName)
 
 /** 拉图谱数据(table 参数=本表,恒含候选边;与 ER 页签同接口)+ 本库打标 map;force 强制重拉 */
 async function loadGraph(force = false) {
@@ -1153,11 +1279,30 @@ async function loadGraph(force = false) {
   }
 }
 
-/** 点节点:开颜色面板,取色器回填当前已解析颜色,并懒拉该表字段列表 */
+/** 点节点:开单表面板(字段详情 + 颜色),并清空套索多选(两个面板互斥) */
 function onGraphNodeClick(table) {
+  graphSelectedTables.value = []
   graphPanelTable.value = table
   graphPanelColor.value = graphNodeColor(table)
   loadGraphPanelColumns(table)
+}
+
+/** 套索框选结束:同步选中集合;有选中就收起单表面板(改开多选面板),并把取色器回填成首个已设色值 */
+function onGraphLassoSelect(names) {
+  graphSelectedTables.value = names || []
+  if (graphSelectedTables.value.length) {
+    graphPanelTable.value = ''
+    const first = graphMultiTargets.value.find((t) => graphCustomColors.value[graphColorKey(t)])
+    graphMultiColor.value = first ? graphCustomColors.value[graphColorKey(first)] : ''
+  }
+  lassoJustFinished = Date.now()
+}
+
+/** 点画布空白:收起单表面板与多选;刚框选结束时那次 click 忽略(否则框选结果会被立刻清空) */
+function onGraphCanvasClick() {
+  if (Date.now() - lassoJustFinished < 300) return
+  graphPanelTable.value = ''
+  graphSelectedTables.value = []
 }
 
 /** 面板字段列表:按表拉元数据字段(与字段明细页同一接口);连点不同节点时只回填最后一次点击的表 */
@@ -1186,7 +1331,8 @@ function openTableDetailNewTab(table) {
 
 /** 取色器选定即保存(写 localStorage),画布随 graphColors computed 重建 */
 function saveGraphColor(color) {
-  if (!color || !graphPanelTable.value) return
+  // 中心节点颜色固定主题蓝,不接收自定义色(面板对中心节点不提供改色入口,这里兜底)
+  if (!color || !graphPanelTable.value || graphPanelTable.value === tableName) return
   graphCustomColors.value = { ...graphCustomColors.value, [graphColorKey(graphPanelTable.value)]: color }
   persistGraphColors()
 }
@@ -1205,6 +1351,51 @@ function applyGraphTagColor(tag) {
   if (!tag?.color) return
   graphPanelColor.value = tag.color
   saveGraphColor(tag.color)
+}
+
+// ---------- 多选面板批量操作(套索框选后) ----------
+
+// 批量作用对象:选中的邻表——中心节点(本表)颜色固定主题蓝、尺寸固定锚点档,不参与批量改
+const graphMultiTargets = computed(() => graphSelectedTables.value.filter((t) => t !== tableName))
+const graphMultiColor = ref('')
+const graphMultiSize = ref(GRAPH_NODE_SIZE_DEFAULT)
+const graphMultiHasCustom = computed(() =>
+  graphMultiTargets.value.some((t) => graphCustomColors.value[graphColorKey(t)]))
+const graphMultiHasSize = computed(() =>
+  graphMultiTargets.value.some((t) => graphCustomSizes.value[graphColorKey(t)] != null))
+
+/** 批量设置选中邻表的颜色(写自定义色,localStorage 持久化,同单节点口径) */
+function applyMultiColor(color) {
+  if (!color || !graphMultiTargets.value.length) return
+  const m = { ...graphCustomColors.value }
+  for (const t of graphMultiTargets.value) m[graphColorKey(t)] = color
+  graphCustomColors.value = m
+  persistGraphColors()
+}
+
+/** 批量恢复默认色:清掉选中邻表的自定义色(回落标记色/兜底随机色) */
+function resetMultiColor() {
+  const m = { ...graphCustomColors.value }
+  for (const t of graphMultiTargets.value) delete m[graphColorKey(t)]
+  graphCustomColors.value = m
+  persistGraphColors()
+}
+
+/** 批量应用尺寸:写自定义尺寸并持久化;尺寸属布局输入,画布随 sizes prop 变化整体重排 */
+function applyMultiSize() {
+  if (!graphMultiTargets.value.length) return
+  const m = { ...graphCustomSizes.value }
+  for (const t of graphMultiTargets.value) m[graphColorKey(t)] = graphMultiSize.value
+  graphCustomSizes.value = m
+  persistGraphSizes()
+}
+
+/** 批量恢复默认尺寸:清掉选中邻表的自定义尺寸,回落调试面板的全局档位值 */
+function resetMultiSize() {
+  const m = { ...graphCustomSizes.value }
+  for (const t of graphMultiTargets.value) delete m[graphColorKey(t)]
+  graphCustomSizes.value = m
+  persistGraphSizes()
 }
 
 /** 字段明细内 表格/DDL 切换:首次切到 DDL 时懒加载;切回表格时表格重挂载,重算视口高度 */
@@ -1569,6 +1760,42 @@ onMounted(async () => {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+}
+/* 中心节点不可改色时的说明文字 */
+.graph-node-panel-hint {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+/* 多选面板:选中清单(可滚动,超高内部滚) */
+.graph-multi-list {
+  max-height: 180px;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 4px 6px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+}
+.graph-multi-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 20px;
+}
+.graph-multi-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.graph-multi-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.graph-multi-anchor {
+  flex: none;
+  color: var(--el-text-color-secondary);
 }
 .graph-node-panel-actions {
   margin-top: 10px;

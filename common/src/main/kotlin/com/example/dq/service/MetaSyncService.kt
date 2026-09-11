@@ -114,7 +114,8 @@ class MetaSyncService(
                 log.info("元数据同步已取消: jobId={}, 数据源={}", jobId, item.datasourceName)
             } catch (e: Exception) {
                 val msg = (e.message ?: "同步失败").take(2000)
-                log.warn("元数据同步失败: jobId={}, 数据源={}({}): {}", jobId, item.datasourceName, item.datasourceId, msg)
+                // 单数据源失败是任务内的真实错误(结构写库失败/同步中断等),按 error 记录并带堆栈便于定位
+                log.error("元数据同步失败: jobId={}, 数据源={}({}): {}", jobId, item.datasourceName, item.datasourceId, msg, e)
                 repo.failItem(item.id, msg)
                 repo.incrFailed(jobId)
             }

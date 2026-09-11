@@ -29,7 +29,7 @@
       <div class="drawer-actions">
         <el-button v-if="edge.status !== 'CONFIRMED'" type="primary" :loading="opLoading" @click="doConfirm">确认</el-button>
         <el-button v-if="edge.status !== 'REJECTED'" type="warning" :loading="opLoading" @click="doReject">否决</el-button>
-        <el-button v-if="edge.status === 'CANDIDATE'" type="danger" :loading="opLoading" @click="doDelete">删除</el-button>
+        <el-button type="danger" :loading="opLoading" @click="doDelete">删除</el-button>
       </div>
     </template>
   </el-drawer>
@@ -79,7 +79,7 @@ async function doReject() {
 
 async function doDelete() {
   try {
-    await ElMessageBox.confirm('删除后该候选关系不再保留(重新推导可能再次出现),确定删除?', '删除候选关系', {
+    await ElMessageBox.confirm('删除后该关系不再保留(误删可重新推导找回),确定删除?', '删除关系', {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning'

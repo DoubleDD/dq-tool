@@ -1,6 +1,7 @@
 package com.example.dq.controller;
 
 import com.example.dq.model.ManualRelationResult;
+import com.example.dq.model.RelationBatchRequest;
 import com.example.dq.model.RelationInferRequest;
 import com.example.dq.model.RelationManualRequest;
 import com.example.dq.service.RelationInferService;
@@ -21,7 +22,7 @@ public class RelationController {
         this.relationService = relationService;
     }
 
-    /** 提交一轮推导(锚点表+锚点字段,字段可带用户手填映射名,aliasOnly 时仅用映射名匹配),返回 job id;异步执行,前端轮询任务列表看进度 */
+    /** 提交一轮推导(锚点表+锚点字段,字段可带用户手填映射名,aliasOnly 时填了映射名的字段仅用映射名匹配、未填的仍按本名),返回 job id;异步执行,前端轮询任务列表看进度 */
     public void submitInfer(Context ctx) {
         RelationInferRequest req = Validators.validate(ctx.bodyAsClass(RelationInferRequest.class));
         ctx.json(Map.of("jobId", inferService.submitInfer(req.getDatasourceId(), req.getDbName(),
@@ -65,10 +66,28 @@ public class RelationController {
         ctx.json(Map.of("ok", true));
     }
 
-    /** 删除关系(仅候选态) */
+    /** 删除关系(任意状态,误删可重新推导找回) */
     public void delete(Context ctx) {
         relationService.delete(id(ctx));
         ctx.json(Map.of("ok", true));
+    }
+
+    /** 批量确认(候选/否决均可转确认),返回实际更新数 updated(不存在的 id 忽略) */
+    public void batchConfirm(Context ctx) {
+        RelationBatchRequest req = Validators.validate(ctx.bodyAsClass(RelationBatchRequest.class));
+        ctx.json(Map.of("ok", true, "updated", relationService.confirmBatch(req.getIds())));
+    }
+
+    /** 批量否决(候选/确认均可转否决),返回实际更新数 updated */
+    public void batchReject(Context ctx) {
+        RelationBatchRequest req = Validators.validate(ctx.bodyAsClass(RelationBatchRequest.class));
+        ctx.json(Map.of("ok", true, "updated", relationService.rejectBatch(req.getIds())));
+    }
+
+    /** 批量删除(任意状态,误删可重新推导找回),返回实际删除数 updated */
+    public void batchDelete(Context ctx) {
+        RelationBatchRequest req = Validators.validate(ctx.bodyAsClass(RelationBatchRequest.class));
+        ctx.json(Map.of("ok", true, "updated", relationService.deleteBatch(req.getIds())));
     }
 
     /** ER 图数据:table 空=全库总图(CONFIRMED 边+孤儿表,includeCandidate 加候选边);非空=该表星型(含候选边) */

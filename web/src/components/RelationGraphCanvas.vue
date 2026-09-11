@@ -3,44 +3,63 @@
        html 节点滚轮转发与双击补发)、顶部工具栏(默认五工具:重绘/1:1/适应画布/线形/档位 + toolbar 插槽业务工具,
        右侧缩放控制条)、右下角鸟瞰图、左下角图例折叠面板、视口定位与生命周期;本组件只负责
        ER 专属部分:html 表节点渲染、field-cubic 字段对齐边、er-dagre-grid 布局、表名单击/双击口径、
-       「+N 个字段」就地展开、边样式图例(legend 插槽)。容器需显式高度(由父级布局保证) -->
-  <BaseGraphCanvas
-    ref="baseRef"
-    :data="graphData"
-    :options="graphOptions"
-    :fit="defaultZoom > 0 ? 'center' : 'view'"
-    :default-zoom="defaultZoom > 0 ? defaultZoom : 1"
-    :options-key="edgeType"
-    :minimap="minimapOptions"
-    :fullscreen="false"
-    :tools="['refresh', 'zoom100', 'fit', 'edge-type', 'export-drawio', 'level']"
-    :level="level"
-    :edge-type="edgeType"
-    @update:level="emit('update:level', $event)"
-    @update:edge-type="emit('update:edgeType', $event)"
-    @export-drawio="emit('export-drawio')"
-    @node-click="onNodeClick"
-    @edge-click="onEdgeClick"
-  >
-    <!-- 业务工具透传:字段数/导出等由调用方按需给 -->
-    <template #toolbar><slot name="toolbar" /></template>
-    <template #legend>
-      <div class="rg-legend">
-        <span class="rg-legend-item"><i class="rg-line rg-line-confirmed" />确认</span>
-        <span class="rg-legend-item"><i class="rg-line rg-line-candidate" />候选</span>
-        <span class="rg-legend-item"><i class="rg-line rg-line-suspect" />疑似多对多</span>
-      </div>
-    </template>
-  </BaseGraphCanvas>
+       节点选中/套索多选/批量否决、边样式图例(legend 插槽)。容器需显式高度(由父级布局保证) -->
+  <div class="rg-wrap">
+    <BaseGraphCanvas
+      ref="baseRef"
+      :data="graphData"
+      :options="graphOptions"
+      :fit="defaultZoom > 0 ? 'center' : 'view'"
+      :default-zoom="defaultZoom > 0 ? defaultZoom : 1"
+      :options-key="edgeType"
+      :minimap="minimapOptions"
+      :fullscreen="false"
+      :tools="['refresh', 'zoom100', 'fit', 'edge-type', 'export-drawio', 'level']"
+      :level="level"
+      :edge-type="edgeType"
+      @update:level="emit('update:level', $event)"
+      @update:edge-type="emit('update:edgeType', $event)"
+      @export-drawio="emit('export-drawio')"
+      @node-click="onNodeClick"
+      @edge-click="onEdgeClick"
+      @canvas-click="onCanvasClick"
+    >
+      <!-- 业务工具透传:字段数/导出等由调用方按需给 -->
+      <template #toolbar><slot name="toolbar" /></template>
+      <template #legend>
+        <div class="rg-legend">
+          <span class="rg-legend-item"><i class="rg-line rg-line-confirmed" />确认</span>
+          <span class="rg-legend-item"><i class="rg-line rg-line-candidate" />候选</span>
+          <span class="rg-legend-item"><i class="rg-line rg-line-suspect" />疑似多对多</span>
+        </div>
+      </template>
+    </BaseGraphCanvas>
+    <!-- 选中操作条(底部居中悬浮):点节点/Shift 点选/Shift 拖动套索后出现;
+         「删除」= 否决选中表的所有关系(与「候选管理-批量否决」同口径:候选/确认均转否决),成功后 emit changed 由父级刷新图 -->
+    <div v-if="selectedTables.size" class="rg-selbar">
+      <span class="rg-selbar-text">已选 {{ selectedTables.size }} 张表</span>
+      <el-tooltip content="否决选中表的所有关系(候选与已确认均转为否决),与「候选管理-批量否决」同口径" placement="top">
+        <el-button size="small" type="warning" :disabled="!affectedEdges.length" :loading="rejecting" @click="rejectSelected">
+          删除{{ affectedEdges.length ? `(${affectedEdges.length} 条关系)` : '' }}
+        </el-button>
+      </el-tooltip>
+      <el-button size="small" @click="clearSelection">取消</el-button>
+    </div>
+    <!-- 画布操作提示:常驻弱提示(浅色、不抢视觉),悬浮在鸟瞰图左侧;不参与鼠标事件 -->
+    <div class="rg-hint">Shift+拖动框选 · Shift+点击多选</div>
+  </div>
 </template>
 
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
 import { BaseLayout, CubicHorizontal, ExtensionCategory, Polyline, register } from '@antv/g6'
 import dagre from 'dagre'
 import BaseGraphCanvas from './canvas/BaseGraphCanvas.vue'
 import { createHtmlMinimapShape } from './canvas/htmlMinimapShape'
 import { themeState } from '../stores/theme'
+import { batchRejectRelations } from '../api'
+import { ElMessage } from '../utils/notify'
 
 // ER 图画布(G6 v5 配置式 API,通用能力见底座 BaseGraphCanvas):
 //  节点 = 表(HTML 矩形节点,三档显示:仅表名 / 表名+关联字段 / 表名+全部字段,锚点表高亮;
@@ -49,7 +68,9 @@ import { themeState } from '../stores/theme'
 //    端点精确对齐到两端字段行(按节点几何常量计算行高坐标,按对端节点方位决定从左侧还是右侧出边),
 //    字段行未展示时(仅表名档位/字段被折叠进「+N 个字段」,该行可点击就地展开/收起)退化为节点边框交点;
 //  边标签只标基数(1:1 / 1:N / M:N),不堆字段文字(字段名看连线两端的行高亮即可);
-//  乌鸦脚语义用自定义边端标记近似:「一」侧画竖杠(1:1 双竖杠),「多」侧画三叉鸦脚
+//  乌鸦脚语义用自定义边端标记近似:「一」侧画竖杠(1:1 双竖杠),「多」侧画三叉鸦脚;
+//  交互:点节点选中(深描边+主题色光环,锚点表恒为主题色底纹)、Shift+点击增减选中、Shift+拖动套索多选、
+//  点画布空白清空;底部操作条「删除」= 批量否决选中表的所有关系(与「候选管理-批量否决」同口径)
 const props = defineProps({
   // 图节点:[{ name, comment }]
   nodes: { type: Array, default: () => [] },
@@ -78,8 +99,9 @@ const props = defineProps({
 
 // edge-click:点边(传 TableRelation);node-click:点节点(传表名);node-open:双击节点表名(传表名,跳字段明细);
 // update:level / update:edgeType:工具栏档位/线形切换(配 v-model 用);
-// export-drawio:工具栏「导出 drawio」(第 5 个图标位;调用方经 exportData() 取数据并下载)
-const emit = defineEmits(['edge-click', 'node-click', 'node-open', 'update:level', 'update:edgeType', 'export-drawio'])
+// export-drawio:工具栏「导出 drawio」(第 5 个图标位;调用方经 exportData() 取数据并下载);
+// changed:批量否决成功 { action: 'reject', ids },父级据此剔除这些边并刷新图(与关系抽屉单条操作同口径)
+const emit = defineEmits(['edge-click', 'node-click', 'node-open', 'update:level', 'update:edgeType', 'export-drawio', 'changed'])
 
 const baseRef = ref(null)
 // 边 id -> TableRelation(点边时回查原始数据)
@@ -90,6 +112,46 @@ let lastTitleClick = 0
 const expandedTables = new Set()
 // 指针按下坐标:拖拽节点结束时也会冒出一个 click,用它过滤「拖拽误触」的展开/收起
 let downPos = null
+
+// ---------- 节点选中(点选/套索多选) ----------
+// 选中表集合:普通点击单选、Shift+点击增减、Shift+拖动套索整体替换(框空=清空);
+// 纯渲染口径(描边/底纹),变化经 repaint 就地刷新,不动布局与视口
+const selectedTables = ref(new Set())
+// 套索框选刚结束的时间戳:框选松手后浏览器补发的 canvas click 据此忽略,否则刚框中的选中会被「点空白清空」立刻清掉
+let lassoJustFinished = 0
+// 批量否决请求进行中(防重复提交)
+const rejecting = ref(false)
+// 选中表涉及的关系(底部操作条「删除」= 否决这些关系,与「候选管理-批量否决」同口径)
+const affectedEdges = computed(() => {
+  const sel = selectedTables.value
+  if (!sel.size) return []
+  return props.edges.filter((e) => sel.has(e.oneTable) || sel.has(e.manyTable))
+})
+
+/** 选中一个表:additive(Shift)= 在现有集合上增减,否则单选替换 */
+function selectTable(table, additive = false) {
+  if (!table) return
+  const next = additive ? new Set(selectedTables.value) : new Set()
+  if (additive && next.has(table)) next.delete(table)
+  else next.add(table)
+  selectedTables.value = next
+}
+
+function clearSelection() {
+  if (selectedTables.value.size) selectedTables.value = new Set()
+}
+
+// 选中集合变化 → 就地重绘节点 HTML 刷选中描边/底纹(不跑布局,拖动后的节点位置不丢)
+watch(selectedTables, () => baseRef.value?.repaint(buildData()))
+// 图数据重建(刷新/批量否决后):选中集合裁掉已不在图里的表,操作条计数随之为准
+watch(
+  () => props.nodes,
+  (nodes) => {
+    const names = new Set((nodes || []).map((n) => n.name))
+    const next = new Set([...selectedTables.value].filter((t) => names.has(t)))
+    if (next.size !== selectedTables.value.size) selectedTables.value = next
+  }
+)
 
 /** 主题色:跟随 Element Plus CSS 变量(亮/暗主题自适应),取不到用兜底值 */
 function themeColors() {
@@ -163,11 +225,14 @@ function nodeSize(table, comment) {
 }
 
 /** 节点 HTML:标题(有中文名时中文名为主、英文表名小字在下;标题可点跳字段明细) + 字段行(关联字段高亮);
- *  超 maxFieldRows 折叠为「+N 个字段」操作行(点击就地展开全量,展开后该行变「收起字段」) */
+ *  超 maxFieldRows 折叠为「+N 个字段」操作行(点击就地展开全量,展开后该行变「收起字段」);
+ *  选中态 = 正文色深描边 + 主题色光环;锚点表(本表/星型中心)恒为主题色底纹,任何状态下都一眼可辨;
+ *  根 div 带 data-rg-node 标记,容器层点击委托按它判定「点节点选中」 */
 function renderNodeHtml(d) {
   const c = themeColors()
   const { table, comment } = d.data
   const isAnchor = table === props.anchorTable
+  const isSelected = selectedTables.value.has(table)
   const fields = nodeFields(table)
   const expanded = expandedTables.has(table)
   const rows = visibleFields(table)
@@ -192,8 +257,13 @@ function renderNodeHtml(d) {
   const subText = comment ? (englishOnly ? comment : table) : ''
   const subHtml = subText
     ? `<div style="height:14px;line-height:14px;padding:0 8px;font-size:11px;color:${c.textSecondary};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subText)}</div>` : ''
-  return `<div style="width:${NODE_W}px;height:100%;box-sizing:border-box;background:${c.bg};border:${isAnchor ? `2px solid ${c.primary}` : `1px solid ${c.borderDarker}`};border-radius:6px;overflow:hidden;${isAnchor ? `box-shadow:0 0 0 3px ${c.primary}33;` : ''}">
-  <div class="rg-node-title" data-rg-table="${esc(table)}" title="双击打开字段明细" style="height:${comment ? 34 : 32}px;line-height:${comment ? 20 : 32}px;padding:${comment ? '6px' : '0'} 8px;font-size:13px;font-weight:600;color:${isAnchor ? c.primary : c.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;${fields.length ? `border-bottom:1px solid ${c.border};background:${c.fill};` : ''}">${esc(titleText)}${subHtml}</div>
+  const border = isSelected ? `2px solid ${c.text}` : isAnchor ? `2px solid ${c.primary}` : `1px solid ${c.borderDarker}`
+  // 光环:选中与锚点同语言(主题色 20% 淡环);锚点另有主题色底纹 + 主题色描边/标题,始终一眼可辨
+  const ring = isSelected || isAnchor ? `box-shadow:0 0 0 3px ${c.primary}33;` : ''
+  // 锚点底纹:根底 = 主题色 8% 淡 tint;有字段行时标题行叠 15% 更深一档(无字段行时标题透明,直接透出根底)
+  const titleBg = fields.length ? `background:${isAnchor ? `${c.primary}26` : c.fill};` : ''
+  return `<div data-rg-node="${esc(table)}" style="width:${NODE_W}px;height:100%;box-sizing:border-box;background:${isAnchor ? `${c.primary}14` : c.bg};border:${border};border-radius:6px;overflow:hidden;${ring}">
+  <div class="rg-node-title" data-rg-table="${esc(table)}" title="双击打开字段明细" style="height:${comment ? 34 : 32}px;line-height:${comment ? 20 : 32}px;padding:${comment ? '6px' : '0'} 8px;font-size:13px;font-weight:600;color:${isAnchor ? c.primary : c.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;${fields.length ? `border-bottom:1px solid ${c.border};${titleBg}` : ''}">${esc(titleText)}${subHtml}</div>
   <div style="padding-top:4px">${fieldHtml}${more}</div>
 </div>`
 }
@@ -567,7 +637,36 @@ const graphOptions = computed(() => ({
   },
   layout: layoutOptions(),
   transforms: parallelEdgeTransforms(),
-  behaviors: ['drag-element'] // 节点可拖拽(底座内置 drag-canvas 拖画布)
+  behaviors: [
+    // 节点可拖拽(底座内置 drag-canvas 拖画布);Shift+拖 让位给套索框选(否则按住 Shift 拖节点会一边拖节点一边画套索)
+    { type: 'drag-element', enable: (e) => !e.shiftKey },
+    // 套索框选(Shift+拖动):圈中的节点即选中,html 节点同样生效(G6 转发节点上的指针事件,
+    // 且坐标换算对 html 节点有专门处理)。只圈节点(enableElements 不含 edge);mode=default 每次框选重置选中集合,
+    // 框空即清空;选中呈现不走 G6 state 样式(默认 selected 样式对本组件的数据样式无效),完全由 selectedTables 驱动重绘
+    {
+      type: 'lasso-select',
+      trigger: ['shift'],
+      enableElements: ['node'],
+      mode: 'default',
+      state: 'selected',
+      animation: false,
+      style: {
+        width: 0,
+        height: 0,
+        lineWidth: 2,
+        lineDash: [4, 4],
+        stroke: themeColors().primary,
+        fill: themeColors().primary,
+        fillOpacity: 0.12,
+        zIndex: 2,
+        pointerEvents: 'none'
+      },
+      onSelect: (states) => {
+        selectedTables.value = new Set(Object.keys(states || {}))
+        lassoJustFinished = Date.now()
+      }
+    }
+  ]
 }))
 
 // 鸟瞰图:只画节点缩略块(边在小图里只是噪音);html 节点的 key 形状是 DOM 画不进小画布,
@@ -582,7 +681,7 @@ const minimapOptions = computed(() => ({
 // 不进图数据、不改节点尺寸(副标题行有无只看 comment) → 走底座 repaint(只重绘不重排,同对象管理图口径)
 watch(() => props.fieldNameMode, () => baseRef.value?.repaint(buildData()))
 
-// ---------- 事件口径:单击节点开面板(单击表名除外)/ 点边回查原始关系 / 双击表名跳字段明细 ----------
+// ---------- 事件口径:单击节点选中(单击表名除外,见 onContainerClick)/ 点边回查原始关系 / 双击表名跳字段明细 ----------
 function onNodeClick(id) {
   // 单击表名不开面板(双击表名才跳字段明细):表名单击已打时间戳,这里忽略
   if (Date.now() - lastTitleClick < 250) return
@@ -594,9 +693,43 @@ function onEdgeClick(id) {
   if (rel) emit('edge-click', rel)
 }
 
-/** 单击表名:仅打时间戳让 node-click 忽略(不开面板);跳字段明细改由双击触发(见 onContainerDblclick) */
+/** 点画布空白(底座 canvas-click):清空选中;刚套索框选结束时补发的 click 忽略,否则框选结果会被立刻清空 */
+function onCanvasClick() {
+  if (Date.now() - lassoJustFinished < 300) return
+  clearSelection()
+}
+
+/** 底部操作条「删除」:否决选中表的所有关系——与「候选管理-批量否决」同一接口与口径
+ *  (候选/确认均转否决,再次推导命中会回炉为候选);成功后清空选中并 emit changed,
+ *  父级按 ids 剔除这些边(星型图同步摘除失去全部连线的邻表节点),与关系抽屉单条否决同口径 */
+async function rejectSelected() {
+  const edges = affectedEdges.value
+  if (!edges.length || rejecting.value) return
+  try {
+    await ElMessageBox.confirm(
+      `将否决与选中 ${selectedTables.value.size} 张表相关的 ${edges.length} 条关系(候选与已确认关系都会转为否决,与「关系管理-批量否决」同口径;否决后重新推导命中会回炉为候选),确定删除?`,
+      '删除选中表的关系',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch {
+    return
+  }
+  rejecting.value = true
+  try {
+    const ids = edges.map((e) => e.id)
+    const res = await batchRejectRelations(ids)
+    ElMessage.success(`已否决 ${res?.updated ?? 0} 条关系`)
+    clearSelection()
+    emit('changed', { action: 'reject', ids })
+  } finally {
+    rejecting.value = false
+  }
+}
+
+/** 容器层 click 委托(捕获阶段):「+N 个字段」展开收起 / 表名单击抑制时间戳 / 点节点本体选中。
+ *  选中口径与图谱页一致:普通点击单选、Shift+点击增减;拖拽节点后的残留 click(位移>4px)不响应 */
 function onContainerClick(ev) {
-  // 「+N 个字段」/「收起字段」操作行:切换展开态;拖拽节点后的残留 click(位移>4px)不响应
+  // 「+N 个字段」/「收起字段」操作行:切换展开态(属于节点内操作,不触发选中)
   const moreRow = ev.target?.closest?.('.rg-more-row')
   if (moreRow) {
     lastTitleClick = Date.now() // 同单击表名:阻止 node-click 开面板
@@ -606,8 +739,14 @@ function onContainerClick(ev) {
     return
   }
   const title = ev.target?.closest?.('.rg-node-title')
-  if (!title) return
-  lastTitleClick = Date.now()
+  if (title) lastTitleClick = Date.now() // 仍抑制「单击表名开面板」;但选中照常(双击跳转前也会先选中,无副作用)
+  // 点节点本体选中(标题区也算;与图谱页同口径:普通点击单选、Shift+点击增减);拖拽节点后的残留 click(位移>4px)不响应
+  const nodeEl = ev.target?.closest?.('[data-rg-node]')
+  if (!nodeEl) return
+  const moved = downPos && (Math.abs(ev.clientX - downPos[0]) + Math.abs(ev.clientY - downPos[1]) > 4)
+  if (moved) return
+  const table = nodeEl.getAttribute('data-rg-node')
+  if (table) selectTable(table, ev.shiftKey)
 }
 
 /** 记录指针按下坐标(拖拽误触过滤,见 onContainerClick);
@@ -690,6 +829,51 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* 画布外包:底座 .bgc-wrap 是 100% 高,这里给个相对定位容器挂底部操作条 */
+.rg-wrap {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+/* 选中操作条:底部居中悬浮(左下角图例/右下角鸟瞰图让开),毛玻璃底与底座工具栏控件区同口径;
+   边框用 darker 一档(lighter 在毛玻璃底下几乎看不见,操作条会融进背景) */
+.rg-selbar {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--el-bg-color) 72%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--el-border-color-darker);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-light);
+  z-index: 10;
+}
+.rg-selbar :deep(.el-button) {
+  margin-left: 0;
+}
+.rg-selbar-text {
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+  white-space: nowrap;
+}
+/* 画布操作提示:常驻,贴鸟瞰图左侧(鸟瞰图 160 宽 + 12 右边距,再留 8 间距),底边与鸟瞰图对齐;
+   占位符色(比次级色更浅)弱提示,不抢图内容视觉;pointer-events 穿透,不挡画布拖拽 */
+.rg-hint {
+  position: absolute;
+  right: 180px;
+  bottom: 12px;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+}
 /* 图例内容样式(定位/面板外壳/折叠由底座 legend 折叠面板负责):与边样式口径一致(实线主题色=确认 / 虚线灰=候选 / 红=疑似多对多) */
 .rg-legend {
   display: flex;

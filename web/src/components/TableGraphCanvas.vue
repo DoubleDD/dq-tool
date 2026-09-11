@@ -26,10 +26,13 @@ import { themeState } from '../stores/theme'
 //    节点多时分多个同心圈;颜色由父级按「自定义色 > 首个标记色 > 主题色」解析后经
 //    colors prop 传入;只显示表名——中文注释优先、无注释回退英文表名,超长截断);
 //  边 = 关系(候选虚线灰色 / 确认实线主题色 / 疑似多对多红色,连线上不标基数,关系详情去 ER 页签看);
-//  筛选高亮:highlight 非空时命中的节点保持原色并加光晕,未命中的节点/关联边大幅降低透明度;
-//  高亮/选中态与渲染口径样式(连线粗细/文本透明度)不进结构数据——变化时走 repaint 原地刷样式
-//  (setData+draw,不跑布局、不动力导仿真),结构重建(数据/颜色/尺寸/力导参数)才经底座整体 render,
-//  重建后借 rendered 事件补刷覆盖层;
+//  选中态:选中节点 = 正文色深描边 + 一圈与节点同色的浅色光晕(halo;haloZIndex=-1 画在节点下方,
+//    加粗只向外溢出、不遮挡描边),颜色随节点颜色走;筛选高亮:highlight 非空时命中的节点保持原色
+//    并加同类光晕(略细),未命中的节点/关联边大幅降低透明度;
+//  高亮/选中态与渲染口径样式(连线粗细/文本透明度)不进结构依赖——变化时走 repaint 原地刷样式
+//  (setData+draw,不跑布局、不动力导仿真);节点填充色同走 repaint 刷,但结构数据里会带上当前值快照
+//  (非响应式的 structColors,不登记依赖),保证筛选裁剪重建的首帧就是最终色、不出现"先主题色后过渡";
+//  结构重建(节点/边集合、尺寸、力导参数)才经底座整体 render,重建后借 rendered 事件补刷覆盖层;
 //  静态模式下坐标算完统一过一遍碰撞消解(resolveOverlaps):重叠节点先在原圈向两侧错开角度,
 //  整圈放不下再逐档外扩半径(延长连接线)直到不重叠;力导模式由 collide 力承担防重叠
 // 渲染口径样式默认值:连线粗细基准(px)/文本透明度;props 缺省与结构数据(见 graphData 的 STRUCT_STYLE)共用
@@ -45,7 +48,9 @@ const props = defineProps({
   edges: { type: Array, default: () => [] },
   // 锚点表名(星型图中心节点)
   anchorTable: { type: String, default: '' },
-  // 各节点颜色:{ 表名: '#hex' }(父级已按 自定义 > 标记 > 默认 解析)
+  // 各节点填充色:{ 表名: '#hex' }(父级已按 自定义 > 标记 > 默认 解析)。
+  // 改色属纯渲染口径:变化走 applyOverlay 的 repaint 原地刷填充色,不重建不重跑仿真;
+  // 结构数据(重建)里会带上当前值快照,保证重建首帧即最终色、不出现"先主题色后过渡"
   colors: { type: Object, default: () => ({}) },
   // 节点直径分档:{ 节点名: px };缺省回退 锚点=ANCHOR_SIZE / 其他=NODE_SIZE。
   // 知识图谱口径(目录大节点下挂小节点表)由父级按层级给:锚点目录 > 子目录 > 挂载表 > 关系表
@@ -56,10 +61,14 @@ const props = defineProps({
   // 节点父子关系:{ 节点名: 父节点名 };与 levels 同传时启用径向分层布局:
   // 叶子节点等分整圈角度,内部节点取子树扇区中心角——子节点聚在父节点外侧同侧,而非本层各自均布整圈
   parentOf: { type: Object, default: null },
-  // 筛选命中的表名数组;null=无筛选(全部正常显示),非 null 时未命中节点/边降透明度
+  // 高亮表名数组;null=无筛选(全部正常显示),非 null 时未命中节点/边降透明度
+  // (对象管理图谱用它做选中态高亮;表详情「图谱」页签的标记/颜色筛选改为父级按命中结果裁剪节点集合后重建,不走本 prop)
   highlight: { type: Array, default: null },
   // 当前选中节点表名(父级点击面板打开的节点),画布上加深描边呈现选中态
   selected: { type: String, default: '' },
+  // 多选命中的表名数组(套索框选):与 selected 单选并存,任一命中即呈现同一选中态(深描边 + 同色光晕);
+  // 属渲染口径(不进结构数据),变化走 applyOverlay 的 repaint 原地刷
+  selectedList: { type: Array, default: () => [] },
   // 连线粗细基准(px,候选/未确认边的线宽;确认边在此基础上 +0.4 加粗)。
   // 纯渲染口径(不进布局输入):实时调节走 applyOverlay 的 repaint 原地刷,不重建不重跑仿真
   edgeWidth: { type: Number, default: EDGE_WIDTH_DEFAULT },
@@ -79,8 +88,9 @@ const props = defineProps({
 // node-click:单击节点圆形本体(传表名,父级开颜色设置面板);
 // node-label-click:单击节点标签文本(与节点点击拆开捕捉——G6 节点是 DisplayObject 组,文本是组内
 //   label 子图形,事件 e.target 恒为节点元素,实际命中图形在 e.originalTarget,沿其祖先链判 className 即可区分);
-// node-open:双击节点(传表名,跳字段明细);canvas-click:点击画布空白(父级可用来取消选中/关面板)
-const emit = defineEmits(['node-click', 'node-label-click', 'node-open', 'canvas-click'])
+// node-open:双击节点(传表名,跳字段明细);canvas-click:点击画布空白(父级可用来取消选中/关面板);
+// lasso-select:套索框选结束(传框中的表名数组,来自 lasso-select behavior 的 onSelect 回调)
+const emit = defineEmits(['node-click', 'node-label-click', 'node-open', 'canvas-click', 'lasso-select'])
 
 /** 事件命中的子图形是否属于节点内指定 className(key/label/halo...)的图形:
  *  从 e.originalTarget(实际命中的叶子图形,如 label 组内的 text)沿祖先链找到 e.target(节点元素)为止 */
@@ -301,10 +311,12 @@ function resolveOverlaps(pos) {
 /** props -> G6 数据;静态坐标直接放节点 style(不跑布局,渲染一次到位);
  *  force 模式不预设坐标(种子会让仿真收敛到种子附近,放不开),交由 d3-force 从零自动编排,
  *  碰撞消解/径向分层等静态逻辑全部跳过。
- *  hl/sel 默认取当前 props;传 null/'' 可剥离高亮/选中态(结构数据用——见 graphData);
+ *  hl/sel/selList 默认取当前 props;传 null/'' 可剥离高亮/选中态(结构数据用——见 graphData);
  *  style(连线粗细/文本透明度)同理:默认取 live props,结构数据显式传 STRUCT_STYLE 剥离依赖,
- *  让这两个纯渲染口径参数的实时调节走 applyOverlay 的 repaint 原地刷,不触发重建+重跑仿真 */
-function buildData(hl, sel, style) {
+ *  让这些纯渲染口径参数的变化走 applyOverlay 的 repaint 原地刷,不触发重建+重跑仿真;
+ *  colors(节点填充色)缺省取 live props.colors;结构数据由 graphData 显式传入快照(非响应式),
+ *  使重建首帧即为最终色,同时不把颜色登记为结构依赖 */
+function buildData(hl, sel, style, colors, selList) {
   const c = themeColors()
   const force = props.layout === 'force'
   // 力导参数(向心力/排斥力/吸引力)只进布局回调不进图数据,这里显式触碰建立依赖:
@@ -317,11 +329,16 @@ function buildData(hl, sel, style) {
   if (!force) resolveOverlaps(pos)
   const hlSet = hl === undefined ? (props.highlight ? new Set(props.highlight) : null) : hl
   const selectedName = sel === undefined ? props.selected : sel
+  // 多选集合(套索框选):缺省取 live props;结构数据传空集合剥离,由覆盖层 repaint 刷选中态
+  const selSet = selList === undefined ? new Set(props.selectedList || []) : selList
+  // 节点填充色:colors 缺省时取 live props.colors(覆盖层 repaint 走这条);
+  // 结构数据由 graphData 显式传入快照,使重建首帧即最终色(改色不重建,见 applyOverlay)
+  const fillOf = (name) => (colors === undefined ? props.colors : colors)?.[name] || c.primary
   const nodes = props.nodes.map((n) => {
     const isAnchor = n.name === props.anchorTable
-    const isSelected = n.name === selectedName
+    const isSelected = n.name === selectedName || selSet.has(n.name)
     const matched = !hlSet || hlSet.has(n.name)
-    const color = props.colors[n.name] || c.primary
+    const color = fillOf(n.name)
     const [x, y] = pos.get(n.name) || []
     return {
       id: n.name,
@@ -341,11 +358,12 @@ function buildData(hl, sel, style) {
         lineWidth: isSelected ? 3 : isAnchor ? 2 : 1.5,
         cursor: 'pointer',
         opacity: matched ? 1 : 0.12,
-        // 筛选命中的节点加同色光晕突出显示(锚点描边语义不变)
-        halo: !!(hlSet && matched),
+        // 光晕(halo 恒画在节点下方,不遮挡描边):选中节点加一圈「节点同色的浅色圆环」突出选中态,
+        // 筛选命中的节点沿用同一视觉语言(略细);两者的颜色都随节点颜色走
+        halo: isSelected || !!(hlSet && matched),
         haloStroke: color,
-        haloStrokeOpacity: 0.3,
-        haloLineWidth: 12,
+        haloStrokeOpacity: isSelected ? 0.25 : 0.3,
+        haloLineWidth: isSelected ? 20 : 12,
         label: true,
         labelText: displayName(n),
         labelPlacement: 'bottom',
@@ -433,35 +451,45 @@ function forceLayoutOptions() {
   }
 }
 
-// 底座输入:结构数据(节点/边集合、坐标、颜色、尺寸、力导参数)变化 → 底座整体重建(力导会重新仿真,尽量少触发);
-// 高亮/选中态与渲染口径样式(连线粗细/文本透明度)不进结构数据——它们走下方 applyOverlay 原地刷样式,
-// 避免每点一下节点/拖一下样式滑杆就重建+重跑仿真;结构数据携带的渲染口径样式固定为默认值(STRUCT_STYLE);
+// 底座输入:结构数据(节点/边集合、坐标、尺寸、力导参数)变化 → 底座整体重建(力导会重新仿真,尽量少触发);
+// 高亮/选中态与渲染口径样式(连线粗细/文本透明度/节点填充色)不进结构依赖——它们走下方 applyOverlay
+// 原地刷样式,避免每点一下节点/改一次颜色/拖一下样式滑杆就重建+重跑仿真;
+// 结构数据携带的渲染口径样式固定为默认值(STRUCT_STYLE);节点填充色是例外——随结构数据一起写出当前值,
+// 这样筛选裁剪等重建的首帧就是最终色,不会先画主题色再由覆盖层过渡过来:
+// 用非响应式变量 structColors 存快照(由 sync watch 跟着 props.colors 走),graphData 读它时不建立依赖,
+// 故改色不会重算结构数据(仍走 repaint 原地刷),而重建时读到的是最新快照;
 // redrawTick = 强制整体重绘计数(父级「刷新」/「重置」按钮):递增即重建,与参数变更同一条 refresh 路径,天然合并成一次;
 // 触碰 themeState.dark:亮/暗主题切换时重算(节点/边颜色取自主题变量),底座整体重建换色(不动视口)
 const STRUCT_STYLE = { edgeWidth: EDGE_WIDTH_DEFAULT, labelOpacity: LABEL_OPACITY_DEFAULT }
+// 结构数据用的空多选集合(常量复用,避免每次重建新建 Set)
+const EMPTY_SELECTION = new Set()
+// 结构色快照(普通变量,刻意非响应式):sync watch 保证改色瞬间就同步到快照,重建时读到即最终色
+let structColors = {}
+watch(() => props.colors, (v) => { structColors = v || {} }, { immediate: true, flush: 'sync' })
 const redrawTick = ref(0)
 const graphData = computed(() => {
   void themeState.dark
   void redrawTick.value
-  return buildData(null, '', STRUCT_STYLE)
+  // 多选集合传空 Set:选中态属覆盖层口径(见 applyOverlay);空 Set 常量复用,不每次新建
+  return buildData(null, '', STRUCT_STYLE, structColors, EMPTY_SELECTION)
 })
 
-// 覆盖层(高亮/选中态/渲染口径样式):变化时经底座 repaint(setData+draw,不跑布局、不动仿真)原地刷透明度/
-// 光晕/描边/线宽/标签透明度;结构重建(力导重排)后元素样式被 graphData 重置回 STRUCT_STYLE,
-// 借底座 rendered 事件补刷;签名判重防 rendered↔repaint 循环
+// 覆盖层(高亮/选中态/渲染口径样式/节点填充色):变化时经底座 repaint(setData+draw,不跑布局、不动仿真)
+// 原地刷透明度/光晕/描边/线宽/标签透明度/填充色;结构重建(力导重排)后元素样式被 graphData
+// 重置回 STRUCT_STYLE(填充色本身已是最新,补刷只是保持一致),借底座 rendered 事件补刷;签名判重防 rendered↔repaint 循环
 let appliedOverlay = ''
 // 强制重绘(redraw())进行中标记:此期间跳过覆盖层 watch 触发的中间 repaint——
 // 「重置」批量改参数时,避免「旧布局上先原地刷一遍默认样式、再整体重排」的两段跳变,rendered 后统一补刷收尾
 let pendingRedraw = false
 function applyOverlay() {
-  const sig = JSON.stringify([props.highlight, props.selected, props.edgeWidth, props.labelOpacity])
+  const sig = JSON.stringify([props.highlight, props.selected, props.selectedList, props.edgeWidth, props.labelOpacity, props.colors])
   if (sig === appliedOverlay) return
   if (!baseRef.value?.getGraph()) return // 图未就绪,等 rendered 事件补刷
   if (pendingRedraw) return // 强制重绘会整体重渲,等 rendered 后补刷(见 onRendered)
   appliedOverlay = sig
   baseRef.value.repaint(buildData())
 }
-watch(() => [props.highlight, props.selected, props.edgeWidth, props.labelOpacity], applyOverlay)
+watch(() => [props.highlight, props.selected, props.selectedList, props.edgeWidth, props.labelOpacity, props.colors], applyOverlay)
 // 结构数据一重建就置空签名:rendered 后的补刷不被判重跳过,覆盖层(含用户调过的样式)才能重新刷上
 watch(graphData, () => { appliedOverlay = '' })
 /** 底座 rendered:强制重绘完成后清标记并补刷覆盖层(重建把元素样式重置回了 STRUCT_STYLE) */
@@ -501,8 +529,40 @@ const graphOptions = {
   edge: { type: 'line' },
   // 同表对多条平行边按曲率分开(bundle 会把 line 边改写为 quadratic,本图无字段对齐诉求,直接可用)
   transforms: [{ type: 'process-parallel-edges', mode: 'bundle', distance: 24 }],
-  // 力导模式换 drag-element-force(拖拽时仿真回温,松手自动归位);静态模式 drag-element
-  behaviors: [props.layout === 'force' ? 'drag-element-force' : 'drag-element'], // 底座内置 drag-canvas 拖画布
+  behaviors: [
+    // 力导模式换 drag-element-force(拖拽时仿真回温,松手自动归位);静态模式 drag-element;
+    // Shift+拖 让位给框选(否则按住 Shift 拖节点会一边拖节点一边画套索)
+    {
+      type: props.layout === 'force' ? 'drag-element-force' : 'drag-element',
+      enable: (e) => !e.shiftKey
+    },
+    // 套索框选(Shift+拖动):圈中的节点即选中。trigger 必须是 shift 而非官方示例的空数组——
+    // 空数组=任意拖拽都框选,会让底座内置的 drag-canvas 直接失效(见 G6 brush-select 源码注释)。
+    // 只圈节点(enableElements 不含 edge);mode=default 每次框选重置选中集合;
+    // G6 会给命中元素加 state='selected',但默认主题的 selected 样式(halo/lineWidth/stroke)
+    // 全部被本组件的数据样式覆盖,故选中呈现完全由 selectedList 驱动(见 buildData 的 isSelected);
+    // onSelect 是拿「框中了哪些元素」的唯一入口,这里同步给父级
+    {
+      type: 'lasso-select',
+      trigger: ['shift'],
+      enableElements: ['node'],
+      mode: 'default',
+      state: 'selected',
+      animation: false,
+      style: {
+        width: 0,
+        height: 0,
+        lineWidth: 2,
+        lineDash: [4, 4],
+        stroke: themeColors().primary,
+        fill: themeColors().primary,
+        fillOpacity: 0.12,
+        zIndex: 2,
+        pointerEvents: 'none'
+      },
+      onSelect: (states) => emit('lasso-select', Object.keys(states || {}))
+    }
+  ], // 底座内置 drag-canvas 拖画布(Shift+拖 时让位给框选)
   ...(props.layout === 'force' ? { layout: forceLayoutOptions() } : {}),
   // 静态模式关掉元素入场动画:render() 会等 draw 动画 finished 才 resolve,关掉后 render/重建都是瞬时完成;
   // 力导模式必须保留动画——仿真收敛与 drag-element-force 都依赖 tick 渲染,关动画会导致节点拖不动

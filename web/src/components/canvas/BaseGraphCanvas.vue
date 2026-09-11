@@ -351,7 +351,11 @@ async function init() {
     data: props.data,
     // 滚轮=平移画布(ctrl/alt 让位);ctrl+滚轮 / 触摸板捏合 / 触屏双指=缩放;左键拖动=拖画布
     behaviors: [
-      'drag-canvas',
+      // 左键拖动平移画布;Shift+拖动让位给业务侧的框选(lasso-select/brush-select 以 Shift 为 trigger),
+      // 否则 Shift+拖动会同时平移画布,框选轨迹跟着画布一起飘。
+      // 必须保留 targetType==='canvas' 守卫(G6 默认 enable 自带,覆盖时不能丢):G6 总线会把节点拖拽
+      // 冒泡成裸 dragstart 同步转发,丢了守卫拖节点会连带平移画布
+      { type: 'drag-canvas', enable: (e) => !e.shiftKey && (!('targetType' in e) || e.targetType === 'canvas') },
       // 触摸板捏合被浏览器合成为 ctrlKey=true 的 wheel 事件,此处让位给缩放行为;
       // alt+滚轮由容器捕获阶段接管为水平平移(见 onAltWheel),此处同步排除
       { type: 'scroll-canvas', enable: (e) => !e.ctrlKey && !e.altKey },
@@ -693,6 +697,11 @@ defineExpose({
   /* 画布背景:G6 画布本体透明(init 传 background:'transparent'),背景由这里提供,
      亮/暗主题切换随 CSS 变量即时生效,无需重建 */
   background: var(--el-bg-color);
+  /* 画布是拖拽操作面:禁文本选择——否则 Shift+拖动套索 / Shift+点击多选会把 html 节点里的
+     表名/字段文字整片框选高亮(G6 画出来的图形文字天然不可选,只有 ER 的 html 节点 DOM 文字会中招);
+     工具栏/缩放条/鸟瞰图是 .bgc-canvas 的兄弟节点,不受影响 */
+  user-select: none;
+  -webkit-user-select: none;
 }
 /* 视口定位完成前隐藏画布内容:render 首帧按世界坐标落笔,直接可见会闪在左上角 */
 .bgc-canvas-hidden {

@@ -411,6 +411,10 @@ public class WebServer {
         routes.post("/api/relations/{id}/confirm", ctx -> relationCtrl.get().confirm(ctx));
         routes.post("/api/relations/{id}/reject", ctx -> relationCtrl.get().reject(ctx));
         routes.delete("/api/relations/{id}", ctx -> relationCtrl.get().delete(ctx));
+        // 批量操作(关系批量处理对话框):返回实际影响数 updated
+        routes.post("/api/relations/batch-confirm", ctx -> relationCtrl.get().batchConfirm(ctx));
+        routes.post("/api/relations/batch-reject", ctx -> relationCtrl.get().batchReject(ctx));
+        routes.post("/api/relations/batch-delete", ctx -> relationCtrl.get().batchDelete(ctx));
         routes.get("/api/relation-graph", ctx -> relationCtrl.get().graph(ctx));
 
         // ---- AI 配置 / 系统设置 / 授权 / 心跳 ----

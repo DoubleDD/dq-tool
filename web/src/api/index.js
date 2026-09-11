@@ -85,9 +85,20 @@ export function rejectRelation(id) {
   return request.post(`/relations/${id}/reject`)
 }
 
-/** 删除关系(仅候选态) */
+/** 删除关系(任意状态,误删可重新推导找回) */
 export function deleteRelation(id) {
   return request.delete(`/relations/${id}`)
+}
+
+// 批量确认/否决/删除,入参 ids 数组;返回 { ok, updated }(updated=实际影响数,不存在的 id 忽略;删除不限状态)
+export function batchConfirmRelations(ids) {
+  return request.post('/relations/batch-confirm', { ids })
+}
+export function batchRejectRelations(ids) {
+  return request.post('/relations/batch-reject', { ids })
+}
+export function batchDeleteRelations(ids) {
+  return request.post('/relations/batch-delete', { ids })
 }
 
 /** ER 图数据;params: { datasourceId, dbName, schemaName, table?, includeCandidate? }

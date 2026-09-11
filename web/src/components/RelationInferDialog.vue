@@ -56,17 +56,9 @@
       <el-form-item label="只用别名匹配">
         <el-switch v-model="aliasOnly" />
         <span class="form-tip" style="margin-left: 8px">
-          只用映射字段名查找,不用锚点字段本名(避免 id 等通用名在全库误命中)
+          只对填了映射字段名的字段生效:这些字段只用映射名查找、不用本名(避免 id 等通用名在全库误命中);未填映射名的字段仍按本名查找
         </span>
       </el-form-item>
-      <el-alert
-        v-if="aliasOnly && aliasOnlyNoAliases"
-        type="warning"
-        :closable="false"
-        title="已开启只用别名匹配,但所有锚点字段都未填映射字段名,将匹配不到任何字段"
-        show-icon
-        style="margin-bottom: 12px"
-      />
       <el-form-item label="语义匹配">
         <el-switch v-model="useSemantic" :disabled="!aiAvailable" />
         <span class="form-tip" style="margin-left: 8px">
@@ -87,13 +79,15 @@
       </template>
     </div>
 
-    <!-- 完成阶段:提示发现的候选数 -->
-    <el-result
-      v-else-if="phase === 'done'"
-      icon="success"
-      title="推导完成"
-      :sub-title="`发现 ${job?.foundCount ?? 0} 条候选关系,可在 ER 图中确认或否决`"
-    />
+    <!-- 完成阶段:提示发现的候选数;任务附注(降级推导/语义批次失败等)一并展示,避免静默给出未验证候选 -->
+    <template v-else-if="phase === 'done'">
+      <el-result
+        icon="success"
+        title="推导完成"
+        :sub-title="`发现 ${job?.foundCount ?? 0} 条候选关系,可在 ER 图中确认或否决`"
+      />
+      <el-alert v-if="job?.error" type="warning" :closable="false" :title="job.error" show-icon style="margin-top: 12px" />
+    </template>
 
     <!-- 失败阶段:展示后端错误 -->
     <el-result v-else icon="error" title="推导失败" :sub-title="job?.error || '未知错误'" />
@@ -142,7 +136,7 @@ const columnsError = ref('')
 const selectedColumns = ref([])
 // 各已选锚点字段的映射字段名:{ 字段名: [映射名...] };随勾选变化增删键,提交时组装 fields
 const aliasMap = ref({})
-const aliasOnly = ref(false) // 只用别名匹配:搜索名集合只含映射字段名,不含锚点字段本名
+const aliasOnly = ref(false) // 只用别名匹配:仅对填了映射名的字段生效(只用映射字段名,不含该字段本名);未填映射名的字段仍按本名
 const useSemantic = ref(false) // 语义匹配开关,默认关;AI 不可用时置灰
 const aiAvailable = ref(false)
 const submitting = ref(false)
@@ -156,12 +150,6 @@ watch(selectedColumns, (names) => {
   for (const n of names) next[n] = aliasMap.value[n] || []
   aliasMap.value = next
 })
-
-// 只用别名匹配但所有已选字段都没填映射名 → 必然零命中,表单内给出预警(不强制拦截)
-const aliasOnlyNoAliases = computed(() =>
-  selectedColumns.value.length > 0 &&
-  selectedColumns.value.every((n) => !(aliasMap.value[n] || []).some((a) => a && a.trim()))
-)
 
 const percent = computed(() => {
   if (!job.value || !job.value.totalSteps) return 0
