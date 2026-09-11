@@ -194,13 +194,14 @@ fn main() {
         .build(tauri::generate_context!())
         .unwrap_or_else(|e| fatal(&format!("Tauri 初始化失败:{e}")));
 
-    app.run(move |handle, event| {
+    // 参数名带下划线前缀:handle 只在 macOS 分支使用,Windows 构建会报 unused_variables
+    app.run(move |_handle, event| {
         use tauri::RunEvent;
         match event {
             RunEvent::ExitRequested { .. } | RunEvent::Exit => kill_child(&child_on_exit),
             // macOS:窗口隐藏后点 Dock 图标重新显示
             #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => show_main_window(handle),
+            RunEvent::Reopen { .. } => show_main_window(_handle),
             _ => {}
         }
     });

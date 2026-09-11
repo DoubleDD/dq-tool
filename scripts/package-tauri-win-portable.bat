@@ -78,8 +78,11 @@ call npm run tauri -- build --no-bundle || (popd & exit /b 1)
 popd
 
 rem Version for the zip name, read from tauri.conf.json (kept in sync by bump-version.sh)
+rem Keep the pipe bare: the whole -Command argument is double-quoted, so cmd already treats it
+rem as literal text. Escaping it as ^| reaches PowerShell as a stray positional argument and the
+rem read fails ("positional parameter cannot be found that accepts argument '^'", 2026-08 CI).
 set VERSION=
-for /f "delims=" %%v in ('powershell -NoProfile -Command "(Get-Content tauri\src-tauri\tauri.conf.json -Raw ^| ConvertFrom-Json).version"') do set VERSION=%%v
+for /f "delims=" %%v in ('powershell -NoProfile -Command "(Get-Content tauri\src-tauri\tauri.conf.json -Raw | ConvertFrom-Json).version"') do set VERSION=%%v
 if not defined VERSION (
   echo ERROR: could not read version from tauri\src-tauri\tauri.conf.json
   exit /b 1
