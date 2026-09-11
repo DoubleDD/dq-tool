@@ -1,13 +1,17 @@
 import axios from 'axios'
 import { ElMessage } from '../utils/notify'
+import { apiBase, authHeaders } from './base'
 
 const request = axios.create({
-  baseURL: '/api',
+  baseURL: apiBase,
   timeout: 30000
 })
 
 // 所有请求统一追加时间戳参数,避免浏览器缓存 GET 响应
 request.interceptors.request.use((config) => {
+  // 基址每次请求读取:端口避让后 initApiBase 会更新 apiBase,不能缓存首次端口
+  config.baseURL = apiBase
+  Object.assign(config.headers, authHeaders())
   config.params = { ...config.params, _t: Date.now() }
   return config
 })

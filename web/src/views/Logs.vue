@@ -51,6 +51,7 @@
 
 <script setup>
 import { ref, computed, onActivated, onDeactivated, nextTick, watch } from 'vue'
+import { apiUrl, getAccessToken } from '../api/base'
 
 const logs = ref([])
 const connected = ref(false)
@@ -101,7 +102,9 @@ function scrollToBottom() {
 function connect() {
   if (eventSource) eventSource.close()
   logs.value = []
-  eventSource = new EventSource('/api/logs/stream')
+  // EventSource 不能自定义请求头,令牌只能走 query(后端 AccessGuard 支持该端点 ?token= 放行)
+  const token = getAccessToken()
+  eventSource = new EventSource(apiUrl('/logs/stream') + (token ? '?token=' + encodeURIComponent(token) : ''))
   connected.value = true
 
   eventSource.onmessage = (ev) => {

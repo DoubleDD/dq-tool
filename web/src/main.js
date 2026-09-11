@@ -12,6 +12,7 @@ import { ElLoading } from 'element-plus'
 import './style.css'
 import App from './App.vue'
 import router from './router'
+import { initApiBase, apiUrl, authHeaders } from './api/base'
 
 const app = createApp(App)
 app.use(router)
@@ -29,7 +30,7 @@ async function waitBackendReady(timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      const res = await fetch('/api/health', { cache: 'no-store' })
+      const res = await fetch(apiUrl('/health'), { cache: 'no-store', headers: authHeaders() })
       if (res.ok) return
       const stage = (await res.json().catch(() => ({}))).stage
       renderBootStage(stage)
@@ -51,7 +52,8 @@ function renderBootStage(stage) {
   })
 }
 
-waitBackendReady().finally(() => {
+// 先初始化 API 基址/令牌(Tauri 经 IPC 取动态端口与 token),再等内核就绪后挂载
+initApiBase().then(() => waitBackendReady()).finally(() => {
   app.mount('#app')
   // 挂载后通知启动页诊断面板隐藏(index.html 内联脚本读取)
   window.__bootMounted = true

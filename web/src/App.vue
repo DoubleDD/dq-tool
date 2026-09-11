@@ -154,6 +154,7 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import request from './api'
+import { apiUrl, authHeaders } from './api/base'
 import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
@@ -285,7 +286,7 @@ const groupedDatasources = computed(() => {
 async function loadDatasources() {
   dsFavorites.value = loadDsFavorites()
   try {
-    const res = await fetch(`/api/datasources?_t=${Date.now()}`)
+    const res = await fetch(apiUrl('/datasources?_t=' + Date.now()), { headers: authHeaders() })
     if (res.ok) datasources.value = await res.json()
   } catch { /* 后端不可达时维持旧列表,不弹错误 */ }
 }
@@ -440,7 +441,7 @@ watch(() => route.fullPath, () => {
 let heartbeatTimer
 onMounted(() => {
   heartbeatTimer = setInterval(() => {
-    axios.get('/api/heartbeat', { timeout: 5000 }).catch(() => {})
+    axios.get(apiUrl('/heartbeat'), { timeout: 5000, headers: authHeaders() }).catch(() => {})
   }, 5000)
 })
 onUnmounted(() => clearInterval(heartbeatTimer))

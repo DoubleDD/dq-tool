@@ -82,7 +82,7 @@
         <div class="el-upload__text">拖拽文件到此处,或 <em>点击选择</em>(仅 .xlsx)</div>
       </el-upload>
       <div style="margin-top: 8px; text-align: right">
-        <el-link type="primary" href="/api/sample-export-template" download="抽样导入模版.xlsx">下载导入模版</el-link>
+        <el-link type="primary" @click="downloadTemplate">下载导入模版</el-link>
       </div>
       <template #footer>
         <el-button @click="uploadDialogVisible = false">取消</el-button>
@@ -111,7 +111,7 @@
         <div class="el-upload__text">拖拽文件到此处,或 <em>点击选择</em>(仅 .xlsx)</div>
       </el-upload>
       <div style="margin-top: 8px; text-align: right">
-        <el-link type="primary" href="/api/sample-export-template" download="抽样导入模版.xlsx">下载导入模版</el-link>
+        <el-link type="primary" @click="downloadTemplate">下载导入模版</el-link>
       </div>
       <template #footer>
         <el-button @click="reimportVisible = false">取消</el-button>
@@ -245,6 +245,7 @@ import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
 import { UploadFilled } from '@element-plus/icons-vue'
 import request from '../api'
+import { downloadFile } from '../utils/download'
 import { formatBytes, formatDateTime } from '../utils/format'
 import DatasourceEditDialog from '../components/DatasourceEditDialog.vue'
 
@@ -490,11 +491,14 @@ function onUploadClosed() {
   uploadFile.value = null
 }
 
-/** 下载 zip:直接走浏览器下载(GET 流式响应),与报告列表页同一写法 */
+/** 下载 zip:统一走 downloadFile(浏览器 window.open;Tauri 走 Rust「另存为」并带 token) */
 function download(row) {
-  const a = document.createElement('a')
-  a.href = `/api/sample-exports/${row.id}/download`
-  a.click()
+  downloadFile(`/api/sample-exports/${row.id}/download`)
+}
+
+/** 下载抽样导入模版:xlsx 流式响应,同样统一走 downloadFile */
+function downloadTemplate() {
+  downloadFile('/api/sample-export-template')
 }
 
 /** 打开产物目录:服务端调系统文件管理器 */

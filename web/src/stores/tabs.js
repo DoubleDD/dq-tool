@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import { apiUrl, authHeaders } from '../api/base'
 
 /**
  * 顶部页签状态(轻量实现,未引入 pinia)
@@ -43,7 +44,7 @@ export function ensureDsName(id) {
   if (dsNames[id]) return Promise.resolve(dsNames[id])
   let p = dsNamePending.get(id)
   if (!p) {
-    p = fetch(`/api/datasources?_t=${Date.now()}`)
+    p = fetch(apiUrl('/datasources?_t=' + Date.now()), { headers: authHeaders() })
       .then((res) => (res.ok ? res.json() : []))
       .then((list) => {
         const ds = (list || []).find((d) => String(d.id) === String(id))

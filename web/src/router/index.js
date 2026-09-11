@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { ElMessage } from '../utils/notify'
+import { apiUrl, authHeaders } from '../api/base'
 
 const routes = [
   { path: '/', redirect: '/datasources' },
@@ -45,7 +46,7 @@ let licenseStatusPromise = null
  */
 export function fetchLicenseStatus() {
   if (!licenseStatusPromise) {
-    licenseStatusPromise = fetch(`/api/license/status?_t=${Date.now()}`)
+    licenseStatusPromise = fetch(apiUrl('/license/status?_t=' + Date.now()), { headers: authHeaders() })
       .then((res) => res.json())
       .catch(() => {
         // 后端不可达时放行,让页面里的 API 错误提示正常展示
