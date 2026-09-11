@@ -21,7 +21,9 @@ if /i not "%~1"=="--skip-build" (
 rem 版本号从根目录 VERSION 文件读取(唯一源头)
 for /f "delims=" %%a in (VERSION) do set APP_VERSION=%%a
 rem 安装包版本与其他平台口径一致:从 APP_VERSION 派生,去掉开头的 "0."(0.1.7 -> 1.7),避免两处手工同步遗漏
-set PKG_VERSION=%APP_VERSION:0.=%
+rem 注意:批处理 %VAR:0.=% 是全局替换所有 "0."(0.2.0.3 会被错改成 2.3),必须只掐开头两位判断
+set "PKG_VERSION=%APP_VERSION%"
+if "%APP_VERSION:~0,2%"=="0." set "PKG_VERSION=%APP_VERSION:~2%"
 set JAR=server\build\libs\dq-tool-%APP_VERSION%.jar
 rem 注意:单行 if (...) 块内不要直接写中文 —— 本文件是 UTF-8,中文 Windows 上 cmd 按 GBK 解析,
 rem 错位的字节配对可能吃掉括号/换行使块解析失败(报"文件名、目录名或卷标语法不正确"),多行块则安全
