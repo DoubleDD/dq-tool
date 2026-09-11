@@ -19,6 +19,14 @@ dq:
     enabled: true                  # 局域网共享总开关(页面「局域网共享」可覆盖):UDP 广播自动发现同网段其他实例,互拉标记/表描述/扫描记录
     discovery-port: 17386          # UDP 发现端口(广播心跳 + 监听);同一局域网内各实例需一致
     announce-interval-seconds: 5   # 心跳间隔(秒);超过 3 个间隔未收到心跳的实例判离线
+  web:
+    # 静态资源目录(磁盘):非空且目录存在时从该目录发前端页面(jpackage 打包注入 ${APPDIR}/static);
+    # 留空 = 用 classpath 内嵌静态(dev/测试)。交付 fat jar 不再内嵌前端,即纯 API 形态
+    static-dir: ""
+  # 浏览器访问管控令牌:任一来源非空即开启——/api/** 与页面须带 X-Dq-Token 头 / ?token= query / Cookie 命中才放行。
+  # 留空 = 不限制(java -jar / jpackage 默认);Tauri 每次启动随机生成并经 -Ddq.access-token 注入,用户无感。
+  # 勿把真实令牌写进本文件提交;本地固定令牌请用 -Ddq.access-token 或环境变量 DQ_ACCESS_TOKEN。
+  access-token: ""
   license:
     # 授权码验签公钥(Ed25519)文件路径,私钥在 license-private.key(不入库);
     # classpath: 前缀读 jar 内资源,否则按文件系统路径读(支持 ${user.home},相对路径相对工作目录),配了路径但读不到时启动直接报错

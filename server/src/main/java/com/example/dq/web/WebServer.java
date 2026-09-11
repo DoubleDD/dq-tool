@@ -58,6 +58,7 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.jar.JarEntry;
@@ -83,6 +84,16 @@ public class WebServer {
 
     private static final Logger log = LoggerFactory.getLogger(WebServer.class);
 
+    /** 访问管控未命中时的页面提示(纯 API 形态下浏览器直接打开页面路由的场景) */
+    private static final String BLOCKED_PAGE = """
+            <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+            <title>访问被拒绝</title></head>
+            <body style="font-family:system-ui,sans-serif;padding:48px;color:#303133">
+            <h2>浏览器直接访问已被禁止</h2>
+            <p>请使用桌面应用打开,或通过
+            <code>http://&lt;host&gt;:&lt;port&gt;/?token=&lt;访问令牌&gt;</code> 访问。</p>
+            </body></html>""";
+
     private final Javalin app;
     /** 共享内核(H2 池 + 服务对象图),openBrowser 开窗后才构建(启动优化) */
     private volatile ServiceEnv env;
@@ -92,10 +103,10 @@ public class WebServer {
     private final TrayManager trayManager;
     /** 共享内核就绪标志:finishInit 完成建表/迁移/恢复后置 true,之前业务接口被闸门拦成 503 */
     private final AtomicBoolean ready = new AtomicBoolean(false);
-    /** 本构建内嵌静态资源(请求路径 → 内容),构造时一次性预读进内存,请求期零 jar I/O */
-    private final Map<String, byte[]> staticCache = preloadStatic();
-    /** 本构建内嵌静态资源清单(/api/assets-manifest 出口),启动诊断复核失败资源时比对用 */
-    private final List<String> staticManifest = staticCache.keySet().stream().sorted().toList();
+    /** 静态资源(请求路径 → 内容):构造时一次性预读进内存,请求期零 I/O(来源见 preloadStatic) */
+    private final Map<String, byte[]> staticCache;
+    /** 静态资源清单(/api/assets-manifest 出口),启动诊断复核失败资源时比对用 */
+    private final List<String> staticManifest;
 
     // 控制器/服务引用:路由在 create 回调里注册,内核(finishInit)构建完成后注入。
     // 就绪闸门在授权校验之前短路(未就绪一律 503),注入前不会触到空引用
@@ -128,6 +139,11 @@ public class WebServer {
         this.config = config;
         DqProperties props = config.dq();
 
+        // 静态资源来源:配置 dq.web.static-dir 且目录存在 → 磁盘发静态(jpackage/安装版);
+        // 否则退回 classpath 内嵌静态(dev/测试)。必须在 Javalin.create 前算好(路由 lambda 捕获这两个字段)
+        this.staticCache = preloadStatic(props.getWeb().getStaticDir());
+        this.staticManifest = staticCache.keySet().stream().sorted().toList();
+
         // 全应用共享的 Jackson 3 mapper:序列化默认值与原 Spring Boot 托管配置对齐
         // (ISO 日期/不报空 bean/忽略未知字段;Jackson 3 默认 FAIL_ON_NULL_FOR_PRIMITIVES=true 与 Boot 相反,须显式关掉);
         // KotlinModule 用于内核的 Kotlin data class 模型
@@ -156,8 +172,20 @@ public class WebServer {
 
         this.app = Javalin.create(cfg -> {
             cfg.jsonMapper(new JavalinJackson3(objectMapper, false));
+            // CORS(方案 B:宽松 CORS + 每次启动随机 token 门禁):交付 jar 是纯 API,Tauri webview 从
+            // tauri://localhost(自定义协议)/ http://tauri.localhost 跨域访问 127.0.0.1:<动态端口>。
+            // 用 Javalin 自带 CorsPlugin 一把梭:anyHost() 的 "*" 分支排在 Origin: null 判断之前,故 null 也回 *;
+            // allowCredentials 必须为 false(* 与 credentials 互斥,我们不用跨域 Cookie)。插件还负责把无匹配路由的
+            // OPTIONS 预检改写为 200,并回显 Access-Control-Request-Headers(即 x-dq-token 自动放行)。
+            cfg.bundledPlugins.enableCors(cors -> cors.addRule(rule -> {
+                rule.path = "/api/*";
+                rule.anyHost();
+                rule.exposeHeader("Content-Disposition");
+                rule.maxAge = 3600;
+            }));
             if (staticCache.isEmpty()) {
-                StartupLog.log("  classpath 无 /static(前端未构建),静态资源为空(dev 模式正常)");
+                StartupLog.log("  静态资源为空:未配置可用的 dq.web.static-dir,classpath 也无 /static"
+                        + "(纯 API 形态下正常,前端由 Tauri frontendDist / jpackage static-dir 提供)");
             }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
@@ -202,6 +230,32 @@ public class WebServer {
                                 AtomicReference<LanController> lanCtrl,
                                 AtomicReference<RelationController> relationCtrl,
                                 LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
+        // 浏览器访问管控(默认关闭):配置了 dq.access-token 才生效,未配置时行为与改动前完全一致。
+        // 用全局 before 而非 beforeMatched:既拦 /api/**(含未匹配路由),也拦 jpackage/static-dir 形态下的页面路由;
+        // 位于最前,早于就绪闸门与授权闸门。OPTIONS 预检、固定豁免清单、带扩展名的静态资源在 AccessGuard 内放行。
+        List<String> accessTokens = config.dq().getAccessTokens();
+        if (!accessTokens.isEmpty()) {
+            // CORS 排查(三平台 webview 实发 Origin):每进程按不同来源各记一次(不含 token、不回传接口)。
+            // 若某平台 webview 完全不发 Origin,这里就不会出现它的来源 —— 即 CorsPlugin 直接 return、
+            // 预检失败、API 全挂,需按实施计划 §7 回落 Rust loopback 反代。
+            Set<String> seenOrigins = java.util.concurrent.ConcurrentHashMap.newKeySet();
+            routes.before(ctx -> {
+                String origin = ctx.header("Origin");
+                if (origin != null && seenOrigins.add(origin)) {
+                    log.info("  /api 请求来源 Origin={}(CORS 排查,每种来源仅记一次)", origin);
+                }
+                AccessGuard.enforce(ctx, accessTokens);
+            });
+            routes.exception(AccessGuard.AccessBlockedException.class, (e, ctx) -> {
+                if (e.isApi() || !"GET".equals(ctx.method().name())) {
+                    ctx.status(403).json(Map.of("message",
+                            "访问被拒绝:请通过桌面应用打开,或使用带访问令牌的地址访问"));
+                    return;
+                }
+                ctx.status(403).contentType("text/html;charset=utf-8").result(BLOCKED_PAGE);
+            });
+            StartupLog.log("  浏览器访问管控已启用(请求须携带访问令牌;令牌值不落日志)");
+        }
         // 授权前置校验(替代 LicenseInterceptor):/api/** 除授权接口自身与页面心跳外,要求已激活且未过期;
         // beforeMatched 只在路由命中时触发,与原 Spring 拦截器一致(未匹配的 /api/** 仍走 404 而非 401)
         routes.beforeMatched("/api/*", ctx -> {
@@ -499,14 +553,21 @@ public class WebServer {
      * 异常被静默吞掉按 404 处理;Windows 杀软对新装未签名 jar 的每次打开都做实时扫描,
      * 首次安装/重启后并发资产请求易被卡住或拒绝,表现为「入口 200(走 SPA 回退)、assets 404」
      * (2026-09 多用户实测反推,反编译 ClasspathResource 字节码证实)。
-     * 枚举:打包运行扫 fat jar 的 static/ 条目;dev/测试遍历 classpath 资源根;失败按空放行
+     * 枚举:配置了 dq.web.static-dir 且目录存在时 Files.walk 该磁盘目录(jpackage/安装版);
+     * 否则打包运行扫 fat jar 的 static/ 条目、dev/测试遍历 classpath 资源根;失败按空放行
      * (dev 不构建前端时本就没有静态资源,仅影响启动诊断判定精度)。
      * 加固(2026-09):杀软可能连启动期这一趟读取也拦截——失败项最多再重试 2 轮(间隔 300ms),
      * 仍失败的资源整个会话期 404,故启动日志固定输出「静态资源 N/M」汇总,缺失时逐个列出,
      * 便于现场对照 /api/assets-manifest 排查。
      */
-    private static Map<String, byte[]> preloadStatic() {
-        List<String> paths = enumerateStaticPaths();
+    private static Map<String, byte[]> preloadStatic(String staticDir) {
+        Path dir = staticDir == null || staticDir.isBlank() ? null : Path.of(staticDir);
+        boolean fromDisk = dir != null && Files.isDirectory(dir);
+        if (dir != null && !fromDisk) {
+            log.warn("配置的静态目录不存在,回落 classpath 静态: {}", staticDir);
+        }
+        String source = fromDisk ? "dir=" + staticDir : "classpath";
+        List<String> paths = fromDisk ? enumerateStaticDirPaths(dir) : enumerateStaticPaths();
         Map<String, byte[]> cache = new java.util.LinkedHashMap<>();
         List<String> pending = new ArrayList<>(paths);
         for (int round = 0; round < 3 && !pending.isEmpty(); round++) {
@@ -521,8 +582,11 @@ public class WebServer {
             }
             List<String> failed = new ArrayList<>();
             for (String path : pending) {
-                // 走类加载器(getResourceAsStream,useCaches=true 共享已打开的 JarFile),启动期单趟读取
-                try (InputStream in = WebServer.class.getResourceAsStream("/static" + path)) {
+                // 磁盘:直接从配置目录读;classpath:走类加载器(getResourceAsStream,
+                // useCaches=true 共享已打开的 JarFile),启动期单趟读取
+                try (InputStream in = fromDisk
+                        ? Files.newInputStream(dir.resolve(path.substring(1)))
+                        : WebServer.class.getResourceAsStream("/static" + path)) {
                     if (in != null) {
                         cache.put(path, in.readAllBytes());
                     } else {
@@ -536,13 +600,26 @@ public class WebServer {
             pending = failed;
         }
         if (pending.isEmpty()) {
-            StartupLog.log("  静态资源 " + cache.size() + "/" + paths.size() + " 加载完成(内存缓存)");
+            StartupLog.log("  静态资源 " + cache.size() + "/" + paths.size() + " 加载完成(内存缓存, source=" + source + ")");
         } else {
             StartupLog.log("  静态资源 " + cache.size() + "/" + paths.size() + " 加载,缺失 "
-                    + pending.size() + " 个(会话期将 404): " + pending);
+                    + pending.size() + " 个(会话期将 404, source=" + source + "): " + pending);
             log.error("静态资源预读最终失败 {}/{} 个,这些资源会话期将 404: {}", pending.size(), paths.size(), pending);
         }
         return cache;
+    }
+
+    /** 枚举磁盘静态目录下的资源路径(与 classpath 分支同口径:/index.html、/assets/xxx.js),供预读与清单出口共用 */
+    private static List<String> enumerateStaticDirPaths(Path root) {
+        try (Stream<Path> walk = Files.walk(root)) {
+            return walk.filter(Files::isRegularFile)
+                    .map(p -> "/" + root.relativize(p).toString().replace('\\', '/'))
+                    .sorted()
+                    .toList();
+        } catch (Exception e) {
+            log.warn("磁盘静态目录枚举失败(按空清单放行): {}", e.toString());
+            return List.of();
+        }
     }
 
     /** 枚举本构建内嵌静态资源路径(返回 /index.html、/assets/xxx.js 等),供预读与清单出口共用 */

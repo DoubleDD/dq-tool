@@ -58,6 +58,29 @@ public final class ConfigLoader {
         }
         dq.getDesktop().setShutdownTimeoutSeconds(getInt(yaml, "dq.desktop.shutdown-timeout-seconds",
                 dq.getDesktop().getShutdownTimeoutSeconds()));
+        // 静态资源目录(磁盘):优先级 系统属性 -Ddq.web.static-dir(jpackage/Tauri 打包注入) > 环境变量 > yml;
+        // 相对路径按工作目录解析(与 dq.data-dir 同口径),${user.home} 手动展开(同 dataDir)
+        String staticDir = System.getProperty("dq.web.static-dir");
+        if (staticDir == null || staticDir.isBlank()) {
+            staticDir = System.getenv("DQ_WEB_STATIC_DIR");
+        }
+        if (staticDir == null || staticDir.isBlank()) {
+            staticDir = getString(yaml, "dq.web.static-dir", "");
+        }
+        dq.getWeb().setStaticDir(staticDir == null ? ""
+                : staticDir.replace("${user.home}", System.getProperty("user.home")).trim());
+        // 浏览器访问管控令牌:三个来源合并去重,任一非空即开启门禁(纯 Web 层,不进内核)。
+        // yml 供用户书签固定访问;-D / DQ_ACCESS_TOKEN 供启动注入(Tauri 每次随机生成)。token 值不落日志。
+        String envToken = System.getenv("DQ_ACCESS_TOKEN");
+        for (String candidate : new String[]{
+                System.getProperty("dq.access-token", ""),
+                envToken == null ? "" : envToken,
+                getString(yaml, "dq.access-token", "")}) {
+            String token = candidate.trim();
+            if (!token.isBlank() && !dq.getAccessTokens().contains(token)) {
+                dq.getAccessTokens().add(token);
+            }
+        }
         dq.getLan().setEnabled(getBoolean(yaml, "dq.lan.enabled", dq.getLan().isEnabled()));
         dq.getLan().setDiscoveryPort(getInt(yaml, "dq.lan.discovery-port", dq.getLan().getDiscoveryPort()));
         dq.getLan().setAnnounceIntervalSeconds(getInt(yaml, "dq.lan.announce-interval-seconds",
