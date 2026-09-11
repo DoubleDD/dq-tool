@@ -33,6 +33,18 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void 静态目录系统属性优先于yml且默认为空() {
+        // yml 默认 dq.web.static-dir: ""(纯 API);-D 注入优先(jpackage/Tauri 打包用)
+        assertEquals("", ConfigLoader.load().dq().getWeb().getStaticDir());
+        System.setProperty("dq.web.static-dir", "/tmp/dq-static-test");
+        try {
+            assertEquals("/tmp/dq-static-test", ConfigLoader.load().dq().getWeb().getStaticDir());
+        } finally {
+            System.clearProperty("dq.web.static-dir");
+        }
+    }
+
+    @Test
     void 文件不存在时抛状态异常() {
         IllegalStateException e = assertThrows(IllegalStateException.class,
                 () -> ConfigLoader.readKeyFile(tempDir.resolve("missing.key").toString()));
