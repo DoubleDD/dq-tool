@@ -2,6 +2,7 @@ package com.example.dq.controller;
 
 import com.example.dq.service.DataSourceService;
 import com.example.dq.service.DataSourceTransferService;
+import com.example.dq.service.MetadataTransferService;
 import com.example.dq.model.DataSourceConfig;
 import com.example.dq.model.DataSourceRequest;
 import com.example.dq.model.DbType;
@@ -15,6 +16,7 @@ import io.javalin.http.UploadedFile;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.ObjectMapper;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -36,10 +38,13 @@ public class DataSourceController {
 
     private final DataSourceService service;
     private final DataSourceTransferService transferService;
+    private final MetadataTransferService metadataTransferService;
 
-    public DataSourceController(DataSourceService service, DataSourceTransferService transferService) {
+    public DataSourceController(DataSourceService service, DataSourceTransferService transferService,
+                                MetadataTransferService metadataTransferService) {
         this.service = service;
         this.transferService = transferService;
+        this.metadataTransferService = metadataTransferService;
     }
 
     public void list(Context ctx) {
@@ -168,7 +173,48 @@ public class DataSourceController {
         transferService.export(ids, response.getOutputStream());
     }
 
-    /** 导入数据源配置:文件(自有 .json / Navicat .ncx)或粘贴文本(自有 JSON / DataGrip 剪贴板 XML) */
+    /** 导出数据源元数据缓存为 JSON 文件(结构缓存 + 标注数据,供连不上库的人导入离线使用) */
+    public void exportMetadata(Context ctx) throws IOException {
+        String idsParam = ctx.queryParam("ids");
+        if (idsParam == null || idsParam.isBlank()) {
+            throw new IllegalArgumentException("请指定要导出的数据源 ids");
+        }
+        final List<Long> ids;
+        try {
+            ids = Arrays.stream(idsParam.split(",")).map(String::trim).map(Long::parseLong).toList();
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("ids 参数格式错误,应为逗号分隔的数字列表");
+        }
+        if (ids.isEmpty()) {
+            throw new IllegalArgumentException("请指定要导出的数据源 ids");
+        }
+        String filename = URLEncoder.encode("dq-metadata-"
+                + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".json",
+                StandardCharsets.UTF_8);
+        HttpServletResponse response = ctx.res();
+        response.setContentType("application/json");
+        response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
+        metadataTransferService.export(ids, response.getOutputStream());
+    }
+
+    /** 元数据导入预检(multipart 文件上传或粘贴文本):返回文件内各数据源规模与本机数据源清单 + 连接身份自动匹配,供前端做数据源映射 */
+    public void previewMetadataImport(Context ctx) throws IOException {
+        UploadedFile file = ctx.uploadedFile("file");
+        if (file != null) {
+            try (var in = file.content()) {
+                ctx.json(metadataTransferService.preview(in));
+            }
+            return;
+        }
+        String text = ctx.formParam("text");
+        if (text == null || text.isBlank()) {
+            throw new IllegalArgumentException("请选择要导入的文件或粘贴元数据内容");
+        }
+        ctx.json(metadataTransferService.preview(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8))));
+    }
+
+    /** 导入数据源配置:文件(自有 .json / Navicat .ncx)或粘贴文本(自有 JSON / DataGrip 剪贴板 XML);
+     * 自有 JSON 再按顶层 app 区分:dq-tool=连接配置、dq-tool-metadata=元数据缓存(可选表单字段 mapping=数据源映射 JSON) */
     public void importDs(Context ctx) throws IOException {
         UploadedFile file = ctx.uploadedFile("file");
         if (file == null) {
@@ -179,8 +225,7 @@ public class DataSourceController {
             }
             String trimmed = text.trim();
             if (trimmed.startsWith("{")) {
-                ctx.json(transferService.importJson(
-                        new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8))));
+                importJsonDispatch(ctx, text.getBytes(StandardCharsets.UTF_8));
             } else if (trimmed.contains("<data-source")) {
                 ctx.json(transferService.importDataGrip(text));
             } else {
@@ -192,12 +237,42 @@ public class DataSourceController {
         String lower = filename.toLowerCase(Locale.ROOT);
         try (var in = file.content()) {
             if (lower.endsWith(".json")) {
-                ctx.json(transferService.importJson(in));
+                importJsonDispatch(ctx, in.readAllBytes());
             } else if (lower.endsWith(".ncx")) {
                 ctx.json(transferService.importNcx(in));
             } else {
                 throw new IllegalArgumentException("仅支持 .json 或 .ncx 文件");
             }
+        }
+    }
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+
+    /** 自有 JSON 按顶层 app 分发到连接配置导入或元数据导入;元数据导入支持可选表单字段 mapping(文件数据源名 → 本机数据源 id,缺失/0=自动匹配或新建) */
+    private void importJsonDispatch(Context ctx, byte[] bytes) throws IOException {
+        String app = null;
+        try {
+            tools.jackson.databind.JsonNode node = JSON.readTree(bytes);
+            app = node == null || node.get("app") == null ? null : node.get("app").asText();
+        } catch (Exception ignored) {
+            // 不是合法 JSON,交给 importJson 按非法文件统一报错
+        }
+        if ("dq-tool-metadata".equals(app)) {
+            ctx.json(metadataTransferService.importJson(new ByteArrayInputStream(bytes), parseMapping(ctx.formParam("mapping"))));
+        } else {
+            ctx.json(transferService.importJson(new ByteArrayInputStream(bytes)));
+        }
+    }
+
+    /** 解析数据源映射表单字段;为空视为未指定(自动匹配),非法 JSON 走 400 */
+    private static Map<String, Long> parseMapping(String mappingJson) {
+        if (mappingJson == null || mappingJson.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return JSON.readValue(mappingJson, new tools.jackson.core.type.TypeReference<Map<String, Long>>() { });
+        } catch (Exception e) {
+            throw new IllegalArgumentException("数据源映射格式不正确", e);
         }
     }
 }

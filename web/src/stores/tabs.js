@@ -84,6 +84,7 @@ const PAGE_TABS = {
   '/ai-usage': '模型用量统计',
   '/report-exports': '报告列表',
   '/sample-exports': '抽样导出',
+  '/compare': '数据比对',
   '/relations': 'ER 关系',
   '/object-manage': '对象管理',
   '/sql-console': 'SQL 控制台',
@@ -120,6 +121,16 @@ function resolveTab(route) {
     let title = schema ? `${schema} - 扫描 #${jobId}` : `扫描 #${jobId}`
     if (p.includes('/tables/')) title = `${route.params.tableName} - 字段统计`
     return { key: `scan-${jobId}`, title, closable: true }
+  }
+  // 数据比对下钻页:新建固定一个页签;差异明细/质量报告每个任务各占一个页签
+  if (p === '/compare/new') return { key: 'page-compare-new', title: '数据比对 - 新建比对任务', closable: true }
+  if (p.startsWith('/compare/') && p.endsWith('/diff')) {
+    const id = route.params.id
+    return { key: `compare-diff-${id}`, title: '数据比对 - 差异明细', closable: true }
+  }
+  if (p.startsWith('/compare/') && p.endsWith('/report')) {
+    const id = route.params.id
+    return { key: `compare-report-${id}`, title: '数据比对 - 质量报告', closable: true }
   }
   // 数据源之外的一级功能页:固定 key,路由命中即占一个页签
   const pageTitle = PAGE_TABS[p]

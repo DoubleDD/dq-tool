@@ -198,6 +198,23 @@ object SampleTableExcelParser {
         return dsKey(type, host, port, ds.username, database)
     }
 
+    /** 从 jdbcUrl + 用户名算身份 key(与 [keyOfExisting] 同口径);URL 无法识别/解析不出/提取不到库名返回 null */
+    fun keyOfJdbcUrl(url: String?, username: String?): String? {
+        if (url.isNullOrBlank()) return null
+        val type = try {
+            DbType.fromJdbcUrl(url)
+        } catch (e: IllegalArgumentException) {
+            return null
+        }
+        val (host, port) = try {
+            JdbcUrlRewriter.extractHostPort(url)
+        } catch (e: IllegalArgumentException) {
+            return null
+        }
+        val database = extractDatabase(type, url) ?: return null
+        return dsKey(type, host, port, username, database)
+    }
+
     /** 生成导入模版 xlsx:表头 + 一行示例数据(前端「下载模版」按钮) */
     fun writeTemplate(out: java.io.OutputStream) {
         XSSFWorkbook().use { wb ->

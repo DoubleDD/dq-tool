@@ -5,6 +5,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.discovery.LanDiscoveryService
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.AiUsageRepository
+import com.example.dq.repository.CompareRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
@@ -35,6 +36,7 @@ import com.example.dq.service.AiUsageService
 import com.example.dq.service.AnnotationTransferService
 import com.example.dq.service.AutoTagService
 import com.example.dq.service.ChangelogService
+import com.example.dq.service.CompareService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
 import com.example.dq.service.DbStructExportService
@@ -45,6 +47,7 @@ import com.example.dq.service.ListExportService
 import com.example.dq.service.LanShareService
 import com.example.dq.service.LocalH2ConsoleService
 import com.example.dq.service.ManualCollectService
+import com.example.dq.service.MetadataTransferService
 import com.example.dq.service.ObjectCatalogService
 import com.example.dq.service.MetadataService
 import com.example.dq.service.MetaSyncService
@@ -116,6 +119,7 @@ class ServiceEnv(val config: AppConfig) {
     val tableRelationRepo = TableRelationRepository(jdbc)
     val relationInferJobRepo = RelationInferJobRepository(jdbc)
     val metaSyncRepo = MetaSyncRepository(jdbc)
+    val compareRepo = CompareRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -158,6 +162,9 @@ class ServiceEnv(val config: AppConfig) {
     /** 本地 H2 库(应用自身配置库)只读查询:SQL 控制台「本地 H2 库」入口,复用主库连接池 */
     val localH2ConsoleService = LocalH2ConsoleService(dataSource, systemSettingsService)
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, tableSystemRepo, dataSourceRepo)
+    /** 元数据缓存导入导出:结构缓存整粒度替换 + 派生标注按自然键合并,供离线使用 ER/图谱/对象管理 */
+    val metadataTransferService = MetadataTransferService(jdbc, dataSourceRepo, crypto, dataSourceService, metaSyncRepo,
+        tagRepo, tableDocRepo, schemaDocRepo, tableSystemRepo, manualCollectRepo, tableRelationRepo, objectCatalogRepo)
     val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
     /** 局域网共享:UDP 发现(纯网络,不做持久化)+ 拉取导入编排;start(httpPort) 由壳层在内核就绪后调用 */
     val lanDiscoveryService = LanDiscoveryService(config.lan)
@@ -180,6 +187,8 @@ class ServiceEnv(val config: AppConfig) {
     val tableRelationService = TableRelationService(tableRelationRepo, metaCacheRepo)
     val relationInferService = RelationInferService(tableRelationRepo, relationInferJobRepo, metaCacheRepo,
         dataSourceService, systemSettingsService, dialectFactory, aiConfigService, tableDocRepo, aiService)
+    val compareService = CompareService(compareRepo, dataSourceService, dialectFactory,
+        metadataService, systemSettingsService)
 
     /**
      * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的
@@ -196,6 +205,7 @@ class ServiceEnv(val config: AppConfig) {
         sampleExportService.recoverUnfinished()
         relationInferJobRepo.failRunningOnStartup()
         metaSyncService.recoverUnfinished()
+        compareService.recoverUnfinished()
     }
 
     fun shutdown() {

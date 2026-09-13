@@ -176,4 +176,47 @@ export function cancelMetadataSync(id) {
   return request.post(`/metadata-sync/${id}/cancel`)
 }
 
+// ---------- 数据比对 ----------
+// 视图结构:任务 CompareJobView / 目标指标 CompareTargetView / 差异行 CompareDiffRow,字段见后端 CompareModels.kt
+
+/** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fields[], targets[{datasourceId, db, schema, table}]};返回 {jobId} */
+export function createCompareJob(payload) {
+  return request.post('/compare-jobs', payload)
+}
+
+/** 任务列表;archived=true 时含已归档(默认不含) */
+export function listCompareJobs(archived = false) {
+  return request.get('/compare-jobs', { params: archived ? { archived: true } : {} })
+}
+
+/** 任务详情 { job, targets };silent=true 用于轮询(失败不弹全局提示) */
+export function getCompareJob(id, silent = false) {
+  return request.get(`/compare-jobs/${id}`, silent ? { _silent: true } : {})
+}
+
+/** 差异明细分页;params: { targetId?, diffType?, kw?, page?, size? } → { rows, total, page, size };silent=true 用于轮询 */
+export function listCompareDiffs(id, params = {}, silent = false) {
+  return request.get(`/compare-jobs/${id}/diffs`, { params, ...(silent ? { _silent: true } : {}) })
+}
+
+/** 质量报告 { targets, fieldIssues, baseCount, sameCount, diffObjectCount, missingTotal, extraTotal, avgFieldConsistency } */
+export function getCompareReport(id) {
+  return request.get(`/compare-jobs/${id}/report`)
+}
+
+/** 重新比对(按原目标清单重跑;RUNNING 时后端 409) */
+export function rerunCompareJob(id) {
+  return request.post(`/compare-jobs/${id}/rerun`)
+}
+
+/** 归档/取消归档 */
+export function setCompareArchived(id, archived) {
+  return request.post(`/compare-jobs/${id}/archive`, null, { params: { archived } })
+}
+
+/** 删除任务(RUNNING 时后端 409) */
+export function deleteCompareJob(id) {
+  return request.delete(`/compare-jobs/${id}`)
+}
+
 export default request

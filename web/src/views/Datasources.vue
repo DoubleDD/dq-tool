@@ -14,8 +14,8 @@
       </div>
       <div class="toolbar-right">
         <el-button @click="syncVisible = true">刷新</el-button>
-        <el-button @click="openExportDialog()">导出配置(JSON)</el-button>
-        <el-button @click="openImportDialog()">导入配置</el-button>
+        <el-button @click="openExportDialog('config')">导出</el-button>
+        <el-button @click="openImportDialog()">导入</el-button>
         <el-button type="primary" @click="openDialog()">新增数据源</el-button>
       </div>
     </div>
@@ -147,9 +147,13 @@
     <!-- 元数据批量同步弹窗:任务终态后刷新列表(连接状态标记可能变化) -->
     <MetadataSyncDialog v-model="syncVisible" @done="loadList" />
 
-    <!-- 导出数据源:勾选后通过 window.open 直接下载 JSON 文件 -->
-    <el-dialog v-model="exportVisible" title="导出数据源" width="560px" destroy-on-close :close-on-press-escape="false">
+    <!-- 导出数据源:勾选后通过 window.open 直接下载 JSON 文件;支持导出连接配置或元数据缓存两种内容 -->
+    <el-dialog v-model="exportVisible" :title="exportMode === 'metadata' ? '导出元数据' : '导出数据源'" width="560px" destroy-on-close :close-on-press-escape="false">
       <template v-if="list.length">
+        <el-radio-group v-model="exportMode" class="export-mode">
+          <el-radio-button value="config">连接配置</el-radio-button>
+          <el-radio-button value="metadata">元数据缓存</el-radio-button>
+        </el-radio-group>
         <div class="export-head">
           <el-checkbox :model-value="exportCheckAll" :indeterminate="exportIndeterminate" @change="onExportCheckAll">全选</el-checkbox>
           <span class="export-count">已选 {{ exportChecked.length }} / {{ list.length }}</span>
@@ -163,7 +167,11 @@
             </span>
           </el-checkbox>
         </el-checkbox-group>
-        <div class="export-tip">导出文件包含加密后的连接密码,请妥善保管,勿对外发送。</div>
+        <div class="export-tip">
+          {{ exportMode === 'metadata'
+            ? '导出各数据源的元数据缓存(表/字段/索引结构、表说明、标记、ER 关系、数据目录等),交给连不上业务库的人导入后可离线使用 ER 关系、图谱、对象管理等功能。'
+            : '导出文件包含加密后的连接密码,请妥善保管,勿对外发送。' }}
+        </div>
       </template>
       <el-empty v-else description="暂无数据源可导出" :image-size="80" />
       <template #footer>
@@ -172,28 +180,57 @@
       </template>
     </el-dialog>
 
-    <!-- 导入数据源:文件上传或粘贴文本,成功后对话框内展示结果明细 -->
-    <el-dialog v-model="importVisible" title="导入数据源" width="560px" destroy-on-close :close-on-press-escape="false" @closed="onImportClosed">
+    <!-- 导入数据源:文件上传或粘贴文本;元数据文件先预检并选择数据源映射,成功后对话框内展示结果明细 -->
+    <el-dialog v-model="importVisible" title="导入数据源" width="640px" destroy-on-close :close-on-press-escape="false" @closed="onImportClosed">
       <template v-if="!importResult">
-        <el-radio-group v-model="importMode" class="import-mode">
-          <el-radio-button value="file">文件导入</el-radio-button>
-          <el-radio-button value="text">粘贴导入</el-radio-button>
-        </el-radio-group>
-        <template v-if="importMode === 'file'">
-          <el-upload ref="uploadRef" drag :auto-upload="false" accept=".json,.ncx" :limit="1"
-            :on-change="onImportFileChange" :on-exceed="onImportFileExceed" :on-remove="onImportFileRemove">
-            <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
-            <div class="el-upload__text">拖拽文件到此处,或 <em>点击选择文件</em></div>
-          </el-upload>
-          <div class="import-tip">
-            支持本工具导出的 JSON 与 Navicat 连接导出的 .ncx 文件;重名数据源会自动追加序号后缀导入,不会覆盖已有配置。
-          </div>
+        <template v-if="importStep === 'select'">
+          <el-radio-group v-model="importMode" class="import-mode">
+            <el-radio-button value="file">文件导入</el-radio-button>
+            <el-radio-button value="text">粘贴导入</el-radio-button>
+          </el-radio-group>
+          <template v-if="importMode === 'file'">
+            <el-upload ref="uploadRef" drag :auto-upload="false" accept=".json,.ncx" :limit="1"
+              :on-change="onImportFileChange" :on-exceed="onImportFileExceed" :on-remove="onImportFileRemove">
+              <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+              <div class="el-upload__text">拖拽文件到此处,或 <em>点击选择文件</em></div>
+            </el-upload>
+            <div class="import-tip">
+              支持本工具导出的 JSON(连接配置 / 元数据)与 Navicat 连接导出的 .ncx 文件;重名数据源会自动追加序号后缀导入,不会覆盖已有配置。
+            </div>
+          </template>
+          <template v-else>
+            <el-input v-model="importText" type="textarea" :rows="10" resize="none"
+              placeholder="粘贴 DataGrip「复制数据源到剪贴板」的内容(#DataSourceSettings# 开头),也支持本工具导出的 JSON 文本(连接配置 / 元数据)" />
+            <div class="import-tip">
+              DataGrip 剪贴板内容不含连接密码,导入后需逐个编辑数据源补充密码;重名数据源会自动追加序号后缀导入。
+            </div>
+          </template>
         </template>
         <template v-else>
-          <el-input v-model="importText" type="textarea" :rows="10" resize="none"
-            placeholder="粘贴 DataGrip「复制数据源到剪贴板」的内容(#DataSourceSettings# 开头),也支持本工具导出的 JSON 文本" />
+          <div class="import-tip" style="margin-top: 0">
+            文件包含 {{ importPreview?.items?.length || 0 }} 个数据源的元数据。已按连接信息自动匹配本机数据源,未匹配的默认新建,也可手动改选:
+          </div>
+          <el-table :data="importMappingRows" size="small" border>
+            <el-table-column label="文件中的数据源" min-width="180">
+              <template #default="{ row }">
+                <div class="map-item-name">{{ row.name }}</div>
+                <div class="map-item-url" :title="row.jdbcUrl">{{ row.jdbcUrl }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="规模" width="130" align="right">
+              <template #default="{ row }">{{ row.tables }} 表 / {{ row.columns }} 字段</template>
+            </el-table-column>
+            <el-table-column label="导入到本机数据源" min-width="190">
+              <template #default="{ row }">
+                <el-select v-model="row.targetDsId" size="small" style="width: 100%">
+                  <el-option :value="0" label="— 新建数据源 —" />
+                  <el-option v-for="ds in importPreview?.datasources || []" :key="ds.id" :value="ds.id" :label="ds.name" />
+                </el-select>
+              </template>
+            </el-table-column>
+          </el-table>
           <div class="import-tip">
-            DataGrip 剪贴板内容不含连接密码,导入后需逐个编辑数据源补充密码;重名数据源会自动追加序号后缀导入。
+            导入会覆盖所选数据源的元数据缓存;表说明、标记、ER 关系等标注数据按自然键合并,不会覆盖本机已有的确认/否决决策。
           </div>
         </template>
       </template>
@@ -220,8 +257,14 @@
       </div>
       <template #footer>
         <template v-if="!importResult">
-          <el-button @click="importVisible = false">取消</el-button>
-          <el-button type="primary" :disabled="!canImport" :loading="importing" @click="doImport">导入</el-button>
+          <template v-if="importStep === 'select'">
+            <el-button @click="importVisible = false">取消</el-button>
+            <el-button type="primary" :disabled="!canImport" :loading="importing" @click="doImport">导入</el-button>
+          </template>
+          <template v-else>
+            <el-button @click="backToSelect">返回</el-button>
+            <el-button type="primary" :loading="importing" @click="confirmImportMapping">确认导入</el-button>
+          </template>
         </template>
         <el-button v-else type="primary" @click="importVisible = false">关闭</el-button>
       </template>
@@ -416,6 +459,8 @@ function dbHost(jdbcUrl) {
 // ---------- 导出 ----------
 const exportVisible = ref(false)
 const exportChecked = ref([])
+// 导出内容:config=连接配置(原有导出) / metadata=元数据缓存(离线交接)
+const exportMode = ref('config')
 
 const exportCheckAll = computed(() => list.value.length > 0 && exportChecked.value.length === list.value.length)
 const exportIndeterminate = computed(() => exportChecked.value.length > 0 && exportChecked.value.length < list.value.length)
@@ -424,15 +469,19 @@ function onExportCheckAll(val) {
   exportChecked.value = val ? list.value.map((r) => r.id) : []
 }
 
-function openExportDialog() {
+function openExportDialog(mode) {
   // 默认全选,与扫描导出对话框的默认行为一致
+  exportMode.value = mode
   exportChecked.value = list.value.map((r) => r.id)
   exportVisible.value = true
 }
 
 function doExport() {
   // 桌面端弹原生保存对话框自选目录,浏览器走默认下载(见 utils/download.js)
-  downloadFile('/api/datasources/export?ids=' + exportChecked.value.join(','))
+  const path = exportMode.value === 'metadata'
+    ? '/api/datasources/metadata-export?ids='
+    : '/api/datasources/export?ids='
+  downloadFile(path + exportChecked.value.join(','))
   exportVisible.value = false
 }
 
@@ -444,6 +493,15 @@ const importFile = ref(null)
 const importText = ref('')
 const importResult = ref(null)
 const uploadRef = ref(null)
+// 导入步骤:select=选文件/粘贴 → mapping=元数据文件的数据源映射 → (importResult 非空时展示结果)
+const importStep = ref('select')
+// 元数据导入预检结果(items=文件内数据源及自动匹配;datasources=本机数据源选项)
+const importPreview = ref(null)
+// 映射行:文件数据源名 → 目标(0=新建,其余为本机数据源 id),自动匹配命中则预选本机数据源
+const importMappingRows = ref([])
+// 待导入的元数据内容(file 或 text 二选一),映射确认后随 mapping 一并提交
+const importPendingFile = ref(null)
+const importPendingText = ref('')
 
 // renamed 为 {原名称: 新名称} 映射,转成列表便于渲染
 const renamedList = computed(() =>
@@ -471,10 +529,21 @@ async function onImportFileChange(file) {
     return
   }
   if (!file.raw) return
-  // 识别文件种类并弹窗确认:确认后直接开始导入;无法识别/不属于本功能/用户取消时清空选择
-  if (!await confirmImportFile(file.raw, 'datasource')) {
+  // 识别文件种类并弹窗确认(确认后返回识别结果);确认后直接开始导入;
+  // 元数据文件先预检并选择数据源映射;无法识别/不属于本功能/用户取消时清空选择
+  const info = await confirmImportFile(file.raw, 'datasource')
+  if (!info) {
     uploadRef.value?.clearFiles()
     importFile.value = null
+    return
+  }
+  if (info.kind === 'metadata-json') {
+    try {
+      await prepareMetadataMapping(file.raw, null)
+    } catch {
+      // 预检失败消息由拦截器统一弹出,清空选择
+      uploadRef.value?.clearFiles()
+    }
     return
   }
   importFile.value = file.raw
@@ -491,8 +560,53 @@ function onImportFileRemove() {
   importFile.value = null
 }
 
+/** 粘贴内容是否为元数据导出文件(顶层 app=dq-tool-metadata) */
+function isMetadataText(text) {
+  try {
+    return JSON.parse(text)?.app === 'dq-tool-metadata'
+  } catch {
+    return false
+  }
+}
+
+/** 元数据导入预检:解析文件内数据源并按连接身份自动匹配本机数据源,进入映射步骤 */
+async function prepareMetadataMapping(file, text) {
+  const formData = new FormData()
+  if (file) {
+    formData.append('file', file)
+  } else {
+    formData.append('text', text)
+  }
+  importPreview.value = await request.post('/datasources/metadata-transfer/preview', formData)
+  importMappingRows.value = (importPreview.value?.items || []).map((it) => ({
+    ...it,
+    targetDsId: it.matchedId ?? 0,
+  }))
+  importPendingFile.value = file
+  importPendingText.value = text || ''
+  importStep.value = 'mapping'
+}
+
+/** 映射步骤返回上一步 */
+function backToSelect() {
+  importStep.value = 'select'
+  importPreview.value = null
+  importMappingRows.value = []
+  importPendingFile.value = null
+  importPendingText.value = ''
+}
+
 async function doImport() {
   if (!canImport.value || importing.value) return
+  // 粘贴模式的元数据 JSON 同样先走预检映射
+  if (importMode.value === 'text' && isMetadataText(importText.value)) {
+    try {
+      await prepareMetadataMapping(null, importText.value)
+    } catch {
+      // 预检失败消息由拦截器统一弹出
+    }
+    return
+  }
   importing.value = true
   try {
     const formData = new FormData()
@@ -501,6 +615,26 @@ async function doImport() {
     } else {
       formData.append('text', importText.value)
     }
+    importResult.value = await request.post('/datasources/import', formData)
+  } finally {
+    importing.value = false
+  }
+}
+
+/** 映射确认:提交文件/文本 + 数据源映射(文件数据源名 → 本机数据源 id,0=新建) */
+async function confirmImportMapping() {
+  if (importing.value) return
+  importing.value = true
+  try {
+    const formData = new FormData()
+    if (importPendingFile.value) {
+      formData.append('file', importPendingFile.value)
+    } else {
+      formData.append('text', importPendingText.value)
+    }
+    const mapping = {}
+    importMappingRows.value.forEach((r) => { mapping[r.name] = r.targetDsId })
+    formData.append('mapping', JSON.stringify(mapping))
     importResult.value = await request.post('/datasources/import', formData)
   } finally {
     importing.value = false
@@ -516,6 +650,7 @@ function onImportClosed() {
   importResult.value = null
   importFile.value = null
   importText.value = ''
+  backToSelect()
 }
 
 // 侧边栏「数据源」操作下拉(pendingDsDialog = new|import|export)时自动打开对应对话框。
@@ -528,7 +663,7 @@ watch(
     await loadList()
     if (v === 'new') openDialog()
     else if (v === 'import') openImportDialog()
-    else if (v === 'export') openExportDialog()
+    else if (v === 'export') openExportDialog('config')
   },
   { immediate: true }
 )
@@ -843,6 +978,10 @@ onActivated(loadList)
 .ds-icon-btn.el-button--danger:hover {
   color: var(--el-color-danger-light-3);
 }
+/* 导出对话框:导出内容选择(连接配置 / 元数据缓存) */
+.export-mode {
+  margin-bottom: 12px;
+}
 /* 导出对话框:全选行 + 勾选项列表 */
 .export-head {
   display: flex;
@@ -920,6 +1059,18 @@ onActivated(loadList)
   margin-bottom: 4px;
   color: var(--el-text-color-regular);
   font-size: 13px;
+}
+/* 元数据导入映射:文件数据源名与连接地址 */
+.map-item-name {
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+}
+.map-item-url {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .import-alert {
   margin-bottom: 8px;

@@ -3,7 +3,8 @@
        顶部 = 工具栏(左:内置默认工具[重绘/1:1/适应画布/线形(第 4 个图标位)/档位,按 tools 裁剪]
        + toolbar 插槽业务工具,控件区带毛玻璃底[图元素拖到下面不挡阅读];右:缩放控制条[同款毛玻璃底];
        整条工具栏的小组件高度严格一致,口径见样式里的 --bgc-ctl-h);
-       右下角 = 鸟瞰图(G6 minimap 插件,相对画布自适应);左下角 = 图例折叠面板(legend 插槽);
+       右下角 = 鸟瞰图(G6 minimap 插件,相对画布自适应),其左 = Shift 框选/多选操作提示
+       (selectable 开启时显示,半透明不挡交互);左下角 = 图例折叠面板(legend 插槽);
        其余浮层(节点面板等)走默认插槽由调用方自绘;首帧隐藏:render 先按世界坐标落笔,
        视口定位(settleView)完成前不显示,避免内容闪在左上角 -->
   <div ref="wrapRef" class="bgc-wrap">
@@ -84,6 +85,9 @@
         <div class="bgc-legend-body"><slot name="legend" /></div>
       </div>
     </div>
+    <!-- Shift 框选/多选操作提示:鸟瞰图左侧、底边与鸟瞰图对齐(位置见 selectHintStyle),半透明;
+         仅 selectable 开启时显示(能力关着不误导);纯提示不接收指针事件,不挡框选/拖画布 -->
+    <div v-if="selectable" class="bgc-select-hint" :style="selectHintStyle">Shift+拖动框选 · Shift+点击多选</div>
     <slot />
   </div>
 </template>
@@ -105,7 +109,8 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *    小组件高度严格一致:统一取 --bgc-ctl-h(默认 24px,与 Element Plus 小号档位同口径),
  *    缩放控制条是同样 24px 高的容器,插槽里的业务工具也被这条规则覆盖,调用方不必各自写死高度;
  *  - 右下角鸟瞰图(G6 minimap 插件,相对画布自适应,视野框可拖拽平移主画布;html 节点需经 minimap.shape 给缩略块,
- *    可用 ./htmlMinimapShape 的 createHtmlMinimapShape 工厂);
+ *    可用 ./htmlMinimapShape 的 createHtmlMinimapShape 工厂);鸟瞰图左侧 = Shift 框选/多选操作提示
+ *    (selectable 开启时显示,半透明、不接收指针事件);
  *  - 左下角图例折叠面板(legend 插槽给内容,面板外壳/折叠交互由底座提供;默认展开,点标题栏收起);
  *  - 缩放控制条:−/+ 步进(×1.2,绕视口中心)、比例可输入(回车/失焦提交,Esc 取消,
  *    输入中不被 aftertransform 回写覆盖)、全屏切换;比例与画布双向同步;
@@ -123,6 +128,13 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *      悬在 HTML 节点上滚轮同样生效——html 节点是叠在 canvas 上的真实 DOM,wheel 不进 g 事件总线,
  *      由容器层 bindHtmlNodeWheel(utils/graphCanvasWheel.js)按 behaviors 同口径转发;
  *      html 节点双击由容器层按世界坐标反查补发(G6 v5 只转发 html 节点的 click/pointer 系事件,不转发 dblclick);
+ *  - 框选/多选(selectable 开启,底座基础能力):Shift+拖动 = 矩形框选节点(G6 brush-select,union 累加,
+ *    保留元素既有其他状态),Shift+点击节点 = 切换其选中态(click-select multiple;普通点击不进选中,
+ *    留给 node-click 等既有交互),点空白 = 清空选中;选中只作用节点(边/组合不纳入),
+ *    选中集合变化统一发 selection-change(当前选中节点 id 全量),选中后做什么由调用方决定
+ *    (选中呈现:给节点配 state.selected 样式,或监听事件自行渲染);clearSelection() 供消费完复位,
+ *    setSelection(ids) 供自有单选交互程序化接入;框选松手后浏览器补发的 click 由容器捕获阶段
+ *    按 300ms 时间窗吞掉(否则 brush-select 自带的 canvas:click 清空会把刚框出的选中当场清掉);
  *  - 视口定位:autoFit 关闭(render 每次都跑 autoFit,交给它会把就地重渲染也重新定位),
  *    初始/重建定位显式收敛到 settleView()(fit='center' → fitCenter + 归一到 defaultZoom;'view' → fitView;'none' → 不动);
  *  - 保持视口口径的锚点补偿:refresh(..., false) 与 redraw() 都走 render(会重跑布局),而 G6 树布局在 postLayout 里
@@ -162,11 +174,19 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *  animated    重建/重绘渲染是否开动画,默认 false(关动画瞬时渲染,配合锚点补偿原地更新不飘移);
  *              活体仿真布局(d3-force 等)必须传 true——关动画路径会 layout.stop() 且不挂 onTick,
  *              仿真死后 drag-element-force 拖拽回温画面不更新;树/静态坐标布局保持默认 false 即可
+ *  selectable  框选/多选开关,默认 false。开启后:Shift+拖动矩形框选节点、Shift+点击节点增减选中、
+ *              点空白清空;选中集合变化发 selection-change(见 emits),鸟瞰图左侧显示操作提示。
+ *              建图期配置(与 minimap/tools 同口径,运行期切换不生效);开启后业务侧勿再自配
+ *              brush-select/lasso-select/click-select behavior(会重复);自配 drag-element 的调用方
+ *              需对 Shift 让位(enable: e => !e.shiftKey),否则按住 Shift 拖节点会一边拖一边框选;
+ *              Shift+点击仍会触发 node-click,调用方可按 event.nativeEvent.shiftKey 区分
  *
  * emits:
  *  node-click / node-dblclick / edge-click —— 均传 (id, data, 原始事件);node-dblclick 的原始事件为原生 DOM 事件
  *  (容器层坐标反查补发,G6 v5 不产生 dblclick),其余为 G6 事件(html 节点内 DOM 命中用 nativeEvent.target 判定);
  *  canvas-click —— 点击画布空白(不传参,供调用方做「点空白取消选中」);
+ *  selection-change(ids) —— 选中集合变化(selectable 开启时):当前带 selected 状态的节点 id 全量,
+ *  框选/点选/清空(含 clearSelection())都会发;选中后做什么由调用方决定;
  *  ready(graph) 首次渲染+定位完成后触发;rendered 每次 render 完成后触发(初始化/重建,供调用方做后置加载);
  *  update:level / update:edgeType 档位/线形切换;export-drawio 导出 drawio 按钮(可选工具,业务侧组装数据并下载)
  *
@@ -178,6 +198,9 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *  reconfigure() 就地重配 node/edge/layout/transforms 并重渲(不销毁,布局切换带过渡动画);
  *  recreate() 销毁重建;settleView() 重新定位;
  *  redraw() 仅重绘(工具栏「重绘」按钮同口径;走 render 会重跑布局,与 repaint 的区别在此,同样带锚点补偿);
+ *  clearSelection() 清空当前选中(selectable 的选中集合,变化同样发 selection-change);
+ *  setSelection(ids) 程序化设置选中(替换语义):调用方把自有交互(如普通点击单选)接入同一选中状态时用,
+ *  保证 selection-change 上报的集合始终完整;
  *  fitView() / fitCenter() / zoomTo100() / zoomTo(z) / zoomBy(dir) / getZoom()
  */
 const props = defineProps({
@@ -196,10 +219,13 @@ const props = defineProps({
   level: { type: String, default: '' },
   edgeType: { type: String, default: '' },
   // 重建/重绘渲染是否开动画(调用方按布局需要决定;力导向活体仿真必须 true,见文件头 props 说明)
-  animated: { type: Boolean, default: false }
+  animated: { type: Boolean, default: false },
+  // 框选/多选开关(建图期配置):Shift+拖动框选节点、Shift+点击多选、点空白清空,
+  // 选中集合变化发 selection-change;详见文件头 props 说明
+  selectable: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['ready', 'rendered', 'node-click', 'node-dblclick', 'edge-click', 'canvas-click', 'update:level', 'update:edgeType', 'export-drawio'])
+const emit = defineEmits(['ready', 'rendered', 'node-click', 'node-dblclick', 'edge-click', 'canvas-click', 'selection-change', 'update:level', 'update:edgeType', 'export-drawio'])
 
 const slots = useSlots()
 /** 顶部工具栏显隐:有缩放控制条/内置工具/业务工具插槽任一即显示 */
@@ -215,6 +241,15 @@ const EDGE_TYPES = [
 // 图例折叠面板:默认展开,收起为小条(不持久化)
 const legendCollapsed = ref(false)
 
+/** Shift 框选/多选提示定位:贴鸟瞰图左侧、底边与鸟瞰图对齐(鸟瞰图固定 right/bottom:12px,
+ *  宽度取 minimap 配置,缺省 180);鸟瞰图关闭时退到右下角原位 */
+const selectHintStyle = computed(() => {
+  if (!props.minimap) return { right: '12px', bottom: '12px' }
+  const m = typeof props.minimap === 'object' ? props.minimap : {}
+  const [w] = m.size || [180, 120]
+  return { right: `${12 + w + 10}px`, bottom: '12px' }
+})
+
 const wrapRef = ref(null)
 const containerRef = ref(null)
 let graph = null
@@ -227,6 +262,8 @@ let unbindNodeWheel = null
 let unbindAltWheel = null
 // 容器层 html 节点双击补发解绑函数
 let unbindDblclick = null
+// selectable 的框选补发 click 吞掉解绑函数
+let unbindSelectClick = null
 // 容器尺寸监听器(见 onMounted:G6 autoResize 只挂 window resize,页签 display:none ↔ 恢复不会触发)
 let resizeObserver = null
 // 视口定位完成前隐藏画布(防首帧闪左上角;render 先按世界坐标原点附近落笔)
@@ -339,6 +376,98 @@ async function compensateAnchor(anchor) {
   await graph.translateBy([-dx * graph.getZoom(), -dy * graph.getZoom()], false)
 }
 
+// ---------- Shift 框选/多选(selectable 开启时的底座基础能力,见文件头 props 说明) ----------
+/** 主题主色(框选矩形配色):跟随 Element Plus CSS 变量,取不到回退 #409eff;建图期取一次 */
+function primaryColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue('--el-color-primary').trim() || '#409eff'
+}
+
+/** 选择能力的两个 behavior:框选(brush-select,矩形) + 点击多选(click-select)。
+ *  只选节点(边/组合不纳入——三处画布都是表节点图,选边没有业务场景;需要边选中的调用方不走
+ *  selectable、自配 behaviors 即可);选中集合变化统一经 emitSelectionChange 读模型全量上报 */
+function selectionBehaviors() {
+  const primary = primaryColor()
+  return [
+    {
+      // Shift+拖动矩形框选:mode=union 与 Shift+点击同为「加选」语义——连续框选/点选累加,
+      // 且不覆盖元素既有其他状态(如调用方的 highlight);trigger 默认 ['shift'],
+      // 底座 drag-canvas 已对 Shift 让位(调用方自配 drag-element 需同样让位);
+      // onSelect 在 setElementState 之前触发,模型更新在同一同步段内完成,微任务后读模型即为最新选中;
+      // lastBrushAt 记框选结束时刻:松手后浏览器补发的那次 click 由容器捕获阶段吞掉(见 onContainerClickCapture)
+      type: 'brush-select',
+      trigger: ['shift'],
+      enableElements: ['node'],
+      mode: 'union',
+      state: 'selected',
+      animation: false,
+      style: { lineWidth: 2, lineDash: [4, 4], stroke: primary, fill: primary, fillOpacity: 0.12, zIndex: 2, pointerEvents: 'none' },
+      onSelect: () => {
+        lastBrushAt = Date.now()
+        queueMicrotask(emitSelectionChange)
+      }
+    },
+    {
+      // Shift+点击多选:multiple + trigger(['shift'] 默认) → 按住 Shift 点击节点切换其选中态;
+      // enable 收口:节点仅 Shift+点击进选中(普通点击留给 node-click 等既有交互,不产生选中),
+      // 画布空白点击(任意修饰键)清空选中——与 brush-select 自带的空白清除同口径,事件在此统一发;
+      // onClick 在状态更新 await 完成后触发,直接读模型即可
+      type: 'click-select',
+      multiple: true,
+      state: 'selected',
+      animation: false,
+      enable: (e) => e.targetType === 'canvas' || (!!e.shiftKey && e.targetType === 'node'),
+      onClick: () => emitSelectionChange()
+    }
+  ]
+}
+
+/** 选中集合变化上报:当前模型里带 selected 状态的节点 id 全量(选中后做什么由调用方决定) */
+function emitSelectionChange() {
+  if (!graph) return
+  emit('selection-change', graph.getElementDataByState('node', 'selected').map((d) => d.id))
+}
+
+/** 程序化设置选中(替换语义):调用方把自有交互(如普通点击单选)接入同一选中状态时用,
+ *  保证 selection-change 上报的集合始终完整;只在选中集合实际变化时发 selection-change
+ *  (调用方常在 rendered 后用它把自身选中集回灌底座——重建会清掉模型里的选中态,无条件发事件会循环) */
+function setSelection(ids = []) {
+  if (!graph) return
+  const want = new Set(ids)
+  const states = {}
+  graph.getNodeData().forEach((n) => {
+    const cur = n.states || []
+    const has = cur.includes('selected')
+    if (want.has(n.id) && !has) states[n.id] = [...cur, 'selected']
+    else if (!want.has(n.id) && has) states[n.id] = cur.filter((s) => s !== 'selected')
+  })
+  if (!Object.keys(states).length) return
+  graph.setElementState(states, false)
+  emitSelectionChange()
+}
+
+/** 清空当前选中(调用方消费完选中结果后复位;选中集合变化同样发 selection-change) */
+function clearSelection() {
+  if (!graph) return
+  const selected = graph.getElementDataByState('node', 'selected')
+  if (!selected.length) return
+  const states = {}
+  selected.forEach((d) => { states[d.id] = (d.states || []).filter((s) => s !== 'selected') })
+  graph.setElementState(states, false)
+  emitSelectionChange()
+}
+
+// 框选松手后浏览器会补发一次 click(同一元素上 mousedown/mouseup 即使位置不同也会派发 click,
+// 落在画布或节点上):不吞掉的话,brush-select 的 clearStates 与 click-select 的清空都挂在 canvas:click 上,
+// 刚框出的选中会被当场清掉;落在节点上还会误触 node-click。容器捕获阶段按时间窗吞掉这次 click
+// (此前各业务侧靠 300ms 时间戳忽略绕过同一问题,现收口到底座;本监听随底座 onMounted 注册,
+//  早于调用方 mounted 里在同一容器上的捕获委托,stopImmediatePropagation 一并挡掉那些委托)
+let lastBrushAt = 0
+function onContainerClickCapture(ev) {
+  if (Date.now() - lastBrushAt >= 300) return
+  ev.stopImmediatePropagation()
+  ev.preventDefault()
+}
+
 async function init() {
   const o = props.options || {}
   graph = new Graph({
@@ -351,7 +480,8 @@ async function init() {
     data: props.data,
     // 滚轮=平移画布(ctrl/alt 让位);ctrl+滚轮 / 触摸板捏合 / 触屏双指=缩放;左键拖动=拖画布
     behaviors: [
-      // 左键拖动平移画布;Shift+拖动让位给业务侧的框选(lasso-select/brush-select 以 Shift 为 trigger),
+      // 左键拖动平移画布;Shift+拖动让位给框选(底座 selectable 内置的 brush-select,
+      // 或业务侧自配的 lasso-select/brush-select,均以 Shift 为 trigger),
       // 否则 Shift+拖动会同时平移画布,框选轨迹跟着画布一起飘。
       // 必须保留 targetType==='canvas' 守卫(G6 默认 enable 自带,覆盖时不能丢):G6 总线会把节点拖拽
       // 冒泡成裸 dragstart 同步转发,丢了守卫拖节点会连带平移画布
@@ -366,6 +496,8 @@ async function init() {
       { type: 'zoom-canvas', enable: (e) => !!e.ctrlKey },
       // 触屏双指捏合(PinchHandler 由 pointerType=touch 的指针事件合成,触控板不走此通道)
       { type: 'zoom-canvas', trigger: ['pinch'] },
+      // Shift 框选/多选(selectable 开启;置于业务 behaviors 之前,业务侧勿再自配框选/点选)
+      ...(props.selectable ? selectionBehaviors() : []),
       ...(o.behaviors || [])
     ],
     plugins: [...minimapPlugins(), ...(o.plugins || [])],
@@ -624,6 +756,9 @@ onMounted(async () => {
   // 节点双击补发(G6 v5 不产生 dblclick,容器层坐标反查,html/原生节点同口径)
   containerRef.value.addEventListener('dblclick', onContainerDblclick)
   unbindDblclick = () => containerRef.value?.removeEventListener('dblclick', onContainerDblclick)
+  // selectable:框选松手后浏览器补发的 click 在捕获阶段吞掉(见 onContainerClickCapture)
+  if (props.selectable) containerRef.value.addEventListener('click', onContainerClickCapture, true)
+  unbindSelectClick = () => containerRef.value?.removeEventListener('click', onContainerClickCapture, true)
   // 容器尺寸同步:G6 autoResize 只监听 window resize,页签 display:none ↔ 恢复、侧栏拖拽等容器尺寸变化
   // 不会触发;隐藏期间若发生 window resize,G6 会把画布改成最小尺寸,切回页签后画布就缩成一小块回不来了。
   // 这里用 ResizeObserver 盯住容器:尺寸为 0(页签隐藏)时跳过并记 hiddenStale——隐藏期间的 window resize /
@@ -662,6 +797,8 @@ onUnmounted(() => {
   unbindAltWheel = null
   unbindDblclick?.()
   unbindDblclick = null
+  unbindSelectClick?.()
+  unbindSelectClick = null
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   graph?.destroy()
   graph = null
@@ -676,6 +813,8 @@ defineExpose({
   recreate,
   redraw,
   settleView,
+  clearSelection,
+  setSelection,
   fitView,
   fitCenter,
   zoomTo,
@@ -897,5 +1036,21 @@ defineExpose({
 }
 .bgc-legend-body {
   padding: 6px 10px;
+}
+/* Shift 框选/多选操作提示:鸟瞰图左侧、底边与鸟瞰图对齐(位置见 selectHintStyle);
+   半透明毛玻璃弱提示(比工具栏控件区更弱的底色,无边框不抢视觉),不接收指针事件——不挡框选/拖画布 */
+.bgc-select-hint {
+  position: absolute;
+  z-index: 10;
+  padding: 3px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--el-text-color-secondary);
+  background: color-mix(in srgb, var(--el-bg-color) 45%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: 6px;
+  pointer-events: none;
+  user-select: none;
 }
 </style>

@@ -37,8 +37,8 @@
                 </template>
                 <div class="ds-more-menu">
                   <div class="ds-more-item" @click="onDsCommand('new')">新增数据源</div>
-                  <div class="ds-more-item" @click="onDsCommand('import')">导入配置</div>
-                  <div class="ds-more-item" @click="onDsCommand('export')">导出配置(JSON)</div>
+                  <div class="ds-more-item" @click="onDsCommand('import')">导入</div>
+                  <div class="ds-more-item" @click="onDsCommand('export')">导出</div>
                 </div>
               </el-popover>
             </span>
@@ -154,7 +154,7 @@ import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import request from './api'
-import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh } from '@element-plus/icons-vue'
+import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { fetchLicenseStatus } from './router'
@@ -173,7 +173,7 @@ const themeModeText = computed(() => THEME_MODE_TEXT[themeState.mode])
 const route = useRoute()
 const router = useRouter()
 
-// 「数据源」为特殊导航(可展开树 + 操作下拉);其余一级功能项均为普通功能,恒显示
+// 「数据源」为特殊导航(可展开树 + 操作下拉);其余一级功能项恒显示,标了 feature 的受控功能按授权过滤
 const licenseFeatures = ref([])
 function hasFeature(key) {
   return licenseFeatures.value.includes(key)
@@ -185,6 +185,7 @@ const otherNav = computed(() => {
     { path: '/manual-collects', label: '人工采集', icon: Star },
     { path: '/report-exports', label: '报告列表', icon: Download },
     { path: '/sample-exports', label: '抽样导出', icon: Files },
+    { path: '/compare', label: '数据比对', icon: ScaleToOriginal, feature: 'compare' },
     { path: '/relations', label: 'ER 关系', icon: Share },
     { path: '/object-manage', label: '对象管理', icon: Folder },
     { path: '/sql-console', label: 'SQL 控制台', icon: Monitor },
@@ -194,7 +195,7 @@ const otherNav = computed(() => {
     { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit },
     { path: '/logs', label: '运行日志', icon: Document }
   ]
-  return navs
+  return navs.filter((n) => !n.feature || hasFeature(n.feature))
 })
 
 // 浏览器式返回/前进/刷新(头栏):可否回退/前进读 vue-router 写入的 history.state,
@@ -330,6 +331,7 @@ const activeNav = computed(() => {
   if (p === '/ai-usage' || p.startsWith('/ai-usage/')) return '/ai-usage'
   if (p === '/report-exports' || p.startsWith('/report-exports/')) return '/report-exports'
   if (p === '/sample-exports' || p.startsWith('/sample-exports/')) return '/sample-exports'
+  if (p === '/compare' || p.startsWith('/compare/')) return '/compare'
   if (p === '/relations' || p.startsWith('/relations/')) return '/relations'
   if (p === '/object-manage' || p.startsWith('/object-manage/')) return '/object-manage'
   if (p === '/sql-console' || p.startsWith('/sql-console/')) return '/sql-console'
@@ -413,11 +415,12 @@ onUnmounted(() => window.removeEventListener('dq-license-changed', onLicenseChan
 async function onLicenseChanged() {
   await refreshLicenseMenus()
   loadDatasources()
-  // 当前页可能因新授权失去入口权限(如正在授权管理页而新码不含 license_admin),主动跳回首页,
-  // 不等下次路由守卫拦截(授权管理页留着一个永远 403 的界面没有意义)
+  // 当前页可能因新授权失去入口权限(如正在授权管理页而新码不含 license_admin、正在数据比对页而新码不含 compare),
+  // 主动跳回首页,不等下次路由守卫拦截(留着一个永远 403 的界面没有意义)
   const features = licenseFeatures.value
   const lostAdmin = route.path.startsWith('/license-admin') && !(isAdmin.value && features.includes('license_admin'))
-  if (lostAdmin) {
+  const lostCompare = (route.path === '/compare' || route.path.startsWith('/compare/')) && !features.includes('compare')
+  if (lostAdmin || lostCompare) {
     router.replace('/')
   }
 }

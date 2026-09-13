@@ -3,18 +3,14 @@
     <div class="toolbar">
       <h3 style="margin: 0">对象管理</h3>
       <div class="toolbar-actions">
-        <el-select v-model="dsId" filterable placeholder="选择数据源" style="width: 220px" :loading="dsLoading" @change="onDsChange">
-          <el-option v-for="ds in datasources" :key="ds.id" :value="String(ds.id)" :label="ds.name">
-            <div class="ds-option">
-              <DbTypeIcon :type="ds.dbType" :size="14" />
-              <span>{{ ds.name }}</span>
-            </div>
-          </el-option>
-        </el-select>
+        <DatasourceSelect v-model="dsId" :datasources="datasources" :loading="dsLoading" style="width: 220px" @change="onDsChange" />
       </div>
     </div>
 
-    <el-empty v-if="!dsId" description="请选择数据源,查看和维护它的数据目录" :image-size="90" />
+    <!-- 空状态内嵌数据源选择:进入页面后在视线中心直接点选,不用挪到右上角 -->
+    <el-empty v-if="!dsId" description="请选择数据源,查看和维护它的数据目录" :image-size="90">
+      <DatasourceSelect v-model="dsId" :datasources="datasources" :loading="dsLoading" style="width: 280px" @change="onDsChange" />
+    </el-empty>
 
     <template v-else>
       <!-- 左侧目录树常驻 + 右侧三页签(列表/关系图/图谱),页签内容随选中目录实时联动 -->
@@ -202,7 +198,7 @@ import request, {
   unmountObjectTable,
   deleteObjectTableRelation
 } from '../api'
-import DbTypeIcon from '../components/DbTypeIcon.vue'
+import DatasourceSelect from '../components/DatasourceSelect.vue'
 import ObjectTableMountDialog from '../components/ObjectTableMountDialog.vue'
 import ObjectTableRelDialog from '../components/ObjectTableRelDialog.vue'
 import ObjectGraphCanvas from '../components/ObjectGraphCanvas.vue'
@@ -473,11 +469,6 @@ onMounted(loadDatasources)
 }
 .toolbar-actions :deep(.el-button) {
   margin-left: 0;
-}
-.ds-option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 /* 目录树操作栏:刷新/新建根目录 */
 .om-tree-head {

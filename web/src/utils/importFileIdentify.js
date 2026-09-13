@@ -1,5 +1,6 @@
 // 导入文件自动识别与确认
-// 系统三种导出文件都是 .json,靠顶层 app 字段区分("dq-tool" 数据源 / "dq-tool-scans" 扫描记录 / "dq-tool-annotations" 标记与描述);
+// 系统四种导出文件都是 .json,靠顶层 app 字段区分("dq-tool" 数据源连接配置 / "dq-tool-metadata" 元数据缓存 /
+// "dq-tool-scans" 扫描记录 / "dq-tool-annotations" 标记与描述);
 // Navicat .ncx 与 DataGrip 剪贴板按 XML 特征识别。选文件后先识别归属并弹窗确认,
 // 防止用户拿错文件(喂错 JSON 只会得到一句混淆的后端报错)。
 import { h } from 'vue'
@@ -12,9 +13,10 @@ export const IMPORT_FEATURES = {
   annotations: { name: '标记与描述数据导入', where: '「系统设置」页的「标记与描述数据」' },
 }
 
-// 文件种类 → 归属功能与展示名
+// 文件种类 → 归属功能与展示名(元数据与连接配置共用数据源页导入入口,由后端按 app 分发)
 const KINDS = {
   'datasource-json': { feature: 'datasource', label: '数据源导出文件' },
+  'metadata-json': { feature: 'datasource', label: '元数据导出文件' },
   'navicat-ncx': { feature: 'datasource', label: 'Navicat 连接导出文件(.ncx)' },
   'datagrip': { feature: 'datasource', label: 'DataGrip 数据源剪贴板内容' },
   'scans-json': { feature: 'scans', label: '扫描记录导出文件' },
@@ -44,6 +46,9 @@ export async function identifyImportFile(file) {
       if (obj?.app === 'dq-tool') {
         return { kind: 'datasource-json', version: obj.version, summary: `共 ${obj.items?.length ?? 0} 个数据源` }
       }
+      if (obj?.app === 'dq-tool-metadata') {
+        return { kind: 'metadata-json', version: obj.version, summary: `共 ${obj.items?.length ?? 0} 个数据源的元数据` }
+      }
       if (obj?.app === 'dq-tool-scans') {
         return { kind: 'scans-json', version: obj.version, summary: `共 ${obj.jobs?.length ?? 0} 条扫描记录、${obj.tagDefs?.length ?? 0} 个标记定义` }
       }
@@ -67,14 +72,15 @@ export async function identifyImportFile(file) {
  * 识别文件并弹窗确认是否导入。
  * @param file 待导入的 File 对象
  * @param currentFeature 当前入口功能 key(IMPORT_FEATURES 的 key)
- * @returns true=用户确认导入;false=无法识别/版本不兼容/不属于当前功能/用户取消
+ * @returns 用户确认时返回识别结果对象(kind/summary/version,调用方可用 kind 决定是否走元数据映射等分支);
+ *          无法识别/版本不兼容/不属于当前功能/用户取消返回 false
  */
 export async function confirmImportFile(file, currentFeature) {
   const info = await identifyImportFile(file)
   const def = KINDS[info.kind]
   if (!def) {
     await ElMessageBox.alert(
-      '无法识别该文件:既不是本工具的导出文件(数据源 / 扫描记录 / 标记与描述),也不是支持的 Navicat .ncx 或 DataGrip 剪贴板格式。',
+      '无法识别该文件:既不是本工具的导出文件(数据源 / 元数据 / 扫描记录 / 标记与描述),也不是支持的 Navicat .ncx 或 DataGrip 剪贴板格式。',
       '导入文件无法识别',
       { type: 'error', confirmButtonText: '知道了', closeOnPressEscape: false }
     )
@@ -121,7 +127,7 @@ export async function confirmImportFile(file, currentFeature) {
       cancelButtonText: '取消',
       closeOnPressEscape: false,
     })
-    return true
+    return info
   } catch {
     // 用户取消
     return false

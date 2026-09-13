@@ -95,12 +95,13 @@ public class LicenseKeygen {
             System.out.println("SID 已自动生成: " + sid);
         }
 
-        // 5) 功能列表(默认仅基础业务功能;license_admin 受控需显式包含,logs 已转为普通功能无需包含)
+        // 5) 功能列表(默认仅基础业务功能;compare/license_admin 受控需显式包含,logs 已转为普通功能无需包含)
         System.out.println("功能列表(逗号分隔,回车=仅基础业务功能):");
         System.out.println("  全部功能: scan(扫描检测), datasource(数据源管理), excel(Excel导出), report(Word报告),");
-        System.out.println("            ai_doc(AI表说明), ai_tag(AI自动打标), tag(表标记), logs(运行日志), license_admin(授权码管理)");
-        System.out.println("  说明: 扫描/数据源/Excel/报告/AI/标记/运行日志为基础业务功能恒可用;仅授权码管理(license_admin)为受控功能,需显式包含");
-        String features = promptOptional(sc, "功能列表");
+        System.out.println("            ai_doc(AI表说明), ai_tag(AI自动打标), tag(表标记), logs(运行日志),");
+        System.out.println("            compare(数据比对), license_admin(授权码管理)");
+        System.out.println("  说明: 扫描/数据源/Excel/报告/AI/标记/运行日志为基础业务功能恒可用;compare/license_admin 为受控功能,需显式包含");
+        String features = normalizeFeatures(promptOptional(sc, "功能列表"));
 
         sign(keyFile, customer, expiresStr, appVersion, serverUrl, username, sid, features);
     }
@@ -116,6 +117,35 @@ public class LicenseKeygen {
     private static String promptOptional(Scanner sc, String label) {
         System.out.print(label + "(选填,回车跳过): ");
         return sc.nextLine().trim();
+    }
+
+    /** 合法功能 key,须与 common 模块 LicenseFeature 枚举保持一致 */
+    private static final java.util.List<String> KNOWN_FEATURES = java.util.List.of(
+            "scan", "datasource", "excel", "report", "ai_doc", "ai_tag", "tag", "compare", "logs", "license_admin");
+
+    /**
+     * 规范化功能列表:剥离每项括号内的中文说明(允许直接粘贴上方提示的整行),
+     * 未知 key 提示后忽略并去重,避免把 "license_admin(授权码管理)" 这类文本写进授权码导致匹配不上。
+     */
+    private static String normalizeFeatures(String features) {
+        if (features.isBlank()) {
+            return "";
+        }
+        java.util.List<String> keys = new java.util.ArrayList<>();
+        for (String item : features.split("[,、]")) {
+            String key = item.replaceAll("[(（].*$", "").trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            if (!KNOWN_FEATURES.contains(key)) {
+                System.out.println("未知功能 key 已忽略: " + item.trim());
+                continue;
+            }
+            if (!keys.contains(key)) {
+                keys.add(key);
+            }
+        }
+        return String.join(",", keys);
     }
 
     /** 软件版本默认值:读根目录 VERSION 文件去 0. 前缀(如 0.1.8 -> 1.8,与构建注入 app-version.txt 口径一致),读不到返回空 */

@@ -81,7 +81,7 @@
           <el-checkbox-group v-model="form.features" class="feature-group">
             <el-checkbox v-for="f in FEATURES" :key="f.key" :value="f.key">{{ f.label }}</el-checkbox>
           </el-checkbox-group>
-          <div class="feature-tip">基础业务功能(扫描/数据源/Excel/报告/AI/标记/运行日志)恒可用;仅授权码管理需在此勾选</div>
+          <div class="feature-tip">基础业务功能(扫描/数据源/Excel/报告/AI/标记/运行日志)恒可用;数据比对与授权码管理需在此勾选</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -114,7 +114,7 @@ const codeVisible = ref(false)
 const codeTitle = ref('授权码')
 const currentCode = ref('')
 
-// 功能清单(与后端 LicenseFeature 对应):基础业务功能恒可用,仅授权码管理需勾选才会写入授权码
+// 功能清单(与后端 LicenseFeature 对应):基础业务功能恒可用,数据比对与授权码管理需勾选才会写入授权码
 const FEATURES = [
   { key: 'scan', label: '扫描检测' },
   { key: 'datasource', label: '数据源管理' },
@@ -123,6 +123,7 @@ const FEATURES = [
   { key: 'ai_doc', label: 'AI表说明' },
   { key: 'ai_tag', label: 'AI自动打标' },
   { key: 'tag', label: '表标记' },
+  { key: 'compare', label: '数据比对' },
   { key: 'license_admin', label: '授权码管理' }
 ]
 const featureLabel = (key) => FEATURES.find((f) => f.key === key)?.label || key

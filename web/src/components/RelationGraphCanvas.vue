@@ -1,9 +1,9 @@
 <template>
   <!-- G6 ER 图画布:通用画布底座 BaseGraphCanvas 承载交互(滚轮平移/Ctrl+滚轮与触摸板捏合缩放/Alt+滚轮水平平移/
-       html 节点滚轮转发与双击补发)、顶部工具栏(默认五工具:重绘/1:1/适应画布/线形/档位 + toolbar 插槽业务工具,
-       右侧缩放控制条)、右下角鸟瞰图、左下角图例折叠面板、视口定位与生命周期;本组件只负责
+       html 节点滚轮转发与双击补发/Shift 框选与多选[selectable]),顶部工具栏(默认五工具:重绘/1:1/适应画布/线形/档位
+       + toolbar 插槽业务工具,右侧缩放控制条)、右下角鸟瞰图、左下角图例折叠面板、视口定位与生命周期;本组件只负责
        ER 专属部分:html 表节点渲染、field-cubic 字段对齐边、er-dagre-grid 布局、表名单击/双击口径、
-       节点选中/套索多选/批量否决、边样式图例(legend 插槽)。容器需显式高度(由父级布局保证) -->
+       选中集合承接(普通点击单选经底座 setSelection 接入)/批量否决、边样式图例(legend 插槽)。容器需显式高度(由父级布局保证) -->
   <div class="rg-wrap">
     <BaseGraphCanvas
       ref="baseRef"
@@ -23,6 +23,9 @@
       @node-click="onNodeClick"
       @edge-click="onEdgeClick"
       @canvas-click="onCanvasClick"
+      @selection-change="onSelectionChange"
+      @rendered="onRendered"
+      selectable
     >
       <!-- 业务工具透传:字段数/导出等由调用方按需给 -->
       <template #toolbar><slot name="toolbar" /></template>
@@ -34,7 +37,7 @@
         </div>
       </template>
     </BaseGraphCanvas>
-    <!-- 选中操作条(底部居中悬浮):点节点/Shift 点选/Shift 拖动套索后出现;
+    <!-- 选中操作条(底部居中悬浮):点节点/Shift 点选/Shift 拖动框选后出现;
          「删除」= 否决选中表的所有关系(与「候选管理-批量否决」同口径:候选/确认均转否决),成功后 emit changed 由父级刷新图 -->
     <div v-if="selectedTables.size" class="rg-selbar">
       <span class="rg-selbar-text">已选 {{ selectedTables.size }} 张表</span>
@@ -45,8 +48,6 @@
       </el-tooltip>
       <el-button size="small" @click="clearSelection">取消</el-button>
     </div>
-    <!-- 画布操作提示:常驻弱提示(浅色、不抢视觉),悬浮在鸟瞰图左侧;不参与鼠标事件 -->
-    <div class="rg-hint">Shift+拖动框选 · Shift+点击多选</div>
   </div>
 </template>
 
@@ -69,8 +70,10 @@ import { ElMessage } from '../utils/notify'
 //    字段行未展示时(仅表名档位/字段被折叠进「+N 个字段」,该行可点击就地展开/收起)退化为节点边框交点;
 //  边标签只标基数(1:1 / 1:N / M:N),不堆字段文字(字段名看连线两端的行高亮即可);
 //  乌鸦脚语义用自定义边端标记近似:「一」侧画竖杠(1:1 双竖杠),「多」侧画三叉鸦脚;
-//  交互:点节点选中(深描边+主题色光环,锚点表恒为主题色底纹)、Shift+点击增减选中、Shift+拖动套索多选、
-//  点画布空白清空;底部操作条「删除」= 批量否决选中表的所有关系(与「候选管理-批量否决」同口径)
+//  交互:点节点选中(深描边+主题色光环,锚点表恒为主题色底纹)、Shift+点击增减选中、Shift+拖动框选、
+//  点画布空白清空(框选/多选/清空为底座 selectable 基础能力,选中集合经 selection-change 同步;
+//  普通点击单选由容器委托经底座 setSelection 接入同一选中状态);
+//  底部操作条「删除」= 批量否决选中表的所有关系(与「候选管理-批量否决」同口径)
 const props = defineProps({
   // 图节点:[{ name, comment }]
   nodes: { type: Array, default: () => [] },
@@ -113,12 +116,11 @@ const expandedTables = new Set()
 // 指针按下坐标:拖拽节点结束时也会冒出一个 click,用它过滤「拖拽误触」的展开/收起
 let downPos = null
 
-// ---------- 节点选中(点选/套索多选) ----------
-// 选中表集合:普通点击单选、Shift+点击增减、Shift+拖动套索整体替换(框空=清空);
+// ---------- 节点选中(底座 selectable 框选/多选 + 普通点击单选) ----------
+// 选中表集合:Shift+拖动框选/Shift+点击增减/点空白清空走底座 selectable(选中集合经 selection-change 全量同步),
+// 普通点击单选由容器层 click 委托经底座 setSelection 接入(见 onContainerClick);
 // 纯渲染口径(描边/底纹),变化经 repaint 就地刷新,不动布局与视口
 const selectedTables = ref(new Set())
-// 套索框选刚结束的时间戳:框选松手后浏览器补发的 canvas click 据此忽略,否则刚框中的选中会被「点空白清空」立刻清掉
-let lassoJustFinished = 0
 // 批量否决请求进行中(防重复提交)
 const rejecting = ref(false)
 // 选中表涉及的关系(底部操作条「删除」= 否决这些关系,与「候选管理-批量否决」同口径)
@@ -128,16 +130,20 @@ const affectedEdges = computed(() => {
   return props.edges.filter((e) => sel.has(e.oneTable) || sel.has(e.manyTable))
 })
 
-/** 选中一个表:additive(Shift)= 在现有集合上增减,否则单选替换 */
-function selectTable(table, additive = false) {
-  if (!table) return
-  const next = additive ? new Set(selectedTables.value) : new Set()
-  if (additive && next.has(table)) next.delete(table)
-  else next.add(table)
-  selectedTables.value = next
+/** 底座选中集合变化(框选/点选/清空/setSelection):全量同步给本地渲染口径 */
+function onSelectionChange(ids) {
+  selectedTables.value = new Set(ids || [])
 }
 
+/** 底座 rendered(初始化/重建/重绘):重建会清掉 G6 模型里的选中态,把本地选中集回灌底座保持一致
+ *  (setSelection 只在有变化时发事件:回灌那次发一次,之后状态一致不再发,不会循环) */
+function onRendered() {
+  if (selectedTables.value.size) baseRef.value?.setSelection([...selectedTables.value])
+}
+
+/** 清空选中:本地集合与底座选中态一起清(底座 clearSelection 会再发一次 selection-change,幂等) */
 function clearSelection() {
+  baseRef.value?.clearSelection()
   if (selectedTables.value.size) selectedTables.value = new Set()
 }
 
@@ -638,34 +644,9 @@ const graphOptions = computed(() => ({
   layout: layoutOptions(),
   transforms: parallelEdgeTransforms(),
   behaviors: [
-    // 节点可拖拽(底座内置 drag-canvas 拖画布);Shift+拖 让位给套索框选(否则按住 Shift 拖节点会一边拖节点一边画套索)
-    { type: 'drag-element', enable: (e) => !e.shiftKey },
-    // 套索框选(Shift+拖动):圈中的节点即选中,html 节点同样生效(G6 转发节点上的指针事件,
-    // 且坐标换算对 html 节点有专门处理)。只圈节点(enableElements 不含 edge);mode=default 每次框选重置选中集合,
-    // 框空即清空;选中呈现不走 G6 state 样式(默认 selected 样式对本组件的数据样式无效),完全由 selectedTables 驱动重绘
-    {
-      type: 'lasso-select',
-      trigger: ['shift'],
-      enableElements: ['node'],
-      mode: 'default',
-      state: 'selected',
-      animation: false,
-      style: {
-        width: 0,
-        height: 0,
-        lineWidth: 2,
-        lineDash: [4, 4],
-        stroke: themeColors().primary,
-        fill: themeColors().primary,
-        fillOpacity: 0.12,
-        zIndex: 2,
-        pointerEvents: 'none'
-      },
-      onSelect: (states) => {
-        selectedTables.value = new Set(Object.keys(states || {}))
-        lassoJustFinished = Date.now()
-      }
-    }
+    // 节点可拖拽(底座内置 drag-canvas 拖画布);Shift+拖 让位给底座框选(selectable 内置 brush-select,
+    // 否则按住 Shift 拖节点会一边拖节点一边画框选)
+    { type: 'drag-element', enable: (e) => !e.shiftKey }
   ]
 }))
 
@@ -693,9 +674,8 @@ function onEdgeClick(id) {
   if (rel) emit('edge-click', rel)
 }
 
-/** 点画布空白(底座 canvas-click):清空选中;刚套索框选结束时补发的 click 忽略,否则框选结果会被立刻清空 */
+/** 点画布空白(底座 canvas-click):清空选中(框选松手后补发的那次 click 已由底座吞掉,不会误清,见 BaseGraphCanvas) */
 function onCanvasClick() {
-  if (Date.now() - lassoJustFinished < 300) return
   clearSelection()
 }
 
@@ -726,8 +706,9 @@ async function rejectSelected() {
   }
 }
 
-/** 容器层 click 委托(捕获阶段):「+N 个字段」展开收起 / 表名单击抑制时间戳 / 点节点本体选中。
- *  选中口径与图谱页一致:普通点击单选、Shift+点击增减;拖拽节点后的残留 click(位移>4px)不响应 */
+/** 容器层 click 委托(捕获阶段):「+N 个字段」展开收起 / 表名单击抑制时间戳 / 点节点本体单选。
+ *  单选经底座 setSelection 接入统一选中状态;Shift+点击增减由底座 click-select 处理,这里不重复;
+ *  拖拽节点后的残留 click(位移>4px)不响应 */
 function onContainerClick(ev) {
   // 「+N 个字段」/「收起字段」操作行:切换展开态(属于节点内操作,不触发选中)
   const moreRow = ev.target?.closest?.('.rg-more-row')
@@ -740,13 +721,14 @@ function onContainerClick(ev) {
   }
   const title = ev.target?.closest?.('.rg-node-title')
   if (title) lastTitleClick = Date.now() // 仍抑制「单击表名开面板」;但选中照常(双击跳转前也会先选中,无副作用)
-  // 点节点本体选中(标题区也算;与图谱页同口径:普通点击单选、Shift+点击增减);拖拽节点后的残留 click(位移>4px)不响应
+  // 点节点本体单选(标题区也算):经底座 setSelection 接入统一选中状态;Shift+点击由底座 click-select 增减,这里跳过;
+  // 拖拽节点后的残留 click(位移>4px)不响应
   const nodeEl = ev.target?.closest?.('[data-rg-node]')
   if (!nodeEl) return
   const moved = downPos && (Math.abs(ev.clientX - downPos[0]) + Math.abs(ev.clientY - downPos[1]) > 4)
   if (moved) return
   const table = nodeEl.getAttribute('data-rg-node')
-  if (table) selectTable(table, ev.shiftKey)
+  if (table && !ev.shiftKey) baseRef.value?.setSelection([table])
 }
 
 /** 记录指针按下坐标(拖拽误触过滤,见 onContainerClick);
@@ -861,18 +843,6 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--el-text-color-regular);
   white-space: nowrap;
-}
-/* 画布操作提示:常驻,贴鸟瞰图左侧(鸟瞰图 160 宽 + 12 右边距,再留 8 间距),底边与鸟瞰图对齐;
-   占位符色(比次级色更浅)弱提示,不抢图内容视觉;pointer-events 穿透,不挡画布拖拽 */
-.rg-hint {
-  position: absolute;
-  right: 180px;
-  bottom: 12px;
-  font-size: 12px;
-  color: var(--el-text-color-placeholder);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 5;
 }
 /* 图例内容样式(定位/面板外壳/折叠由底座 legend 折叠面板负责):与边样式口径一致(实线主题色=确认 / 虚线灰=候选 / 红=疑似多对多) */
 .rg-legend {

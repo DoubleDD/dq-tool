@@ -6,7 +6,8 @@
        容器需显式高度(由父级布局保证) -->
   <BaseGraphCanvas ref="baseRef" :data="graphData" :options="graphOptions" fit="center" :default-zoom="1"
     :refit-on-data-change="false" :animated="layout === 'force'" @node-click="onNodeClick"
-    @node-dblclick="(id) => emit('node-open', id)" @canvas-click="emit('canvas-click')" @rendered="onRendered">
+    @node-dblclick="(id) => emit('node-open', id)" @canvas-click="emit('canvas-click')" @rendered="onRendered"
+    selectable @selection-change="(ids) => emit('lasso-select', ids)">
     <!-- 业务工具透传:标记/颜色筛选等由调用方按需给 -->
     <template #toolbar>
       <slot name="toolbar" />
@@ -66,7 +67,7 @@ const props = defineProps({
   highlight: { type: Array, default: null },
   // 当前选中节点表名(父级点击面板打开的节点),画布上加深描边呈现选中态
   selected: { type: String, default: '' },
-  // 多选命中的表名数组(套索框选):与 selected 单选并存,任一命中即呈现同一选中态(深描边 + 同色光晕);
+  // 多选命中的表名数组(Shift 框选/点选):与 selected 单选并存,任一命中即呈现同一选中态(深描边 + 同色光晕);
   // 属渲染口径(不进结构数据),变化走 applyOverlay 的 repaint 原地刷
   selectedList: { type: Array, default: () => [] },
   // 连线粗细基准(px,候选/未确认边的线宽;确认边在此基础上 +0.4 加粗)。
@@ -89,7 +90,7 @@ const props = defineProps({
 // node-label-click:单击节点标签文本(与节点点击拆开捕捉——G6 节点是 DisplayObject 组,文本是组内
 //   label 子图形,事件 e.target 恒为节点元素,实际命中图形在 e.originalTarget,沿其祖先链判 className 即可区分);
 // node-open:双击节点(传表名,跳字段明细);canvas-click:点击画布空白(父级可用来取消选中/关面板);
-// lasso-select:套索框选结束(传框中的表名数组,来自 lasso-select behavior 的 onSelect 回调)
+// lasso-select:框选/多选集合变化(传选中的表名数组全量,来自底座 selectable 的 selection-change;事件名保持 lasso-select 不变,父级不用改)
 const emit = defineEmits(['node-click', 'node-label-click', 'node-open', 'canvas-click', 'lasso-select'])
 
 /** 事件命中的子图形是否属于节点内指定 className(key/label/halo...)的图形:
@@ -104,8 +105,10 @@ function hitShape(e, className) {
   return false
 }
 
-/** 单击分发:命中标签文本 → 独立的 node-label-click(不触发节点点击);命中圆形本体/光晕 → node-click */
+/** 单击分发:命中标签文本 → 独立的 node-label-click(不触发节点点击);命中圆形本体/光晕 → node-click;
+ *  Shift+点击只进底座框选/多选(selectable),不分发——否则父级会开单表面板并把刚多选的集合清空 */
 function onNodeClick(id, _data, e) {
+  if (e?.shiftKey) return
   if (hitShape(e, 'label')) {
     emit('node-label-click', id)
     return
@@ -329,7 +332,7 @@ function buildData(hl, sel, style, colors, selList) {
   if (!force) resolveOverlaps(pos)
   const hlSet = hl === undefined ? (props.highlight ? new Set(props.highlight) : null) : hl
   const selectedName = sel === undefined ? props.selected : sel
-  // 多选集合(套索框选):缺省取 live props;结构数据传空集合剥离,由覆盖层 repaint 刷选中态
+  // 多选集合(Shift 框选/点选):缺省取 live props;结构数据传空集合剥离,由覆盖层 repaint 刷选中态
   const selSet = selList === undefined ? new Set(props.selectedList || []) : selList
   // 节点填充色:colors 缺省时取 live props.colors(覆盖层 repaint 走这条);
   // 结构数据由 graphData 显式传入快照,使重建首帧即最终色(改色不重建,见 applyOverlay)
@@ -490,13 +493,19 @@ function applyOverlay() {
   baseRef.value.repaint(buildData())
 }
 watch(() => [props.highlight, props.selected, props.selectedList, props.edgeWidth, props.labelOpacity, props.colors], applyOverlay)
+// 外部把 selectedList 清空(多选面板关闭/点节点开单表面板等):同步清掉底座选中态——
+// 否则 G6 模型里残留 selected,下次 Shift+点击会被误判成「取消选中」(底座选中态是框选/点选的唯一口径)
+watch(() => props.selectedList, (v) => { if (!v?.length) baseRef.value?.clearSelection() })
 // 结构数据一重建就置空签名:rendered 后的补刷不被判重跳过,覆盖层(含用户调过的样式)才能重新刷上
 watch(graphData, () => { appliedOverlay = '' })
-/** 底座 rendered:强制重绘完成后清标记并补刷覆盖层(重建把元素样式重置回了 STRUCT_STYLE) */
+/** 底座 rendered:强制重绘完成后清标记并补刷覆盖层(重建把元素样式重置回了 STRUCT_STYLE);
+ *  重建同时会清掉 G6 模型里的选中态——把父级多选集合回灌底座,保持「底座选中态(框选/点选口径)」
+ *  与「selectedList(呈现口径)」一致(setSelection 只在有变化时发事件,不会循环) */
 function onRendered() {
   pendingRedraw = false
   applyOverlay()
   bindHoverEvents()
+  if (props.selectedList?.length) baseRef.value?.setSelection(props.selectedList)
 }
 
 // hover 置顶:悬停节点临时抬到最上层(普通节点 zIndex=1、边=0、悬停=2),移开恢复——
@@ -531,38 +540,12 @@ const graphOptions = {
   transforms: [{ type: 'process-parallel-edges', mode: 'bundle', distance: 24 }],
   behaviors: [
     // 力导模式换 drag-element-force(拖拽时仿真回温,松手自动归位);静态模式 drag-element;
-    // Shift+拖 让位给框选(否则按住 Shift 拖节点会一边拖节点一边画套索)
+    // Shift+拖 让位给底座框选(selectable 内置 brush-select,否则按住 Shift 拖节点会一边拖节点一边画框选)
     {
       type: props.layout === 'force' ? 'drag-element-force' : 'drag-element',
       enable: (e) => !e.shiftKey
-    },
-    // 套索框选(Shift+拖动):圈中的节点即选中。trigger 必须是 shift 而非官方示例的空数组——
-    // 空数组=任意拖拽都框选,会让底座内置的 drag-canvas 直接失效(见 G6 brush-select 源码注释)。
-    // 只圈节点(enableElements 不含 edge);mode=default 每次框选重置选中集合;
-    // G6 会给命中元素加 state='selected',但默认主题的 selected 样式(halo/lineWidth/stroke)
-    // 全部被本组件的数据样式覆盖,故选中呈现完全由 selectedList 驱动(见 buildData 的 isSelected);
-    // onSelect 是拿「框中了哪些元素」的唯一入口,这里同步给父级
-    {
-      type: 'lasso-select',
-      trigger: ['shift'],
-      enableElements: ['node'],
-      mode: 'default',
-      state: 'selected',
-      animation: false,
-      style: {
-        width: 0,
-        height: 0,
-        lineWidth: 2,
-        lineDash: [4, 4],
-        stroke: themeColors().primary,
-        fill: themeColors().primary,
-        fillOpacity: 0.12,
-        zIndex: 2,
-        pointerEvents: 'none'
-      },
-      onSelect: (states) => emit('lasso-select', Object.keys(states || {}))
     }
-  ], // 底座内置 drag-canvas 拖画布(Shift+拖 时让位给框选)
+  ], // 底座内置 drag-canvas 拖画布(Shift+拖 时让位给框选);Shift 框选/多选走底座 selectable(选中集合经 selection-change 同步,选中呈现仍由 selectedList 驱动)
   ...(props.layout === 'force' ? { layout: forceLayoutOptions() } : {}),
   // 静态模式关掉元素入场动画:render() 会等 draw 动画 finished 才 resolve,关掉后 render/重建都是瞬时完成;
   // 力导模式必须保留动画——仿真收敛与 drag-element-force 都依赖 tick 渲染,关动画会导致节点拖不动

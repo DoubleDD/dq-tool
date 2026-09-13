@@ -13,6 +13,7 @@ import com.example.dq.controller.AiConfigController;
 import com.example.dq.controller.AiUsageController;
 import com.example.dq.controller.AnnotationController;
 import com.example.dq.controller.ChangelogController;
+import com.example.dq.controller.CompareController;
 import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.DiagnosticsController;
 import com.example.dq.controller.LicenseController;
@@ -108,6 +109,7 @@ public class WebServer {
     private final AtomicReference<MetadataSyncController> metaSyncCtrl = new AtomicReference<>();
     private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
     private final AtomicReference<SampleExportController> sampleExportCtrl = new AtomicReference<>();
+    private final AtomicReference<CompareController> compareCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
     private final AtomicReference<ManualCollectController> manualCollectCtrl = new AtomicReference<>();
     private final AtomicReference<ObjectCatalogController> objectCatalogCtrl = new AtomicReference<>();
@@ -163,7 +165,7 @@ public class WebServer {
             }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
-                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, metaSyncCtrl, reportCtrl, sampleExportCtrl, tagCtrl,
+                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, metaSyncCtrl, reportCtrl, sampleExportCtrl, compareCtrl, tagCtrl,
                     manualCollectCtrl, objectCatalogCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     changelogCtrl, lanCtrl, relationCtrl,
@@ -189,6 +191,7 @@ public class WebServer {
                                 AtomicReference<MetadataSyncController> metaSyncCtrl,
                                 AtomicReference<ReportExportController> reportCtrl,
                                 AtomicReference<SampleExportController> sampleExportCtrl,
+                                AtomicReference<CompareController> compareCtrl,
                                 AtomicReference<TagController> tagCtrl,
                                 AtomicReference<ManualCollectController> manualCollectCtrl,
                                 AtomicReference<ObjectCatalogController> objectCatalogCtrl,
@@ -221,6 +224,11 @@ public class WebServer {
             // 授权码管理(license_admin 受控功能):/api/license 前缀下不被激活拦截,但需授权码显式包含该功能
             if (path.startsWith("/api/license/admin")) {
                 licenseService.checkFeature(LicenseFeature.LICENSE_ADMIN, false);
+                return;
+            }
+            // 数据比对(compare 受控功能):需已激活且授权码显式包含 compare,未授权 403
+            if (path.startsWith("/api/compare-jobs")) {
+                licenseService.checkFeature(LicenseFeature.COMPARE);
                 return;
             }
             // 局域网共享出口(/api/lan/share/*)放行激活检查:供同网段其他实例 HTTP 拉取数据,peer 侧无本机授权上下文
@@ -283,6 +291,10 @@ public class WebServer {
         routes.post("/api/datasources/preview-databases", ctx -> dataSourceCtrl.get().previewDatabases(ctx));
         routes.get("/api/db-types/{dbType}/system-schemas", ctx -> dataSourceCtrl.get().systemSchemas(ctx));
         routes.get("/api/datasources/export", ctx -> dataSourceCtrl.get().export(ctx));
+        // 元数据缓存导出(结构缓存 + 标注数据,供离线导入使用);静态段优先于 {dsId} 路径参数
+        routes.get("/api/datasources/metadata-export", ctx -> dataSourceCtrl.get().exportMetadata(ctx));
+        // 元数据导入预检:解析文件内数据源并按连接身份自动匹配本机数据源,供前端做映射
+        routes.post("/api/datasources/metadata-transfer/preview", ctx -> dataSourceCtrl.get().previewMetadataImport(ctx));
         routes.post("/api/datasources/import", ctx -> dataSourceCtrl.get().importDs(ctx));
 
         // ---- 扫描作业 ----
@@ -356,6 +368,17 @@ public class WebServer {
         routes.post("/api/sample-exports/{id}/reimport", ctx -> sampleExportCtrl.get().reimport(ctx));
         // 批量删除刻意避开 /api/sample-exports/ 前缀注册(同前缀静态段会被 {id} 吃掉报 400,见上方 template 注释)
         routes.post("/api/sample-exports-delete", ctx -> sampleExportCtrl.get().delete(ctx));
+
+        // ---- 数据比对任务 ----
+        routes.post("/api/compare-jobs", ctx -> compareCtrl.get().submit(ctx));
+        routes.get("/api/compare-jobs", ctx -> compareCtrl.get().list(ctx));
+        routes.get("/api/compare-jobs/{id}", ctx -> compareCtrl.get().detail(ctx));
+        routes.delete("/api/compare-jobs/{id}", ctx -> compareCtrl.get().delete(ctx));
+        routes.get("/api/compare-jobs/{id}/diffs", ctx -> compareCtrl.get().diffs(ctx));
+        routes.get("/api/compare-jobs/{id}/report", ctx -> compareCtrl.get().report(ctx));
+        routes.get("/api/compare-jobs/{id}/export", ctx -> compareCtrl.get().export(ctx));
+        routes.post("/api/compare-jobs/{id}/rerun", ctx -> compareCtrl.get().rerun(ctx));
+        routes.post("/api/compare-jobs/{id}/archive", ctx -> compareCtrl.get().archive(ctx));
 
         // ---- 元数据批量同步(数据源页「刷新」)----
         routes.post("/api/metadata-sync", ctx -> metaSyncCtrl.get().submit(ctx));
@@ -738,7 +761,8 @@ public class WebServer {
     private void injectKernel(ServiceEnv env) {
         this.env = env;
         licenseServiceRef.set(env.getLicenseService());
-        dataSourceCtrl.set(new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService()));
+        dataSourceCtrl.set(new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService(),
+                env.getMetadataTransferService()));
         scanCtrl.set(new ScanController(env.getScanService(), env.getExportService(), env.getScanWordExportService()));
         scanTransferCtrl.set(new ScanTransferController(env.getScanTransferService()));
         metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService(),
@@ -746,6 +770,7 @@ public class WebServer {
         metaSyncCtrl.set(new MetadataSyncController(env.getMetaSyncService()));
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
+        compareCtrl.set(new CompareController(env.getCompareService()));
         tagCtrl.set(new TagController(env.getTagService()));
         manualCollectCtrl.set(new ManualCollectController(env.getManualCollectService()));
         objectCatalogCtrl.set(new ObjectCatalogController(env.getObjectCatalogService()));

@@ -13,7 +13,6 @@
           </template>
         </el-result>
         <div class="activate-actions">
-          <el-button type="primary" @click="goHome">进入系统</el-button>
           <el-button link type="primary" @click="showRenew = !showRenew">更换授权码</el-button>
         </div>
       </template>
@@ -67,6 +66,11 @@ const showRenew = ref(false)
 
 onMounted(async () => {
   status.value = await request.get('/license/status')
+  // 授权有效时直接进入系统(顺手刷新守卫缓存,避免缓存里的过期状态把导航弹回本页)
+  if (status.value?.activated && !status.value?.expired) {
+    markActivated(status.value)
+    router.replace('/')
+  }
 })
 
 async function onActivate() {
@@ -81,10 +85,6 @@ async function onActivate() {
   } finally {
     submitting.value = false
   }
-}
-
-function goHome() {
-  router.push('/')
 }
 
 /** 授权码签发时间(epoch 毫秒)转本地时间串 */

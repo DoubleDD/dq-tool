@@ -456,9 +456,13 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   background: var(--el-color-primary-light-9);
 }
 
-/* 主题切换按钮推到头栏右侧 */
-.header .theme-toggle {
+/* 铃铛推到头栏右侧(无页签时兜底;有页签时 tab-bar flex:1 占位,auto 余量为 0),
+   主题切换按钮紧随其后 */
+.header .notify-bell {
   margin-left: auto;
+}
+
+.header .theme-toggle {
   color: var(--el-text-color-secondary);
 }
 

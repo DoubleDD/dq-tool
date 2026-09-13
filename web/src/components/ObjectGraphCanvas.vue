@@ -1,6 +1,7 @@
 <template>
   <!-- 对象目录图视图画布:通用画布底座 BaseGraphCanvas 承载交互(滚轮平移/Ctrl+滚轮与触摸板捏合缩放/
-       Alt+滚轮水平平移/html 节点滚轮转发与双击补发)、顶部工具栏(默认工具:重绘/1:1/适应画布 + toolbar 插槽
+       Alt+滚轮水平平移/html 节点滚轮转发与双击补发/Shift 框选与多选[selectable,Shift+点击只选中不收起])、
+       顶部工具栏(默认工具:重绘/1:1/适应画布 + toolbar 插槽
        业务工具[布局方向/字段显示开关等],右侧缩放控制条)、右下角鸟瞰图、视口定位与生命周期;
        本组件只负责目录树专属部分:html 节点渲染、树布局(compact-box,H=LR / V=TB,H/V 可切,
        切换走底座 reconfigure 就地重配,带聚拢-展开过渡动画,不销毁重建)、omg-cubic-h/v 单点起边、收起/展开与字段按需加载。容器需显式高度(由父级布局保证) -->
@@ -15,6 +16,7 @@
     @node-click="onNodeClick"
     @node-dblclick="onNodeDblclick"
     @rendered="ensureColumns"
+    selectable
   >
     <!-- 业务工具透传:布局方向/字段显示开关等由调用方按需给 -->
     <template #toolbar><slot name="toolbar" /></template>
@@ -427,6 +429,8 @@ watch(() => props.rootDir, () => baseRef.value?.refresh(buildData(), true))
 // ---------- 事件口径 ----------
 // 目录节点单击=收起/展开子树;表节点右缘 ▸/▾ 按钮单击=收起/展开关系表;「… 共 N 个字段」行单击=展开/收起全部字段
 function onNodeClick(id, nodeData, event) {
+  // Shift+点击只进底座框选/多选(selectable),不触发收起/展开等节点交互
+  if (event?.nativeEvent?.shiftKey) return
   const d = nodeData?.data
   if (!d) return
   // 点中收起/展开按钮(HTML 节点内 DOM,经 nativeEvent.target 判定)

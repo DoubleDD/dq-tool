@@ -45,6 +45,12 @@ class MetaSyncRepository(private val jdbc: Jdbc) {
     fun hasRunning(): Boolean =
         (jdbc.queryOne("SELECT COUNT(*) FROM meta_sync_job WHERE status IN ('PENDING','RUNNING')") { it.getLong(1) } ?: 0L) > 0
 
+    /** 指定数据源是否有未结束的同步明细(元数据导入前校验,避免与同步的整粒度覆盖互相踩踏) */
+    fun hasRunningForDatasource(datasourceId: Long): Boolean =
+        (jdbc.queryOne("SELECT COUNT(*) FROM meta_sync_item i JOIN meta_sync_job j ON j.id = i.job_id " +
+                "WHERE i.datasource_id=? AND j.status IN ('PENDING','RUNNING') " +
+                "AND i.status IN ('PENDING','RUNNING')", datasourceId) { it.getLong(1) } ?: 0L) > 0
+
     fun isCanceled(id: Long): Boolean =
         findJob(id)?.status == "CANCELED"
 

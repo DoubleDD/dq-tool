@@ -10,6 +10,11 @@ const routes = [
   { path: '/ai-usage', component: () => import('../views/AiUsage.vue') },
   { path: '/report-exports', component: () => import('../views/ReportExports.vue') },
   { path: '/sample-exports', component: () => import('../views/SampleExports.vue') },
+  // 数据比对:任务列表 / 新建(三步向导)/ 差异明细 / 质量报告
+  { path: '/compare', component: () => import('../views/CompareTasks.vue') },
+  { path: '/compare/new', component: () => import('../views/CompareNew.vue') },
+  { path: '/compare/:id/diff', component: () => import('../views/CompareDiff.vue') },
+  { path: '/compare/:id/report', component: () => import('../views/CompareReport.vue') },
   { path: '/relations', component: () => import('../views/RelationGraph.vue') },
   { path: '/object-manage', component: () => import('../views/ObjectManage.vue') },
   { path: '/sql-console', component: () => import('../views/SqlConsole.vue') },
@@ -93,6 +98,10 @@ router.beforeEach(async (to) => {
   // 授权码管理页:仅管理员实例 + 授权码包含 license_admin 功能(未激活的管理员实例也放行);否则跳回首页
   if (to.path === '/license-admin') {
     return (status.admin && features.includes('license_admin')) ? true : '/'
+  }
+  // 数据比对:受控功能,授权码未包含 compare 时跳回首页(后端 403 兜底)
+  if (to.path === '/compare' || to.path.startsWith('/compare/')) {
+    return features.includes('compare') ? true : '/'
   }
   const ok = !!(status.activated && !status.expired)
   return ok ? true : '/activate'
