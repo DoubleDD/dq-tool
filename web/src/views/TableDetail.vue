@@ -470,14 +470,14 @@
       @done="onAddDone"
     />
 
-    <!-- 关系批量处理对话框(整库清单,默认仅候选,预填本表过滤;批量确认/否决/删除后刷新星型图) -->
+    <!-- 关系批量处理对话框(有中心表:接口只拉本表参与的关系,默认全部状态;批量确认/否决/删除后刷新星型图) -->
     <RelationBatchDialog
       v-if="dsId && schema"
       v-model="batchDialogVisible"
       :ds-id="dsId"
       :schema="schema"
       :db="db"
-      :initial-table="tableName"
+      :center-table="tableName"
       @done="loadErGraph(true)"
     />
 
@@ -513,7 +513,7 @@ import { cellText, exportListToExcel } from '../utils/listExport'
 import { downloadFile } from '../utils/download'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { downloadDrawio } from '../utils/drawioExport'
-import { exportErGraphExcel } from '../utils/erGraphExport'
+import { exportErRelationExcel } from '../utils/erGraphExport'
 
 const route = useRoute()
 const router = useRouter()
@@ -943,22 +943,20 @@ function exportErDrawio() {
   downloadDrawio(data, `ER 星型图-${schema.value}-${tableName}`)
 }
 
-/** 「ER 关系」页签导出 Excel(工具栏「导出ER表格」):与 ER 关系页「导出ER关系」同口径,
- *  行 = 星型图内每张表 × 该表作为关系端点的去重级联字段,逻辑见 erGraphExport.js;
- *  字段注释清单可能未加载(仅 erLevel=all 时才拉),导出前先确保已加载 */
+/** 「ER 关系」页签导出 Excel(工具栏「导出ER表格」):3 个 sheet(表清单/原始关系/关系变化),
+ *  只含本表参与的关系(table 参数),且表清单不列本表(主表),只列副表;逻辑见 erGraphExport.js */
 const erExporting = ref(false)
 async function exportErExcel() {
   if (!erGraph.value.nodes.length) return ElMessage.warning('当前图没有可导出的数据')
   erExporting.value = true
   try {
-    await loadErColumnsMap()
-    await exportErGraphExcel({
+    await exportErRelationExcel({
       dsId: dsId.value,
       db: db.value,
       schema: schema.value,
+      table: tableName,
       filename: `ER 星型图-${schema.value}-${tableName}`,
-      graph: erGraph.value,
-      columnsMap: erColumnsMap.value
+      graph: erGraph.value
     })
   } finally {
     erExporting.value = false

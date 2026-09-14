@@ -114,7 +114,7 @@
       <el-tab-pane label="库过滤" name="schemas">
         <div class="sf-head">
           <el-button :loading="schemaLoading" @click="loadSchemaList">加载库列表</el-button>
-          <span class="ssh-tip">勾选需要显示的库;全部勾选(或不加载)表示不过滤。系统库已默认不勾选,可按需勾回。</span>
+          <span class="ssh-tip">勾选需要显示的库;全部勾选(或不加载)表示不过滤 —— 不过滤默认只含业务库、不含系统库。系统库已默认不勾选,需要时勾上保存即可包含。</span>
         </div>
         <template v-if="schemaFetched">
           <div class="sf-all">
@@ -130,7 +130,7 @@
         <div v-else-if="form.schemaFilter?.length" class="ssh-tip sf-current">
           当前仅显示 {{ form.schemaFilter.length }} 个库:{{ form.schemaFilter.join('、') }}。点击「加载库列表」可修改。
         </div>
-        <el-empty v-else description="当前不过滤,显示全部库" :image-size="60" />
+        <el-empty v-else description="当前不过滤:显示全部业务库(不含系统库)" :image-size="60" />
       </el-tab-pane>
       <el-tab-pane label="高级" name="advanced">
         <el-form :model="form" label-width="120px" autocomplete="off">
@@ -211,6 +211,7 @@ import { CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import request from '../api'
 import DbTypeIcon from './DbTypeIcon.vue'
 import { notifyDsListChanged } from '../utils/dsListChanged'
+import { toSchemaFilter } from '../utils/schemaFilter'
 
 /**
  * 数据源新增/编辑弹窗,完全独立可在任意页面使用(数据源页卡片、抽样导出任务明细等)。
@@ -409,11 +410,10 @@ watch(activeTab, (tab) => {
   if (tab === 'schemas' && form.id && !connDirty() && !schemaFetched.value) loadSchemaList()
 })
 
-/** 保存时的库过滤值:加载过列表按勾选(全勾/全不勾=不过滤),没加载过保留已存配置 */
+/** 保存时的库过滤值:加载过列表按勾选(恰好等于默认业务库集合=不过滤),没加载过保留已存配置 */
 function currentSchemaFilter() {
   if (!schemaFetched.value) return form.schemaFilter ?? undefined
-  if (schemaChecked.value.length === 0 || schemaChecked.value.length === schemaList.value.length) return null
-  return [...schemaChecked.value]
+  return toSchemaFilter(schemaChecked.value, schemaList.value, isSystemSchema)
 }
 
 const urlPlaceholder = computed(() => URL_PLACEHOLDERS[form.dbType] || 'jdbc:...')

@@ -14,7 +14,7 @@
       :options-key="edgeType"
       :minimap="minimapOptions"
       :fullscreen="false"
-      :tools="['refresh', 'zoom100', 'fit', 'edge-type', 'export-drawio', 'level']"
+      :tools="tools"
       :level="level"
       :edge-type="edgeType"
       @update:level="emit('update:level', $event)"
@@ -30,7 +30,11 @@
       <!-- 业务工具透传:字段数/导出等由调用方按需给 -->
       <template #toolbar><slot name="toolbar" /></template>
       <template #legend>
-        <div class="rg-legend">
+        <!-- mapping 模式:图例换成连线操作提示(关系三态图例在字段映射场景无意义) -->
+        <div v-if="mode === 'mapping'" class="rg-legend">
+          <span>点一侧字段行、再点另一侧字段行即可连线;点连线本身删除</span>
+        </div>
+        <div v-else class="rg-legend">
           <span class="rg-legend-item"><i class="rg-line rg-line-confirmed" />确认</span>
           <span class="rg-legend-item"><i class="rg-line rg-line-candidate" />候选</span>
           <span class="rg-legend-item"><i class="rg-line rg-line-suspect" />疑似多对多</span>
@@ -38,8 +42,9 @@
       </template>
     </BaseGraphCanvas>
     <!-- 选中操作条(底部居中悬浮):点节点/Shift 点选/Shift 拖动框选后出现;
-         「删除」= 否决选中表的所有关系(与「候选管理-批量否决」同口径:候选/确认均转否决),成功后 emit changed 由父级刷新图 -->
-    <div v-if="selectedTables.size" class="rg-selbar">
+         「删除」= 否决选中表的所有关系(与「候选管理-批量否决」同口径:候选/确认均转否决),成功后 emit changed 由父级刷新图;
+         mapping 模式不展示(字段映射没有「否决关系」语义) -->
+    <div v-if="mode !== 'mapping' && selectedTables.size" class="rg-selbar">
       <span class="rg-selbar-text">已选 {{ selectedTables.size }} 张表</span>
       <el-tooltip content="否决选中表的所有关系(候选与已确认均转为否决),与「候选管理-批量否决」同口径" placement="top">
         <el-button size="small" type="warning" :disabled="!affectedEdges.length" :loading="rejecting" @click="rejectSelected">
@@ -85,7 +90,7 @@ const props = defineProps({
   level: { type: String, default: 'name' },
   // level=all 时的各表字段清单:{ 表名: [{ name, type, comment }] }
   columnsMap: { type: Object, default: () => ({}) },
-  // 单表最多展示的字段行数(超出折叠为「+N 个字段」,可点击就地展开):工具栏可设置,默认 10
+  // 单表最多展示的字段行数(超出折叠为「+N 个字段」,可点击就地展开):工具栏可设置,默认 10;mapping 模式全量展示不折叠
   maxFieldRows: { type: Number, default: 10 },
   // 初始/重建后的默认比例(1=100%):>0 时内容置中并锁定该比例(表详情 ER 页签传 1);
   // 0=fitView 自适应视口(独立 ER 图页,大图先看全貌)
@@ -97,14 +102,22 @@ const props = defineProps({
   //   chinese=仅中文注释(表节点标题中文名为主、英文表名降为副标题;字段行只显示中文注释,无注释回退英文名);
   //   english=仅英文名(标题英文表名为主、注释降为副标题;字段行只显示英文名,完整注释仍在行 tooltip);
   //   both=中英文同时显示(中文在前:标题同 chinese 档主/副标题双行,字段行中文注释在前、英文名淡色尾随)
-  fieldNameMode: { type: String, default: 'chinese' }
+  fieldNameMode: { type: String, default: 'chinese' },
+  // 画布用途:relation=ER 关系图(默认,行为与改动前完全一致);
+  //   mapping=数据比对「字段映射」(节点标题取 label、副标题取 comment;字段行可点连线;隐藏线型/档位/导出工具与批量否决条,图例换成操作提示)
+  mode: { type: String, default: 'relation' },
+  // mapping 模式:当前待连线的基准字段名(该行高亮,提示「点它再点对侧字段」)
+  activeColumn: { type: String, default: '' },
+  // mapping 模式:锚点表(基准表)里**参与比对的基准字段**——常亮高亮,让用户一眼看到哪些字段需要连线
+  highlightColumns: { type: Array, default: () => [] }
 })
 
 // edge-click:点边(传 TableRelation);node-click:点节点(传表名);node-open:双击节点表名(传表名,跳字段明细);
+// field-click:mapping 模式点字段行(传 { table, column });mapping-connect:mapping 模式 create-edge 新建边完成(传两端表+字段);
 // update:level / update:edgeType:工具栏档位/线形切换(配 v-model 用);
 // export-drawio:工具栏「导出 drawio」(第 5 个图标位;调用方经 exportData() 取数据并下载);
 // changed:批量否决成功 { action: 'reject', ids },父级据此剔除这些边并刷新图(与关系抽屉单条操作同口径)
-const emit = defineEmits(['edge-click', 'node-click', 'node-open', 'update:level', 'update:edgeType', 'export-drawio', 'changed'])
+const emit = defineEmits(['edge-click', 'node-click', 'node-open', 'field-click', 'mapping-connect', 'update:level', 'update:edgeType', 'export-drawio', 'changed'])
 
 const baseRef = ref(null)
 // 边 id -> TableRelation(点边时回查原始数据)
@@ -130,6 +143,11 @@ const affectedEdges = computed(() => {
   return props.edges.filter((e) => sel.has(e.oneTable) || sel.has(e.manyTable))
 })
 
+/** 工具栏工具集:mapping 模式只留 重绘/1:1/适应画布(线型、档位、导出 drawio 都是 ER 关系图专属) */
+const tools = computed(() => props.mode === 'mapping'
+  ? ['refresh', 'zoom100', 'fit']
+  : ['refresh', 'zoom100', 'fit', 'edge-type', 'export-drawio', 'level'])
+
 /** 底座选中集合变化(框选/点选/清空/setSelection):全量同步给本地渲染口径 */
 function onSelectionChange(ids) {
   selectedTables.value = new Set(ids || [])
@@ -148,7 +166,7 @@ function clearSelection() {
 }
 
 // 选中集合变化 → 就地重绘节点 HTML 刷选中描边/底纹(不跑布局,拖动后的节点位置不丢)
-watch(selectedTables, () => baseRef.value?.repaint(buildData()))
+watch(selectedTables, () => repaintInPlace())
 // 图数据重建(刷新/批量否决后):选中集合裁掉已不在图里的表,操作条计数随之为准
 watch(
   () => props.nodes,
@@ -214,10 +232,19 @@ function nodeFields(table) {
   return (props.columnsMap[table] || []).map((c) => ({ name: c.name, type: c.type || '', comment: c.comment || '', related: relatedSet.has(c.name) }))
 }
 
-/** 节点当前可见字段行:已展开的表全量返回,否则截断到 maxFieldRows(超出部分折叠为「+N 个字段」行) */
+/** 节点当前可见字段行:ER 图按 maxFieldRows 折叠(展开表全量);mapping 模式全量展开——
+ * 字段映射要对照两侧全表字段人工连线,「+N 个字段」折叠会让目标行点不到 */
 function visibleFields(table) {
   const fields = nodeFields(table)
-  return expandedTables.has(table) ? fields : fields.slice(0, props.maxFieldRows)
+  if (props.mode !== 'mapping') {
+    return expandedTables.has(table) ? fields : fields.slice(0, props.maxFieldRows)
+  }
+  return fields
+}
+
+/** 是否出现「+N 个字段」折叠行(mapping 模式:可见行少于总行数时出现) */
+function hasFoldRow(table) {
+  return nodeFields(table).length > visibleFields(table).length
 }
 
 /** 节点尺寸:标题区(表名+注释) + 可见字段行 + 折叠/收起行;尺寸与 renderNodeHtml 实际渲染严格一致(边端点按此几何对齐字段行) */
@@ -226,7 +253,7 @@ function nodeSize(table, comment) {
   const fields = nodeFields(table)
   if (!fields.length) return [NODE_W, titleH]
   // 超 maxFieldRows 时恒有一行操作行(折叠态=「+N 个字段」,展开态=「收起字段」)
-  const moreH = fields.length > props.maxFieldRows ? MORE_ROW_H : 0
+  const moreH = hasFoldRow(table) ? MORE_ROW_H : 0
   return [NODE_W, titleH + FIELD_PAD_TOP + visibleFields(table).length * ROW_H + moreH + FIELD_PAD_BOTTOM]
 }
 
@@ -236,14 +263,22 @@ function nodeSize(table, comment) {
  *  根 div 带 data-rg-node 标记,容器层点击委托按它判定「点节点选中」 */
 function renderNodeHtml(d) {
   const c = themeColors()
-  const { table, comment } = d.data
+  const { table, comment, label } = d.data
+  const mapping = props.mode === 'mapping'
   const isAnchor = table === props.anchorTable
   const isSelected = selectedTables.value.has(table)
   const fields = nodeFields(table)
   const expanded = expandedTables.has(table)
   const rows = visibleFields(table)
   const fieldHtml = rows.map((f) => {
-    const style = f.related ? `color:${c.primary};font-weight:600` : `color:${c.textSecondary}`
+    const isActive = mapping && isAnchor && props.activeColumn && f.name === props.activeColumn
+    // 基准表里「参与比对的基准字段」常亮高亮(主题色左侧竖条 + 淡底):用户一眼看到哪些字段需要连线
+    const isBaseField = mapping && isAnchor && props.highlightColumns.includes(f.name)
+    const style = isActive
+      ? `color:${c.primary};font-weight:600;background:${c.primary}26;border-radius:3px`
+      : isBaseField
+        ? `color:${f.related ? c.primary : c.text};${f.related ? 'font-weight:600;' : ''}background:${c.primary}0f;box-shadow:inset 2px 0 0 ${c.primary};border-radius:3px`
+        : f.related ? `color:${c.primary};font-weight:600` : `color:${c.textSecondary}`
     // 字段名口径三档:chinese=仅中文注释(无注释回退英文名);english=仅英文名;both=中文在前、英文名更淡尾随;
     // 超长随行截断「…」;整行 title 恒带 英文名+完整注释,hover 即可查看全文
     const main = props.fieldNameMode === 'english' ? f.name : (f.comment || f.name)
@@ -252,15 +287,19 @@ function renderNodeHtml(d) {
     const type = f.type ? `<span style="flex:none;padding-left:8px;opacity:.75;font-weight:400">${esc(f.type)}</span>` : ''
     const tipText = [f.name, f.comment].filter(Boolean).join(' ')
     const tip = tipText ? ` title="${esc(tipText)}"` : ''
-    return `<div${tip} style="display:flex;align-items:center;height:18px;line-height:18px;padding:0 8px;font-size:11px;overflow:hidden;${style}"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(main.replace(/\s+/g, ' '))}${tailHtml}</span>${type}</div>`
+    // data-rg-column:容器层点击委托据此在 mapping 模式下派发 field-click(点字段行连线)
+    const colAttr = ` data-rg-column="${esc(f.name)}" data-rg-column-table="${esc(table)}"`
+    const cursor = mapping ? 'cursor:pointer;' : ''
+    return `<div${tip}${colAttr} style="display:flex;align-items:center;height:18px;line-height:18px;padding:0 8px;font-size:11px;overflow:hidden;${style};${cursor}"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(main.replace(/\s+/g, ' '))}${tailHtml}</span>${type}</div>`
   }).join('')
-  const more = fields.length > props.maxFieldRows
+  const more = hasFoldRow(table)
     ? `<div class="rg-more-row" data-rg-table="${esc(table)}" title="${expanded ? '收起字段' : '点击展开全部字段'}" style="height:16px;line-height:16px;padding:0 8px;font-size:11px;color:${c.primary};cursor:pointer;white-space:nowrap">${expanded ? '收起字段' : `+${fields.length - props.maxFieldRows} 个字段`}</div>` : ''
   // 名字口径与字段一致:中文档(含 both)中文注释为主标题、英文表名小字副标题;
-  // 仅英文名档则反过来(同对象管理图;副标题行有无只看 comment,节点几何不变)
+  // 仅英文名档则反过来(同对象管理图;副标题行有无只看 comment,节点几何不变);
+  // mapping 模式:主标题取调用方给的 label(如「三方厂商库 · reservoir_vendor.t_reservoir_info」),副标题取 comment
   const englishOnly = props.fieldNameMode === 'english'
-  const titleText = englishOnly ? table : (comment || table)
-  const subText = comment ? (englishOnly ? comment : table) : ''
+  const titleText = mapping ? (label || table) : (englishOnly ? table : (comment || table))
+  const subText = mapping ? (comment || '') : (comment ? (englishOnly ? comment : table) : '')
   const subHtml = subText
     ? `<div style="height:14px;line-height:14px;padding:0 8px;font-size:11px;color:${c.textSecondary};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subText)}</div>` : ''
   const border = isSelected ? `2px solid ${c.text}` : isAnchor ? `2px solid ${c.primary}` : `1px solid ${c.borderDarker}`
@@ -268,8 +307,9 @@ function renderNodeHtml(d) {
   const ring = isSelected || isAnchor ? `box-shadow:0 0 0 3px ${c.primary}33;` : ''
   // 锚点底纹:根底 = 主题色 8% 淡 tint;有字段行时标题行叠 15% 更深一档(无字段行时标题透明,直接透出根底)
   const titleBg = fields.length ? `background:${isAnchor ? `${c.primary}26` : c.fill};` : ''
+  const titleTip = mapping ? '点击字段行连线;拖动画布可移动表' : '双击打开字段明细'
   return `<div data-rg-node="${esc(table)}" style="width:${NODE_W}px;height:100%;box-sizing:border-box;background:${isAnchor ? `${c.primary}14` : c.bg};border:${border};border-radius:6px;overflow:hidden;${ring}">
-  <div class="rg-node-title" data-rg-table="${esc(table)}" title="双击打开字段明细" style="height:${comment ? 34 : 32}px;line-height:${comment ? 20 : 32}px;padding:${comment ? '6px' : '0'} 8px;font-size:13px;font-weight:600;color:${isAnchor ? c.primary : c.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;${fields.length ? `border-bottom:1px solid ${c.border};${titleBg}` : ''}">${esc(titleText)}${subHtml}</div>
+  <div class="rg-node-title" data-rg-table="${esc(table)}" title="${titleTip}" style="height:${subText ? 34 : 32}px;line-height:${subText ? 20 : 32}px;padding:${subText ? '6px' : '0'} 8px;font-size:13px;font-weight:600;color:${isAnchor ? c.primary : c.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;${fields.length ? `border-bottom:1px solid ${c.border};${titleBg}` : ''}">${esc(titleText)}${subHtml}</div>
   <div style="padding-top:4px">${fieldHtml}${more}</div>
 </div>`
 }
@@ -319,11 +359,18 @@ function portOffsetY(table, comment, column, h) {
 
 /** 字段行中心点(节点左/右缘)+ 出边侧(+1 右 / -1 左);行不可见时退化为边框交点 */
 function fieldEndpoint(self, nodeEl, column, oppositeEl) {
+  const table = nodeEl.id
+  let comment = ''
+  try {
+    comment = self.context.graph.getNodeData(table)?.data?.comment || ''
+  } catch {
+    comment = '' // 节点刚被移除(重建/删除)时同样退化为无注释口径
+  }
+  const [w, h] = nodeSize(table, comment)
+  // getCenter() 恒为元素几何中心(实测:数据级 style.x/y 的 html 节点,DOM 左上角=model 点、
+  // 元素局部几何以 model 点为原点,中心即 model+半宽半高;布局坐标亦同),两种模式同一口径,直接按中心算
   const center = nodeEl.getCenter()
   const opposite = oppositeEl.getCenter()
-  const table = nodeEl.id
-  const comment = self.context.graph.getNodeData(table)?.data?.comment || ''
-  const [w, h] = nodeSize(table, comment)
   const idx = column == null
     ? -1
     : visibleFields(table).findIndex((f) => f.name === column)
@@ -338,7 +385,15 @@ function fieldEndpoint(self, nodeEl, column, oppositeEl) {
 
 /** 两端字段行对齐端点 + 出边侧(field-cubic / field-polyline 两种线型共用) */
 function erEdgeEndpoints(self) {
-  const rel = self.context.graph.getEdgeData(self.id)?.data || {}
+  // create-edge 的橡皮筋辅助边(g6-create-edge-assist-edge-id)在「建边/取消」瞬间会被移除,
+  // 而重绘(getKeyPath)可能晚一拍才拿到它——G6 的 getEdgeData 对不存在的边直接抛错,
+  // 不兜住会打断整次 repaint。取不到就按「无字段」处理:端点退化到节点边框交点,视觉无碍。
+  let rel = {}
+  try {
+    rel = self.context.graph.getEdgeData(self.id)?.data || {}
+  } catch {
+    rel = {}
+  }
   const source = fieldEndpoint(self, self.sourceNode, rel.oneColumn, self.targetNode)
   const target = fieldEndpoint(self, self.targetNode, rel.manyColumn, self.sourceNode)
   self.sides = [source.side, target.side]
@@ -552,6 +607,48 @@ class ErDagreGridLayout extends BaseLayout {
 }
 register(ExtensionCategory.LAYOUT, 'er-dagre-grid', ErDagreGridLayout)
 
+// ---------- mapping 模式布局 mapping-row ----------
+// 字段映射不需要层次关系图:第 1 个节点(基准表,锚点)固定在左,其余节点(各对比表)在右侧
+// **一行等距水平排开**,且所有卡片中心都落在同一条水平中心线(y=0)上。
+// 表多时靠画布缩放/平移(适应画布/鸟瞰图)容纳,而不是折行——折行会破坏「同一条中心线」。
+//
+// 坐标是**纯函数算好写进节点样式**的(buildData 里调用),布局类只把同一份坐标回吐:
+// G6 对 html 节点只认数据级 style.x/y(布局结果异步回填,不会同步到 DOM),且该口径下
+// 坐标按「左上角」对齐 DOM —— 故这里写左上角坐标;连线端点经 getCenter() 取元素几何中心统一计算(见 fieldEndpoint)。
+function mappingRowPositions(nodes, opts = {}) {
+  const sizeOf = (n) => {
+    if (n.data?.table) return nodeSize(n.data.table, n.data.comment || '')
+    const sz = n.style?.size
+    const num = (v, fb) => { const x = Number(v); return Number.isFinite(x) && x > 0 ? x : fb }
+    if (Array.isArray(sz)) return [num(sz[0], NODE_W), num(sz[1], 40)]
+    return [num(sz, NODE_W), 40]
+  }
+  const out = new Map()
+  if (!nodes.length) return out
+  const gapX = opts.ranksep ?? 160
+  const anchor = nodes[0]
+  const [aw, ah] = sizeOf(anchor)
+  out.set(String(anchor.id), { x: -aw / 2, y: -ah / 2 }) // 锚点中心 = (0, 0)
+  let x = aw / 2 + gapX
+  for (const n of nodes.slice(1)) {
+    const [w, h] = sizeOf(n)
+    // y = -h/2:卡片中心落在锚点中心所在的水平中心线上(卡片高度不同也能对齐)
+    out.set(String(n.id), { x, y: -h / 2 })
+    x += w + gapX
+  }
+  return out
+}
+
+class MappingRowLayout extends BaseLayout {
+  id = 'mapping-row'
+  // 坐标已写进节点数据,这里返回不带坐标的空结果:G6 会把结果与现有节点数据合并,不返回即保留
+  async execute(model) {
+    const { nodes = [] } = model
+    return { nodes: nodes.map((n) => ({ id: String(n.id) })), edges: [], combos: [] }
+  }
+}
+register(ExtensionCategory.LAYOUT, 'mapping-row', MappingRowLayout)
+
 /** 边样式:候选虚线灰色 / 确认实线主题色 / 疑似多对多红色;两端按基数画竖杠/鸦脚 */
 function edgeStyle(r) {
   const c = themeColors()
@@ -590,11 +687,17 @@ function edgeStyle(r) {
 /** props -> G6 数据;边 data 带两端字段名(field-cubic 边据此对齐字段行) */
 function buildData() {
   relById = new Map()
-  const nodes = props.nodes.map((n) => ({
+  const rawNodes = props.nodes.map((n) => ({
     id: n.name,
-    data: { table: n.name, comment: n.comment || '' },
+    data: { table: n.name, comment: n.comment || '', label: n.label || '' },
     style: { size: nodeSize(n.name, n.comment) }
   }))
+  // mapping 模式:坐标在数据里一次算好并写入(G6 对 html 节点的定位只认数据级 style.x/y,
+  // 布局结果是异步回填的、不会同步到 html DOM——实测两个节点会叠在同一处)
+  const columnsPos = props.mode === 'mapping' ? mappingRowPositions(rawNodes) : null
+  const nodes = columnsPos
+    ? rawNodes.map((n) => ({ ...n, style: { ...n.style, ...(columnsPos.get(String(n.id)) || {}) } }))
+    : rawNodes
   const edges = props.edges.map((r) => {
     relById.set(String(r.id), r)
     return {
@@ -608,16 +711,120 @@ function buildData() {
   return { nodes, edges }
 }
 
-/** 布局配置:组合布局 er-dagre-grid(有关系的表 dagre 层次 + 孤儿表底部多行网格),一次性算好不重绘 */
+/** 布局配置:关系图=er-dagre-grid(有关系的表 dagre 层次 + 孤儿表底部多行网格);字段映射=mapping-columns(锚点在左、对比表右侧分列等距) */
 function layoutOptions() {
   // animation:false——G6 v5 布局动画是在 render() resolve 之后才推移节点的,
   // 开着动画时 fitView 采到的是未收敛位置(zoom 异常偏大、节点散出视口)
+  if (props.mode === 'mapping') {
+    return { type: 'mapping-row', ranksep: 160, animation: false }
+  }
   return { type: 'er-dagre-grid', rankdir: 'LR', nodesep: 24, ranksep: 120, animation: false }
+}
+
+/** 映射边样式(create-edge 新建边与状态重建边共用同一套:确认实线主题色 + 1:1 两端竖杠) */
+function mappingEdgeStyle() {
+  return edgeStyle({ cardinality: 'ONE_TO_ONE', status: 'CONFIRMED' })
+}
+
+// hover 的字段行(mapping 模式):直接改行 DOM,绝不走 G6 重绘——整图 setData+draw 代价大,
+// hover 高频触发(跨行即刷)会明显卡顿。记录当前高亮行元素与其原始内联样式,换行/离开时还原
+let hoverRowEl = null
+let hoverRowStyle = ''
+
+function clearRowHover() {
+  if (hoverRowEl?.isConnected) hoverRowEl.setAttribute('style', hoverRowStyle)
+  hoverRowEl = null
+  hoverRowStyle = ''
+}
+
+/** 容器层 pointermove/mousemove 委托(捕获):只有「换到另一个行元素」才动一次手,O(1) 不影响滑动流畅度 */
+function onContainerPointerMove(ev) {
+  if (props.mode !== 'mapping') return
+  const colEl = ev.target?.closest?.('[data-rg-column]') || null
+  if (colEl === hoverRowEl) return
+  clearRowHover()
+  if (!colEl) return
+  hoverRowEl = colEl
+  hoverRowStyle = colEl.getAttribute('style') || ''
+  const c = themeColors()
+  colEl.style.background = `${c.primary}1f`
+  colEl.style.borderRadius = '3px'
+  // 次要色(未连线行)提亮为正文色(对齐原高亮口径);已连线行是主题色加粗,保持不动
+  if (colEl.style.color === c.textSecondary) colEl.style.color = c.text
+}
+
+/** create-edge 交互进行中(橡皮筋辅助节点还在模型里):此时不能再 setData 重绘,否则辅助节点被清掉、行为下次 pointermove 抛错 */
+function createEdgePending() {
+  const g = baseRef.value?.getGraph()
+  if (!g) return false
+  try {
+    return !!g.getNodeData('g6-create-edge-assist-node-id')
+  } catch {
+    return false
+  }
+}
+
+/** 原地重绘(不跑布局、不动视口):create-edge 交互进行中则跳过,避免打断连线 */
+function repaintInPlace() {
+  if (createEdgePending()) return
+  baseRef.value?.repaint(buildData())
+}
+
+// 字段行点击日志(最近几次):create-edge 行为只给节点 id,字段名要从容器点击委托里带上来的记录取;
+// 只认「最后两次点击」,避免点到节点标题/空白后拿旧记录错连
+let fieldClickLog = []
+// create-edge 临时边序号:临时边 id 必须唯一——重连「已映射过的基准字段」时,同语义的正式边
+// (map:表:字段)还留在模型里,同 id 会让 G6 addEdgeData 抛 Edge already exists,create-edge 流程
+// 中断(辅助边残留、之后点击全被吞),故临时边用独立 id,正式边由父级按映射重建时落
+let tmpEdgeSeq = 0
+function noteFieldClick(table, column) {
+  fieldClickLog.push({ table, column })
+  if (fieldClickLog.length > 4) fieldClickLog.shift()
+}
+function columnOfRecentClick(table) {
+  for (let i = fieldClickLog.length - 1; i >= 0; i--) {
+    if (fieldClickLog[i].table === table) return fieldClickLog[i].column
+  }
+  return ''
+}
+
+/**
+ * create-edge(trigger=click)新建边回调:两端都必须是「刚点过的字段行」,且必须一侧是基准表、另一侧是对比表;
+ * 返回带 oneColumn/manyColumn 的边数据(field-cubic 据此把端点对齐到字段行),不合法返回 undefined 取消创建。
+ */
+function onCreateEdge(edge) {
+  const last = fieldClickLog.slice(-2)
+  const source = last.find((x) => x.table === edge.source)
+  const target = last.find((x) => x.table === edge.target)
+  if (!source || !target) return undefined
+  const srcIsBase = edge.source === props.anchorTable
+  const dstIsBase = edge.target === props.anchorTable
+  if (srcIsBase === dstIsBase) return undefined // 基准↔基准 / 对比表↔对比表 不连
+  const oneColumn = srcIsBase ? source.column : target.column
+  const manyColumn = srcIsBase ? target.column : source.column
+  const manyTable = srcIsBase ? edge.target : edge.source
+  return {
+    ...edge,
+    id: `map-tmp:${manyTable}:${oneColumn}:${++tmpEdgeSeq}`,
+    data: { oneColumn, manyColumn },
+    style: mappingEdgeStyle()
+  }
+}
+
+/** 新建边完成:交给调用方落状态(父级更新映射后整图按状态重建:正式边以 map:表:字段 落模型,临时边被收敛移除) */
+function onFinishEdge(edge) {
+  emit('mapping-connect', {
+    oneTable: edge.source,
+    manyTable: edge.target,
+    oneColumn: edge.data?.oneColumn,
+    manyColumn: edge.data?.manyColumn
+  })
 }
 
 /** 平行边(同一对表多条关系)处理:仅「仅表名」档位需要按曲率分开——
  *  有字段行的档位下边端点已按字段行天然分开,且 bundle 会把自定义边改写成 quadratic 丢掉字段对齐 */
 function parallelEdgeTransforms() {
+  if (props.mode === 'mapping') return []
   return props.level === 'name' ? [{ type: 'process-parallel-edges', mode: 'bundle', distance: 24 }] : []
 }
 
@@ -646,7 +853,12 @@ const graphOptions = computed(() => ({
   behaviors: [
     // 节点可拖拽(底座内置 drag-canvas 拖画布);Shift+拖 让位给底座框选(selectable 内置 brush-select,
     // 否则按住 Shift 拖节点会一边拖节点一边画框选)
-    { type: 'drag-element', enable: (e) => !e.shiftKey }
+    { type: 'drag-element', enable: (e) => !e.shiftKey },
+    // mapping 模式:用 G6 内置 create-edge(trigger=click)点两端字段行连线,自带橡皮筋辅助边;
+    // 字段名由容器点击委托记录(见 onCreateEdge),两端不合法(同侧表/未点字段行)的新建请求直接取消
+    ...(props.mode === 'mapping'
+      ? [{ type: 'create-edge', trigger: 'click', style: mappingEdgeStyle(), onCreate: onCreateEdge, onFinish: onFinishEdge }]
+      : [])
   ]
 }))
 
@@ -660,7 +872,9 @@ const minimapOptions = computed(() => ({
 
 // 名字口径开关:只影响节点 HTML 渲染(renderNodeHtml 读 props.fieldNameMode),
 // 不进图数据、不改节点尺寸(副标题行有无只看 comment) → 走底座 repaint(只重绘不重排,同对象管理图口径)
-watch(() => props.fieldNameMode, () => baseRef.value?.repaint(buildData()))
+watch(() => props.fieldNameMode, () => repaintInPlace())
+// 基准字段高亮集合变化(向导第二步改勾选后回到本步):原地重绘即可
+watch(() => props.highlightColumns, () => repaintInPlace())
 
 // ---------- 事件口径:单击节点选中(单击表名除外,见 onContainerClick)/ 点边回查原始关系 / 双击表名跳字段明细 ----------
 function onNodeClick(id) {
@@ -710,6 +924,17 @@ async function rejectSelected() {
  *  单选经底座 setSelection 接入统一选中状态;Shift+点击增减由底座 click-select 处理,这里不重复;
  *  拖拽节点后的残留 click(位移>4px)不响应 */
 function onContainerClick(ev) {
+  // mapping 模式:点字段行 = 派发 field-click(连线本身交给 create-edge 行为);字段名在 pointerdown 记录
+  if (props.mode === 'mapping') {
+    const colEl = ev.target?.closest?.('[data-rg-column]')
+    if (!colEl) return
+    const moved = downPos && (Math.abs(ev.clientX - downPos[0]) + Math.abs(ev.clientY - downPos[1]) > 4)
+    if (moved) return
+    const table = colEl.getAttribute('data-rg-column-table')
+    const column = colEl.getAttribute('data-rg-column')
+    if (table && column) emit('field-click', { table, column })
+    return
+  }
   // 「+N 个字段」/「收起字段」操作行:切换展开态(属于节点内操作,不触发选中)
   const moreRow = ev.target?.closest?.('.rg-more-row')
   if (moreRow) {
@@ -737,6 +962,16 @@ function onContainerClick(ev) {
 function onContainerPointerdown(ev) {
   downPos = [ev.clientX, ev.clientY]
   if (ev.target?.closest?.('.rg-node-title, .rg-more-row')) lastTitleClick = Date.now()
+  // mapping 模式:字段名在 pointerdown 就记下来——G6 的 node:click 由 pointerup 合成派发(早于 DOM click),
+  // create-edge 的 onCreate 回调发生在那一刻,晚于 click 再记就来不及了
+  if (props.mode === 'mapping') {
+    const colEl = ev.target?.closest?.('[data-rg-column]')
+    if (colEl) {
+      const table = colEl.getAttribute('data-rg-column-table')
+      const column = colEl.getAttribute('data-rg-column')
+      if (table && column) noteFieldClick(table, column)
+    }
+  }
 }
 
 /** 「+N 个字段」/「收起字段」点击:切换节点展开态并就地重渲染该节点(不重布局、不动视口;边端点随可见行重对齐) */
@@ -750,8 +985,9 @@ async function toggleExpand(table) {
   await graph.render()
 }
 
-/** 双击表名跳字段明细:HTML 节点内 .rg-node-title 的捕获阶段委托 */
+/** 双击表名跳字段明细:HTML 节点内 .rg-node-title 的捕获阶段委托(mapping 模式不跳转) */
 function onContainerDblclick(ev) {
+  if (props.mode === 'mapping') return
   const title = ev.target?.closest?.('.rg-node-title')
   if (!title) return
   const table = title.getAttribute('data-rg-table')
@@ -764,6 +1000,12 @@ onMounted(() => {
   el.addEventListener('click', onContainerClick, true)
   el.addEventListener('dblclick', onContainerDblclick, true)
   el.addEventListener('pointerdown', onContainerPointerdown, true)
+  // pointermove + mousemove 都挂:真实鼠标两者都会来(handler 内部按行元素去重,重复调用无副作用),
+  // 某些环境/自动化只投递 mousemove,挂一个会漏掉 hover 高亮;pointerleave 在鼠标划出画布时清掉行高亮
+  el.addEventListener('pointermove', onContainerPointerMove, true)
+  el.addEventListener('mousemove', onContainerPointerMove, true)
+  el.addEventListener('pointerleave', clearRowHover)
+  el.addEventListener('mouseleave', clearRowHover)
 })
 
 /**
@@ -807,6 +1049,10 @@ onUnmounted(() => {
   el?.removeEventListener('click', onContainerClick, true)
   el?.removeEventListener('dblclick', onContainerDblclick, true)
   el?.removeEventListener('pointerdown', onContainerPointerdown, true)
+  el?.removeEventListener('pointermove', onContainerPointerMove, true)
+  el?.removeEventListener('mousemove', onContainerPointerMove, true)
+  el?.removeEventListener('pointerleave', clearRowHover)
+  el?.removeEventListener('mouseleave', clearRowHover)
 })
 </script>
 

@@ -80,7 +80,7 @@ export function confirmRelation(id) {
   return request.post(`/relations/${id}/confirm`)
 }
 
-/** 否决关系(候选/确认均可转否决;否决对再推导时不跳过——重新验证,命中则回炉为候选) */
+/** 否决关系(候选/确认均可转否决;人工审核结论落库后重新推导不再覆盖) */
 export function rejectRelation(id) {
   return request.post(`/relations/${id}/reject`)
 }
@@ -90,15 +90,19 @@ export function deleteRelation(id) {
   return request.delete(`/relations/${id}`)
 }
 
-// 批量确认/否决/删除,入参 ids 数组;返回 { ok, updated }(updated=实际影响数,不存在的 id 忽略;删除不限状态)
-export function batchConfirmRelations(ids) {
-  return request.post('/relations/batch-confirm', { ids })
+// 批量确认/否决,入参 ids 数组 + 可选 remarks(键为关系 id 字符串,值为人工填写的否决原因;
+// 只有本次修改过的行才带,缺省的行保留原备注);返回 { ok, updated }(updated=实际影响数,不存在的 id 忽略)
+export function batchConfirmRelations(ids, remarks) {
+  return request.post('/relations/batch-confirm', { ids, remarks })
 }
-export function batchRejectRelations(ids) {
-  return request.post('/relations/batch-reject', { ids })
+export function batchRejectRelations(ids, remarks) {
+  return request.post('/relations/batch-reject', { ids, remarks })
 }
-export function batchDeleteRelations(ids) {
-  return request.post('/relations/batch-delete', { ids })
+
+/** 关系审核数据(导出 ER 关系 3 个 sheet:表清单 / 推导关系清单 / 关系变化)
+ *  params: { datasourceId, dbName, schemaName, table? };table 非空时只保留该表参与的关系 */
+export function getRelationAudit(params) {
+  return request.get('/relation-audit', { params })
 }
 
 /** ER 图数据;params: { datasourceId, dbName, schemaName, table?, includeCandidate? }
@@ -124,6 +128,11 @@ export function createObjectDir(payload) {
 /** 重命名目录 */
 export function renameObjectDir(id, name) {
   return request.put(`/object-dirs/${id}`, { name })
+}
+
+/** 同级目录重排(目录树拖动排序);payload: { datasourceId, parentId(可空=根目录), orderedIds:[同级目录 id 按期望顺序] } */
+export function sortObjectDirs(payload) {
+  return request.post('/object-dirs/sort', payload)
 }
 
 /** 删除目录(级联删除子目录/挂载表/关系表,响应含删除统计) */
@@ -179,7 +188,7 @@ export function cancelMetadataSync(id) {
 // ---------- 数据比对 ----------
 // 视图结构:任务 CompareJobView / 目标指标 CompareTargetView / 差异行 CompareDiffRow,字段见后端 CompareModels.kt
 
-/** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fields[], targets[{datasourceId, db, schema, table}]};返回 {jobId} */
+/** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fields[], targets[{datasourceId, db, schema, table}], displayField?};返回 {jobId} */
 export function createCompareJob(payload) {
   return request.post('/compare-jobs', payload)
 }

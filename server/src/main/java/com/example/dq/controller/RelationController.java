@@ -60,7 +60,7 @@ public class RelationController {
         ctx.json(Map.of("ok", true));
     }
 
-    /** 否决关系(候选/确认均可转否决;否决对再推导时跳过) */
+    /** 否决关系(候选/确认均可转否决;人工审核结论落库后重新推导不再覆盖) */
     public void reject(Context ctx) {
         relationService.reject(id(ctx));
         ctx.json(Map.of("ok", true));
@@ -72,22 +72,27 @@ public class RelationController {
         ctx.json(Map.of("ok", true));
     }
 
-    /** 批量确认(候选/否决均可转确认),返回实际更新数 updated(不存在的 id 忽略) */
+    /** 批量确认(候选/否决均可转确认;remarks 为逐条人工备注,可选),返回实际更新数 updated(不存在的 id 忽略) */
     public void batchConfirm(Context ctx) {
         RelationBatchRequest req = Validators.validate(ctx.bodyAsClass(RelationBatchRequest.class));
-        ctx.json(Map.of("ok", true, "updated", relationService.confirmBatch(req.getIds())));
+        ctx.json(Map.of("ok", true, "updated", relationService.confirmBatch(req.getIds(), req.getRemarks())));
     }
 
-    /** 批量否决(候选/确认均可转否决),返回实际更新数 updated */
+    /** 批量否决(候选/确认均可转否决;remarks 为逐条人工备注,可选),返回实际更新数 updated */
     public void batchReject(Context ctx) {
         RelationBatchRequest req = Validators.validate(ctx.bodyAsClass(RelationBatchRequest.class));
-        ctx.json(Map.of("ok", true, "updated", relationService.rejectBatch(req.getIds())));
+        ctx.json(Map.of("ok", true, "updated", relationService.rejectBatch(req.getIds(), req.getRemarks())));
     }
 
-    /** 批量删除(任意状态,误删可重新推导找回),返回实际删除数 updated */
+    /** 批量删除(任意状态,误删可重新推导找回),返回实际删除数 updated(界面已不再提供该入口,接口保留) */
     public void batchDelete(Context ctx) {
         RelationBatchRequest req = Validators.validate(ctx.bodyAsClass(RelationBatchRequest.class));
         ctx.json(Map.of("ok", true, "updated", relationService.deleteBatch(req.getIds())));
+    }
+
+    /** 关系审核数据(导出「推导关系清单 / 关系变化」sheet 用):最终关系 / 原始关系 / 关系变化;table 可选,只保留该表参与的关系 */
+    public void audit(Context ctx) {
+        ctx.json(relationService.audit(dsId(ctx), ctx.queryParam("dbName"), schemaName(ctx), ctx.queryParam("table")));
     }
 
     /** ER 图数据:table 空=全库总图(CONFIRMED 边+孤儿表,includeCandidate 加候选边);非空=该表星型(含候选边) */

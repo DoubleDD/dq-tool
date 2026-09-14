@@ -3,6 +3,7 @@ package com.example.dq.env
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.discovery.LanDiscoveryService
+import com.example.dq.model.AiScene
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.AiUsageRepository
 import com.example.dq.repository.CompareRepository
@@ -188,7 +189,9 @@ class ServiceEnv(val config: AppConfig) {
     val relationInferService = RelationInferService(tableRelationRepo, relationInferJobRepo, metaCacheRepo,
         dataSourceService, systemSettingsService, dialectFactory, aiConfigService, tableDocRepo, aiService)
     val compareService = CompareService(compareRepo, dataSourceService, dialectFactory,
-        metadataService, systemSettingsService)
+        metadataService, systemSettingsService, tableSystemRepo, aiConfigService,
+        // 匹配逻辑 3 的补配调用计入 AI 用量统计(场景:比对匹配)
+        { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MATCH) })
 
     /**
      * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的

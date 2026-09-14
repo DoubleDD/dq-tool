@@ -14,14 +14,17 @@ class CompareRepository(private val jdbc: Jdbc) {
 
     data class JobRow(val id: Long, val name: String, val baseDatasourceId: Long, val baseDb: String,
                       val baseSchema: String?, val baseTable: String, val keyField: String,
-                      val fieldsJson: String?, val status: String, val stage: String?,
+                      val displayField: String?, val matchMode: String?, val fieldsJson: String?,
+                      val status: String, val stage: String?,
                       val totalUnits: Int, val doneUnits: Int, val error: String?, val archived: Boolean,
                       val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?)
 
     private val jobMapper: (ResultSet) -> JobRow = { rs ->
         JobRow(rs.getLong("id"), rs.getString("name"), rs.getLong("base_datasource_id"),
             rs.getString("base_db") ?: "", rs.getString("base_schema"), rs.getString("base_table"),
-            rs.getString("key_field"), rs.getString("fields_json"), rs.getString("status"), rs.getString("stage"),
+            rs.getString("key_field"), rs.getString("display_field"), rs.getString("match_mode"),
+            rs.getString("fields_json"),
+            rs.getString("status"), rs.getString("stage"),
             rs.getInt("total_units"), rs.getInt("done_units"), rs.getString("error"), rs.getBoolean("archived"),
             ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"))
     }
@@ -30,27 +33,37 @@ class CompareRepository(private val jdbc: Jdbc) {
 
     data class TargetRow(val id: Long, val jobId: Long, val datasourceId: Long, val dsName: String?,
                          val dbName: String, val schemaName: String?, val tableName: String, val status: String,
-                         val baseCount: Int?, val matchedCount: Int?, val missingCount: Int?, val extraCount: Int?,
-                         val fieldMismatchCount: Int?, val coverage: Double?, val fieldConsistency: Double?,
-                         val completeness: Double?, val score: Double?, val error: String?)
+                         val baseCount: Int?, val targetCount: Int?, val matchedCount: Int?,
+                         val codeMatchedCount: Int?, val nameMatchedCount: Int?, val aiMatchedCount: Int?,
+                         val missingCount: Int?,
+                         val extraCount: Int?, val fieldMismatchCount: Int?, val coverage: Double?,
+                         val fieldConsistency: Double?, val completeness: Double?, val score: Double?,
+                         val error: String?, val fieldMappingJson: String? = null)
 
     private val targetMapper: (ResultSet) -> TargetRow = { rs ->
         TargetRow(rs.getLong("id"), rs.getLong("job_id"), rs.getLong("datasource_id"), rs.getString("ds_name"),
             rs.getString("db_name") ?: "", rs.getString("schema_name"), rs.getString("table_name"),
-            rs.getString("status"), intOrNull(rs, "base_count"), intOrNull(rs, "matched_count"),
+            rs.getString("status"), intOrNull(rs, "base_count"), intOrNull(rs, "target_count"),
+            intOrNull(rs, "matched_count"),
+            intOrNull(rs, "code_matched_count"), intOrNull(rs, "name_matched_count"),
+            intOrNull(rs, "ai_matched_count"),
             intOrNull(rs, "missing_count"), intOrNull(rs, "extra_count"), intOrNull(rs, "field_mismatch_count"),
             doubleOrNull(rs, "coverage"), doubleOrNull(rs, "field_consistency"),
-            doubleOrNull(rs, "completeness"), doubleOrNull(rs, "score"), rs.getString("error"))
+            doubleOrNull(rs, "completeness"), doubleOrNull(rs, "score"), rs.getString("error"),
+            rs.getString("field_mapping_json"))
     }
 
     // ---------- 差异明细行 ----------
 
     data class DiffRow(val id: Long, val jobId: Long, val targetId: Long, val objectKey: String?,
-                       val objectName: String?, val diffType: String, val diffJson: String?)
+                       val objectName: String?, val diffType: String, val diffJson: String?,
+                       /** 该行对象的对齐来源:CODE / NAME / LLM;NULL = 老数据(按编码对齐解读) */
+                       val matchBy: String? = null)
 
     private val diffMapper: (ResultSet) -> DiffRow = { rs ->
         DiffRow(rs.getLong("id"), rs.getLong("job_id"), rs.getLong("target_id"), rs.getString("object_key"),
-            rs.getString("object_name"), rs.getString("diff_type"), rs.getString("diff_json"))
+            rs.getString("object_name"), rs.getString("diff_type"), rs.getString("diff_json"),
+            rs.getString("match_by"))
     }
 
     private fun ts(rs: ResultSet, col: String): LocalDateTime? = rs.getTimestamp(col)?.toLocalDateTime()
@@ -67,11 +80,18 @@ class CompareRepository(private val jdbc: Jdbc) {
 
     // ---------- 任务操作 ----------
 
+    /**
+     * 落任务:displayField 为提交时解析好的对象名称(显示名)字段,可空(空 = 无显示字段,object_name 落空串);
+     * matchMode 为对象对齐匹配逻辑(EXACT/CODE_THEN_NAME/CODE_NAME_LLM),空 = 老任务按「只按编码」解读
+     */
     fun insertJob(name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?, baseTable: String,
-                  keyField: String, fieldsJson: String, totalUnits: Int): Long =
+                  keyField: String, fieldsJson: String, totalUnits: Int, displayField: String? = null,
+                  matchMode: String? = null): Long =
         jdbc.insert("INSERT INTO compare_job(name, base_datasource_id, base_db, base_schema, base_table, " +
-            "key_field, fields_json, status, total_units, started_at) VALUES (?,?,?,?,?,?,?,'RUNNING',?,CURRENT_TIMESTAMP)",
-            name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fieldsJson, totalUnits)
+            "key_field, fields_json, display_field, match_mode, status, total_units, started_at) " +
+            "VALUES (?,?,?,?,?,?,?,?,?,'RUNNING',?,CURRENT_TIMESTAMP)",
+            name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fieldsJson, displayField,
+            matchMode, totalUnits)
 
     fun getJob(id: Long): JobRow? =
         jdbc.queryOne("SELECT * FROM compare_job WHERE id=?", id, mapper = jobMapper)
@@ -138,10 +158,12 @@ class CompareRepository(private val jdbc: Jdbc) {
 
     // ---------- 目标操作 ----------
 
+    /** 落目标行:fieldMappingJson 为人工字段映射(基准列名 → 目标列名)的 JSON 对象,空 = 按字段名自动匹配 */
     fun insertTarget(jobId: Long, datasourceId: Long, dsName: String?, dbName: String, schemaName: String?,
-                     tableName: String): Long =
-        jdbc.insert("INSERT INTO compare_target(job_id, datasource_id, ds_name, db_name, schema_name, table_name, status) " +
-            "VALUES (?,?,?,?,?,?,'PENDING')", jobId, datasourceId, dsName, dbName, schemaName, tableName)
+                     tableName: String, fieldMappingJson: String? = null): Long =
+        jdbc.insert("INSERT INTO compare_target(job_id, datasource_id, ds_name, db_name, schema_name, table_name, " +
+            "field_mapping_json, status) VALUES (?,?,?,?,?,?,?,'PENDING')",
+            jobId, datasourceId, dsName, dbName, schemaName, tableName, fieldMappingJson)
 
     fun listTargets(jobId: Long): List<TargetRow> =
         jdbc.query("SELECT * FROM compare_target WHERE job_id=? ORDER BY id", jobId, mapper = targetMapper)
@@ -150,18 +172,35 @@ class CompareRepository(private val jdbc: Jdbc) {
         jdbc.update("UPDATE compare_target SET status='RUNNING' WHERE id=?", id)
     }
 
-    /** 目标比对完成:指标四项比率连同计数一次性落库 */
-    fun updateTargetStats(id: Long, baseCount: Int, matchedCount: Int, missingCount: Int, extraCount: Int,
-                          fieldMismatchCount: Int, coverage: Double, fieldConsistency: Double,
-                          completeness: Double, score: Double) {
-        jdbc.update("UPDATE compare_target SET status='DONE', base_count=?, matched_count=?, missing_count=?, " +
-            "extra_count=?, field_mismatch_count=?, coverage=?, field_consistency=?, completeness=?, score=? WHERE id=?",
-            baseCount, matchedCount, missingCount, extraCount, fieldMismatchCount,
-            coverage, fieldConsistency, completeness, score, id)
+    /**
+     * 目标比对完成:指标四项比率连同计数一次性落库(targetCount=目标侧实际读到的总行数,含多余行);
+     * code/name/aiMatchedCount 为三种对齐来源各自命中的对象数,三者之和 = matchedCount
+     * (老口径只有 code 匹配,故三列留空时按 matchedCount 解读)
+     */
+    fun updateTargetStats(id: Long, baseCount: Int, targetCount: Int, matchedCount: Int, missingCount: Int,
+                          extraCount: Int, fieldMismatchCount: Int, coverage: Double, fieldConsistency: Double,
+                          completeness: Double, score: Double,
+                          codeMatchedCount: Int? = null, nameMatchedCount: Int? = null,
+                          aiMatchedCount: Int? = null) {
+        jdbc.update("UPDATE compare_target SET status='DONE', base_count=?, target_count=?, matched_count=?, " +
+            "missing_count=?, extra_count=?, field_mismatch_count=?, coverage=?, field_consistency=?, " +
+            "completeness=?, score=?, code_matched_count=?, name_matched_count=?, ai_matched_count=? WHERE id=?",
+            baseCount, targetCount, matchedCount, missingCount, extraCount, fieldMismatchCount,
+            coverage, fieldConsistency, completeness, score,
+            codeMatchedCount, nameMatchedCount, aiMatchedCount, id)
     }
 
     fun failTarget(id: Long, error: String) {
         jdbc.update("UPDATE compare_target SET status='FAILED', error=? WHERE id=?", error, id)
+    }
+
+    /**
+     * 给已完成的目标追加说明(如大模型归一化补配部分批次失败):
+     * 追加而不是覆盖,保留既有内容;error 列在 DONE 状态下仅作「需要人工关注的说明」用
+     */
+    fun appendTargetNote(id: Long, note: String) {
+        jdbc.update("UPDATE compare_target SET error = CASE WHEN error IS NULL OR error='' THEN ? " +
+            "ELSE error || ' | ' || ? END WHERE id=?", note.take(1000), note.take(1000), id)
     }
 
     /** 重跑前清空既有结果:tx 删差异明细 + 目标(目标行由调用方随后重建) */
@@ -179,15 +218,16 @@ class CompareRepository(private val jdbc: Jdbc) {
 
     // ---------- 差异明细操作 ----------
 
-    /** 待落库的差异明细行 */
-    data class DiffInput(val objectKey: String?, val objectName: String?, val diffType: String, val diffJson: String?)
+    /** 待落库的差异明细行(matchBy 为对象对齐来源 CODE/NAME/LLM,可空) */
+    data class DiffInput(val objectKey: String?, val objectName: String?, val diffType: String,
+                         val diffJson: String?, val matchBy: String? = null)
 
     /** 批量插入差异明细(单事务;调用方按 500 分批) */
     fun insertDiffs(jobId: Long, targetId: Long, rows: List<DiffInput>) {
         if (rows.isEmpty()) return
         jdbc.tx { conn ->
-            conn.prepareStatement("INSERT INTO compare_diff(job_id, target_id, object_key, object_name, diff_type, diff_json) " +
-                "VALUES (?,?,?,?,?,?)").use { ps ->
+            conn.prepareStatement("INSERT INTO compare_diff(job_id, target_id, object_key, object_name, diff_type, " +
+                "diff_json, match_by) VALUES (?,?,?,?,?,?,?)").use { ps ->
                 for (r in rows) {
                     ps.setLong(1, jobId)
                     ps.setLong(2, targetId)
@@ -195,6 +235,7 @@ class CompareRepository(private val jdbc: Jdbc) {
                     ps.setString(4, r.objectName)
                     ps.setString(5, r.diffType)
                     ps.setString(6, r.diffJson)
+                    ps.setString(7, r.matchBy)
                     ps.addBatch()
                 }
                 ps.executeBatch()
@@ -251,4 +292,16 @@ class CompareRepository(private val jdbc: Jdbc) {
     fun listDiffsForExport(jobId: Long, targetId: Long): List<DiffRow> =
         jdbc.query("SELECT * FROM compare_diff WHERE job_id=? AND target_id=? AND diff_type<>'SAME' ORDER BY id",
             jobId, targetId, mapper = diffMapper)
+
+    /**
+     * 导出用差异行数统计:targetId → (diffType → 行数),只统计非 SAME 行。
+     * 总览表的「差异条数」与明细 sheet 拆分策略(一差异行一 sheet / 超量按目标降级)都只看这个计数,
+     * 不必为拿计数把明细全量读进内存
+     */
+    fun countForExport(jobId: Long): Map<Long, Map<String, Int>> =
+        jdbc.query("SELECT target_id, diff_type, COUNT(*) FROM compare_diff " +
+                "WHERE job_id=? AND diff_type<>'SAME' GROUP BY target_id, diff_type", jobId) { rs ->
+            Triple(rs.getLong(1), rs.getString(2), rs.getInt(3))
+        }.groupBy({ it.first }, { it.second to it.third })
+            .mapValues { (_, rows) -> rows.toMap() }
 }

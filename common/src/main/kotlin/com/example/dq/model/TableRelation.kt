@@ -18,7 +18,7 @@ enum class RelationCardinality { ONE_TO_ONE, ONE_TO_MANY, SUSPECT_MANY_TO_MANY }
 enum class RelationInferStage { NAME_MATCH, SEMANTIC_TABLE, SEMANTIC_COLUMN, VERIFY }
 
 /**
- * 表间关系(table_relation 一行,方向化存储):
+ * 表间关系(table_relation 一行,方向化存储)= **最终关系**:人工审核最后一次修改后的结果;
  * one 侧 = 唯一方(一的一端;ONE_TO_ONE/SUSPECT_MANY_TO_MANY 时按 (表名,字段名) 字典序小的一侧,方向归一化);
  * many 侧 = 重复方(多的一端)。
  */
@@ -37,9 +37,74 @@ data class TableRelation(
     val confidence: String?,
     /** 值交集率(0~1),可空 */
     val overlapRatio: Double?,
+    /** 最终备注(人工填写的否决原因优先于推导说明) */
     val remark: String?,
+    /** 是否已经过人工审核(确认/否决/人工补充均为 true);true 时重新推导不再覆盖本行 */
+    val reviewed: Boolean,
+    val reviewedAt: LocalDateTime?,
     val createdAt: LocalDateTime?,
     val updatedAt: LocalDateTime?,
+)
+
+/**
+ * 原始关系(table_relation_original 一行)= 大模型推导产出的关系快照:
+ * 每次推导按最新验证数据整行刷新(方向无关 upsert),人工审核不修改它,用于与最终关系做差得到「关系变化」。
+ */
+data class TableRelationOriginal(
+    val id: Long,
+    val datasourceId: Long,
+    val dbName: String,
+    val schemaName: String,
+    val oneTable: String,
+    val oneColumn: String,
+    val manyTable: String,
+    val manyColumn: String,
+    val cardinality: String,
+    val status: String,
+    val source: String,
+    val confidence: String?,
+    val overlapRatio: Double?,
+    val remark: String?,
+    val derivedAt: LocalDateTime?,
+    val updatedAt: LocalDateTime?,
+)
+
+/** 关系变化中的一端快照(原始/最终共用同一形状,便于导出时并排展示) */
+data class RelationSnapshot(
+    val oneTable: String,
+    val oneColumn: String,
+    val manyTable: String,
+    val manyColumn: String,
+    val cardinality: String,
+    val status: String,
+    val source: String,
+    val confidence: String?,
+    val overlapRatio: Double?,
+    val remark: String?,
+)
+
+/** 关系变化类型:ADDED 人工新增 / REMOVED 人工删除 / MODIFIED 人工修改 */
+enum class RelationChangeType { ADDED, REMOVED, MODIFIED }
+
+/** 关系变化的变更项(前端转中文文案):STATUS 状态 / REMARK 备注 / DIRECTION 方向 / CARDINALITY 基数 */
+enum class RelationChangeField { STATUS, REMARK, DIRECTION, CARDINALITY }
+
+/**
+ * 关系变化(原始关系 → 最终关系的差异,一行一条有变化的关系):
+ * before 为原始关系快照(ADDED 时 null),after 为最终关系快照(REMOVED 时 null)。
+ */
+data class TableRelationChange(
+    val changeType: String,
+    val changedFields: List<String>,
+    val before: RelationSnapshot?,
+    val after: RelationSnapshot?,
+)
+
+/** ER 关系审核数据(导出 3 个 sheet 的数据源):最终关系 / 原始关系 / 关系变化 */
+data class RelationAuditView(
+    val finals: List<TableRelation>,
+    val originals: List<TableRelationOriginal>,
+    val changes: List<TableRelationChange>,
 )
 
 /** 锚点字段(归一化后的视图模型):name 锚点表字段名;aliases 用户手填的、其他表中引用该字段的常见映射字段名 */

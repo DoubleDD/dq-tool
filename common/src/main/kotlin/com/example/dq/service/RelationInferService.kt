@@ -39,8 +39,9 @@ import java.util.concurrent.Executors
  *   验证阶段据此跳过连接尝试,候选按「未验证」入库(remark 注明,交集率/置信度留空);一张缓存都没有则任务判失败;
  *   已标记不可达且实测在 [KNOWN_DOWN_TTL] 内时本轮连连接都不取(直接读缓存推导,省一次连接池超时等待),
  *   超窗后重新实测一次(标记不会永久生效,恢复后最多 TTL 自动恢复);回源成功时此前 ERROR 标记自愈为 OK;
- * 两条通道候选合并去重(同一字段对 source 优先 NAME_MATCH;已确认/候选对已存在不重复验证/插入,
- *   已确认关系不被降级;已否决对不跳过——重新验证并回炉为 CANDIDATE,同 id 整行刷新含方向翻转)
+ * 两条通道候选合并去重(同一字段对 source 优先 NAME_MATCH;已存在候选对不重复验证/插入,已确认不被降级;
+ *   人工已审核的关系——确认/否决——重新推导一律保留上次结论,不回炉为候选;只有从未审核的新关系才留给人工审核;
+ *   原始关系快照 table_relation_original 随推导刷新,人工审核不改变它,导出时与最终关系做差得到「关系变化」)
  * → 逐对串行验证(stage=VERIFY):值交集(两端各 distinctSampleSql ≤1000,值 toString().trim() 求交集率)
  *   + 基数(唯一索引/主键单列缓存短路,否则 hasDuplicateSql;两端唯一=ONE_TO_ONE,
  *   一端唯一=ONE_TO_MANY(one 侧存唯一方),两端重复=SUSPECT_MANY_TO_MANY 标 remark;
@@ -169,11 +170,11 @@ class RelationInferService(
                 }
             }
 
-            // 候选对:方向无关 key 去重;排除锚点表自身;跳过已存在对(已确认/候选不重复验证,已确认关系不被降级);
-            // REJECTED 不入 existing:否决对重新推导——重新验证并回炉为 CANDIDATE(见 TableRelationRepository.upsertDerived)
+            // 候选对:方向无关 key 去重;排除锚点表自身;跳过「人工已审核」与「已存在候选」的对——
+            // 人工审核结论(确认/否决)重新推导一律保留,不再回炉为候选;只有从未审核的新关系才留给人工审核
             val existing = HashSet<String>()
             for (r in relationRepo.listBySchema(datasourceId, dbName, schema)) {
-                if (r.status != RelationStatus.REJECTED.name) {
+                if (r.reviewed || r.status == RelationStatus.CANDIDATE.name) {
                     existing.add(pairKey(ColRef(r.oneTable, r.oneColumn), ColRef(r.manyTable, r.manyColumn)))
                 }
             }
@@ -266,7 +267,7 @@ class RelationInferService(
                                 val anchor = ColRef(anchorTable, a)
                                 val other = ColRef(t, c)
                                 val key = pairKey(anchor, other)
-                                // 合并规则:已存在对/名字匹配已命中的对不覆盖(source 优先 NAME_MATCH;REJECTED 不跳过,重新验证回炉)
+                                // 合并规则:已存在对/名字匹配已命中的对不覆盖(source 优先 NAME_MATCH;人工已审核的对已在 existing 中跳过)
                                 if (key in existing || candidates.containsKey(key)) continue
                                 semanticHits++
                                 if (candidates.size < candidateLimit) {
@@ -322,7 +323,7 @@ class RelationInferService(
                 if (verifyConn != null) runCatching { verifyConn.close() }
             }
             jobRepo.finish(jobId, found)
-            log.info("关系推导完成: 任务 {} 锚点 {}.{},候选 {} 对(名字命中 {} + 语义命中 {}),验证剔除 {} 对,新发现 {} 对(含否决回炉){}",
+            log.info("关系推导完成: 任务 {} 锚点 {}.{},候选 {} 对(名字命中 {} + 语义命中 {}),验证剔除 {} 对,新发现 {} 对(仅未审核的新关系){}",
                 jobId, anchorTable, anchorSpecs.map { it.name }, candidates.size, totalHits, semanticHits, dropped, found,
                 if (offline) ",来源:本地结构缓存降级(候选未验证)" else "")
         } catch (e: Exception) {
@@ -432,7 +433,7 @@ class RelationInferService(
     }
 
     /**
-     * 验证单对候选并入库,返回是否新插入/回炉:
+     * 验证单对候选并入库,返回是否新插入(新关系):
      * 值交集率 = 交集数/较小样本数;任一侧样本为空(空表/字段全 NULL)不剔除——空库也要能产出候选,
      *   交集率/置信度留空,基数只看索引缓存(空表判重 SQL 无意义,会误判两端唯一),remark 注明未验证待人工裁决;
      * 两端唯一=ONE_TO_ONE(字典序小者入 one 侧),一端唯一=ONE_TO_MANY(one 侧存唯一方),
@@ -441,7 +442,8 @@ class RelationInferService(
      * conn=null 表示数据源不可达(降级读缓存):不跑任何验证 SQL,只信索引缓存,
      *   交集率/置信度留空、基数规则同上,remark 注明「数据源连接不可达…待恢复后复核」;
      * hitAlias 非空表示经映射名命中,remark 注明「经映射字段名 xx 命中」(与其他备注可并存,分号连接);
-     * 入库经 upsertDerived:命中已否决行回炉为 CANDIDATE(按最新方向/验证数据整行刷新),命中非否决行不动
+     * 入库经 upsertDerived:原始关系快照刷新;最终关系不存在→插入 CANDIDATE(留待人工审核),
+     *   人工已审核(reviewed=true)→原样保留,只有新关系才返回非 null(计入新发现)
      */
     private fun verifyAndInsert(conn: Connection?, dialect: DbDialect, datasourceId: Long, dbName: String,
                                 schema: String, a: ColRef, b: ColRef, source: RelationSource,

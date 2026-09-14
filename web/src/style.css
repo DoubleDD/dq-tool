@@ -59,6 +59,9 @@
   /* 表格 */
   --dq-table-header-bg: #f8fafc;
   --dq-table-row-hover-bg: #f6f8fc;
+  /* 数据比对差异明细:不一致单元格整格底色 + 左侧标记条(对齐导出核对表观感) */
+  --dq-diff-cell-bg: #ffebee;
+  --dq-diff-cell-accent: #de9313;
 }
 
 /* ---------- 深色主题(html.dark,配合 EP 官方暗色变量包) ---------- */
@@ -130,6 +133,9 @@ html.dark {
   --dq-scrollbar-thumb-hover: #5c616a;
   --dq-table-header-bg: #26292e;
   --dq-table-row-hover-bg: #303338;
+  /* 数据比对差异明细:暗色下同色系压暗,保证文字可读且不刺眼 */
+  --dq-diff-cell-bg: #3d2429;
+  --dq-diff-cell-accent: #e6a23c;
 }
 
 body {
@@ -321,7 +327,7 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   white-space: nowrap;
 }
 /* 数据源子菜单项右侧编辑图标:默认隐藏,悬停项时才显示(避免整列图标发乱);
-   点击进数据源列表页开编辑框(见 App.vue onEditDs) */
+   点击就地弹编辑框,不跳数据源页(弹框由 App.vue 持有,见 App.vue onEditDs) */
 .sidebar-menu .ds-edit {
   flex-shrink: 0;
   display: inline-flex;

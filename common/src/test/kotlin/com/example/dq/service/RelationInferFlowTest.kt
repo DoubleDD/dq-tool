@@ -35,7 +35,7 @@ import java.time.LocalDateTime
 
 /**
  * ER 关系推导(H2 内存库,SchemaInit 到 V35 + 真实 Repo/Service 组装):
- * 名字匹配全流程、方向归一化幂等、否决对再推导回炉为候选(含方向翻转整行刷新)/已确认不降级、候选上限截断、三态流转、
+ * 名字匹配全流程、方向归一化幂等、人工已审核关系再推导保留结论(不回炉/不降级)/候选上限截断、三态流转、
  * 手动新增、graph 组装、重启恢复;语义匹配(M2)经 HttpServer 假 LLM 端点 + 真实 AiService 覆盖:
  * 两阶段全流程(source=SEMANTIC)、单批失败容错(名字匹配结果保住+附注)、双通道命中 source 优先 NAME_MATCH、
  * 无 AI 配置拒绝;DataSourceService 打桩返回指向业务 H2 库的真实连接
@@ -364,7 +364,7 @@ class RelationInferFlowTest {
     }
 
     @Test
-    fun `已否决对再推导回炉为候选 已确认对跳过且不降级`() {
+    fun `人工已审核的关系再推导保留结论 已否决不复活 已确认不降级`() {
         seedBase()
         submitAndAwait()
         val relations = relationService.list(DS_ID, null, SCHEMA, null, null)
@@ -372,13 +372,15 @@ class RelationInferFlowTest {
         val basin = relations.first { it.oneTable == "basin" }
         relationService.reject(flood.id)
         relationService.confirm(basin.id)
+        assertTrue(relationRepo.findById(flood.id)!!.reviewed)
+        assertTrue(relationRepo.findById(basin.id)!!.reviewed)
 
         val job2 = submitAndAwait()
         assertEquals("DONE", job2.status)
-        assertEquals(1, job2.foundCount) // 否决对重新验证回炉;确认对/已存在候选跳过
-        // 否决对回炉为候选(同 id 刷新验证数据),确认保持确认且置信度不被新推导覆盖
+        assertEquals(0, job2.foundCount) // 人工已审核的对全部跳过,没有新关系
+        // 否决结论保留(不再回炉为候选),确认保持确认且置信度不被新推导覆盖
         val floodAfter = relationRepo.findById(flood.id)!!
-        assertEquals("CANDIDATE", floodAfter.status)
+        assertEquals("REJECTED", floodAfter.status)
         assertEquals("HIGH", floodAfter.confidence)
         val basinAfter = relationRepo.findById(basin.id)!!
         assertEquals("CONFIRMED", basinAfter.status)
@@ -387,7 +389,7 @@ class RelationInferFlowTest {
     }
 
     @Test
-    fun `否决回炉按最新推导方向整行刷新 不产生反向重复行`() {
+    fun `人工已审核的反向否决行再推导保持原样 不产生反向重复行`() {
         // a/b 各一行且值相同:推导得 a.id↔b.id ONE_TO_ONE(字典序 a 入 one 侧)
         biz { st ->
             st.execute("""CREATE TABLE "a" ("id" VARCHAR(50) PRIMARY KEY, "code" VARCHAR(50))""")
@@ -396,19 +398,21 @@ class RelationInferFlowTest {
             st.execute("""INSERT INTO "b" VALUES ('A1', 'C1')""")
         }
         cacheColumns("a" to listOf("id", "code"), "b" to listOf("id", "code"))
-        // 预置一条反向存储的否决行(one=b.id, many=a.id),模拟历史推导方向与本轮相反
+        // 预置一条反向存储、人工已审核的否决行(one=b.id, many=a.id),模拟历史推导方向与人工裁决
         val rejectedId = relationRepo.insertIfAbsent(DS_ID, "", SCHEMA,
-            "b", "id", "a", "id", "ONE_TO_MANY", "REJECTED", "NAME_MATCH", null, null, null)!!
+            "b", "id", "a", "id", "ONE_TO_MANY", "REJECTED", "NAME_MATCH", null, null, "人工否决", reviewed = true)!!
+        // 原始关系快照(该字段对曾由大模型推导产出)
+        relationRepo.upsertOriginal(DS_ID, "", SCHEMA,
+            "b", "id", "a", "id", "ONE_TO_MANY", "CANDIDATE", "NAME_MATCH", null, null, null)
 
         val job = submitAndAwait("a", listOf("id", "code"))
         assertEquals("DONE", job.status) { "任务失败: " + job.error }
-        assertEquals(2, job.foundCount) // 反向否决行回炉 + code 对新插入
-        val revived = relationRepo.findById(rejectedId)!!
-        assertEquals("CANDIDATE", revived.status)
-        assertEquals("ONE_TO_ONE", revived.cardinality) // 方向按最新推导重算:a 入 one 侧
-        assertEquals("a", revived.oneTable)
-        assertEquals("b", revived.manyTable)
-        assertEquals("HIGH", revived.confidence)
+        assertEquals(1, job.foundCount) // a.id↔b.id 人工已审核跳过;只有 code 对是新关系
+        val kept = relationRepo.findById(rejectedId)!!
+        assertEquals("REJECTED", kept.status) // 保留人工否决结论,不复活
+        assertEquals("b", kept.oneTable)      // 方向/基数原样保留
+        assertEquals("a", kept.manyTable)
+        assertEquals("人工否决", kept.remark)
         assertEquals(2, relationService.list(DS_ID, null, SCHEMA, null, null).size) // 无反向重复行
     }
 

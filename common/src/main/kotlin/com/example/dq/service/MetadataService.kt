@@ -47,6 +47,7 @@ class MetadataService(
     @Throws(SQLException::class)
     fun listDatabases(datasourceId: Long, unfiltered: Boolean = false, refresh: Boolean = false): List<String> {
         val ds = dataSourceService.get(datasourceId)
+        val dialect = dialectOf(ds)
         val cacheReady = metaCacheRepo.isDatabaseListReady(datasourceId)
         val all = if (!refresh && cacheReady) {
             metaCacheRepo.listNames(datasourceId, "")
@@ -62,23 +63,32 @@ class MetadataService(
             }
         }
         if (unfiltered) return all
-        return applySchemaFilter(all, ds.schemaFilter)
+        return applySchemaFilter(all, ds.schemaFilter, dialect.systemSchemas())
     }
 
-    /** 实时库清单(不经缓存) */
+    /** 实时库清单(不经缓存):单库方言的「库」就是 schema,按 dialect 统一口径回落,不能只取 listDatabases */
     @Throws(SQLException::class)
     private fun fetchDatabases(datasourceId: Long): List<String> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
         dataSourceService.getConnection(datasourceId).use { conn ->
-            return dialect.listDatabases(conn)
+            return dialect.listDatabasesOrSchemas(conn)
         }
     }
 
     companion object {
-        /** 库过滤白名单:null/空表示不过滤;非空时只保留名单内的库(保持方言返回顺序) */
-        fun applySchemaFilter(databases: List<String>, filter: List<String>?): List<String> {
-            if (filter.isNullOrEmpty()) return databases
+        /**
+         * 库过滤规则:未配置白名单(null/空)时用**默认规则** —— 全部业务库(排除方言系统库),
+         * 与「库过滤」页签「系统库默认不勾选」的前端口径一致;配置了白名单则只保留名单内的库(保持方言返回顺序)。
+         *
+         * 系统库清单由调用方传入方言的 [com.example.dq.dialect.DbDialect.systemSchemas](小写,比对大小写不敏感);
+         * 需要全量(含系统库)的入口(库过滤页签回填、元数据批量同步、缓存写入)一律走 unfiltered=true 旁路。
+         * 想包含系统库时,在库过滤页签勾上并保存即可(写入显式白名单)。
+         */
+        fun applySchemaFilter(databases: List<String>, filter: List<String>?, systemSchemas: Set<String>): List<String> {
+            if (filter.isNullOrEmpty()) {
+                return databases.filterNot { it.lowercase() in systemSchemas }
+            }
             return databases.filter { it in filter }
         }
     }
@@ -109,7 +119,7 @@ class MetadataService(
         }
         // 多库方言(SQL Server)的 schema(dbo 等)不属于白名单语义,只过滤单库方言的 schema(即用户眼中的「库」)
         if (unfiltered || dialect.supportsMultiDatabase()) return all
-        return applySchemaFilter(all, ds.schemaFilter)
+        return applySchemaFilter(all, ds.schemaFilter, dialect.systemSchemas())
     }
 
     /** 实时 schema 清单(不经缓存) */
@@ -353,9 +363,11 @@ class MetadataService(
                 readCache = { schemaStatRepo.findAll(datasourceId, database) },
             ) { fetchAndCache(datasourceId, database) }
         }
-        // 白名单在读取路径同样生效:过滤规则变更后旧缓存无需重建;多库方言的 schema 层级不过滤
-        if (!dialect.supportsMultiDatabase() && !ds.schemaFilter.isNullOrEmpty()) {
-            cached = cached.filter { it.schemaName in ds.schemaFilter!! }
+        // 库过滤规则在读取路径同样生效:规则变更(含「未配置白名单 → 默认排除系统库」)后旧缓存无需重建;
+        // 多库方言的 schema 层级不过滤(白名单作用于数据库层级,见 listDatabases)
+        if (!dialect.supportsMultiDatabase()) {
+            val keep = applySchemaFilter(cached.map { it.schemaName }, ds.schemaFilter, dialect.systemSchemas()).toSet()
+            cached = cached.filter { it.schemaName in keep }
         }
         val latest = scanRepository.latestJobsBySchema(datasourceId, database)
         val docs = schemaDocRepo.findByDatasource(datasourceId, database ?: "")
@@ -437,9 +449,9 @@ class MetadataService(
             val counts = dialect.countTablesBySchema(conn)
             val sizes = dialect.sumSizeBySchema(conn)
             schemasAll = dialect.listSchemas(conn)
-            // 库过滤白名单同样作用于概览缓存;多库方言的 schema 层级不过滤
+            // 库过滤规则同样作用于概览缓存(未配置白名单即默认排除系统库);多库方言的 schema 层级不过滤
             val schemas = if (dialect.supportsMultiDatabase()) schemasAll
-            else applySchemaFilter(schemasAll, ds.schemaFilter)
+            else applySchemaFilter(schemasAll, ds.schemaFilter, dialect.systemSchemas())
             for (schema in schemas) {
                 stats.add(SchemaStatRepository.CachedStat(schema, counts[schema], sizes[schema]))
             }

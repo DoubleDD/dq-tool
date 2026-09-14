@@ -1,6 +1,7 @@
 package com.example.dq.repository
 
 import java.sql.ResultSet
+import java.sql.Statement
 import java.time.LocalDateTime
 
 /**
@@ -10,9 +11,9 @@ import java.time.LocalDateTime
  */
 class ObjectCatalogRepository(private val jdbc: Jdbc) {
 
-    /** 目录行 */
+    /** 目录行;sortOrder=同级手工排序序号(越小越靠前,新建取同级 max+1 追加末尾,故初值顺序=创建时间顺序) */
     data class DirRow(val id: Long, val datasourceId: Long, val parentId: Long, val name: String,
-                      val createdAt: LocalDateTime?, val updatedAt: LocalDateTime?)
+                      val sortOrder: Int, val createdAt: LocalDateTime?, val updatedAt: LocalDateTime?)
 
     /** 挂载表行;relKind=与目录的关系类型(INCLUDE/ASSOC,null=未指定) */
     data class TableRow(val id: Long, val dirId: Long, val dbName: String, val schemaName: String,
@@ -24,13 +25,16 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
 
     // ---------- 目录 ----------
 
-    /** 某数据源全部目录(组树用,量小直接拉回内存) */
+    /**
+     * 某数据源全部目录(组树用,量小直接拉回内存)。
+     * 按同级手工排序序号升序,同级序号相同回退 id(创建顺序);子节点在各自父节点下按此顺序排列
+     */
     fun listDirs(datasourceId: Long): List<DirRow> =
-        jdbc.query("SELECT id, datasource_id, parent_id, name, created_at, updated_at " +
-                "FROM object_dir WHERE datasource_id=? ORDER BY name, id", datasourceId) { rs -> mapDir(rs) }
+        jdbc.query("SELECT id, datasource_id, parent_id, name, sort_order, created_at, updated_at " +
+                "FROM object_dir WHERE datasource_id=? ORDER BY sort_order, id", datasourceId) { rs -> mapDir(rs) }
 
     fun findDir(id: Long): DirRow? =
-        jdbc.queryOne("SELECT id, datasource_id, parent_id, name, created_at, updated_at " +
+        jdbc.queryOne("SELECT id, datasource_id, parent_id, name, sort_order, created_at, updated_at " +
                 "FROM object_dir WHERE id=?", id) { rs -> mapDir(rs) }
 
     /** 同级(同数据源同父目录)是否已存在同名目录;excludeId 用于重命名时排除自己 */
@@ -43,9 +47,52 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
                 datasourceId, parentId, name, excludeId) { rs -> rs.getLong(1) }!! > 0
         }
 
-    fun insertDir(datasourceId: Long, parentId: Long, name: String): Long =
-        jdbc.insert("INSERT INTO object_dir(datasource_id, parent_id, name) VALUES (?,?,?)",
-            datasourceId, parentId, name)
+    /**
+     * 新建目录:sortOrder 为空时取同级(同数据源同父目录)当前最大序号 +1,即追加到同级末尾
+     * (默认顺序 = 创建时间顺序);元数据导入保序时显式传 sortOrder。
+     */
+    fun insertDir(datasourceId: Long, parentId: Long, name: String, sortOrder: Int? = null): Long =
+        jdbc.tx { conn ->
+            val order = sortOrder ?: conn.prepareStatement(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM object_dir WHERE datasource_id=? AND parent_id=?",
+            ).use { ps ->
+                ps.setLong(1, datasourceId)
+                ps.setLong(2, parentId)
+                ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+            }
+            conn.prepareStatement(
+                "INSERT INTO object_dir(datasource_id, parent_id, name, sort_order) VALUES (?,?,?,?)",
+                Statement.RETURN_GENERATED_KEYS,
+            ).use { ps ->
+                ps.setLong(1, datasourceId)
+                ps.setLong(2, parentId)
+                ps.setString(3, name)
+                ps.setInt(4, order)
+                ps.executeUpdate()
+                ps.generatedKeys.use { rs ->
+                    check(rs.next()) { "插入未返回自增主键" }
+                    rs.getLong(1)
+                }
+            }
+        }
+
+    /**
+     * 同级目录整体重排:按 orderedIds 的顺序把 sort_order 连续写为 0..n-1;
+     * 调用方已校验 id 均属同一父级,并已把未列出的同级目录追加在末尾。
+     */
+    fun reorderDirs(orderedIds: List<Long>) {
+        if (orderedIds.isEmpty()) return
+        jdbc.tx { conn ->
+            conn.prepareStatement("UPDATE object_dir SET sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=?").use { ps ->
+                orderedIds.forEachIndexed { i, id ->
+                    ps.setInt(1, i)
+                    ps.setLong(2, id)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+            }
+        }
+    }
 
     /** 返回影响行数,0 表示目录不存在 */
     fun renameDir(id: Long, name: String): Int =
@@ -86,11 +133,14 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
 
     // ---------- 挂载表 ----------
 
-    /** 某数据源全部挂载记录(JOIN 目录按数据源过滤) */
+    /**
+     * 某数据源全部挂载记录(JOIN 目录按数据源过滤)。
+     * 按挂载时间升序,同一时刻(批量挂载)回退 id(插入顺序),与目录图/列表页的展示顺序一致
+     */
     fun listTables(datasourceId: Long): List<TableRow> =
         jdbc.query("SELECT t.id, t.dir_id, t.db_name, t.schema_name, t.table_name, t.remark, t.rel_kind, t.created_at " +
                 "FROM object_table t JOIN object_dir d ON d.id = t.dir_id " +
-                "WHERE d.datasource_id=? ORDER BY t.table_name, t.id", datasourceId) { rs -> mapTable(rs) }
+                "WHERE d.datasource_id=? ORDER BY t.created_at, t.id", datasourceId) { rs -> mapTable(rs) }
 
     fun findTable(dirId: Long, dbName: String, schema: String, table: String): TableRow? =
         jdbc.queryOne("SELECT id, dir_id, db_name, schema_name, table_name, remark, rel_kind, created_at " +
@@ -126,12 +176,12 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
 
     // ---------- 关系表 ----------
 
-    /** 某数据源全部关系记录(经挂载 JOIN 目录按数据源过滤) */
+    /** 某数据源全部关系记录(经挂载 JOIN 目录按数据源过滤);按登记时间升序,同刻回退 id(插入顺序) */
     fun listRels(datasourceId: Long): List<RelRow> =
         jdbc.query("SELECT r.id, r.object_table_id, r.db_name, r.schema_name, r.table_name, r.remark, r.rel_kind, r.created_at " +
                 "FROM object_table_rel r JOIN object_table t ON t.id = r.object_table_id " +
                 "JOIN object_dir d ON d.id = t.dir_id " +
-                "WHERE d.datasource_id=? ORDER BY r.table_name, r.id", datasourceId) { rs -> mapRel(rs) }
+                "WHERE d.datasource_id=? ORDER BY r.created_at, r.id", datasourceId) { rs -> mapRel(rs) }
 
     fun findRel(objectTableId: Long, dbName: String, schema: String, table: String): RelRow? =
         jdbc.queryOne("SELECT id, object_table_id, db_name, schema_name, table_name, remark, rel_kind, created_at " +
@@ -152,7 +202,7 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
 
     private fun mapDir(rs: ResultSet): DirRow =
         DirRow(rs.getLong("id"), rs.getLong("datasource_id"), rs.getLong("parent_id"), rs.getString("name"),
-            ts(rs, "created_at"), ts(rs, "updated_at"))
+            rs.getInt("sort_order"), ts(rs, "created_at"), ts(rs, "updated_at"))
 
     private fun mapTable(rs: ResultSet): TableRow =
         TableRow(rs.getLong("id"), rs.getLong("dir_id"), rs.getString("db_name"), rs.getString("schema_name"),

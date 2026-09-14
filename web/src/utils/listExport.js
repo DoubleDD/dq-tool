@@ -11,10 +11,17 @@ import { downloadFile } from './download'
  * @param {string} [sheetName] sheet 名,默认与文件名相同
  */
 export async function exportListToExcel(filename, headers, rows, sheetName) {
-  const { token } = await request.post('/list-exports', {
-    filename,
-    sheets: [{ name: sheetName || filename, headers, rows }]
-  })
+  await exportSheetsToExcel(filename, [{ name: sheetName || filename, headers, rows }])
+}
+
+/**
+ * 多 sheet 通用列表导出:与 exportListToExcel 同一后端通道(POST /api/list-exports + token 下载),
+ * 一次性提交多个工作表。
+ * @param {string} filename 文件名(不带扩展名)
+ * @param {Array<{name: string, headers: string[], rows: Array<Array>}>} sheets 工作表清单(顺序即 xlsx 内 sheet 顺序)
+ */
+export async function exportSheetsToExcel(filename, sheets) {
+  const { token } = await request.post('/list-exports', { filename, sheets })
   downloadFile(`/api/list-exports/${token}`)
 }
 

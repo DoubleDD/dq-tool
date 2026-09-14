@@ -203,9 +203,8 @@ class DataSourceService(
         }
         return withOptionalTunnel(req) { url ->
             withFirstConnectable(dialect, url, req.username, req.password) { conn ->
-                // 只有多库方言(SQL Server/Kingbase)实现 listDatabases;其余方言的「库」就是 schema 列表(MySQL 的 schema 即库)
-                val databases = dialect.listDatabases(conn)
-                if (databases.isNotEmpty()) databases else dialect.listSchemas(conn)
+                // 单库方言的「库」就是 schema 列表(MySQL 的 schema 即库),口径与 MetadataService.listDatabases 共用
+                dialect.listDatabasesOrSchemas(conn)
             }
         }
     }

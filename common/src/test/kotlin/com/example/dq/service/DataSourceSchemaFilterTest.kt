@@ -70,18 +70,24 @@ class DataSourceSchemaFilterTest {
     }
 
     @Test
-    fun `库列表过滤语义`() {
+    fun `库过滤规则 未配置白名单时默认排除系统库`() {
         val all = listOf("information_schema", "mysql", "report_agent", "sys", "xxl_job")
-        // null / 空名单不过滤
-        assertEquals(all, MetadataService.applySchemaFilter(all, null))
-        assertEquals(all, MetadataService.applySchemaFilter(all, emptyList()))
-        // 非空名单只保留命中的库,保持方言返回顺序;名单里不存在的库不产生条目
+        val sys = setOf("information_schema", "mysql", "sys", "performance_schema")
+        // null / 空名单 = 默认规则:全部业务库,排除系统库(与库过滤页签「系统库默认不勾选」一致)
+        assertEquals(listOf("report_agent", "xxl_job"), MetadataService.applySchemaFilter(all, null, sys))
+        assertEquals(listOf("report_agent", "xxl_job"), MetadataService.applySchemaFilter(all, emptyList(), sys))
+        // 显式白名单只保留命中的库,保持方言返回顺序;系统库被显式勾选时照常返回
         assertEquals(
-            listOf("report_agent", "xxl_job"),
-            MetadataService.applySchemaFilter(all, listOf("xxl_job", "report_agent", "不存在"))
+            listOf("mysql", "report_agent", "xxl_job"),
+            MetadataService.applySchemaFilter(all, listOf("xxl_job", "mysql", "report_agent", "不存在"), sys)
         )
         // 全不命中得到空列表
-        assertEquals(emptyList<String>(), MetadataService.applySchemaFilter(all, listOf("不存在")))
+        assertEquals(emptyList<String>(), MetadataService.applySchemaFilter(all, listOf("不存在"), sys))
+        // 系统库名大小写不敏感(Oracle/DM 的 schema 名是大写、方言清单存小写)
+        assertEquals(
+            listOf("REPORT_AGENT"),
+            MetadataService.applySchemaFilter(listOf("SYS", "REPORT_AGENT"), null, sys)
+        )
     }
 
     @Test
@@ -121,5 +127,20 @@ class DataSourceSchemaFilterTest {
             MetaCacheRepository(jdbc))
         val stats = meta.listSchemaStats(id, null)
         assertEquals(listOf("report_agent", "xxl_job"), stats.map { it.name })
+    }
+
+    @Test
+    fun `未配置白名单时概览读取路径排除系统库`() {
+        // 与库过滤页签「系统库默认不勾选」保持一致:未配置白名单 = 默认规则(排除方言系统库)
+        val id = dataSourceService.create(req(null))
+        schemaStatRepo.replaceAll(id, null, listOf(
+            SchemaStatRepository.CachedStat("information_schema", 10, 1000),
+            SchemaStatRepository.CachedStat("mysql", 3, 300),
+            SchemaStatRepository.CachedStat("report_agent", 5, 100),
+        ))
+        val meta = MetadataService(dataSourceService, DialectFactory, ScanRepository(jdbc), schemaStatRepo, SchemaDocRepository(jdbc),
+            MetaCacheRepository(jdbc))
+        val stats = meta.listSchemaStats(id, null)
+        assertEquals(listOf("report_agent"), stats.map { it.name })
     }
 }

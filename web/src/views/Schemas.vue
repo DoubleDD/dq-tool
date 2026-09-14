@@ -201,7 +201,7 @@
     <!-- 库过滤:勾选需要显示的库,保存为数据源级白名单(与编辑数据源对话框的「库过滤」页签同一份配置) -->
     <el-dialog v-model="filterVisible" title="库过滤" width="560px" destroy-on-close :close-on-press-escape="false">
       <div v-loading="filterLoading">
-        <div class="filter-tip">勾选需要显示的库;全部勾选(或全不勾)表示不过滤。系统库已默认不勾选,可按需勾回。</div>
+        <div class="filter-tip">勾选需要显示的库;全部勾选(或全不勾)表示不过滤 —— 不过滤默认只含业务库、不含系统库。系统库已默认不勾选,需要时勾上保存即可包含。</div>
         <template v-if="filterList.length">
           <div class="filter-all">
             <el-checkbox :model-value="filterCheckAll" :indeterminate="filterIndeterminate" @change="onFilterCheckAll">全部</el-checkbox>
@@ -235,6 +235,7 @@ import { formatBytes, formatDateTime, formatNumber, statusTagType, statusText } 
 import { downloadFile } from '../utils/download'
 import { cellText, exportListToExcel } from '../utils/listExport'
 import { confirmAiUsable } from '../utils/aiCheck'
+import { toSchemaFilter } from '../utils/schemaFilter'
 import Breadcrumb from '../components/Breadcrumb.vue'
 const route = useRoute()
 const router = useRouter()
@@ -416,13 +417,11 @@ async function openFilter() {
   }
 }
 
-/** 保存白名单并刷新库列表;全勾/全不勾视为不过滤 */
+/** 保存白名单并刷新库列表;勾选恰好等于默认业务库集合(或全不勾)视为不过滤 */
 async function saveFilter() {
   filterSaving.value = true
   try {
-    const schemas = (filterChecked.value.length === 0 || filterChecked.value.length === filterList.value.length)
-      ? null
-      : [...filterChecked.value]
+    const schemas = toSchemaFilter(filterChecked.value, filterList.value, isSystemSchema)
     await request.put(`/datasources/${dsId}/schema-filter`, { schemas })
     if (dsRow.value) dsRow.value.schemaFilter = schemas
     ElMessage.success('库过滤已更新')

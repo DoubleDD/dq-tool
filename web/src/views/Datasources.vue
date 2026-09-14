@@ -181,28 +181,33 @@
     </el-dialog>
 
     <!-- 导入数据源:文件上传或粘贴文本;元数据文件先预检并选择数据源映射,成功后对话框内展示结果明细 -->
-    <el-dialog v-model="importVisible" title="导入数据源" width="640px" destroy-on-close :close-on-press-escape="false" @closed="onImportClosed">
+    <el-dialog v-model="importVisible" width="640px" destroy-on-close :close-on-press-escape="false"
+      class="import-dialog" @closed="onImportClosed">
+      <template #header="{ titleId, titleClass }">
+        <div :id="titleId" :class="titleClass" class="import-head-title">导入</div>
+        <div class="import-head-desc">自动识别连接配置或元数据,快速接入参与比对的数据源</div>
+      </template>
       <template v-if="!importResult">
         <template v-if="importStep === 'select'">
-          <el-radio-group v-model="importMode" class="import-mode">
-            <el-radio-button value="file">文件导入</el-radio-button>
-            <el-radio-button value="text">粘贴导入</el-radio-button>
-          </el-radio-group>
+          <!-- 页签仅作切换入口,内容仍按 v-if 渲染,与改造前行为一致 -->
+          <el-tabs v-model="importMode" class="import-tabs">
+            <el-tab-pane label="文件导入" name="file" />
+            <el-tab-pane label="粘贴导入" name="text" />
+          </el-tabs>
           <template v-if="importMode === 'file'">
             <el-upload ref="uploadRef" drag :auto-upload="false" accept=".json,.ncx" :limit="1"
+              class="import-upload"
               :on-change="onImportFileChange" :on-exceed="onImportFileExceed" :on-remove="onImportFileRemove">
-              <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+              <div class="import-drop-icon"><el-icon><Upload /></el-icon></div>
               <div class="el-upload__text">拖拽文件到此处,或 <em>点击选择文件</em></div>
+              <div class="import-drop-desc">支持 .json 与 Navicat 导出的 .ncx,选择文件后自动识别内容类型</div>
             </el-upload>
-            <div class="import-tip">
-              支持本工具导出的 JSON(连接配置 / 元数据)与 Navicat 连接导出的 .ncx 文件;重名数据源会自动追加序号后缀导入,不会覆盖已有配置。
-            </div>
           </template>
           <template v-else>
             <el-input v-model="importText" type="textarea" :rows="10" resize="none"
               placeholder="粘贴 DataGrip「复制数据源到剪贴板」的内容(#DataSourceSettings# 开头),也支持本工具导出的 JSON 文本(连接配置 / 元数据)" />
             <div class="import-tip">
-              DataGrip 剪贴板内容不含连接密码,导入后需逐个编辑数据源补充密码;重名数据源会自动追加序号后缀导入。
+              DataGrip 剪贴板内容不含连接密码,导入后需逐个编辑数据源补充密码。
             </div>
           </template>
         </template>
@@ -256,17 +261,26 @@
         </template>
       </div>
       <template #footer>
-        <template v-if="!importResult">
-          <template v-if="importStep === 'select'">
-            <el-button @click="importVisible = false">取消</el-button>
-            <el-button type="primary" :disabled="!canImport" :loading="importing" @click="doImport">导入</el-button>
-          </template>
-          <template v-else>
-            <el-button @click="backToSelect">返回</el-button>
-            <el-button type="primary" :loading="importing" @click="confirmImportMapping">确认导入</el-button>
-          </template>
-        </template>
-        <el-button v-else type="primary" @click="importVisible = false">关闭</el-button>
+        <div class="import-footer">
+          <div class="import-footer-tip">
+            <template v-if="!importResult && importStep === 'select'">
+              重名数据源会自动追加序号后缀导入,不会覆盖已有配置。
+            </template>
+          </div>
+          <div class="import-footer-actions">
+            <template v-if="!importResult">
+              <template v-if="importStep === 'select'">
+                <el-button @click="importVisible = false">取消</el-button>
+                <el-button type="primary" :disabled="!canImport" :loading="importing" @click="doImport">导入</el-button>
+              </template>
+              <template v-else>
+                <el-button @click="backToSelect">返回</el-button>
+                <el-button type="primary" :loading="importing" @click="confirmImportMapping">确认导入</el-button>
+              </template>
+            </template>
+            <el-button v-else type="primary" @click="importVisible = false">关闭</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
@@ -274,18 +288,18 @@
 </template>
 
 <script setup>
-import { computed, onActivated, ref, watch } from 'vue'
+import { computed, getCurrentInstance, onActivated, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
-import { ArrowDown, ArrowRight, Connection, Delete, EditPen, Search, Star, StarFilled, UploadFilled, User, WarningFilled } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowRight, Connection, Delete, EditPen, Search, Star, StarFilled, Upload, User, WarningFilled } from '@element-plus/icons-vue'
 import request from '../api'
 import DbTypeIcon from '../components/DbTypeIcon.vue'
 import DatasourceEditDialog from '../components/DatasourceEditDialog.vue'
 import MetadataSyncDialog from '../components/MetadataSyncDialog.vue'
 import { tabState } from '../stores/tabs'
 import { loadDsFavorites, saveDsFavorites, sortDsByFavorite } from '../utils/dsFavorites'
-import { notifyDsListChanged } from '../utils/dsListChanged'
+import { DS_LIST_CHANGED_EVENT, notifyDsListChanged } from '../utils/dsListChanged'
 import { downloadFile } from '../utils/download'
 import { confirmImportFile } from '../utils/importFileIdentify'
 
@@ -379,7 +393,7 @@ async function onGroupDrop(key) {
   await request.put(`/datasources/${id}/group`, { groupName: target })
   ElMessage.success(target ? `已移动到分组「${target}」` : '已移出分组')
   loadList()
-  notifyDsListChanged()
+  notifyListChanged()
 }
 // 收藏:前端本地偏好,按数据源 id 存 localStorage;收藏的卡片排最前,同收藏按收藏时间倒序(与侧边栏共用 dsFavorites 工具)
 const favorites = ref(loadDsFavorites())
@@ -436,7 +450,7 @@ async function onDelete(row) {
   await request.delete(`/datasources/${row.id}`)
   ElMessage.success('删除成功')
   loadList()
-  notifyDsListChanged()
+  notifyListChanged()
 }
 
 function goSchemas(row) {
@@ -645,7 +659,7 @@ async function confirmImportMapping() {
 function onImportClosed() {
   if ((importResult.value?.imported?.length || 0) > 0) {
     loadList()
-    notifyDsListChanged()
+    notifyListChanged()
   }
   importResult.value = null
   importFile.value = null
@@ -655,35 +669,55 @@ function onImportClosed() {
 
 // 侧边栏「数据源」操作下拉(pendingDsDialog = new|import|export)时自动打开对应对话框。
 // 导出依赖 list(全选),先等列表加载完成再开框;命令消费后立即清空,避免重复弹框。
+async function consumePendingDialog() {
+  const cmd = tabState.pendingDsDialog
+  if (!cmd) return
+  tabState.pendingDsDialog = ''
+  await loadList()
+  if (cmd === 'new') openDialog()
+  else if (cmd === 'import') openImportDialog()
+  else if (cmd === 'export') openExportDialog('config')
+}
+
+// 这个标记写在模块级 tabState 上,凡订阅者都会收到变化。头栏「刷新」是软刷新(换 keep-alive key
+// 重挂载当前页,见 App.vue refreshStamp),被换下的旧实例仍留在 keep-alive 缓存里、isDeactivated 为 true,
+// 但它的 watcher 照常触发:若让它抢先消费标记,弹窗就开在那个已停用的隐藏子树上,当前可见实例什么也不显示
+// ——表现为「点 ⋮ 新增/导入/导出没反应」。所以停用中的实例一律放行,把标记留给激活实例。
+// (侧边栏数据源项的编辑图标已改为 App.vue 自己持有弹框、就地打开,不再经这里)
+const self = getCurrentInstance()
+
+// 激活态实例收到标记立即消费
 watch(
   () => tabState.pendingDsDialog,
-  async (v) => {
-    if (!v) return
-    tabState.pendingDsDialog = ''
-    await loadList()
-    if (v === 'new') openDialog()
-    else if (v === 'import') openImportDialog()
-    else if (v === 'export') openExportDialog('config')
-  },
+  (v) => { if (v && !self.isDeactivated) consumePendingDialog() },
   { immediate: true }
 )
 
-// 侧边栏数据源项右侧编辑图标(pendingDsEditId = 数据源 id)时自动打开编辑对话框。
-// 与 pendingDsDialog 同理:先等列表加载完成再按 id 找行;消费后立即清空,避免重复弹框。
-watch(
-  () => tabState.pendingDsEditId,
-  async (v) => {
-    if (!v) return
-    tabState.pendingDsEditId = ''
-    await loadList()
-    const row = list.value.find((d) => String(d.id) === String(v))
-    if (row) openDialog(row)
-  },
-  { immediate: true }
-)
+// 别处改了数据源(侧边栏就地编辑弹框保存后广播)时刷新本页卡片;本页自己的操作都已经 loadList 过,
+// 广播时跳过自己这一次,避免重复请求
+let skipNextListChanged = false
+function notifyListChanged() {
+  skipNextListChanged = true
+  notifyDsListChanged()
+}
+function onListChanged() {
+  if (skipNextListChanged) {
+    skipNextListChanged = false
+    return
+  }
+  // 被 keep-alive 停用的旧实例不刷新(重新激活时 onActivated 会拉一次),避免白跑请求
+  if (self.isDeactivated) return
+  loadList()
+}
+window.addEventListener(DS_LIST_CHANGED_EVENT, onListChanged)
+onUnmounted(() => window.removeEventListener(DS_LIST_CHANGED_EVENT, onListChanged))
 
-// 数据源页切回时刷新(首次挂载也会触发)
-onActivated(loadList)
+// 数据源页切回时刷新(首次挂载也会触发);侧边栏 ⋮ 的标记若在本页未激活期间写入(点击 → 跳本页),
+// 停用实例已放行、激活时又不会有新的依赖变化,故这里补一次消费,保证弹窗落在真正可见的实例上
+onActivated(async () => {
+  await loadList()
+  await consumePendingDialog()
+})
 </script>
 
 <style scoped>
@@ -1033,9 +1067,103 @@ onActivated(loadList)
   color: var(--el-text-color-secondary);
   font-size: 12px;
 }
-/* 导入对话框:说明与结果明细 */
-.import-mode {
-  margin-bottom: 12px;
+/* 导入对话框:标题/副标题、下划线页签、浅底拖拽区与底部说明 */
+.import-head-title {
+  color: var(--el-text-color-primary);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.import-head-desc {
+  margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.import-tabs {
+  margin-bottom: 14px;
+}
+.import-tabs :deep(.el-tabs__header) {
+  margin-bottom: 0;
+}
+.import-tabs :deep(.el-tabs__item) {
+  font-size: 15px;
+  color: var(--el-text-color-regular);
+}
+.import-tabs :deep(.el-tabs__item.is-active) {
+  font-weight: 600;
+}
+.import-tabs :deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+}
+.import-tabs :deep(.el-tabs__active-bar) {
+  height: 2px;
+}
+.import-upload {
+  display: block;
+  --dq-import-panel-bg: #f4f7fd;
+}
+html.dark .import-upload {
+  --dq-import-panel-bg: var(--el-fill-color-light);
+}
+/* 拖拽区:浅色底 + 虚线框,图标放在白色圆角方块里 */
+.import-upload :deep(.el-upload-dragger) {
+  padding: 26px 20px;
+  border: 1px dashed var(--el-border-color);
+  border-radius: 10px;
+  background: var(--dq-import-panel-bg);
+  transition: border-color 0.2s ease;
+}
+.import-upload :deep(.el-upload-dragger:hover),
+.import-upload :deep(.el-upload-dragger.is-dragover) {
+  border-color: var(--el-color-primary);
+}
+.import-drop-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: var(--el-bg-color);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+  color: var(--el-color-primary);
+  font-size: 22px;
+}
+.import-upload :deep(.el-upload__text) {
+  margin-top: 14px;
+  color: var(--el-text-color-primary);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.import-upload :deep(.el-upload__text em) {
+  color: var(--el-color-primary);
+  font-style: normal;
+}
+.import-drop-desc {
+  margin-top: 6px;
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* 底部:左侧说明 + 右侧按钮 */
+.import-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.import-footer-tip {
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+}
+.import-footer-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
 }
 .import-tip {
   margin-top: 12px;
@@ -1080,5 +1208,21 @@ onActivated(loadList)
   color: var(--el-text-color-primary);
   font-size: 13px;
   font-weight: 600;
+}
+</style>
+
+<style>
+/* 导入弹窗内容被 teleport 到 body,scoped 选择器覆盖不到 el-dialog 自身结构,故这里按弹窗类名单独写一份 */
+.import-dialog .el-dialog__header {
+  margin-right: 0;
+  padding-bottom: 0;
+}
+.import-dialog .el-dialog__body {
+  padding-top: 14px;
+}
+/* 底部说明与按钮之间用整宽分隔线隔开 */
+.import-dialog .el-dialog__footer {
+  padding: 14px var(--el-dialog-padding-primary);
+  border-top: 1px solid var(--el-border-color-lighter);
 }
 </style>

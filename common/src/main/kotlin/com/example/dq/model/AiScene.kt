@@ -10,6 +10,8 @@ enum class AiScene(val label: String) {
     WORD_REPORT("报告分析"),
     /** ER 关系推导·语义匹配(表级粗筛 + 字段级精判) */
     RELATION_INFER("关系推导"),
+    /** 数据比对·匹配逻辑 3:编码与名称都没配上的残余对象交大模型归一化配对 */
+    COMPARE_MATCH("比对匹配"),
     /** 「AI 配置」连通性测试 */
     TEST("连通测试"),
     ;

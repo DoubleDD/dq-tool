@@ -7,8 +7,12 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 
-/** ER 表间关系批量操作:批量确认/否决计数与状态落库 / 批量删除任意状态生效 / 空列表与超上限校验 */
+/** ER 表间关系批量操作:批量确认/否决计数与状态落库 / 批量删除任意状态生效 / 空列表与超上限校验 /
+ *  人工审核备注落库 / 审核数据(原始 vs 最终)差异组装 */
 class TableRelationRepositoryTest {
 
     private lateinit var jdbc: Jdbc
@@ -87,5 +91,105 @@ class TableRelationRepositoryTest {
     fun `repo 空集合兜底不拼非法 IN`() {
         assertEquals(0, repo.updateStatusBatch(emptyList(), "CONFIRMED"))
         assertEquals(0, repo.deleteByIds(emptyList()))
+    }
+
+    @Test
+    fun `批量审核落库备注并标记人工已审核 未带备注的行保留原备注`() {
+        val id1 = insert("t1", "id", "t2", "t1_id")
+        val id2 = insert("t3", "id", "t4", "t3_id")
+        // 只有 id1 填了否决原因,id2 未改备注
+        assertEquals(2, service.rejectBatch(listOf(id1, id2), mapOf(id1.toString() to "重复字段,误报")))
+
+        val r1 = repo.findById(id1)!!
+        assertEquals("REJECTED", r1.status)
+        assertEquals("重复字段,误报", r1.remark)
+        assertTrue(r1.reviewed)
+        assertTrue(r1.reviewedAt != null)
+        val r2 = repo.findById(id2)!!
+        assertEquals("REJECTED", r2.status)
+        assertNull(r2.remark)
+        assertTrue(r2.reviewed)
+        // 非数字备注键忽略、不存在的 id 忽略
+        assertEquals(1, service.confirmBatch(listOf(id1, 999L), mapOf("abc" to "x", id1.toString() to "确认原因")))
+        val after = repo.findById(id1)!!
+        assertEquals("CONFIRMED", after.status)
+        assertEquals("确认原因", after.remark)
+    }
+
+    @Test
+    fun `推导入库保留人工已审核的行 原始关系快照随推导刷新`() {
+        // 手工造一条人工已否决的最终行 + 它的原始快照
+        val id = repo.insertIfAbsent(1L, "", "public", "t1", "id", "t2", "t1_id",
+            "ONE_TO_MANY", "REJECTED", "NAME_MATCH", "LOW", 0.1, "人工否决", reviewed = true)!!
+        repo.upsertOriginal(1L, "", "public", "t1", "id", "t2", "t1_id",
+            "ONE_TO_MANY", "CANDIDATE", "NAME_MATCH", "LOW", 0.1, null)
+
+        // 重新推导命中同一对,方向翻转:最终行原样保留(状态/方向/备注都不动,返回 null 表示不是新关系)
+        assertNull(repo.upsertDerived(1L, "", "public", "t2", "t1_id", "t1", "id",
+            "ONE_TO_ONE", "SEMANTIC", "HIGH", 0.9, "新推导说明"))
+        val kept = repo.findById(id)!!
+        assertEquals("REJECTED", kept.status)
+        assertEquals("t1", kept.oneTable)
+        assertEquals("t2", kept.manyTable)
+        assertEquals("ONE_TO_MANY", kept.cardinality)
+        assertEquals("人工否决", kept.remark)
+        assertTrue(kept.reviewed)
+
+        // 原始关系快照按最新推导刷新(方向翻转 + 新验证数据),人工审核不影响它
+        val originals = repo.listOriginalsBySchema(1L, "", "public")
+        assertEquals(1, originals.size)
+        assertEquals("t2", originals[0].oneTable)
+        assertEquals("ONE_TO_ONE", originals[0].cardinality)
+        assertEquals("SEMANTIC", originals[0].source)
+        assertEquals(0.9, originals[0].overlapRatio!!, 1e-9)
+
+        // 未审核的新关系照常插入为候选
+        val fresh = repo.upsertDerived(1L, "", "public", "t3", "id", "t4", "t3_id",
+            "ONE_TO_MANY", "NAME_MATCH", "HIGH", 0.8, null)
+        assertTrue(fresh != null)
+        assertFalse(repo.findById(fresh!!)!!.reviewed)
+    }
+
+    @Test
+    fun `审核数据组装 原始与最终的差异 含人工新增删除与修改`() {
+        // 最终:未审核候选(与原始一致,无变化)/ 人工确认(状态变化)/ 人工补充(只存在于最终→新增)
+        val unchanged = insert("t1", "id", "t2", "t1_id")
+        val confirmed = insert("t3", "id", "t4", "t3_id")
+        service.confirm(confirmed)
+        repo.insertIfAbsent(1L, "", "public", "t5", "id", "t6", "t5_id",
+            "ONE_TO_ONE", "CONFIRMED", "MANUAL", null, null, "人工补充", reviewed = true)
+        // 原始:与最终同 key 的两条 + 一条只剩原始快照(人工删除)
+        repo.upsertOriginal(1L, "", "public", "t1", "id", "t2", "t1_id",
+            "ONE_TO_MANY", "CANDIDATE", "NAME_MATCH", "HIGH", 0.9, null)
+        repo.upsertOriginal(1L, "", "public", "t3", "id", "t4", "t3_id",
+            "ONE_TO_MANY", "CANDIDATE", "NAME_MATCH", "HIGH", 0.9, null)
+        repo.upsertOriginal(1L, "", "public", "t7", "id", "t8", "t7_id",
+            "ONE_TO_MANY", "CANDIDATE", "NAME_MATCH", "LOW", 0.1, null)
+
+        val audit = service.audit(1L, null, "public", null)
+        assertEquals(3, audit.finals.size)
+        assertEquals(3, audit.originals.size)
+        assertEquals(3, audit.changes.size)
+        val byType = audit.changes.groupBy { it.changeType }
+        assertEquals(1, byType["ADDED"]!!.size)
+        val added = byType["ADDED"]!!.single()
+        assertNull(added.before)
+        assertEquals("t5", added.after!!.oneTable)
+        assertEquals(1, byType["REMOVED"]!!.size)
+        val removed = byType["REMOVED"]!!.single()
+        assertEquals("t7", removed.before!!.oneTable)
+        assertNull(removed.after)
+        val modified = byType["MODIFIED"]!!.single()
+        assertEquals(listOf("STATUS"), modified.changedFields)
+        assertEquals("CANDIDATE", modified.before!!.status)
+        assertEquals("CONFIRMED", modified.after!!.status)
+        assertTrue(audit.finals.any { it.id == unchanged })
+
+        // 表过滤:只保留该表参与的关系(已删除的原始关系仍能从快照捞出)
+        val byTable = service.audit(1L, null, "public", "t7")
+        assertEquals(1, byTable.originals.size)
+        assertEquals(0, byTable.finals.size)
+        assertEquals(1, byTable.changes.size)
+        assertEquals("REMOVED", byTable.changes[0].changeType)
     }
 }

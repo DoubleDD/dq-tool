@@ -33,6 +33,11 @@ async function readTextTolerant(file) {
   }
 }
 
+// 导入相关的消息框统一与导入弹窗顶部对齐:
+// el-dialog 默认 margin-top 15vh,而 ElMessageBox 默认在视口垂直居中,两者同屏时上下错位;
+// 这里改为顶部对齐,并用负 margin 抵消 overlay 自带的 16px 内边距,使顶部正好落在 15vh。
+const BOX_STYLE_AT_DIALOG_TOP = { verticalAlign: 'top', marginTop: 'calc(15vh - 16px)' }
+
 /**
  * 识别导入文件种类。返回 { kind, label, summary, version? }:
  * kind 为 KINDS 的 key 或 'unknown';summary 为内容摘要(如"共 3 个数据源");
@@ -82,7 +87,7 @@ export async function confirmImportFile(file, currentFeature) {
     await ElMessageBox.alert(
       '无法识别该文件:既不是本工具的导出文件(数据源 / 元数据 / 扫描记录 / 标记与描述),也不是支持的 Navicat .ncx 或 DataGrip 剪贴板格式。',
       '导入文件无法识别',
-      { type: 'error', confirmButtonText: '知道了', closeOnPressEscape: false }
+      { type: 'error', confirmButtonText: '知道了', closeOnPressEscape: false, customStyle: BOX_STYLE_AT_DIALOG_TOP }
     )
     return false
   }
@@ -98,7 +103,7 @@ export async function confirmImportFile(file, currentFeature) {
         h('div', { style: 'margin-top: 8px' }, `文件版本(v${info.version})与当前工具不兼容,请使用导出该文件的工具版本导入,或升级本工具。`),
       ]),
       '导入文件版本不兼容',
-      { type: 'warning', confirmButtonText: '知道了', closeOnPressEscape: false }
+      { type: 'warning', confirmButtonText: '知道了', closeOnPressEscape: false, customStyle: BOX_STYLE_AT_DIALOG_TOP }
     )
     return false
   }
@@ -110,7 +115,7 @@ export async function confirmImportFile(file, currentFeature) {
         h('div', { style: 'margin-top: 8px' }, `它与当前「${IMPORT_FEATURES[currentFeature].name}」功能不匹配,请到${target.where}导入。`),
       ]),
       '导入文件与当前功能不匹配',
-      { type: 'warning', confirmButtonText: '知道了', closeOnPressEscape: false }
+      { type: 'warning', confirmButtonText: '知道了', closeOnPressEscape: false, customStyle: BOX_STYLE_AT_DIALOG_TOP }
     )
     return false
   }
@@ -126,6 +131,7 @@ export async function confirmImportFile(file, currentFeature) {
       confirmButtonText: '确认导入',
       cancelButtonText: '取消',
       closeOnPressEscape: false,
+      customStyle: BOX_STYLE_AT_DIALOG_TOP,
     })
     return info
   } catch {

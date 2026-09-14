@@ -145,6 +145,9 @@
       <LicenseFooter />
     </el-container>
     </el-container>
+    <!-- 侧边栏数据源项右侧编辑图标:就地弹编辑框(不跳数据源页,任何页面都能直接改);保存后组件内部广播
+         dq-ds-list-changed,侧边栏与其他监听该事件的页面各自刷新 -->
+    <DatasourceEditDialog v-model="dsEditVisible" :ds="dsEditRow" :groups="dsGroupOptions" />
   </el-config-provider>
 </template>
 
@@ -161,6 +164,7 @@ import { fetchLicenseStatus } from './router'
 import LicenseFooter from './components/LicenseFooter.vue'
 import NotificationBell from './components/NotificationBell.vue'
 import DbTypeIcon from './components/DbTypeIcon.vue'
+import DatasourceEditDialog from './components/DatasourceEditDialog.vue'
 import { loadDsFavorites, sortDsByFavorite, DS_FAVORITES_CHANGED_EVENT } from './utils/dsFavorites'
 import { DS_LIST_CHANGED_EVENT } from './utils/dsListChanged'
 
@@ -376,10 +380,18 @@ function onDsCommand(cmd) {
   tabState.pendingDsDialog = cmd
   router.push('/datasources')
 }
-// 菜单项右侧编辑图标:写入待编辑数据源 id 并跳数据源列表页,由 Datasources.vue 消费(pendingDsEditId)
+// 菜单项右侧编辑图标:就地弹编辑对话框(弹框由 App 自己持有,不跳数据源页,任何页面点都能直接改)。
+// 侧边栏数据源行与数据源页列表同源(都来自 /api/datasources),字段口径一致;分组候选由侧边栏现有数据聚合。
+const dsEditVisible = ref(false)
+const dsEditRow = ref(null)
+const dsGroupOptions = computed(() => {
+  const set = new Set()
+  datasources.value.forEach((d) => { if (d.groupName) set.add(d.groupName) })
+  return [...set].sort()
+})
 function onEditDs(ds) {
-  tabState.pendingDsEditId = String(ds.id)
-  router.push('/datasources')
+  dsEditRow.value = ds
+  dsEditVisible.value = true
 }
 
 // 授权管理入口仅管理员实例 + 授权码包含 license_admin 功能可见(复用路由守卫的缓存请求)

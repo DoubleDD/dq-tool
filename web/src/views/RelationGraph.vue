@@ -101,14 +101,14 @@
       @done="onAddDone"
     />
 
-    <!-- 关系批量处理对话框(整库清单,默认仅候选;批量确认/否决/删除后刷新图;星型图预填当前表过滤) -->
+    <!-- 关系批量处理对话框(默认全部状态;批量确认/否决/删除后刷新图;星型图时以当前表为中心表,接口只拉该表参与的关系) -->
     <RelationBatchDialog
       v-if="dsId && schema"
       v-model="batchVisible"
       :ds-id="dsId"
       :db="db"
       :schema="schema"
-      :initial-table="starTable"
+      :center-table="starTable"
       @done="loadGraph"
     />
 
@@ -132,7 +132,7 @@ import { ElMessage } from '../utils/notify'
 import request, { getRelationGraph } from '../api'
 import { Close, Download, Refresh } from '@element-plus/icons-vue'
 import { downloadDrawio } from '../utils/drawioExport'
-import { exportErGraphExcel } from '../utils/erGraphExport'
+import { exportErRelationExcel } from '../utils/erGraphExport'
 import RelationGraphCanvas from '../components/RelationGraphCanvas.vue'
 import RelationEdgeDrawer from '../components/RelationEdgeDrawer.vue'
 import RelationAddDialog from '../components/RelationAddDialog.vue'
@@ -308,19 +308,18 @@ function exportDrawio() {
 // ---------- 导出 ER 关系 Excel ----------
 const exporting = ref(false)
 
-/** 导出 ER 关系 Excel:当前图(全库总图/星型图)口径的表清单,逻辑见 erGraphExport.js(与字段明细页「ER 关系」页签共用) */
+/** 导出 ER 关系 Excel:3 个 sheet(表清单/原始关系/关系变化),逻辑见 erGraphExport.js(与字段明细页「ER 关系」页签共用);
+ *  星型图只导该表参与的关系且表清单不列锚点表(table 参数),全库总图导整库 */
 async function exportExcel() {
-  if (!graphData.value.nodes.length) return
   exporting.value = true
   try {
-    await loadColumnsMap()
-    await exportErGraphExcel({
+    await exportErRelationExcel({
       dsId: dsId.value,
       db: db.value,
       schema: schema.value,
+      table: starTable.value || undefined,
       filename: starTable.value ? `ER 星型图-${schema.value}-${starTable.value}` : `ER 总图-${schema.value}`,
-      graph: graphData.value,
-      columnsMap: columnsMap.value
+      graph: graphData.value
     })
   } finally {
     exporting.value = false

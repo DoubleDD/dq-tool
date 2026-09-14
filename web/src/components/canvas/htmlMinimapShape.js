@@ -28,7 +28,9 @@ export function createHtmlMinimapShape(highlight, colors) {
   return (id, type, target) => {
     const c = read()
     const hot = highlight ? highlight(id) : false
-    const box = target.getShape('key-container').cloneNode()
+    // 非 html 节点(如 create-edge 的隐藏辅助圆点)没有 key-container 容器矩形,克隆其 key 形状兜底
+    const container = target.getShape('key-container')
+    const box = container ? container.cloneNode() : target.getShape('key').cloneNode()
     box.style.opacity = 1
     box.style.fill = hot ? c.primary : c.textSecondary
     box.style.stroke = 'transparent'

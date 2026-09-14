@@ -38,7 +38,9 @@ public class CompareController {
 
     /** 差异明细分页:query targetId/diffType/kw/page(size 缺省 20) 组合过滤 */
     public void diffs(Context ctx) {
-        Long targetId = ctx.queryParamAsClass("targetId", Long.class).getOrDefault(null);
+        // targetId 可缺省:必须用 getOrNull()。Javalin 的 getOrDefault(T) 是 Kotlin 方法、形参非空,
+        // Java 侧传 null 会先被 Intrinsics 非空检查拦下(即使请求带了 targetId 也一律 500)
+        Long targetId = ctx.queryParamAsClass("targetId", Long.class).getOrNull();
         Integer page = ctx.queryParamAsClass("page", Integer.class).getOrDefault(1);
         Integer size = ctx.queryParamAsClass("size", Integer.class).getOrDefault(20);
         ctx.json(service.diffs(id(ctx), targetId, ctx.queryParam("diffType"), ctx.queryParam("kw"), page, size));
@@ -68,10 +70,10 @@ public class CompareController {
         ctx.json(Map.of("ok", true));
     }
 
-    /** 差异明细导出 xlsx:每目标一 sheet,只含非 SAME 行,DIFF 行逐字段展开 */
+    /** 比对报告导出 xlsx:首 sheet「总览」一行一系统,其后每个差异行一个 sheet 展开字段级明细 */
     public void export(Context ctx) throws Exception {
         long id = id(ctx);
-        String filename = URLEncoder.encode("差异明细-" + id + ".xlsx", StandardCharsets.UTF_8);
+        String filename = URLEncoder.encode("比对总览-" + id + ".xlsx", StandardCharsets.UTF_8);
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);

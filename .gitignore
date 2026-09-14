@@ -53,3 +53,6 @@ license-private.key
 .gradle-home*/
 .reasonix/
 reasonix.toml
+
+# 本地浏览器/自动化临时 profile
+.tmp-gh/

@@ -30,6 +30,12 @@
       <el-table-column label="比对字段" width="90" align="center">
         <template #default="{ row }">{{ (row.fields || []).length }} 个</template>
       </el-table-column>
+      <!-- 匹配逻辑:决定「两条数据算不算同一个对象」,老任务为空 = 仅按编码对齐 -->
+      <el-table-column label="匹配逻辑" width="130" align="center">
+        <template #default="{ row }">
+          <el-tag size="small" type="info" plain>{{ matchModeLabel(row.matchMode) }}</el-tag>
+        </template>
+      </el-table-column>
       <!-- 列表视图不含目标数,逐任务详情接口补一次(缓存,不随轮询重拉) -->
       <el-table-column label="比对系统" width="90" align="center">
         <template #default="{ row }">
@@ -97,6 +103,17 @@ const showArchived = ref(false)
 // 各任务的目标系统数(列表视图不返回,从详情接口补;任务 id → 目标数)
 const targetCounts = ref({})
 let timer = null
+
+/** 匹配逻辑短文案(与后端 CompareService.MatchMode 同一取值;老任务为空 = 仅按编码对齐) */
+const MATCH_MODE_LABELS = {
+  EXACT: '编码+名称',
+  CODE_THEN_NAME: '先编码后名称',
+  CODE_NAME_LLM: '编码/名称+AI'
+}
+
+function matchModeLabel(mode) {
+  return MATCH_MODE_LABELS[mode] || '仅编码'
+}
 
 /** 基准表定位串:多库方言带库名 db.schema.table,否则 schema.table */
 function baseTableLabel(row) {

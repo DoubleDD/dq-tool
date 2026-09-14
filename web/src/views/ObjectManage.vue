@@ -21,6 +21,7 @@
             <el-button size="small" :icon="Refresh" :loading="loading" @click="loadCatalog()">刷新</el-button>
             <el-button size="small" type="primary" :icon="Plus" @click="createDir(null)">新建根目录</el-button>
           </div>
+          <div class="om-tree-tip">拖动目录可调整同级顺序(默认按创建时间)</div>
           <el-tree
             ref="treeRef"
             :data="catalog"
@@ -29,7 +30,10 @@
             highlight-current
             default-expand-all
             :expand-on-click-node="false"
+            draggable
+            :allow-drop="allowDirDrop"
             @node-click="onDirClick"
+            @node-drop="onDirDrop"
           >
             <template #default="{ node, data }">
               <div class="om-tree-node">
@@ -194,6 +198,7 @@ import request, {
   getObjectCatalog,
   createObjectDir,
   renameObjectDir,
+  sortObjectDirs,
   deleteObjectDir,
   unmountObjectTable,
   deleteObjectTableRelation
@@ -206,6 +211,7 @@ import ObjectDirGraphPane from '../components/ObjectDirGraphPane.vue'
 
 // 对象管理(数据目录)页:按数据源维护「目录树 → 挂载表 → 关系表」三层数据目录。
 // 整树一次拉取(GET object-catalog),所有增删改成功后整树重拉并保持当前选中目录;
+// 目录同级顺序默认按创建时间(后端 sort_order 初值),支持在树上拖动同级目录重排(POST object-dirs/sort);
 // 布局:左侧目录树常驻,右侧三页签随选中目录实时联动——
 //   列表(当前目录挂载表)/ 关系图(以选中目录为根的目录子图)/ 图谱(目录子树表之间的 ER 推导关系,只读)
 const router = useRouter()
@@ -339,6 +345,34 @@ function onDirClick(data) {
 function toggleNode(node) {
   if (node.expanded) node.collapse()
   else node.expand()
+}
+
+// ---------- 目录拖动排序 ----------
+/**
+ * 拖放约束:只允许同级(同一父目录)目录之间前后插入,不允许拖成子目录
+ * (目录层级调整走节点上的「新增子目录」,拖拽只负责排序)
+ */
+function allowDirDrop(draggingNode, dropNode, type) {
+  if (type === 'inner') return false
+  return draggingNode.parent === dropNode.parent
+}
+
+/**
+ * 同级目录拖放完成:el-tree 已就地改好本地顺序,取该父目录下新的同级顺序整表提交后端;
+ * 提交失败(请求层已提示)与成功都重拉整树,以服务端口径确认/回滚本地顺序。
+ */
+async function onDirDrop(_draggingNode, dropNode) {
+  const parent = dropNode.parent
+  const parentId = parent?.level === 0 ? 0 : parent?.data?.id
+  const orderedIds = (parent?.childNodes || []).map((n) => n.data.id)
+  if (!orderedIds.length) return
+  try {
+    await sortObjectDirs({ datasourceId: currentDs.value?.id ?? dsId.value, parentId, orderedIds })
+  } catch {
+    // 提交失败(request 层已提示错误):交给下方重拉整树,按服务端口径回滚本地顺序
+  } finally {
+    await loadCatalog()
+  }
 }
 
 // ---------- 目录增删改 ----------
@@ -479,6 +513,13 @@ onMounted(loadDatasources)
 .om-tree-head .el-button {
   flex: 1;
   margin-left: 0;
+}
+/* 拖动排序提示:说明目录顺序口径,提升可发现性 */
+.om-tree-tip {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--el-text-color-placeholder);
 }
 /* 关系图画布顶部工具栏内的开关:清掉 el-checkbox 默认右间距,交给工具栏 gap */
 .om-graph-pane .el-checkbox {

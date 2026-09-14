@@ -3,6 +3,7 @@ package com.example.dq.controller;
 import com.example.dq.model.ObjectBatchResult;
 import com.example.dq.model.ObjectDirCreateRequest;
 import com.example.dq.model.ObjectDirRenameRequest;
+import com.example.dq.model.ObjectDirSortRequest;
 import com.example.dq.model.ObjectTableMountRequest;
 import com.example.dq.model.ObjectTableRelRequest;
 import com.example.dq.service.ObjectCatalogService;
@@ -39,6 +40,12 @@ public class ObjectCatalogController {
     public void renameDir(Context ctx) {
         ObjectDirRenameRequest req = Validators.validate(ctx.bodyAsClass(ObjectDirRenameRequest.class));
         service.renameDir(id(ctx), req.getName());
+    }
+
+    /** 同级目录重排:body {datasourceId, parentId(可空=根), orderedIds};不在同一父级 400 */
+    public void sortDirs(Context ctx) {
+        ObjectDirSortRequest req = Validators.validate(ctx.bodyAsClass(ObjectDirSortRequest.class));
+        service.reorderDirs(req.getDatasourceId(), req.getParentId(), req.getOrderedIds());
     }
 
     /** 删除目录:级联删除子孙目录与挂载/关系记录,返回 {dirs, tables, rels} 级联统计 */

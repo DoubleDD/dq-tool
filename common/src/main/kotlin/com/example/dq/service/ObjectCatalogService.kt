@@ -24,7 +24,9 @@ class ObjectCatalogService(
 
     /**
      * 整棵目录树:根为虚拟节点(id=0,name 空串,tables 恒空),真实顶层目录在其 children 下。
-     * 目录按 name 排序;挂载表/关系表的 comment 从 meta_table 缓存按四元组批量补齐(缓存未覆盖给空串)。
+     * 排序口径(决定左树、列表页与目录图同层节点的先后):目录按同级手工排序序号(默认顺序 = 创建时间顺序,
+     * 经重排接口改写),挂载表按挂载时间、关系表按登记时间(同刻回退 id);
+     * 挂载表/关系表的 comment 从 meta_table 缓存按四元组批量补齐(缓存未覆盖给空串)。
      */
     fun loadTree(datasourceId: Long): ObjectDirNode {
         if (dataSourceRepo.findById(datasourceId) == null) {
@@ -101,6 +103,33 @@ class ObjectCatalogService(
             throw IllegalArgumentException("同级目录已存在:$trimmed")
         }
         catalogRepo.renameDir(id, trimmed)
+    }
+
+    /**
+     * 同级目录重排(页面拖动排序):orderedIds 为该数据源同一父目录下同级目录按期望顺序排列的 id 列表。
+     * 列表内不允许重复,且必须全部属于该父级(否则 400);未列出的同级目录按当前顺序追加在末尾
+     * (并发新增兜底),最终把同级 sort_order 连续重写为 0..n-1。
+     */
+    fun reorderDirs(datasourceId: Long, parentId: Long?, orderedIds: List<Long>) {
+        if (dataSourceRepo.findById(datasourceId) == null) {
+            throw IllegalArgumentException("数据源不存在:$datasourceId")
+        }
+        if (orderedIds.size != orderedIds.distinct().size) {
+            throw IllegalArgumentException("排序列表存在重复目录:$orderedIds")
+        }
+        // 根是虚拟节点:id 用 0 表达(与 createDir 口径一致)
+        val pid = parentId ?: 0L
+        val siblings = catalogRepo.listDirs(datasourceId).filter { it.parentId == pid }
+        val siblingIds = siblings.map { it.id }.toSet()
+        val unknown = orderedIds.filter { it !in siblingIds }
+        if (unknown.isNotEmpty()) {
+            throw IllegalArgumentException("目录不属于该父级:$unknown")
+        }
+        if (siblings.isEmpty()) {
+            return
+        }
+        val listed = orderedIds.toSet()
+        catalogRepo.reorderDirs(orderedIds + siblings.map { it.id }.filter { it !in listed })
     }
 
     /** 删除目录:级联删除全部子孙目录及其挂载/关系记录,返回级联统计 */

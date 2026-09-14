@@ -1,0 +1,11 @@
+# =============================================================================
+# 客户端字符集兜底:官方 MySQL 镜像里 mysql 客户端的 default-character-set=auto,
+# 而容器 locale 非 UTF-8 时会解析成 latin1,导致初始化脚本里的中文被双重编码。
+# 这里强制所有客户端(entrypoint 的 mysql、docker exec 的 mysql、mysqladmin 等)
+# 使用 utf8mb4;mysqld 不读 [client] 段,其字符集由 compose 的 command 参数保证。
+# =============================================================================
+[client]
+default-character-set = utf8mb4
+
+[mysql]
+default-character-set = utf8mb4

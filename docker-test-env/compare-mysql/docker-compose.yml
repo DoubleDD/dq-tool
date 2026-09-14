@@ -1,0 +1,46 @@
+# =============================================================================
+# 数据比对测试环境:一个 MySQL 8.0 实例,里面放两个库
+#   reservoir_base   —— 基准库(国标规范库,100 条水库)
+#   reservoir_vendor —— 三方厂商库(表结构不规范,缺失3/多余4/差异5)
+#
+# 端口用 3307(3306 常被本机其它 MySQL/MariaDB 占用),首次启动自动执行 mysql-init/*.sql。
+#   启动: docker compose -f docker-test-env/compare-mysql/docker-compose.yml up -d
+#   停止: docker compose -f docker-test-env/compare-mysql/docker-compose.yml down
+#   重置: docker compose -f docker-test-env/compare-mysql/docker-compose.yml down -v
+# =============================================================================
+name: dq-compare-mysql
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: test-mysql-compare
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: "Test@12345"
+      TZ: Asia/Shanghai
+      # 必须有 UTF-8 locale:否则 mysql 客户端的 default-character-set=auto 会退化成
+      # latin1,初始化脚本里的中文会被双重编码(配合 conf.d/charset.cnf 双保险)
+      LANG: C.UTF-8
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-compare-data:/var/lib/mysql
+      # 仅在数据卷为空(首次启动)时执行,按文件名顺序 01 -> 05
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+      # 客户端字符集兜底(单文件挂载,不覆盖镜像自带的 conf.d 目录)
+      - ./conf.d/charset.cnf:/etc/mysql/conf.d/zz-charset.cnf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+volumes:
+  mysql-compare-data:

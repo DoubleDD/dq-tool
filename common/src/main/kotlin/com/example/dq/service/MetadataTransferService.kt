@@ -51,7 +51,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   都没有才按文件配置新建(重名自动加「 (2)」后缀;匹配不是按名称——数据源改名不影响身份);
  * - 结构缓存 = 整粒度替换(与元数据「刷新」的 delete+insert 同口径,属缓存语义);
  * - 派生数据 = 按自然键合并(幂等,不覆盖本机已有的 ER 否决/确认决策与手工标注,对齐 AnnotationTransferService 口径);
- * - object_dir/object_table 带代理主键,导出保留源 id,导入按 (parent_id, name) 逐级匹配/新建做 id 重映射;
+ * - object_dir/object_table 带代理主键,导出保留源 id,导入按 (parent_id, name) 逐级匹配/新建做 id 重映射
+ *   (目录同级排序序号 sort_order 随行导出;老文件无该键时新建目录走默认追加末尾,即创建时间顺序);
  * - 数据源正在跑元数据同步时拒绝导入该条(避免与同步的整粒度覆盖互相踩踏)。
  * 不导出:scan_*(扫描记录有独立 Transfer)、relation_infer_job/meta_sync_*(纯历史任务)。
  */
@@ -134,7 +135,7 @@ class MetadataTransferService(
                 "SELECT db_name, schema_name, one_table, one_column, many_table, many_column, " +
                         "cardinality, status, source, confidence, overlap_ratio, remark FROM table_relation WHERE datasource_id=?", id),
             objectDirs = rows(
-                "SELECT id AS source_id, parent_id AS source_parent_id, name FROM object_dir WHERE datasource_id=? ORDER BY id", id),
+                "SELECT id AS source_id, parent_id AS source_parent_id, name, sort_order FROM object_dir WHERE datasource_id=? ORDER BY id", id),
             objectTables = rows(
                 "SELECT t.id AS source_id, t.dir_id AS source_dir_id, t.db_name, t.schema_name, t.table_name, t.remark, t.rel_kind " +
                         "FROM object_table t JOIN object_dir d ON d.id = t.dir_id WHERE d.datasource_id=? ORDER BY t.id", id),
@@ -495,7 +496,9 @@ class MetadataTransferService(
         }
     }
 
-    /** ER 关系 insert-if-absent:本机已有的候选/确认/否决决策一律保留,导入只做补齐 */
+    /** ER 关系 insert-if-absent:本机已有的候选/确认/否决决策一律保留,导入只做补齐;
+     *  非候选态与人工补充视为已经过人工审核(reviewed),重新推导不再覆盖;
+     *  原始关系快照同步补齐(人工补充无原始关系,导入后体现为人工新增) */
     private fun mergeRelations(rows: List<Map<String, Any?>>, dsId: Long, skipped: IntArray) {
         for (row in rows) {
             val oneTable = str(row, "one_table")?.takeIf { it.isNotBlank() }
@@ -509,9 +512,20 @@ class MetadataTransferService(
             }
             val status = str(row, "status")?.takeIf { it in RELATION_STATUSES } ?: "CANDIDATE"
             val source = str(row, "source")?.takeIf { it.isNotBlank() } ?: "MANUAL"
-            tableRelationRepo.insertIfAbsent(dsId, str(row, "db_name") ?: "", str(row, "schema_name") ?: "",
+            val confidence = str(row, "confidence")
+            val ratio = (row["overlap_ratio"] as? Number)?.toDouble()
+            val remark = str(row, "remark")
+            val dbName = str(row, "db_name") ?: ""
+            val schemaName = str(row, "schema_name") ?: ""
+            val reviewed = status != "CANDIDATE" || source == "MANUAL"
+            tableRelationRepo.insertIfAbsent(dsId, dbName, schemaName,
                 oneTable, oneColumn, manyTable, manyColumn, cardinality, status, source,
-                str(row, "confidence"), (row["overlap_ratio"] as? Number)?.toDouble(), str(row, "remark"))
+                confidence, ratio, remark, reviewed)
+            if (source != "MANUAL") {
+                tableRelationRepo.insertOriginalIfAbsent(dsId, dbName, schemaName,
+                    oneTable, oneColumn, manyTable, manyColumn, cardinality, "CANDIDATE", source,
+                    confidence, ratio, remark)
+            }
         }
     }
 
@@ -537,7 +551,10 @@ class MetadataTransferService(
             }
             val dirName = str(row, "name")?.takeIf { it.isNotBlank() } ?: return null
             val key = parentId to dirName
-            val newId = dirIndex[key] ?: objectCatalogRepo.insertDir(dsId, parentId, dirName).also { dirIndex[key] = it }
+            // sort_order 为导出文件可选字段(V46 起):老文件缺省走 insertDir 默认追加末尾(即创建顺序)
+            val newId = dirIndex[key]
+                ?: objectCatalogRepo.insertDir(dsId, parentId, dirName, (row["sort_order"] as? Number)?.toInt())
+                    .also { dirIndex[key] = it }
             idMap[sid] = newId
             return newId
         }

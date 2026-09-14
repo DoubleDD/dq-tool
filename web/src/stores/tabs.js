@@ -14,9 +14,8 @@ export const tabState = reactive({
   activeKey: '',
   // 侧边栏「数据源」操作下拉命令(new/import/export):由 App.vue 写入,数据源页消费后清空。
   // 不用路由 query 传递——App.vue 的 keep-alive 以 route.fullPath 为 key,query 变化会导致组件重挂载,弹框状态丢失。
-  pendingDsDialog: '',
-  // 侧边栏数据源项右侧编辑图标:App.vue 写入待编辑数据源 id 并跳数据源页,数据源页消费后清空(理由同上)
-  pendingDsEditId: ''
+  // (侧边栏数据源项右侧的编辑图标已改为 App.vue 就地弹框,不再走这里的待办标记)
+  pendingDsDialog: ''
 })
 
 // 路由里拿不到名称时的兜底缓存:数据源 id -> 数据源名,任务 id -> 库名标签,任务 id -> 数据源 id

@@ -409,6 +409,7 @@ public class WebServer {
         // ---- 对象管理(数据目录):目录树按数据源隔离,目录挂载表,挂载表登记关系表 ----
         routes.get("/api/datasources/{dsId}/object-catalog", ctx -> objectCatalogCtrl.get().tree(ctx));
         routes.post("/api/object-dirs", ctx -> objectCatalogCtrl.get().createDir(ctx));
+        routes.post("/api/object-dirs/sort", ctx -> objectCatalogCtrl.get().sortDirs(ctx));
         routes.put("/api/object-dirs/{id}", ctx -> objectCatalogCtrl.get().renameDir(ctx));
         routes.delete("/api/object-dirs/{id}", ctx -> objectCatalogCtrl.get().deleteDir(ctx));
         routes.post("/api/object-dirs/{id}/tables", ctx -> objectCatalogCtrl.get().mountTable(ctx));
@@ -438,6 +439,8 @@ public class WebServer {
         routes.post("/api/relations/batch-confirm", ctx -> relationCtrl.get().batchConfirm(ctx));
         routes.post("/api/relations/batch-reject", ctx -> relationCtrl.get().batchReject(ctx));
         routes.post("/api/relations/batch-delete", ctx -> relationCtrl.get().batchDelete(ctx));
+        // 关系审核数据(导出 ER 关系 3 个 sheet:最终/原始/关系变化),table 可选
+        routes.get("/api/relation-audit", ctx -> relationCtrl.get().audit(ctx));
         routes.get("/api/relation-graph", ctx -> relationCtrl.get().graph(ctx));
 
         // ---- AI 配置 / 系统设置 / 授权 / 心跳 ----

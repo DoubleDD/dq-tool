@@ -75,8 +75,13 @@ class WebServerSmokeTest {
 
     /** 激活永久授权,绕过业务接口的授权前置校验 */
     private void activateLicense() throws Exception {
+        activateLicense("");
+    }
+
+    /** 激活永久授权并显式携带受控功能(如 compare);传空串等价于仅基础功能集 */
+    private void activateLicense(String features) throws Exception {
         String code = LicenseCodec.encode("测试客户", null, licenseKeyPair.getPrivate(),
-                "1.5-test", "jdbc:oracle:thin:@//secret-host:1521/ORCL", "scott", "ORCL", 1755000000000L);
+                "1.5-test", "jdbc:oracle:thin:@//secret-host:1521/ORCL", "scott", "ORCL", 1755000000000L, features);
         HttpResponse<String> resp = send("POST", "/api/license/activate",
                 "{\"code\":\"" + code + "\"}");
         assertEquals(200, resp.statusCode(), resp.body());
@@ -199,6 +204,25 @@ class WebServerSmokeTest {
         assertEquals(500, resp.statusCode(), resp.body());
         assertTrue(resp.body().contains("message"), resp.body());
         assertFalse(resp.body().contains("NullPointerException"), resp.body());
+    }
+
+    @Test
+    void 比对差异明细分页缺省targetId不报Kotlin非空NPE() throws Exception {
+        activateLicense("compare");
+
+        // targetId 可缺省。任务不存在时业务层抛 IllegalArgumentException → 400 统一映射;
+        // 若控制器用 queryParamAsClass("targetId").getOrDefault(null),会先撞 Kotlin 非空参数检查 → 500
+        // (与「表数据预览缺省rows参数不报NPE」同一类 BUG,且与是否真的带 targetId 无关)。
+        for (String query : new String[]{
+                "",
+                "?targetId=1",
+                "?page=1&size=20",
+                "?targetId=1&diffType=DIFF&page=1&size=20"}) {
+            HttpResponse<String> resp = get("/api/compare-jobs/999999/diffs" + query);
+            assertEquals(400, resp.statusCode(), query + " -> " + resp.body());
+            assertTrue(resp.body().contains("比对任务不存在"), resp.body());
+            assertFalse(resp.body().contains("non-null"), resp.body());
+        }
     }
 
     @Test

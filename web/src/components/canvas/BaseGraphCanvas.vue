@@ -3,8 +3,9 @@
        顶部 = 工具栏(左:内置默认工具[重绘/1:1/适应画布/线形(第 4 个图标位)/档位,按 tools 裁剪]
        + toolbar 插槽业务工具,控件区带毛玻璃底[图元素拖到下面不挡阅读];右:缩放控制条[同款毛玻璃底];
        整条工具栏的小组件高度严格一致,口径见样式里的 --bgc-ctl-h);
-       右下角 = 鸟瞰图(G6 minimap 插件,相对画布自适应),其左 = Shift 框选/多选操作提示
-       (selectable 开启时显示,半透明不挡交互);左下角 = 图例折叠面板(legend 插槽);
+       右下角 = 鸟瞰图(G6 minimap 插件,相对画布自适应),其左 = 画布操作提示
+       (Ctrl+滚轮缩放恒显示,Shift 框选/多选在 selectable 开启时追加,半透明不挡交互);
+       左下角 = 图例折叠面板(legend 插槽);
        其余浮层(节点面板等)走默认插槽由调用方自绘;首帧隐藏:render 先按世界坐标落笔,
        视口定位(settleView)完成前不显示,避免内容闪在左上角 -->
   <div ref="wrapRef" class="bgc-wrap">
@@ -85,9 +86,11 @@
         <div class="bgc-legend-body"><slot name="legend" /></div>
       </div>
     </div>
-    <!-- Shift 框选/多选操作提示:鸟瞰图左侧、底边与鸟瞰图对齐(位置见 selectHintStyle),半透明;
-         仅 selectable 开启时显示(能力关着不误导);纯提示不接收指针事件,不挡框选/拖画布 -->
-    <div v-if="selectable" class="bgc-select-hint" :style="selectHintStyle">Shift+拖动框选 · Shift+点击多选</div>
+    <!-- 画布操作提示:鸟瞰图左侧、底边与鸟瞰图对齐(位置见 canvasHintStyle),半透明;
+         「Ctrl+滚轮缩放」= 底座常开能力(zoom-canvas trigger Control,触摸板捏合同通道),恒显示;
+         「Shift+拖动框选/Shift+点击多选」仅 selectable 开启时追加(能力关着不误导);
+         纯提示不接收指针事件,不挡框选/拖画布 -->
+    <div class="bgc-canvas-hint" :style="canvasHintStyle">{{ canvasHint }}</div>
     <slot />
   </div>
 </template>
@@ -109,8 +112,8 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *    小组件高度严格一致:统一取 --bgc-ctl-h(默认 24px,与 Element Plus 小号档位同口径),
  *    缩放控制条是同样 24px 高的容器,插槽里的业务工具也被这条规则覆盖,调用方不必各自写死高度;
  *  - 右下角鸟瞰图(G6 minimap 插件,相对画布自适应,视野框可拖拽平移主画布;html 节点需经 minimap.shape 给缩略块,
- *    可用 ./htmlMinimapShape 的 createHtmlMinimapShape 工厂);鸟瞰图左侧 = Shift 框选/多选操作提示
- *    (selectable 开启时显示,半透明、不接收指针事件);
+ *    可用 ./htmlMinimapShape 的 createHtmlMinimapShape 工厂);鸟瞰图左侧 = 画布操作提示
+ *    (「Ctrl+滚轮缩放」恒显示,「Shift+拖动框选 · Shift+点击多选」在 selectable 开启时追加,半透明、不接收指针事件);
  *  - 左下角图例折叠面板(legend 插槽给内容,面板外壳/折叠交互由底座提供;默认展开,点标题栏收起);
  *  - 缩放控制条:−/+ 步进(×1.2,绕视口中心)、比例可输入(回车/失焦提交,Esc 取消,
  *    输入中不被 aftertransform 回写覆盖)、全屏切换;比例与画布双向同步;
@@ -175,7 +178,7 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *              活体仿真布局(d3-force 等)必须传 true——关动画路径会 layout.stop() 且不挂 onTick,
  *              仿真死后 drag-element-force 拖拽回温画面不更新;树/静态坐标布局保持默认 false 即可
  *  selectable  框选/多选开关,默认 false。开启后:Shift+拖动矩形框选节点、Shift+点击节点增减选中、
- *              点空白清空;选中集合变化发 selection-change(见 emits),鸟瞰图左侧显示操作提示。
+ *              点空白清空;选中集合变化发 selection-change(见 emits),鸟瞰图左侧操作提示追加 Shift 框选/多选文案。
  *              建图期配置(与 minimap/tools 同口径,运行期切换不生效);开启后业务侧勿再自配
  *              brush-select/lasso-select/click-select behavior(会重复);自配 drag-element 的调用方
  *              需对 Shift 让位(enable: e => !e.shiftKey),否则按住 Shift 拖节点会一边拖一边框选;
@@ -241,9 +244,13 @@ const EDGE_TYPES = [
 // 图例折叠面板:默认展开,收起为小条(不持久化)
 const legendCollapsed = ref(false)
 
-/** Shift 框选/多选提示定位:贴鸟瞰图左侧、底边与鸟瞰图对齐(鸟瞰图固定 right/bottom:12px,
+/** 画布操作提示文案:Ctrl+滚轮缩放 = 底座常开能力(任意画布都有),恒显示;
+ *  Shift 框选/多选只在 selectable 开启时追加(能力关着不提示,不误导) */
+const canvasHint = computed(() => (props.selectable ? 'Shift+拖动框选 · Shift+点击多选 · ' : '') + 'Ctrl+滚轮缩放')
+
+/** 画布操作提示定位:贴鸟瞰图左侧、底边与鸟瞰图对齐(鸟瞰图固定 right/bottom:12px,
  *  宽度取 minimap 配置,缺省 180);鸟瞰图关闭时退到右下角原位 */
-const selectHintStyle = computed(() => {
+const canvasHintStyle = computed(() => {
   if (!props.minimap) return { right: '12px', bottom: '12px' }
   const m = typeof props.minimap === 'object' ? props.minimap : {}
   const [w] = m.size || [180, 120]
@@ -306,12 +313,43 @@ function minimapPlugins() {
 async function settleView() {
   if (!graph) return
   if (props.fit === 'center') {
-    await graph.fitCenter(false)
-    // fitCenter 只平移不改比例;绕视口中心归一到默认比例,居中的内容保持居中
+    centerContent()
+    // 居中只平移不改比例;绕视口中心归一到默认比例,居中的内容保持居中
     if (Math.abs(graph.getZoom() - props.defaultZoom) > 1e-6) await graph.zoomTo(props.defaultZoom, false)
   } else if (props.fit === 'view') {
     await graph.fitView({}, false)
   }
+}
+
+/** 内容(全部节点并集包围盒)置中:fitCenter 聚焦的是画布元素包围盒,与图内容位置无关——内容偏离
+ *  画布中心时会整体飞出视口。这里按 getElementRenderBounds(画布绘制坐标系,与 DOM 位置实测一致)
+ *  求节点并集中心,换算视口坐标后直接落相机位姿。translateBy/zoomTo 走 camera landmark,
+ *  渲染初期或连续调用会互相吞没(实测两次平移只落一半),故不用;空图/取不到包围盒回退 fitCenter */
+async function centerContent() {
+  const ids = graph.getData().nodes.map((n) => n.id)
+  if (!ids.length) return graph.fitCenter(false)
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  for (const id of ids) {
+    const b = graph.getElementRenderBounds(id)
+    if (!b) continue
+    minX = Math.min(minX, b.min[0])
+    minY = Math.min(minY, b.min[1])
+    maxX = Math.max(maxX, b.max[0])
+    maxY = Math.max(maxY, b.max[1])
+  }
+  const camera = graph.context.viewport?.camera
+  if (!Number.isFinite(minX) || !camera) return graph.fitCenter(false)
+  const center = [(minX + maxX) / 2, (minY + maxY) / 2]
+  const canvasCenter = graph.getCanvasCenter()
+  const viewportPos = graph.getViewportByCanvas(center)
+  const zoom = graph.getZoom()
+  // 相机位姿与内容位移反向(translateBy 内部同样取负),按目标位移反推相机偏移
+  const dx = (viewportPos[0] - canvasCenter[0]) / zoom
+  const dy = (viewportPos[1] - canvasCenter[1]) / zoom
+  const p = camera.getPosition()
+  const f = camera.getFocalPoint()
+  camera.setPosition([p[0] + dx, p[1] + dy, p[2]])
+  camera.setFocalPoint([f[0] + dx, f[1] + dy, f[2]])
 }
 
 // ---------- 保持视口时的锚点补偿(抵消 G6 树布局的整树重新锚定) ----------
@@ -1037,9 +1075,10 @@ defineExpose({
 .bgc-legend-body {
   padding: 6px 10px;
 }
-/* Shift 框选/多选操作提示:鸟瞰图左侧、底边与鸟瞰图对齐(位置见 selectHintStyle);
-   半透明毛玻璃弱提示(比工具栏控件区更弱的底色,无边框不抢视觉),不接收指针事件——不挡框选/拖画布 */
-.bgc-select-hint {
+/* 画布操作提示(Ctrl+滚轮缩放 / selectable 时的 Shift 框选多选):鸟瞰图左侧、底边与鸟瞰图对齐
+   (位置见 canvasHintStyle);半透明毛玻璃弱提示(比工具栏控件区更弱的底色,无边框不抢视觉),
+   不接收指针事件——不挡框选/拖画布 */
+.bgc-canvas-hint {
   position: absolute;
   z-index: 10;
   padding: 3px 10px;

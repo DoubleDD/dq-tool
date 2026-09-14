@@ -36,6 +36,19 @@ interface DbDialect {
     @Throws(SQLException::class)
     fun listDatabases(conn: Connection): List<String> = emptyList()
 
+    /**
+     * 用户眼中的「库」清单统一口径:多库方言取 [listDatabases];单库方言库就是 schema(MySQL 的 schema 即库),
+     * [listDatabases] 未实现返回空,回落 [listSchemas]。
+     *
+     * 凡是给「库过滤」页签/库选择器拉清单都必须走这里:直接只用 [listDatabases] 会在单库方言上拿到空列表,
+     * 把数据源级库清单缓存覆盖成空,库过滤页签显示「已选 0/0」。
+     */
+    @Throws(SQLException::class)
+    fun listDatabasesOrSchemas(conn: Connection): List<String> {
+        val databases = listDatabases(conn)
+        return if (databases.isNotEmpty()) databases else listSchemas(conn)
+    }
+
     /** 是否多库方言(如 SQL Server/Kingbase 先选库再选 schema);false 时 listSchemas 的 schema 即用户眼中的「库」 */
     fun supportsMultiDatabase(): Boolean = false
 

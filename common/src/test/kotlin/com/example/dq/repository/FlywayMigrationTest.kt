@@ -1,5 +1,7 @@
 package com.example.dq.repository
 
+import org.flywaydb.core.Flyway
+import org.flywaydb.core.api.MigrationVersion
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
@@ -114,5 +116,52 @@ class FlywayMigrationTest {
             conn.metaData.getColumns(null, null, "DATA_SOURCE", "GROUP_NAME").use { it.next() }
         }
         assertTrue(groupColBack, "老库缺少 V18 补列: GROUP_NAME")
+    }
+
+    @Test
+    fun `V47 老库升级回填人工审核标记与原始关系快照`() {
+        val ds = memDs("relation_v47_${UUID.randomUUID()}")
+        // 先迁到 V46(模拟已发布版本的库),再塞入存量关系数据
+        Flyway.configure()
+            .dataSource(ds)
+            .locations("classpath:db/migration")
+            .target(MigrationVersion.fromVersion("46"))
+            .load()
+            .migrate()
+        val jdbc = Jdbc(ds)
+        fun rel(oneTable: String, oneCol: String, manyTable: String, manyCol: String,
+                source: String, status: String): Long =
+            jdbc.insert(
+                "INSERT INTO table_relation(datasource_id, db_name, schema_name, one_table, one_column, " +
+                    "many_table, many_column, cardinality, status, source, confidence, overlap_ratio, remark) " +
+                    "VALUES (1,'','PUBLIC',?,?,?,?,'ONE_TO_MANY',?,?,'HIGH',0.9,NULL)",
+                oneTable, oneCol, manyTable, manyCol, status, source)
+
+        val confirmed = rel("t1", "id", "t2", "t2_id", "NAME_MATCH", "CONFIRMED")
+        val rejected = rel("t3", "id", "t4", "t4_id", "NAME_MATCH", "REJECTED")
+        val candidate = rel("t5", "id", "t6", "t6_id", "SEMANTIC", "CANDIDATE")
+        val manual = rel("t7", "id", "t8", "t8_id", "MANUAL", "CONFIRMED")
+        // 反向存储的重复行(与 t1/t2 同一字段对),回填时应被方向无关去重掉
+        rel("t2", "t2_id", "t1", "id", "NAME_MATCH", "CANDIDATE")
+
+        SchemaInit.run(ds) // 应用 V47
+
+        fun reviewed(id: Long): Boolean =
+            jdbc.queryOne("SELECT reviewed FROM table_relation WHERE id=?", id) { it.getBoolean(1) }!!
+        // 非候选态与人工补充视为人工已审核;纯候选为未审核
+        assertTrue(reviewed(confirmed))
+        assertTrue(reviewed(rejected))
+        assertTrue(reviewed(manual))
+        assertEquals(false, reviewed(candidate))
+
+        // 原始关系快照:派生关系回填(状态 CANDIDATE),人工补充不回填,反向重复只留一条
+        val originals = jdbc.query(
+            "SELECT one_table, many_table, status FROM table_relation_original ORDER BY id"
+        ) { Triple(it.getString(1), it.getString(2), it.getString(3)) }
+        assertEquals(3, originals.size)
+        assertTrue(originals.all { it.third == "CANDIDATE" })
+        assertTrue(originals.none { it.first == "t7" })
+        assertEquals(1, originals.count { it.first == "t1" && it.second == "t2" })
+        assertEquals(0, originals.count { it.first == "t2" && it.second == "t1" })
     }
 }

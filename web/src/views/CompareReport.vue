@@ -35,6 +35,20 @@
                   <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ (row.db ? row.db + '.' : '') + (row.schema || '') + '.' + row.table }}</div>
                 </template>
               </el-table-column>
+              <!-- 对象对齐构成:命中总数 + 编码/名称/大模型各自配上的数量(匹配逻辑 2/3 下可核对补配规模) -->
+              <el-table-column label="对象命中" width="120" align="center">
+                <template #default="{ row }">
+                  <span v-if="row.matchedCount == null" style="color: var(--el-text-color-secondary)">—</span>
+                  <el-tooltip v-else placement="top" :show-after="200">
+                    <template #content>
+                      <div>编码对齐:{{ row.codeMatchedCount ?? row.matchedCount }} 个</div>
+                      <div>名称补配:{{ row.nameMatchedCount ?? 0 }} 个</div>
+                      <div>大模型补配:{{ row.aiMatchedCount ?? 0 }} 个</div>
+                    </template>
+                    <span>{{ row.matchedCount }} 个</span>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
               <el-table-column label="对象覆盖率" width="110" align="center">
                 <template #default="{ row }"><MetricCell :target="row" :value="percent(row.coverage)" /></template>
               </el-table-column>

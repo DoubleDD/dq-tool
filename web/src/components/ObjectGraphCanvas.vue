@@ -41,6 +41,9 @@ import { themeState } from '../stores/theme'
 //    「… 共 N 个字段」可点击展开/收起(展开态跨 rebuild 保持);字段走单表 columns 接口按需拉取(服务端有缓存不连业务库);
 //    字段区可由 showFields 关闭;有关系表时右缘 ▸/▾ 按钮收起/展开关系;
 //  关系表 = 挂载表的子节点,加「关系」徽标区分;
+//  同层节点顺序 = 目录树顺序(目录按同级拖动排序,表按挂载时间、关系表按登记时间):
+//    buildData 按 payload 顺序推入节点与边,compact-box 按「子节点数组顺序」排布(H=LR 时自上而下、V=TB 时从左往右),
+//    G6 的树结构由边插入顺序还原,故前端不做任何重排,后端有序即图上有序;
 //  挂载表带 relKind(包含/关联)时,目录→表 连线中点展示该关系标签;
 //  关系表带 relKind 时,挂载表→关系表 连线同样展示;
 //  双击表/关系表节点跳该表字段明细页(底座容器层坐标反查补发——G6 v5 不转发 html 节点 dblclick);
@@ -157,7 +160,8 @@ const ROOT_ID = 'om-root'
 // 挂载表与目录的关系类型(relKind)→ 目录→表 连线标签文字
 const REL_KIND_TEXT = { INCLUDE: '包含', ASSOC: '关联' }
 
-/** 目录树 -> G6 数据(nodes/edges;父子关系用边表达,树布局按边排布) */
+/** 目录树 -> G6 数据(nodes/edges;父子关系用边表达,树布局按边排布)
+ *  推入顺序即同层排布顺序(目录按 sort_order / 表按挂载时间,来自后端 loadTree),此处不做重排 */
 function buildData() {
   const nodes = []
   const edges = []

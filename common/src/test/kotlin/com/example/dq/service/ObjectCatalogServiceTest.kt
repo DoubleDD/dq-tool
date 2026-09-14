@@ -73,10 +73,8 @@ class ObjectCatalogServiceTest {
         assertEquals("客户", n2.name)
         val n3 = n2.children[0]
         assertEquals("核心", n3.name)
-        assertEquals(2, n3.tables.size)                // 按 tableName 排序:addr 在前
-        assertEquals("addr", n3.tables[0].tableName)
-        assertEquals("", n3.tables[0].comment)         // 缓存未覆盖给空串
-        val cust = n3.tables[1]
+        assertEquals(2, n3.tables.size)                // 按挂载时间排序:cust 先挂载,在前
+        val cust = n3.tables[0]
         assertEquals("cust", cust.tableName)
         assertEquals("客户信息表", cust.comment)        // meta_table 补注释
         assertEquals("客户主表", cust.remark)
@@ -85,6 +83,8 @@ class ObjectCatalogServiceTest {
         assertEquals("订单表", cust.relations[0].comment)
         assertEquals("订单关联", cust.relations[0].remark)
         assertEquals("", cust.dbName)                  // db null 归一空串
+        assertEquals("addr", n3.tables[1].tableName)   // addr 后挂载,排在后面
+        assertEquals("", n3.tables[1].comment)         // 缓存未覆盖给空串
         assertFalse(t1.existing)
         assertFalse(service.mountTable(d2, null, "public", "tmp", null).existing)
     }
@@ -120,7 +120,7 @@ class ObjectCatalogServiceTest {
         // 都落在虚拟根下,parent_id 统一为 0
         assertEquals(0, catalogRepo.findDir(d1)!!.parentId)
         assertEquals(0, catalogRepo.findDir(d2)!!.parentId)
-        // 顶层目录按 name 排序(H2 按码点比较:业 U+4E1A < 归 U+5F52,故业务域在前)
+        // 顶层目录默认按创建时间排序(此处 业务域 先建、归档 后建,恰好与 name 排序同序)
         assertEquals(listOf("业务域", "归档"), service.loadTree(dsId).children.map { it.name })
         // null 与 0 属于同一父级作用域:撞名按同级重名拦截
         assertThrows(IllegalArgumentException::class.java) { service.createDir(dsId, null, "归档") }
@@ -128,6 +128,58 @@ class ObjectCatalogServiceTest {
         // 子目录与父目录归属语义不受影响
         val child = service.createDir(dsId, d1, "客户")
         assertEquals(d1, catalogRepo.findDir(child)!!.parentId)
+    }
+
+    @Test
+    fun `目录默认按创建时间排序且支持同级拖动重排`() {
+        val dsId = newDs("生产库")
+        val a = service.createDir(dsId, 0, "b目录")   // 名称码点大,创建在前(与 name 排序相反)
+        val b = service.createDir(dsId, 0, "a目录")
+        val c = service.createDir(dsId, 0, "c目录")
+        // 默认按创建时间(而非 name):b目录 在前、a目录 居中
+        assertEquals(listOf("b目录", "a目录", "c目录"), service.loadTree(dsId).children.map { it.name })
+        // 同级作用域独立:父目录下的子目录各排各的
+        val x = service.createDir(dsId, a, "x")
+        val y = service.createDir(dsId, a, "y")
+        assertEquals(listOf("x", "y"), service.loadTree(dsId).children.first { it.id == a }.children.map { it.name })
+
+        // 根级重排(倒序):c,b,a → 显示 c目录,a目录,b目录
+        service.reorderDirs(dsId, null, listOf(c, b, a))
+        assertEquals(listOf("c目录", "a目录", "b目录"), service.loadTree(dsId).children.map { it.name })
+        // 重排后新建目录追加同级末尾(默认顺序口径不变)
+        service.createDir(dsId, 0, "d目录")
+        assertEquals(listOf("c目录", "a目录", "b目录", "d目录"), service.loadTree(dsId).children.map { it.name })
+        // 子目录重排只影响该父目录,不影响根级
+        service.reorderDirs(dsId, a, listOf(y, x))
+        assertEquals(listOf("y", "x"), service.loadTree(dsId).children.first { it.id == a }.children.map { it.name })
+        assertEquals(listOf("c目录", "a目录", "b目录", "d目录"), service.loadTree(dsId).children.map { it.name })
+
+        // 非法:跨父级 id / 列表内重复 / 数据源不存在 均 400
+        assertThrows(IllegalArgumentException::class.java) { service.reorderDirs(dsId, null, listOf(x)) }
+        assertThrows(IllegalArgumentException::class.java) { service.reorderDirs(dsId, null, listOf(a, a)) }
+        assertThrows(IllegalArgumentException::class.java) { service.reorderDirs(9999, null, listOf(a)) }
+    }
+
+    @Test
+    fun `挂载表与关系表按挂载登记时间排序且不随目录重排变化`() {
+        val dsId = newDs("生产库")
+        val dir = service.createDir(dsId, 0, "业务域")
+        // 故意逆表名顺序挂载:zzz 先挂、aaa 后挂
+        val zzz = service.mountTable(dir, null, "s", "zzz", null)
+        service.mountTable(dir, null, "s", "aaa", null)
+        // 关系表同样逆表名顺序登记:r-zzz 先登记
+        service.addRelation(zzz.id, null, "s", "r-zzz", null)
+        service.addRelation(zzz.id, null, "s", "r-aaa", null)
+
+        val node = service.loadTree(dsId).children[0]
+        assertEquals(listOf("zzz", "aaa"), node.tables.map { it.tableName })                    // 挂载时间,而非表名
+        assertEquals(listOf("r-zzz", "r-aaa"), node.tables[0].relations.map { it.tableName })   // 登记时间,而非表名
+        // 重复挂载命中幂等不改变顺序
+        service.mountTable(dir, null, "s", "zzz", "再次挂载")
+        assertEquals(listOf("zzz", "aaa"), service.loadTree(dsId).children[0].tables.map { it.tableName })
+        // 目录重排不影响表顺序(表序只看挂载时间)
+        service.reorderDirs(dsId, null, listOf(dir))
+        assertEquals(listOf("zzz", "aaa"), service.loadTree(dsId).children[0].tables.map { it.tableName })
     }
 
     @Test

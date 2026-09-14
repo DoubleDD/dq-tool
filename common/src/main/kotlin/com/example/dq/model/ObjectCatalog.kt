@@ -8,7 +8,9 @@ import jakarta.validation.constraints.NotNull
 /**
  * 对象管理(数据目录):目录树节点视图。
  * 目录按数据源隔离;根是虚拟节点(id=0,name 空串,tables 恒空),真实顶层目录挂在 children 下。
- * children 按 name 排序,tables 按 tableName 排序。
+ * children 按同级手工排序序号排列(默认顺序 = 创建时间顺序,可在页面拖动重排);
+ * tables 按挂载时间排序(同刻回退 id),relations 按登记时间排序。
+ * 该顺序同时也是目录图(关系图页签)同层节点的排布顺序。
  */
 data class ObjectDirNode(
     val id: Long,
@@ -58,6 +60,16 @@ data class ObjectDirCreateRequest(
 /** 重命名目录请求 */
 data class ObjectDirRenameRequest(
     @field:NotBlank val name: String?,
+)
+
+/**
+ * 同级目录重排请求:orderedIds 为该父目录下同级目录按期望顺序排列的 id 列表
+ * (parentId 可空,null=根下的顶层目录,等价 0)
+ */
+data class ObjectDirSortRequest(
+    @field:NotNull val datasourceId: Long?,
+    val parentId: Long?,
+    @field:NotEmpty val orderedIds: List<Long>?,
 )
 
 /** 挂载表单项:relKind 可空,INCLUDE=包含 / ASSOC=关联(非法值由内核 400) */
