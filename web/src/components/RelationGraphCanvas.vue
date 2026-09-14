@@ -705,7 +705,8 @@ function buildData() {
       source: r.oneTable,
       target: r.manyTable,
       data: { oneColumn: r.oneColumn, manyColumn: r.manyColumn },
-      style: edgeStyle(r)
+      // mapping 模式走普通实线(不表达 ER 基数语义);ER 关系图保持候选/确认/疑似三态样式
+      style: props.mode === 'mapping' ? mappingEdgeStyle() : edgeStyle(r)
     }
   })
   return { nodes, edges }
@@ -721,9 +722,11 @@ function layoutOptions() {
   return { type: 'er-dagre-grid', rankdir: 'LR', nodesep: 24, ranksep: 120, animation: false }
 }
 
-/** 映射边样式(create-edge 新建边与状态重建边共用同一套:确认实线主题色 + 1:1 两端竖杠) */
+/** 映射边样式(create-edge 新建边与状态重建边共用同一套):普通实线主题色——字段映射只表达
+ *  「左边基准字段 → 右边对比字段」的指向,不带 ER 基数语义,故不要两端竖杠/鸦脚与 1:1 标签 */
 function mappingEdgeStyle() {
-  return edgeStyle({ cardinality: 'ONE_TO_ONE', status: 'CONFIRMED' })
+  const c = themeColors()
+  return { stroke: c.primary, lineWidth: 1.8 }
 }
 
 // hover 的字段行(mapping 模式):直接改行 DOM,绝不走 G6 重绘——整图 setData+draw 代价大,
