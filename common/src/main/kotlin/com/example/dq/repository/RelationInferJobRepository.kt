@@ -38,12 +38,22 @@ class RelationInferJobRepository(private val jdbc: Jdbc) {
             raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { AnchorField(it) }
         }
 
-    /** 创建任务(立即 RUNNING,started_at 记提交时刻;anchorFields 序列化为 JSON 落库) */
+    /** 创建任务(显式 PENDING:单线程守护排队期间诚实显示「排队中」;started_at 由 markRunning 在开始执行时记,提交时刻看 created_at) */
     fun insert(datasourceId: Long, dbName: String, schema: String,
                anchorTable: String, anchorFields: List<AnchorField>, useSemantic: Boolean): Long =
         jdbc.insert("INSERT INTO relation_infer_job(datasource_id, db_name, schema_name, anchor_table, anchor_columns, " +
-                "use_semantic, started_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                "use_semantic, status) VALUES (?,?,?,?,?,?,'PENDING')",
             datasourceId, dbName, schema, anchorTable, json.writeValueAsString(anchorFields), useSemantic)
+
+    /** 守护线程取出任务开始执行:置 RUNNING 并记开始时刻(排队等待不计入耗时) */
+    fun markRunning(id: Long) {
+        jdbc.update("UPDATE relation_infer_job SET status='RUNNING', started_at=CURRENT_TIMESTAMP WHERE id=?", id)
+    }
+
+    /** 后台任务中心轮询:全部未完成任务(跨库,PENDING 排队在前),id 升序 */
+    fun listActive(): List<RelationInferJob> =
+        jdbc.query("SELECT * FROM relation_infer_job WHERE status IN ('PENDING','RUNNING') ORDER BY id",
+            mapper = mapper)
 
     fun findById(id: Long): RelationInferJob? =
         jdbc.queryOne("SELECT * FROM relation_infer_job WHERE id=?", id, mapper = mapper)
@@ -83,8 +93,8 @@ class RelationInferJobRepository(private val jdbc: Jdbc) {
                 "ELSE SUBSTRING(error, 1, 1700) || '; ' || ? END WHERE id=?", n, n, id)
     }
 
-    /** 服务重启:残留 RUNNING(执行线程已随重启消亡)统一置 FAILED */
+    /** 服务重启:残留 PENDING/RUNNING(执行线程已随重启消亡)统一置 FAILED */
     fun failRunningOnStartup(): Int =
         jdbc.update("UPDATE relation_infer_job SET status='FAILED', error='服务重启,推导任务中断', " +
-                "finished_at=CURRENT_TIMESTAMP WHERE status='RUNNING'")
+                "finished_at=CURRENT_TIMESTAMP WHERE status IN ('PENDING','RUNNING')")
 }

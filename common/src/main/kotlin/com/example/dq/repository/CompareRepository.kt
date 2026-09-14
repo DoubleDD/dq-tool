@@ -14,7 +14,8 @@ class CompareRepository(private val jdbc: Jdbc) {
 
     data class JobRow(val id: Long, val name: String, val baseDatasourceId: Long, val baseDb: String,
                       val baseSchema: String?, val baseTable: String, val keyField: String,
-                      val displayField: String?, val matchMode: String?, val fieldsJson: String?,
+                      val displayField: String?, val matchMode: String?, val compareMode: String?,
+                      val fieldsJson: String?,
                       val status: String, val stage: String?,
                       val totalUnits: Int, val doneUnits: Int, val error: String?, val archived: Boolean,
                       val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?)
@@ -23,7 +24,7 @@ class CompareRepository(private val jdbc: Jdbc) {
         JobRow(rs.getLong("id"), rs.getString("name"), rs.getLong("base_datasource_id"),
             rs.getString("base_db") ?: "", rs.getString("base_schema"), rs.getString("base_table"),
             rs.getString("key_field"), rs.getString("display_field"), rs.getString("match_mode"),
-            rs.getString("fields_json"),
+            rs.getString("compare_mode"), rs.getString("fields_json"),
             rs.getString("status"), rs.getString("stage"),
             rs.getInt("total_units"), rs.getInt("done_units"), rs.getString("error"), rs.getBoolean("archived"),
             ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"))
@@ -82,16 +83,17 @@ class CompareRepository(private val jdbc: Jdbc) {
 
     /**
      * 落任务:displayField 为提交时解析好的对象名称(显示名)字段,可空(空 = 无显示字段,object_name 落空串);
-     * matchMode 为对象对齐匹配逻辑(EXACT/CODE_THEN_NAME/CODE_NAME_LLM),空 = 老任务按「只按编码」解读
+     * matchMode 为对象对齐匹配逻辑(EXACT/CODE_THEN_NAME/CODE_NAME_LLM),空 = 老任务按「只按编码」解读;
+     * compareMode 为对比模式(ROW/COLUMN),空 = 行级(老任务兼容)
      */
     fun insertJob(name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?, baseTable: String,
                   keyField: String, fieldsJson: String, totalUnits: Int, displayField: String? = null,
-                  matchMode: String? = null): Long =
+                  matchMode: String? = null, compareMode: String? = null): Long =
         jdbc.insert("INSERT INTO compare_job(name, base_datasource_id, base_db, base_schema, base_table, " +
-            "key_field, fields_json, display_field, match_mode, status, total_units, started_at) " +
-            "VALUES (?,?,?,?,?,?,?,?,?,'RUNNING',?,CURRENT_TIMESTAMP)",
+            "key_field, fields_json, display_field, match_mode, compare_mode, status, total_units, started_at) " +
+            "VALUES (?,?,?,?,?,?,?,?,?,?,'RUNNING',?,CURRENT_TIMESTAMP)",
             name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fieldsJson, displayField,
-            matchMode, totalUnits)
+            matchMode, compareMode, totalUnits)
 
     fun getJob(id: Long): JobRow? =
         jdbc.queryOne("SELECT * FROM compare_job WHERE id=?", id, mapper = jobMapper)
@@ -104,6 +106,21 @@ class CompareRepository(private val jdbc: Jdbc) {
             jdbc.query("SELECT * FROM compare_job WHERE archived=FALSE ORDER BY created_at DESC, id DESC",
                 mapper = jobMapper)
         }
+
+    /** 后台任务中心轮询:RUNNING 任务(跨全部库,id 升序) */
+    fun listActiveJobs(): List<JobRow> =
+        jdbc.query("SELECT * FROM compare_job WHERE status='RUNNING' ORDER BY id", mapper = jobMapper)
+
+    /** 活动任务的目标进度:jobId → (目标总数, 已出终态数);一次 GROUP BY 覆盖全部活动任务 */
+    fun countActiveTargets(jobIds: List<Long>): Map<Long, Pair<Int, Int>> {
+        if (jobIds.isEmpty()) return emptyMap()
+        val placeholders = jobIds.joinToString(",") { "?" }
+        return jdbc.query("SELECT job_id, COUNT(*) AS total, " +
+                "SUM(CASE WHEN status IN ('DONE','FAILED') THEN 1 ELSE 0 END) AS done " +
+                "FROM compare_target WHERE job_id IN ($placeholders) GROUP BY job_id", *jobIds.toTypedArray()) { rs ->
+            rs.getLong("job_id") to (rs.getInt("total") to rs.getInt("done"))
+        }.toMap()
+    }
 
     fun updateStage(id: Long, stage: String) {
         jdbc.update("UPDATE compare_job SET stage=? WHERE id=?", stage, id)

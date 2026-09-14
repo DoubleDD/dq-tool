@@ -191,7 +191,9 @@ class ServiceEnv(val config: AppConfig) {
     val compareService = CompareService(compareRepo, dataSourceService, dialectFactory,
         metadataService, systemSettingsService, tableSystemRepo, aiConfigService,
         // 匹配逻辑 3 的补配调用计入 AI 用量统计(场景:比对匹配)
-        { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MATCH) })
+        aiChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MATCH) },
+        // 列级对比字段映射预生成(场景:比对映射)
+        aiMappingChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MAPPING) })
 
     /**
      * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的

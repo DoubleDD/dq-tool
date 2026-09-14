@@ -40,3 +40,15 @@ export function downloadText(filename, text, mime = 'text/markdown') {
   a.click()
   URL.revokeObjectURL(url)
 }
+
+/**
+ * DataURL 下载(前端画布生成的图片等):a[download] 直载,浏览器与 Tauri webview 均可用。
+ * @param {string} filename 下载文件名
+ * @param {string} dataUrl canvas.toDataURL 等产出的 data:... URL
+ */
+export function downloadDataUrl(filename, dataUrl) {
+  const a = document.createElement('a')
+  a.href = dataUrl
+  a.download = filename
+  a.click()
+}

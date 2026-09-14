@@ -5,6 +5,7 @@
        ER 专属部分:html 表节点渲染、field-cubic 字段对齐边、er-dagre-grid 布局、表名单击/双击口径、
        选中集合承接(普通点击单选经底座 setSelection 接入)/批量否决、边样式图例(legend 插槽)。容器需显式高度(由父级布局保证) -->
   <div class="rg-wrap">
+    <!-- 全屏按钮:mapping 模式(字段映射)显示——比对画布大、需要全屏铺开操作;ER 关系图保持不显示 -->
     <BaseGraphCanvas
       ref="baseRef"
       :data="graphData"
@@ -13,10 +14,11 @@
       :default-zoom="defaultZoom > 0 ? defaultZoom : 1"
       :options-key="edgeType"
       :minimap="minimapOptions"
-      :fullscreen="false"
+      :fullscreen="mode === 'mapping'"
       :tools="tools"
       :level="level"
       :edge-type="edgeType"
+      image-name="ER图"
       @update:level="emit('update:level', $event)"
       @update:edge-type="emit('update:edgeType', $event)"
       @export-drawio="emit('export-drawio')"
@@ -53,6 +55,8 @@
       </el-tooltip>
       <el-button size="small" @click="clearSelection">取消</el-button>
     </div>
+    <!-- 悬停连线浮层(mapping):显示两端字段名(注释优先),人工审核连线去向;fixed 定位跟随鼠标 -->
+    <div v-show="edgeTip.show" class="rg-edgetip" :style="{ left: edgeTip.x + 'px', top: edgeTip.y + 'px' }">{{ edgeTip.text }}</div>
   </div>
 </template>
 
@@ -104,11 +108,13 @@ const props = defineProps({
   //   both=中英文同时显示(中文在前:标题同 chinese 档主/副标题双行,字段行中文注释在前、英文名淡色尾随)
   fieldNameMode: { type: String, default: 'chinese' },
   // 画布用途:relation=ER 关系图(默认,行为与改动前完全一致);
-  //   mapping=数据比对「字段映射」(节点标题取 label、副标题取 comment;字段行可点连线;隐藏线型/档位/导出工具与批量否决条,图例换成操作提示)
+  //   mapping=数据比对「字段映射」(节点标题取 label、副标题取 comment;字段行可点连线;隐藏线型/档位/导出 drawio 与批量否决条,
+  //   「另存为图片」为底座常驻工具仍显示;图例换成操作提示)
   mode: { type: String, default: 'relation' },
   // mapping 模式:当前待连线的基准字段名(该行高亮,提示「点它再点对侧字段」)
   activeColumn: { type: String, default: '' },
-  // mapping 模式:锚点表(基准表)里**参与比对的基准字段**——常亮高亮,让用户一眼看到哪些字段需要连线
+  // mapping 模式:锚点表(基准表)里**参与比对的基准字段**——曾做常亮底色高亮,用户反馈干扰观看已移除,
+  // 目前仅保留接口(参与比对的口径由向导第二步与提交校验兜底),不再影响画布渲染
   highlightColumns: { type: Array, default: () => [] }
 })
 
@@ -143,7 +149,8 @@ const affectedEdges = computed(() => {
   return props.edges.filter((e) => sel.has(e.oneTable) || sel.has(e.manyTable))
 })
 
-/** 工具栏工具集:mapping 模式只留 重绘/1:1/适应画布(线型、档位、导出 drawio 都是 ER 关系图专属) */
+/** 工具栏工具集:mapping 模式只留 重绘/1:1/适应画布(线型、档位、导出 drawio 都是 ER 关系图专属);
+ *  「另存为图片」为底座常驻工具、不经 tools 裁剪,mapping 模式同样显示 */
 const tools = computed(() => props.mode === 'mapping'
   ? ['refresh', 'zoom100', 'fit']
   : ['refresh', 'zoom100', 'fit', 'edge-type', 'export-drawio', 'level'])
@@ -186,6 +193,7 @@ function themeColors() {
     danger: get('--el-color-danger', '#f56c6c'),
     border: get('--el-border-color', '#dcdfe6'),
     borderDarker: get('--el-border-color-darker', '#cdd0d6'),
+    borderLighter: get('--el-border-color-lighter', '#ebeef5'),
     bg: get('--el-bg-color', '#ffffff'),
     text: get('--el-text-color-primary', '#303133'),
     textSecondary: get('--el-text-color-secondary', '#909399'),
@@ -263,7 +271,7 @@ function nodeSize(table, comment) {
  *  根 div 带 data-rg-node 标记,容器层点击委托按它判定「点节点选中」 */
 function renderNodeHtml(d) {
   const c = themeColors()
-  const { table, comment, label } = d.data
+  const { table, comment, label, tableComment } = d.data
   const mapping = props.mode === 'mapping'
   const isAnchor = table === props.anchorTable
   const isSelected = selectedTables.value.has(table)
@@ -272,13 +280,11 @@ function renderNodeHtml(d) {
   const rows = visibleFields(table)
   const fieldHtml = rows.map((f) => {
     const isActive = mapping && isAnchor && props.activeColumn && f.name === props.activeColumn
-    // 基准表里「参与比对的基准字段」常亮高亮(主题色左侧竖条 + 淡底):用户一眼看到哪些字段需要连线
-    const isBaseField = mapping && isAnchor && props.highlightColumns.includes(f.name)
+    // 基准字段不再做底色/左竖条高亮(用户反馈整表淡蓝底太干扰观看)——基准表字段行与普通行同款式,
+    // 连过线的字段照旧主题色加粗;是否参与比对的口径由向导第二步与提交校验兜底
     const style = isActive
       ? `color:${c.primary};font-weight:600;background:${c.primary}26;border-radius:3px`
-      : isBaseField
-        ? `color:${f.related ? c.primary : c.text};${f.related ? 'font-weight:600;' : ''}background:${c.primary}0f;box-shadow:inset 2px 0 0 ${c.primary};border-radius:3px`
-        : f.related ? `color:${c.primary};font-weight:600` : `color:${c.textSecondary}`
+      : f.related ? `color:${c.primary};font-weight:600` : `color:${c.textSecondary}`
     // 字段名口径三档:chinese=仅中文注释(无注释回退英文名);english=仅英文名;both=中文在前、英文名更淡尾随;
     // 超长随行截断「…」;整行 title 恒带 英文名+完整注释,hover 即可查看全文
     const main = props.fieldNameMode === 'english' ? f.name : (f.comment || f.name)
@@ -291,16 +297,29 @@ function renderNodeHtml(d) {
     const colAttr = ` data-rg-column="${esc(f.name)}" data-rg-column-table="${esc(table)}"`
     // mapping 模式字段行悬停给十字光标(正在连线的语义);ER 图字段行不可点,保持默认
     const cursor = mapping ? 'cursor:crosshair;' : ''
-    return `<div${tip}${colAttr} style="display:flex;align-items:center;height:18px;line-height:18px;padding:0 8px;font-size:11px;overflow:hidden;${style};${cursor}"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(main.replace(/\s+/g, ' '))}${tailHtml}</span>${type}</div>`
+    // mapping 模式给每个字段行加上下 0.5px 发丝分隔线(表格感;1px 近距离视觉比节点边框还抢;
+    // 颜色用 --el-border-color 常规边框灰——lighter 灰叠在基准字段淡蓝底上几乎不可见)。
+    // 用 background-image 渐变实现:Chrome 会把 border-width:0.5px 计算值取整成 1px,边框做不到真半像素;
+    // 行高不加边框仍是 18px(边端点/节点高度按 ROW_H=18 推算,撑高会端点对不齐)。
+    // 放在 ${style} 之后:基准字段的 background 简写会清掉 background-image,后者补上两者兼得;
+    // hover 高亮改 background 时分隔线暂隐、还原后恢复,视觉无碍
+    const sepBg = mapping
+      ? `background-image:linear-gradient(to bottom, ${c.border}, ${c.border} 0.5px, rgba(0,0,0,0) 0.5px), linear-gradient(to top, ${c.border}, ${c.border} 0.5px, rgba(0,0,0,0) 0.5px);background-size:100% 0.5px, 100% 0.5px;background-position:0 0, 0 100%;background-repeat:no-repeat;`
+      : ''
+    return `<div${tip}${colAttr} style="display:flex;align-items:center;height:18px;line-height:18px;padding:0 8px;font-size:11px;overflow:hidden;${style};${sepBg}${cursor}"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(main.replace(/\s+/g, ' '))}${tailHtml}</span>${type}</div>`
   }).join('')
   const more = hasFoldRow(table)
     ? `<div class="rg-more-row" data-rg-table="${esc(table)}" title="${expanded ? '收起字段' : '点击展开全部字段'}" style="height:16px;line-height:16px;padding:0 8px;font-size:11px;color:${c.primary};cursor:pointer;white-space:nowrap">${expanded ? '收起字段' : `+${fields.length - props.maxFieldRows} 个字段`}</div>` : ''
   // 名字口径与字段一致:中文档(含 both)中文注释为主标题、英文表名小字副标题;
   // 仅英文名档则反过来(同对象管理图;副标题行有无只看 comment,节点几何不变);
-  // mapping 模式:主标题取调用方给的 label(如「三方厂商库 · reservoir_vendor.t_reservoir_info」),副标题取 comment
+  // mapping 模式统一「中文名加粗第一行、英文名第二行」(与映射管理弹窗同口径):
+  //   有表注释(中文表名)时主标题=中文表名、副标题=数据源·库.模式.表(定位串,含英文名);
+  //   无注释时主标题=定位串、副标题=英文表名。
+  //   两种情形都有副标题行——节点几何(TITLE_H_COMMENT=46)与 fieldEndpoint 按 comment 恒非空推算,
+  //   这里必须保持「恒有副标题」,否则标题矮 14px、边端点对不齐行
   const englishOnly = props.fieldNameMode === 'english'
-  const titleText = mapping ? (label || table) : (englishOnly ? table : (comment || table))
-  const subText = mapping ? (comment || '') : (comment ? (englishOnly ? comment : table) : '')
+  const titleText = mapping ? (tableComment || label || table) : (englishOnly ? table : (comment || table))
+  const subText = mapping ? (tableComment ? (label || comment) : (comment || '')) : (comment ? (englishOnly ? comment : table) : '')
   const subHtml = subText
     ? `<div style="height:14px;line-height:14px;padding:0 8px;font-size:11px;color:${c.textSecondary};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subText)}</div>` : ''
   const border = isSelected ? `2px solid ${c.text}` : isAnchor ? `2px solid ${c.primary}` : `1px solid ${c.borderDarker}`
@@ -709,7 +728,7 @@ function buildData() {
   relById = new Map()
   const rawNodes = props.nodes.map((n) => ({
     id: n.name,
-    data: { table: n.name, comment: n.comment || '', label: n.label || '' },
+    data: { table: n.name, comment: n.comment || '', label: n.label || '', tableComment: n.tableComment || '' },
     style: { size: nodeSize(n.name, n.comment) }
   }))
   // mapping 模式:坐标在数据里一次算好并写入(G6 对 html 节点的定位只认数据级 style.x/y,
@@ -725,8 +744,8 @@ function buildData() {
       source: r.oneTable,
       target: r.manyTable,
       data: { oneColumn: r.oneColumn, manyColumn: r.manyColumn },
-      // mapping 模式走普通实线(不表达 ER 基数语义);ER 关系图保持候选/确认/疑似三态样式
-      style: props.mode === 'mapping' ? mappingEdgeStyle() : edgeStyle(r)
+      // mapping 模式走普通实线(不表达 ER 基数语义,按目标表着色);ER 关系图保持候选/确认/疑似三态样式
+      style: props.mode === 'mapping' ? mappingEdgeStyle(r.manyTable) : edgeStyle(r)
     }
   })
   return { nodes, edges }
@@ -742,11 +761,25 @@ function layoutOptions() {
   return { type: 'er-dagre-grid', rankdir: 'LR', nodesep: 24, ranksep: 120, animation: false }
 }
 
-/** 映射边样式(create-edge 新建边与状态重建边共用同一套):普通实线主题色——字段映射只表达
- *  「左边基准字段 → 右边对比字段」的指向,不带 ER 基数语义,故不要两端竖杠/鸦脚与 1:1 标签 */
-function mappingEdgeStyle() {
+// 各对比表连线配色:多目标时按颜色一眼分清线属于哪张对比表(基准表锚点仍是主题蓝)。
+// 按 manyTable 首次出现顺序从调色板取色,同表恒同色;橡皮筋阶段已知目标表也直接着色
+const TARGET_EDGE_PALETTE = ['#e6a23c', '#67c23a', '#f56c6c', '#8e44ad', '#16a085', '#d35400', '#2d8cf0', '#eb2f96']
+const targetEdgeColorMap = new Map()
+function targetEdgeColor(manyTable) {
+  if (!targetEdgeColorMap.has(manyTable)) {
+    targetEdgeColorMap.set(manyTable, TARGET_EDGE_PALETTE[targetEdgeColorMap.size % TARGET_EDGE_PALETTE.length])
+  }
+  return targetEdgeColorMap.get(manyTable)
+}
+
+/** 映射边样式(create-edge 新建边与状态重建边共用同一套):普通实线——字段映射只表达
+ *  「左边基准字段 → 右边对比字段」的指向,不带 ER 基数语义,故不要两端竖杠/鸦脚与 1:1 标签;
+ *  stroke 按目标表着色(manyTable 为空时取主题色);cursor:pointer 透传到边 key 形状,悬停连线鼠标变手指;
+ *  increasedLineWidthForHitTesting:1.8px 细线 hover/点击容差太小(偏离 2~3px 就拾不到),
+ *  命中宽度放宽到 10px——光标与「点线删除」都好中,视觉线宽不受影响 */
+function mappingEdgeStyle(manyTable) {
   const c = themeColors()
-  return { stroke: c.primary, lineWidth: 1.8 }
+  return { stroke: manyTable ? targetEdgeColor(manyTable) : c.primary, lineWidth: 1.8, cursor: 'pointer', increasedLineWidthForHitTesting: 10 }
 }
 
 // hover 的字段行(mapping 模式):直接改行 DOM,绝不走 G6 重绘——整图 setData+draw 代价大,
@@ -754,26 +787,172 @@ function mappingEdgeStyle() {
 let hoverRowEl = null
 let hoverRowStyle = ''
 
+/** 行高亮口径(字段行 hover 与连线悬停的两端行高亮共用):主题色淡底 + 圆角,次要色文字提亮 */
+function applyRowHighlight(el) {
+  const c = themeColors()
+  el.style.background = `${c.primary}1f`
+  el.style.borderRadius = '3px'
+  // 次要色(未连线行)提亮为正文色;已连线行是主题色加粗,保持不动
+  if (el.style.color === c.textSecondary) el.style.color = c.text
+}
+
 function clearRowHover() {
   if (hoverRowEl?.isConnected) hoverRowEl.setAttribute('style', hoverRowStyle)
   hoverRowEl = null
   hoverRowStyle = ''
 }
 
+// ---------- mapping 悬停连线:加粗该线 + 高亮两端字段行,浮层显示「基准字段 → 目标字段」 ----------
+// 密集并行线光靠点选分不清哪条;悬停反馈让点选目标与两端去向一目了然(人工审核连线关系)
+const edgeTip = ref({ show: false, x: 0, y: 0, text: '' })
+let hoverEdgeId = ''
+let hoverEdgeRel = null
+let hoverEdgeRows = []
+
+/** 字段行出边点(model 坐标):与 fieldEndpoint 同一套几何(基准表出右边、对比表出左边),行不可见返回 null */
+function rowPortPoint(table, column) {
+  const g = baseRef.value?.getGraph()
+  if (!g) return null
+  let pos = null
+  try {
+    pos = g.getElementPosition(table)
+  } catch {
+    return null // 节点刚被移除
+  }
+  let comment = ''
+  try {
+    comment = g.getNodeData(table)?.data?.comment || ''
+  } catch {
+    comment = ''
+  }
+  const [w] = nodeSize(table, comment)
+  const idx = visibleFields(table).findIndex((f) => f.name === column)
+  if (!pos || idx < 0) return null
+  const x = pos[0] + (table === props.anchorTable ? w : 0)
+  const y = pos[1] + (comment ? TITLE_H_COMMENT : TITLE_H_PLAIN) + FIELD_PAD_TOP + idx * ROW_H + ROW_H / 2
+  return [x, y]
+}
+
+/** 边曲线采样点(model 坐标,与 field-cubic 同公式:两端 + 水平 stub 控制点),供悬停距离计算 */
+function edgeBezierSamples(oneColumn, manyTable, manyColumn, n = 24) {
+  const s = rowPortPoint(props.anchorTable, oneColumn)
+  const t = rowPortPoint(manyTable, manyColumn)
+  if (!s || !t) return null
+  const stub = edgeStub(s, t)
+  const c0 = [s[0] + stub, s[1]]
+  const c1 = [t[0] - stub, t[1]]
+  const pts = []
+  for (let i = 0; i <= n; i++) {
+    const u = i / n
+    const v = 1 - u
+    pts.push([
+      v * v * v * s[0] + 3 * v * v * u * c0[0] + 3 * v * u * u * c1[0] + u * u * u * t[0],
+      v * v * v * s[1] + 3 * v * v * u * c0[1] + 3 * v * u * u * c1[1] + u * u * u * t[1]
+    ])
+  }
+  return pts
+}
+
+function edgeTipText(rel) {
+  const find = (t, c) => (props.columnsMap[t] || []).find((x) => x.name === c)
+  const b = find(props.anchorTable, rel.oneColumn)
+  const m = find(rel.manyTable, rel.manyColumn)
+  return `${b?.comment || rel.oneColumn} → ${m?.comment || rel.manyColumn}`
+}
+
+/** 悬停连线:只改边 key 形状的 lineWidth(不动模型,不触发整图重建),两端字段行走高亮口径 */
+function applyEdgeHover(rel) {
+  const g = baseRef.value?.getGraph()
+  if (!g) return
+  try {
+    const key = g.context.element.getElement(String(rel.id))?.getShape('key')
+    if (key) key.style.lineWidth = 2.8
+  } catch {
+    // 边刚被删除/重建,忽略
+  }
+  const rows = []
+  for (const [t, col] of [[props.anchorTable, rel.oneColumn], [rel.manyTable, rel.manyColumn]]) {
+    const el = document.querySelector(`[data-rg-node="${CSS.escape(t)}"] [data-rg-column="${CSS.escape(col)}"]`)
+    if (el) {
+      rows.push({ el, style: el.getAttribute('style') || '' })
+      applyRowHighlight(el)
+    }
+  }
+  hoverEdgeRows = rows
+}
+
+function clearEdgeHover() {
+  const g = baseRef.value?.getGraph()
+  if (g && hoverEdgeRel) {
+    try {
+      const key = g.context.element.getElement(String(hoverEdgeRel.id))?.getShape('key')
+      if (key) key.style.lineWidth = 1.8
+    } catch {
+      // 边已不存在
+    }
+  }
+  for (const r of hoverEdgeRows) {
+    if (r.el.isConnected) r.el.setAttribute('style', r.style)
+  }
+  hoverEdgeRows = []
+  hoverEdgeRel = null
+  hoverEdgeId = ''
+  if (edgeTip.value.show) edgeTip.value = { ...edgeTip.value, show: false }
+}
+
+/** 指针下最近的连线(按曲线采样距离,阈值与命中宽度同量级,除以 zoom) */
+function pickEdgeAt(clientX, clientY) {
+  const g = baseRef.value?.getGraph()
+  if (!g) return null
+  const [mx, my] = g.getCanvasByClient([clientX, clientY])
+  let best = null
+  let bestDist = 6 / g.getZoom()
+  for (const e of props.edges) {
+    const pts = edgeBezierSamples(e.oneColumn, e.manyTable, e.manyColumn)
+    if (!pts) continue
+    let d = Infinity
+    for (const p of pts) {
+      const dd = Math.hypot(p[0] - mx, p[1] - my)
+      if (dd < d) d = dd
+    }
+    if (d < bestDist) {
+      bestDist = d
+      best = e
+    }
+  }
+  return best
+}
+
 /** 容器层 pointermove/mousemove 委托(捕获):只有「换到另一个行元素」才动一次手,O(1) 不影响滑动流畅度 */
 function onContainerPointerMove(ev) {
   if (props.mode !== 'mapping') return
   const colEl = ev.target?.closest?.('[data-rg-column]') || null
-  if (colEl === hoverRowEl) return
-  clearRowHover()
-  if (!colEl) return
-  hoverRowEl = colEl
-  hoverRowStyle = colEl.getAttribute('style') || ''
-  const c = themeColors()
-  colEl.style.background = `${c.primary}1f`
-  colEl.style.borderRadius = '3px'
-  // 次要色(未连线行)提亮为正文色(对齐原高亮口径);已连线行是主题色加粗,保持不动
-  if (colEl.style.color === c.textSecondary) colEl.style.color = c.text
+  if (colEl !== hoverRowEl) {
+    clearRowHover()
+    if (colEl) {
+      hoverRowEl = colEl
+      hoverRowStyle = colEl.getAttribute('style') || ''
+      applyRowHighlight(colEl)
+    }
+  }
+  if (colEl || createEdgePending()) {
+    // 悬停字段行(连线语义)或橡皮筋进行中:不抢连线悬停
+    if (hoverEdgeId || edgeTip.value.show) clearEdgeHover()
+    return
+  }
+  const best = pickEdgeAt(ev.clientX, ev.clientY)
+  const id = best ? String(best.id) : ''
+  if (id !== hoverEdgeId) {
+    clearEdgeHover()
+    hoverEdgeId = id
+    hoverEdgeRel = best
+    if (best) applyEdgeHover(best)
+  }
+  if (best) {
+    edgeTip.value = { show: true, x: ev.clientX + 12, y: ev.clientY + 14, text: edgeTipText(best) }
+  } else if (edgeTip.value.show) {
+    edgeTip.value = { ...edgeTip.value, show: false }
+  }
 }
 
 /** create-edge 交互进行中(橡皮筋辅助节点还在模型里):此时不能再 setData 重绘,否则辅助节点被清掉、行为下次 pointermove 抛错 */
@@ -830,7 +1009,7 @@ function onCreateEdge(edge) {
     ...edge,
     id: `map-tmp:${manyTable}:${oneColumn}:${++tmpEdgeSeq}`,
     data: { oneColumn, manyColumn },
-    style: mappingEdgeStyle()
+    style: mappingEdgeStyle(manyTable)
   }
 }
 
@@ -1068,6 +1247,8 @@ async function fitView() { await baseRef.value?.fitView() }
 
 defineExpose({ exportData, zoomTo100, fitView })
 onUnmounted(() => {
+  clearEdgeHover()
+  clearRowHover()
   const el = baseRef.value?.getContainer()
   el?.removeEventListener('click', onContainerClick, true)
   el?.removeEventListener('dblclick', onContainerDblclick, true)
@@ -1107,6 +1288,20 @@ onUnmounted(() => {
 }
 .rg-selbar :deep(.el-button) {
   margin-left: 0;
+}
+/* 悬停连线浮层:两端字段名(注释优先);pointer-events:none 不挡点击,跟随鼠标偏移 12/14 */
+.rg-edgetip {
+  position: fixed;
+  z-index: 20;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--el-text-color-primary);
+  background: color-mix(in srgb, var(--el-bg-color) 92%, transparent);
+  border: 1px solid var(--el-border-color-darker);
+  border-radius: 4px;
+  box-shadow: var(--el-box-shadow-light);
+  pointer-events: none;
+  white-space: nowrap;
 }
 .rg-selbar-text {
   font-size: 12px;

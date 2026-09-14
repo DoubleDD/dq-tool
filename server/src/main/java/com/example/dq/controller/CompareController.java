@@ -1,6 +1,7 @@
 package com.example.dq.controller;
 
 import com.example.dq.model.CreateCompareJobRequest;
+import com.example.dq.model.MappingSuggestRequest;
 import com.example.dq.service.CompareService;
 import com.example.dq.web.Validators;
 import io.javalin.http.Context;
@@ -25,10 +26,21 @@ public class CompareController {
         ctx.json(Map.of("jobId", service.submit(req)));
     }
 
+    /** 列级对比·字段映射预生成:大模型逐目标产出「基准字段 → 目标列」建议,人工审核后随任务提交 */
+    public void suggestMapping(Context ctx) {
+        MappingSuggestRequest req = Validators.validate(ctx.bodyAsClass(MappingSuggestRequest.class));
+        ctx.json(service.suggestMappings(req));
+    }
+
     /** 任务列表(新的在前);query archived=true 时含已归档 */
     public void list(Context ctx) {
         boolean includeArchived = "true".equalsIgnoreCase(ctx.queryParam("archived"));
         ctx.json(service.list(includeArchived));
+    }
+
+    /** RUNNING 任务瘦出行(后台任务中心 1s 轮询口径;compare 授权校验同前缀) */
+    public void listActive(Context ctx) {
+        ctx.json(service.listActive());
     }
 
     /** 任务详情:任务字段 + 目标指标列表 */

@@ -43,6 +43,11 @@
         <el-tooltip v-if="hasTool('export-drawio')" content="导出 drawio" placement="bottom">
           <el-button size="small" :icon="Download" @click="emit('export-drawio')" />
         </el-tooltip>
+        <!-- 另存为图片:第 6 个图标位(导出 drawio 之后、档位之前);底座内建常驻工具,不经 tools 裁剪、恒显示
+             (与缩放控制条同口径):整张图(不止视口)合成 PNG 下载,文件名经 imageName 定制 -->
+        <el-tooltip content="另存为图片(PNG,整张图)" placement="bottom">
+          <el-button size="small" :icon="Picture" :loading="exportingImage" @click="onExportImage" />
+        </el-tooltip>
         <el-radio-group
           v-if="hasTool('level') && level"
           :model-value="level"
@@ -98,8 +103,10 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, useSlots, watch } from 'vue'
 import { Graph } from '@antv/g6'
-import { Aim, Download, Refresh } from '@element-plus/icons-vue'
+import { Aim, Download, Picture, Refresh } from '@element-plus/icons-vue'
 import { bindHtmlNodeWheel } from '../../utils/graphCanvasWheel'
+import { downloadDataUrl } from '../../utils/download'
+import { ElMessage } from '../../utils/notify'
 import EdgeTypeIcon from './EdgeTypeIcon.vue'
 
 /**
@@ -170,8 +177,10 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *  minZoom/maxZoom  缩放范围,默认 [0.2, 4]
  *  tools       顶部工具栏内置默认工具(按数组裁剪):refresh 重绘(见下) / zoom100 1:1 / fit 适应画布 /
  *              edge-type 线形(三图标单选)/ level 档位;默认全五个(level/edge-type 未配 v-model 时自动隐藏);
- *              另有可选工具 export-drawio 导出 drawio(不在默认组,ER 画布启用,点击发 export-drawio 事件由业务侧导出);
- *              渲染顺序固定为 重绘 → 1:1 → 适应画布 → 线形(第 4 个图标位)→ 导出 drawio(第 5 位)→ 档位 → toolbar 插槽业务工具
+ *              另有可选工具 export-drawio 导出 drawio(不在默认组,ER 画布经 tools 启用,点击发 export-drawio 事件由业务侧导出);
+ *              另存为图片(第 6 位)为底座内建常驻工具,不经 tools 裁剪、恒显示:整张图合成 PNG 下载,见 exportImage;
+ *              渲染顺序固定为 重绘 → 1:1 → 适应画布 → 线形(第 4 个图标位)→ 导出 drawio(第 5 位)→ 另存为图片(第 6 位)→ 档位 → toolbar 插槽业务工具
+ *  imageName   export-image 的下载文件名(不含扩展名),默认 graph,非法字符由导出侧替换为下划线
  *  level       档位当前值(name 仅表名/related 关联字段/all 全部字段),配 @update:level 使用
  *  edgeType    线形当前值(curve 曲线/orth 直角/orth-round 圆角),图标单选,配 @update:edgeType 使用
  *  animated    重建/重绘渲染是否开动画,默认 false(关动画瞬时渲染,配合锚点补偿原地更新不飘移);
@@ -221,6 +230,8 @@ const props = defineProps({
   tools: { type: Array, default: () => ['refresh', 'zoom100', 'fit', 'level', 'edge-type'] },
   level: { type: String, default: '' },
   edgeType: { type: String, default: '' },
+  // export-image 下载文件名(不含扩展名)
+  imageName: { type: String, default: 'graph' },
   // 重建/重绘渲染是否开动画(调用方按布局需要决定;力导向活体仿真必须 true,见文件头 props 说明)
   animated: { type: Boolean, default: false },
   // 框选/多选开关(建图期配置):Shift+拖动框选节点、Shift+点击多选、点空白清空,
@@ -759,6 +770,8 @@ function onZoomCancel(e) {
 }
 
 const isFullscreen = ref(false)
+// 导出图片进行中(按钮 loading,防重复点击)
+const exportingImage = ref(false)
 function toggleFullscreen() {
   if (document.fullscreenElement) document.exitFullscreen()
   else wrapRef.value?.requestFullscreen()
@@ -775,6 +788,127 @@ async function fitView() {
 async function fitCenter() {
   if (!graph) return
   await graph.fitCenter()
+}
+
+// ---------- 另存为图片(export-image 工具):整张图合成 PNG ----------
+// 图分两层:原生图形(圆/矩形节点、连线、标签)由 G6 画进位图;html 节点是叠在画布上的真实 DOM,
+// G6 的 toDataURL 拿不到,须按世界坐标逐个栅格化后叠加合成(顺序与屏幕一致:html 节点压在连线上方)。
+const EXPORT_MAX_EDGE = 8192 // 导出位图单边上限(px,超过按比例收敛,防超大图撑爆内存)
+
+/** 取 html 节点的 DOM 包装元素(G6 HTML 节点的 getDomElement,原生节点没有该方法返回空) */
+function htmlNodeDom(id) {
+  try {
+    return graph.context.element.getElement(id)?.getDomElement?.() || null
+  } catch {
+    return null
+  }
+}
+
+/** HTML 节点 DOM 栅格化:克隆节点包一层 XHTML 塞进 SVG foreignObject,由浏览器排版引擎渲染
+ *  (与屏幕显示同一引擎,节点 HTML 全内联样式、无外部资源,序列化不丢样式),返回可 drawImage 的 Image。
+ *  width/height 为节点 CSS 尺寸,ratio 为放大倍数(等于 dpr 时按设备分辨率栅格化,放大不糊) */
+function rasterizeHtml(el, width, height, ratio) {
+  return new Promise((resolve, reject) => {
+    const clone = el.cloneNode(true)
+    // 剥掉画布定位态:包装元素的 transform/left/top 是把节点放到视口位置的相机矩阵,
+    // 原样序列化会被推出 foreignObject 视口(导出内容全空),只保留节点自身尺寸与样式
+    clone.removeAttribute('id')
+    clone.style.position = 'static'
+    clone.style.left = '0px'
+    clone.style.top = '0px'
+    clone.style.transform = 'none'
+    clone.style.willChange = 'auto'
+    const serialized = new XMLSerializer().serializeToString(clone)
+    const w = Math.max(1, Math.ceil(width * ratio))
+    const h = Math.max(1, Math.ceil(height * ratio))
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">`
+      + `<foreignObject x="0" y="0" width="${w}" height="${h}">`
+      + `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;height:${height}px;transform:scale(${ratio});transform-origin:0 0;">${serialized}</div>`
+      + `</foreignObject></svg>`
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('html 节点栅格化失败'))
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`
+  })
+}
+
+/** 加载 Image(位图数据 dataURL) */
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('位图加载失败'))
+    img.src = src
+  })
+}
+
+/**
+ * 导出整张图为 PNG:返回 { dataUrl, width, height }(不触发下载,供测试/程序化使用;按钮下载走 onExportImage)。
+ * 与 graph.toDataURL({mode:'overall'}) 同口径取画布内容包围盒:G6 位图为底,html 节点按
+ *  渲染包围盒(世界坐标)换算位置叠加;底衬取容器背景色(--el-bg-color),亮/暗主题所见即所得。
+ */
+async function exportImage() {
+  if (!graph) throw new Error('画布未就绪')
+  const g = graph
+  // G6 画布层位图(内容包围盒,透明底)与其边界;两者同源同口径,bounds 用于 html 节点定位
+  const [dataUrl, bounds] = await Promise.all([
+    g.toDataURL({ mode: 'overall', type: 'image/png' }),
+    Promise.resolve().then(() => g.getCanvas().getBounds())
+  ])
+  const boundsW = bounds.max[0] - bounds.min[0]
+  const boundsH = bounds.max[1] - bounds.min[1]
+  if (!Number.isFinite(boundsW) || !Number.isFinite(boundsH) || boundsW <= 0 || boundsH <= 0) {
+    throw new Error('画布内容为空')
+  }
+  const base = await loadImage(dataUrl)
+  // dpr = 世界坐标(CSS px)→ G6 位图像素的比例(随设备像素比);fit = 超大图整体收敛系数
+  const dpr = base.naturalWidth / boundsW
+  const fit = Math.min(1, EXPORT_MAX_EDGE / Math.max(base.naturalWidth, base.naturalHeight))
+  const out = document.createElement('canvas')
+  out.width = Math.max(1, Math.round(base.naturalWidth * fit))
+  out.height = Math.max(1, Math.round(base.naturalHeight * fit))
+  const ctx = out.getContext('2d')
+  // 底衬:容器背景色(画布本体透明,背景由容器 CSS 变量提供);取不到有效色回退白底
+  const bg = getComputedStyle(containerRef.value).backgroundColor
+  ctx.fillStyle = bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' ? bg : '#ffffff'
+  ctx.fillRect(0, 0, out.width, out.height)
+  ctx.drawImage(base, 0, 0, out.width, out.height)
+  // html 节点层:按渲染包围盒(世界坐标,即 CSS px)定位,逐个栅格化叠加;失败的节点跳过不阻断整体导出
+  const s = dpr * fit
+  for (const node of g.getNodeData()) {
+    if (g.getElementVisibility(node.id) === 'hidden') continue
+    const el = htmlNodeDom(node.id)
+    if (!el || !el.offsetWidth || !el.offsetHeight) continue
+    const b = g.getElementRenderBounds(node.id)
+    if (!b) continue
+    const cssW = b.max[0] - b.min[0]
+    const cssH = b.max[1] - b.min[1]
+    if (cssW <= 0 || cssH <= 0) continue
+    try {
+      const img = await rasterizeHtml(el, cssW, cssH, dpr)
+      ctx.drawImage(img, (b.min[0] - bounds.min[0]) * s, (b.min[1] - bounds.min[1]) * s, cssW * s, cssH * s)
+    } catch (e) {
+      console.warn(`[BaseGraphCanvas] 导出图片:节点 ${node.id} 栅格化失败,已跳过`, e)
+    }
+  }
+  return { dataUrl: out.toDataURL('image/png'), width: out.width, height: out.height }
+}
+
+/** 工具栏「另存为图片」:导出整张图 PNG 并触发下载,失败给全局错误提示 */
+async function onExportImage() {
+  if (exportingImage.value) return
+  exportingImage.value = true
+  try {
+    const { dataUrl } = await exportImage()
+    const safe = (props.imageName || 'graph').replace(/[\\/:*?"<>|]/g, '_')
+    downloadDataUrl(`${safe}.png`, dataUrl)
+    ElMessage.success('已导出图片')
+  } catch (e) {
+    console.error('[BaseGraphCanvas] 导出图片失败', e)
+    ElMessage.error(`导出图片失败:${e?.message || e}`)
+  } finally {
+    exportingImage.value = false
+  }
 }
 
 // 数据变化:整体重建(布局/静态坐标重算,按 refitOnDataChange 决定是否重新定位视口)
@@ -858,7 +992,8 @@ defineExpose({
   zoomTo,
   zoomBy,
   zoomTo100,
-  getZoom
+  getZoom,
+  exportImage
 })
 </script>
 

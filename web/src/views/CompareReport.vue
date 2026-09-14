@@ -35,7 +35,7 @@
                   <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ (row.db ? row.db + '.' : '') + (row.schema || '') + '.' + row.table }}</div>
                 </template>
               </el-table-column>
-              <!-- 对象对齐构成:命中总数 + 编码/名称/大模型各自配上的数量(匹配逻辑 2/3 下可核对补配规模) -->
+              <!-- 对象对齐构成:命中总数 + 编码/名称/大模型各自配上的数量(「先编码后名称+大模型归一化」下可核对补配规模) -->
               <el-table-column label="对象命中" width="120" align="center">
                 <template #default="{ row }">
                   <span v-if="row.matchedCount == null" style="color: var(--el-text-color-secondary)">—</span>

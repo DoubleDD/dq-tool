@@ -89,6 +89,15 @@ class WebServerAccessTokenTest {
         assertEquals(200, resp.statusCode(), resp.body());
     }
 
+    private void activateCode(String code) throws Exception {
+        HttpResponse<String> resp = client.send(HttpRequest.newBuilder(URI.create(base() + "/api/license/activate"))
+                        .header("X-Dq-Token", TOKEN)
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString("{\"code\":\"" + code + "\"}")).build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, resp.statusCode(), resp.body());
+    }
+
     @Test
     void 无令牌403_头与Cookie三选一放行() throws Exception {
         activateLicense();
@@ -142,6 +151,30 @@ class WebServerAccessTokenTest {
                 String.valueOf(resp.headers().map()));
         assertTrue(resp.headers().firstValue("Access-Control-Allow-Headers").orElse("").contains("x-dq-token"),
                 String.valueOf(resp.headers().map()));
+    }
+
+    @Test
+    void 免鉴权授权码激活后整实例放行() throws Exception {
+        // 演示用授权码(带免鉴权标记):激活后所有请求(业务接口 + 页面路由)免令牌
+        String code = LicenseCodec.encode("演示客户", null, licenseKeyPair.getPrivate(),
+                "1.5-test", "", "", "", 1755000000000L, "", "", true);
+        activateCode(code);
+
+        assertEquals(200, send("GET", "/api/datasources", null, null).statusCode());
+        // 未匹配路由不再被门禁拦成 403,回落 404
+        assertEquals(404, send("GET", "/api/not-exists", null, null).statusCode());
+        assertEquals(200, send("GET", "/", null, null).statusCode());
+    }
+
+    @Test
+    void 普通授权码激活后仍须携带令牌() throws Exception {
+        // 对照:不带免鉴权标记的授权码激活后,无令牌照样 403
+        String code = LicenseCodec.encode("测试客户", null, licenseKeyPair.getPrivate(),
+                "1.5-test", "", "", "", 1755000000000L, "", "", false);
+        activateCode(code);
+
+        assertEquals(403, send("GET", "/api/datasources", null, null).statusCode());
+        assertEquals(200, send("GET", "/api/datasources", TOKEN, null).statusCode());
     }
 
     @Test

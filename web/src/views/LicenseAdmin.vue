@@ -23,14 +23,12 @@
       <el-table-column prop="serverUrl" label="server_url" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ row.serverUrl || '—' }}</template>
       </el-table-column>
-      <el-table-column label="功能" min-width="200">
+      <el-table-column label="菜单" min-width="240">
         <template #default="{ row }">
-          <template v-if="row.features">
-            <el-tag v-for="k in row.features.split(',')" :key="k" size="small" style="margin-right: 4px">
-              {{ featureLabel(k) }}
-            </el-tag>
-          </template>
-          <span v-else style="color: var(--el-text-color-secondary)">仅基础功能</span>
+          <el-tag v-for="k in menuKeys(row)" :key="k" size="small" style="margin-right: 4px">
+            {{ menuLabel(k) }}
+          </el-tag>
+          <el-tag v-if="row.bypassAuth" size="small" type="warning" style="margin-right: 4px">免鉴权</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="签发时间" width="160">
@@ -51,8 +49,8 @@
       </template>
     </el-table>
 
-    <!-- 生成授权码:客户名必填;有效期永久/日期二选一;扩展字段选填 -->
-    <el-dialog v-model="generateVisible" title="生成授权码" width="520px" destroy-on-close :close-on-press-escape="false">
+    <!-- 生成授权码:客户名必填;有效期永久/日期二选一;扩展字段选填;弹窗加宽(宽屏桌面工具)让菜单平铺更从容 -->
+    <el-dialog v-model="generateVisible" title="生成授权码" width="1040px" destroy-on-close :close-on-press-escape="false">
       <el-form label-width="90px">
         <el-form-item label="客户名称" required>
           <el-input v-model="form.customer" placeholder="如:某某公司" />
@@ -77,11 +75,18 @@
         <el-form-item label="用户名">
           <el-input v-model="form.username" placeholder="选填" />
         </el-form-item>
-        <el-form-item label="功能">
-          <el-checkbox-group v-model="form.features" class="feature-group">
-            <el-checkbox v-for="f in FEATURES" :key="f.key" :value="f.key">{{ f.label }}</el-checkbox>
+        <el-form-item label="菜单">
+          <div class="menu-head">
+            <!-- 全选:半选态=只勾了部分菜单;点击全选/全不选 -->
+            <el-checkbox :model-value="allMenusChecked" :indeterminate="menuIndeterminate" @change="toggleAllMenus">全选</el-checkbox>
+            <span class="menu-tip">勾选即展示:客户实例侧边栏只显示勾选的菜单,不再区分基础/受控功能</span>
+          </div>
+          <el-checkbox-group v-model="form.menus" class="menu-group">
+            <el-checkbox v-for="m in MENUS" :key="m.key" :value="m.key">{{ m.label }}</el-checkbox>
           </el-checkbox-group>
-          <div class="feature-tip">基础业务功能(扫描/数据源/Excel/报告/AI/标记/运行日志)恒可用;数据比对与授权码管理需在此勾选</div>
+        </el-form-item>
+        <el-form-item label="接口鉴权">
+          <el-checkbox v-model="form.bypassAuth">免鉴权(演示用:实例无需访问令牌即可调用全部接口)</el-checkbox>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -114,21 +119,36 @@ const codeVisible = ref(false)
 const codeTitle = ref('授权码')
 const currentCode = ref('')
 
-// 功能清单(与后端 LicenseFeature 对应):基础业务功能恒可用,数据比对与授权码管理需勾选才会写入授权码
-const FEATURES = [
-  { key: 'scan', label: '扫描检测' },
-  { key: 'datasource', label: '数据源管理' },
-  { key: 'excel', label: 'Excel导出' },
-  { key: 'report', label: 'Word报告' },
-  { key: 'ai_doc', label: 'AI表说明' },
-  { key: 'ai_tag', label: 'AI自动打标' },
-  { key: 'tag', label: '表标记' },
+// 菜单清单(与后端 LicenseMenu 对应,顺序一致):勾选即客户实例侧边栏可见
+const MENUS = [
+  { key: 'datasource', label: '数据源' },
+  { key: 'dashboard', label: '扫描记录' },
+  { key: 'tags', label: '标记统计' },
+  { key: 'manual-collects', label: '人工采集' },
+  { key: 'report-exports', label: '报告列表' },
+  { key: 'sample-exports', label: '抽样导出' },
   { key: 'compare', label: '数据比对' },
-  { key: 'license_admin', label: '授权码管理' }
+  { key: 'relations', label: 'ER 关系' },
+  { key: 'object-manage', label: '对象管理' },
+  { key: 'sql-console', label: 'SQL 控制台' },
+  { key: 'lan-share', label: '局域网共享' },
+  { key: 'ai-usage', label: '模型用量统计' },
+  { key: 'settings', label: '系统设置' },
+  { key: 'diagnostics', label: '系统诊断' },
+  { key: 'logs', label: '运行日志' },
+  { key: 'license-admin', label: '授权管理' }
 ]
-const featureLabel = (key) => FEATURES.find((f) => f.key === key)?.label || key
+const menuLabel = (key) => MENUS.find((m) => m.key === key)?.label || key
+const menuKeys = (row) => (row.menus || '').split(',').filter(Boolean)
 
-const form = ref({ customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', features: FEATURES.map((f) => f.key) })
+// 全选:全部勾选为真、部分勾选为半选态
+const allMenusChecked = computed(() => form.value.menus.length === MENUS.length)
+const menuIndeterminate = computed(() => form.value.menus.length > 0 && form.value.menus.length < MENUS.length)
+function toggleAllMenus(checked) {
+  form.value.menus = checked ? MENUS.map((m) => m.key) : []
+}
+
+const form = ref({ customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', menus: MENUS.map((m) => m.key), bypassAuth: false })
 
 const canGenerate = computed(() =>
   form.value.customer.trim() && (form.value.permanent || form.value.expiresDate))
@@ -145,8 +165,8 @@ async function load() {
 }
 
 function openGenerate() {
-  // 默认全勾(业务功能恒有,勾了也写入码内以显式声明;不勾的受控功能 logs/license_admin 客户将不可用)
-  form.value = { customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', features: FEATURES.map((f) => f.key) }
+  // 默认全勾(客户实例菜单全开放),按需取消勾选;免鉴权默认关,仅演示场景开启
+  form.value = { customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', menus: MENUS.map((m) => m.key), bypassAuth: false }
   generateVisible.value = true
 }
 
@@ -159,7 +179,8 @@ async function onGenerate() {
       expires: f.permanent ? 'permanent' : f.expiresDate,
       serverUrl: f.serverUrl.trim() || null,
       username: f.username.trim() || null,
-      features: f.features.length ? f.features : null
+      menus: f.menus,
+      bypassAuth: f.bypassAuth
     })
     generateVisible.value = false
     ElMessage.success('授权码已生成')
@@ -203,15 +224,24 @@ function formatTime(ts) {
 </script>
 
 <style scoped>
-.feature-group {
+.menu-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 2px;
+}
+.menu-group {
   display: flex;
   flex-wrap: wrap;
-  gap: 0 12px;
-  line-height: 28px;
+  /* 宽弹窗下固定项宽对齐成列;16 个菜单约 4~5 列平铺 */
+  gap: 0 8px;
+  line-height: 30px;
 }
-.feature-tip {
-  width: 100%;
-  margin-top: 4px;
+.menu-group .el-checkbox {
+  width: 150px;
+  margin-right: 0;
+}
+.menu-tip {
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }

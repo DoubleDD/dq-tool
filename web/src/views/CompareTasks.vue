@@ -17,7 +17,13 @@
     <el-table :data="tasks" v-loading="loading" border>
       <el-table-column label="任务" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">
-          <div>{{ row.name }}</div>
+          <div>
+            {{ row.name }}
+            <!-- 对比模式标识:COLUMN=行级+列级全量字段比对(重),ROW=仅行级身份字段比对(老任务缺省同此) -->
+            <el-tag size="small" :type="row.compareMode === 'COLUMN' ? 'warning' : 'info'" effect="plain" style="margin-left: 4px">
+              {{ row.compareMode === 'COLUMN' ? '行级+列级' : '行级' }}
+            </el-tag>
+          </div>
           <div style="color: var(--el-text-color-secondary); font-size: 12px">T-{{ row.id }}</div>
         </template>
       </el-table-column>
@@ -94,6 +100,7 @@ import {
   listCompareJobs, getCompareJob, rerunCompareJob, deleteCompareJob
 } from '../api'
 import { formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
+import { ackTask } from '../stores/backgroundTasks'
 
 const router = useRouter()
 
@@ -108,7 +115,7 @@ let timer = null
 const MATCH_MODE_LABELS = {
   EXACT: '编码+名称',
   CODE_THEN_NAME: '先编码后名称',
-  CODE_NAME_LLM: '编码/名称+AI'
+  CODE_NAME_LLM: '先编码后名称+AI'
 }
 
 function matchModeLabel(mode) {
@@ -125,10 +132,18 @@ function needPolling() {
   return tasks.value.some((t) => t.status === 'RUNNING')
 }
 
+/** 列表已渲染到终态的任务登记 ack:全局后台任务跟踪器不再对其弹完成/失败通知(本页自己看得见) */
+function ackTerminal() {
+  for (const t of tasks.value) {
+    if (t.status === 'DONE' || t.status === 'FAILED' || t.status === 'CANCELED') ackTask('compare', t.id)
+  }
+}
+
 async function load() {
   loading.value = true
   try {
     tasks.value = await listCompareJobs(showArchived.value) || []
+    ackTerminal()
     fillTargetCounts()
   } finally {
     loading.value = false
@@ -150,6 +165,7 @@ function startPolling() {
   stopPolling()
   timer = setInterval(async () => {
     tasks.value = await listCompareJobs(showArchived.value).catch(() => tasks.value)
+    ackTerminal()
     if (!needPolling()) stopPolling()
   }, 1000)
 }

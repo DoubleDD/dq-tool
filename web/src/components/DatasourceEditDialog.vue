@@ -356,6 +356,8 @@ watch(
 /**
  * 加载库列表。编辑态且连接信息未改:直接走已存数据源的库列表接口(与浏览库页同源,all=true 旁路白名单拿全量);
  * 新增态或连接信息被改过:用表单连接参数实时连接拉取(preview-databases,密码留空由服务端回落已存值)。
+ * 两种路径都必须实时回源、不读本地缓存:编辑态接口带 refresh=true 强制回源,源库不可达时后端降级返回
+ * 缓存并打 X-Dq-Cache-Fallback 响应头,据此提示用户本次展示的是缓存(与「加载」语义不符,须告知)。
  */
 async function loadSchemaList() {
   if (schemaLoading.value) return
@@ -364,10 +366,16 @@ async function loadSchemaList() {
     // 系统库清单与库列表并行拉取;系统清单失败不阻塞(退化为全勾)
     const sysPromise = request.get(`/db-types/${form.dbType}/system-schemas`).catch(() => [])
     let dbs
+    // 本次结果是否来自「数据源不可达降级读本地缓存」(响应头 X-Dq-Cache-Fallback)
+    let fromCacheFallback = false
     if (form.id && !connDirty()) {
-      dbs = await request.get(`/datasources/${form.id}/databases?all=true`)
+      const resp = await request.get(`/datasources/${form.id}/databases?all=true&refresh=true`, { _raw: true })
+      fromCacheFallback = resp.headers?.['x-dq-cache-fallback'] === 'true'
+      dbs = resp.data
       if (!dbs?.length) {
-        dbs = await request.get(`/datasources/${form.id}/schemas?all=true`)
+        const resp2 = await request.get(`/datasources/${form.id}/schemas?all=true&refresh=true`, { _raw: true })
+        fromCacheFallback = resp2.headers?.['x-dq-cache-fallback'] === 'true'
+        dbs = resp2.data
       }
     } else {
       if (!syncJdbcUrl()) return
@@ -398,13 +406,14 @@ async function loadSchemaList() {
       ? schemaList.value.filter((db) => form.schemaFilter.includes(db))
       : schemaList.value.filter((db) => !isSystemSchema(db))
     schemaFetched.value = true
+    if (fromCacheFallback) ElMessage.warning('数据源不可达,当前展示的是本地缓存库列表,可能与源库不一致')
     if (!schemaList.value.length) ElMessage.info('目标库没有可选择的库')
   } finally {
     schemaLoading.value = false
   }
 }
 
-// 编辑态且连接信息未改时,切到「库过滤」页签自动加载(走已存数据源接口);
+// 编辑态且连接信息未改时,切到「库过滤」页签自动加载(同按钮口径:走已存数据源接口并实时回源,不读缓存);
 // 新增态或连接信息被改过时需手动点按钮(按表单新值实时连接)
 watch(activeTab, (tab) => {
   if (tab === 'schemas' && form.id && !connDirty() && !schemaFetched.value) loadSchemaList()

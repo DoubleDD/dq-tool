@@ -159,7 +159,8 @@ class RelationInferFlowTest {
         val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
             val job = jobRepo.findById(jobId)!!
-            if (job.status != "RUNNING") return job
+            // 等终态:任务先进 PENDING(排队)再由守护线程置 RUNNING,非 RUNNING 不等于已结束
+            if (job.status == "DONE" || job.status == "FAILED") return job
             Thread.sleep(50)
         }
         throw AssertionError("推导任务超时未完成")
@@ -677,11 +678,14 @@ class RelationInferFlowTest {
     }
 
     @Test
-    fun `重启残留 RUNNING 任务标 FAILED`() {
-        val id = jobRepo.insert(DS_ID, "", SCHEMA, "reservoir", listOf(AnchorField("res_code")), false)
-        assertEquals("RUNNING", jobRepo.findById(id)!!.status)
-        assertEquals(1, inferService.failRunningOnStartup())
-        val job = jobRepo.findById(id)!!
+    fun `重启残留 PENDING 与 RUNNING 任务都标 FAILED`() {
+        val pendingId = jobRepo.insert(DS_ID, "", SCHEMA, "reservoir", listOf(AnchorField("res_code")), false)
+        val runningId = jobRepo.insert(DS_ID, "", SCHEMA, "reservoir", listOf(AnchorField("res_code")), false)
+        jobRepo.markRunning(runningId)
+        assertEquals("PENDING", jobRepo.findById(pendingId)!!.status)
+        assertEquals("RUNNING", jobRepo.findById(runningId)!!.status)
+        assertEquals(2, inferService.failRunningOnStartup())
+        val job = jobRepo.findById(runningId)!!
         assertEquals("FAILED", job.status)
         assertTrue(job.error!!.contains("服务重启"))
         assertNotNull(job.finishedAt)
@@ -840,7 +844,8 @@ class RelationInferFlowTest {
         val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
             val job = jobRepo.findById(jobId)!!
-            if (job.status != "RUNNING") return job
+            // 等终态:任务先进 PENDING(排队)再由守护线程置 RUNNING,非 RUNNING 不等于已结束
+            if (job.status == "DONE" || job.status == "FAILED") return job
             Thread.sleep(50)
         }
         throw AssertionError("推导任务超时未完成")

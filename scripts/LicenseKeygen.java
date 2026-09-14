@@ -24,12 +24,13 @@ import java.util.UUID;
  *   # 2) 把公钥文件内容写入 server/src/main/resources/license-public.key
  *   #    (application.yml 的 dq.license.public-key-file 只存该文件路径)
  *
- *   # 3) 签发授权码(交互式,依次提示输入私钥/客户/有效期/版本/扩展字段/功能列表,回车使用默认值)
+ *   # 3) 签发授权码(交互式,依次提示输入私钥/客户/有效期/版本/扩展字段/菜单列表/免鉴权,回车使用默认值)
  *   java scripts/LicenseKeygen.java
  *
  * 授权码格式须与 com.example.dq.license.LicenseCodec 保持一致:
- * DQ1.<base64url(客户名|yyyy-MM-dd 或 PERMANENT|软件版本|server_url|username|sid|timestamp|features)>.<base64url(Ed25519 签名)>
- * (timestamp 为签发时间 epoch 毫秒,自动生成;features 为逗号分隔功能列表,回车=仅基础业务功能;
+ * DQ1.<base64url(客户名|yyyy-MM-dd 或 PERMANENT|软件版本|server_url|username|sid|timestamp|features|menus|bypassAuth)>.<base64url(Ed25519 签名)>
+ * (timestamp 为签发时间 epoch 毫秒,自动生成;features 为旧功能段(新码留空,仅兼容旧格式);
+ * menus 为逗号分隔菜单列表(回车=全部菜单),勾选即客户实例侧边栏可见;bypassAuth 为免接口鉴权标记(true/false,演示用);
  * server_url 仅存在于授权码中,不回传用户实例前端)
  */
 public class LicenseKeygen {
@@ -95,15 +96,21 @@ public class LicenseKeygen {
             System.out.println("SID 已自动生成: " + sid);
         }
 
-        // 5) 功能列表(默认仅基础业务功能;compare/license_admin 受控需显式包含,logs 已转为普通功能无需包含)
-        System.out.println("功能列表(逗号分隔,回车=仅基础业务功能):");
-        System.out.println("  全部功能: scan(扫描检测), datasource(数据源管理), excel(Excel导出), report(Word报告),");
-        System.out.println("            ai_doc(AI表说明), ai_tag(AI自动打标), tag(表标记), logs(运行日志),");
-        System.out.println("            compare(数据比对), license_admin(授权码管理)");
-        System.out.println("  说明: 扫描/数据源/Excel/报告/AI/标记/运行日志为基础业务功能恒可用;compare/license_admin 为受控功能,需显式包含");
-        String features = normalizeFeatures(promptOptional(sc, "功能列表"));
+        // 5) 菜单列表(默认全部菜单,逗号分隔;勾选即客户实例侧边栏可见,不再区分基础/受控功能)
+        System.out.println("菜单列表(逗号分隔,回车=全部菜单):");
+        System.out.println("  全部菜单: datasource(数据源), dashboard(扫描记录), tags(标记统计), manual-collects(人工采集),");
+        System.out.println("            report-exports(报告列表), sample-exports(抽样导出), compare(数据比对), relations(ER 关系),");
+        System.out.println("            object-manage(对象管理), sql-console(SQL 控制台), lan-share(局域网共享), ai-usage(模型用量统计),");
+        System.out.println("            settings(系统设置), diagnostics(系统诊断), logs(运行日志), license-admin(授权管理)");
+        String menus = normalizeKeys(promptOptional(sc, "菜单列表"), KNOWN_MENUS, true);
+        // 6) 免接口鉴权(演示用):true 时实例所有请求跳过 dq.access-token 校验
+        String bypassAuth = prompt(sc, "免接口鉴权(true/false,演示用)", "false");
+        if (!bypassAuth.equalsIgnoreCase("true") && !bypassAuth.equalsIgnoreCase("false")) {
+            System.out.println("免接口鉴权只接受 true/false,已按 false 处理");
+            bypassAuth = "false";
+        }
 
-        sign(keyFile, customer, expiresStr, appVersion, serverUrl, username, sid, features);
+        sign(keyFile, customer, expiresStr, appVersion, serverUrl, username, sid, menus, bypassAuth.equalsIgnoreCase("true"));
     }
 
     /** 读取一行输入(有默认值):回车返回默认值,否则返回输入内容 */
@@ -119,26 +126,28 @@ public class LicenseKeygen {
         return sc.nextLine().trim();
     }
 
-    /** 合法功能 key,须与 common 模块 LicenseFeature 枚举保持一致 */
-    private static final java.util.List<String> KNOWN_FEATURES = java.util.List.of(
-            "scan", "datasource", "excel", "report", "ai_doc", "ai_tag", "tag", "compare", "logs", "license_admin");
+    /** 合法菜单 key,须与 common 模块 LicenseMenu 枚举保持一致 */
+    private static final java.util.List<String> KNOWN_MENUS = java.util.List.of(
+            "datasource", "dashboard", "tags", "manual-collects", "report-exports", "sample-exports",
+            "compare", "relations", "object-manage", "sql-console", "lan-share", "ai-usage",
+            "settings", "diagnostics", "logs", "license-admin");
 
     /**
-     * 规范化功能列表:剥离每项括号内的中文说明(允许直接粘贴上方提示的整行),
-     * 未知 key 提示后忽略并去重,避免把 "license_admin(授权码管理)" 这类文本写进授权码导致匹配不上。
+     * 规范化逗号分隔 key 列表:剥离每项括号内的中文说明(允许直接粘贴上方提示的整行),
+     * 未知 key 提示后忽略并去重;blankAsAll=true 且输入为空时返回全部 key。
      */
-    private static String normalizeFeatures(String features) {
-        if (features.isBlank()) {
-            return "";
+    private static String normalizeKeys(String input, java.util.List<String> known, boolean blankAsAll) {
+        if (input.isBlank()) {
+            return blankAsAll ? String.join(",", known) : "";
         }
         java.util.List<String> keys = new java.util.ArrayList<>();
-        for (String item : features.split("[,、]")) {
+        for (String item : input.split("[,、]")) {
             String key = item.replaceAll("[(（].*$", "").trim();
             if (key.isEmpty()) {
                 continue;
             }
-            if (!KNOWN_FEATURES.contains(key)) {
-                System.out.println("未知功能 key 已忽略: " + item.trim());
+            if (!known.contains(key)) {
+                System.out.println("未知 key 已忽略: " + item.trim());
                 continue;
             }
             if (!keys.contains(key)) {
@@ -180,9 +189,9 @@ public class LicenseKeygen {
 
     private static void sign(String keyFile, String customer, String expiresStr,
                              String appVersion, String serverUrl, String username, String sid,
-                             String features) throws Exception {
+                             String menus, boolean bypassAuth) throws Exception {
         for (var field : new String[][]{{"客户名", customer}, {"软件版本", appVersion},
-                {"server_url", serverUrl}, {"username", username}, {"sid", sid}, {"功能列表", features}}) {
+                {"server_url", serverUrl}, {"username", username}, {"sid", sid}, {"菜单列表", menus}}) {
             if (field[1].contains("|")) {
                 System.err.println(field[0] + "不能包含 | 字符");
                 System.exit(1);
@@ -197,10 +206,10 @@ public class LicenseKeygen {
 
         String expiry = permanent ? "PERMANENT" : expires.toString();
         long timestamp = System.currentTimeMillis();
-        // payload 扩展字段:软件版本|server_url|username|sid|timestamp(签发时间,epoch 毫秒)|features(逗号分隔功能列表,可空);
-        // server_url 不回传用户实例前端
+        // payload 扩展字段:软件版本|server_url|username|sid|timestamp(签发时间,epoch 毫秒)|features(旧功能段,新码留空)|
+        // menus(逗号分隔菜单列表)|bypassAuth(免接口鉴权标记,演示用);server_url 不回传用户实例前端
         byte[] payload = (customer + "|" + expiry + "|" + appVersion + "|" + serverUrl + "|" + username + "|" + sid
-                + "|" + timestamp + "|" + features).getBytes(StandardCharsets.UTF_8);
+                + "|" + timestamp + "||" + menus + "|" + (bypassAuth ? "true" : "false")).getBytes(StandardCharsets.UTF_8);
         Signature sig = Signature.getInstance("Ed25519");
         sig.initSign(privateKey);
         sig.update(payload);
@@ -209,7 +218,7 @@ public class LicenseKeygen {
         System.out.println("授权码(客户: " + customer + "," + (permanent ? "永久有效" : "有效期至: " + expires)
                 + ",版本: " + (appVersion.isEmpty() ? "(未绑定)" : appVersion)
                 + ",username: " + username + ",sid: " + sid
-                + ",功能: " + (features.isEmpty() ? "仅基础业务功能" : features) + ",签发时间: " + timestamp + "):");
+                + ",菜单: " + menus + ",免鉴权: " + bypassAuth + ",签发时间: " + timestamp + "):");
         System.out.println(code);
     }
 }

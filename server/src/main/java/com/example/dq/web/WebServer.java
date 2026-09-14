@@ -34,9 +34,9 @@ import com.example.dq.controller.ScanTransferController;
 import com.example.dq.controller.SystemSettingsController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
-import com.example.dq.license.LicenseFeature;
+import com.example.dq.license.LicenseMenu;
 import com.example.dq.model.LicenseAdminRequiredException;
-import com.example.dq.model.LicenseFeatureRequiredException;
+import com.example.dq.model.LicenseMenuRequiredException;
 import com.example.dq.model.LicenseRequiredException;
 import com.example.dq.service.LicenseService;
 import io.javalin.Javalin;
@@ -250,6 +250,12 @@ public class WebServer {
                 if (origin != null && seenOrigins.add(origin)) {
                     log.info("  /api 请求来源 Origin={}(CORS 排查,每种来源仅记一次)", origin);
                 }
+                // 授权码「免接口鉴权」标记生效时(演示用,已激活未过期且授权码带标记)整实例跳过令牌校验;
+                // isAuthBypassed 内部对异常按 false 处理(库未就绪等),宁严勿松
+                LicenseService licenseService = licenseServiceRef.get();
+                if (licenseService != null && licenseService.isAuthBypassed()) {
+                    return;
+                }
                 AccessGuard.enforce(ctx, accessTokens);
             });
             routes.exception(AccessGuard.AccessBlockedException.class, (e, ctx) -> {
@@ -275,14 +281,14 @@ public class WebServer {
                 throw new ServiceNotReadyException();
             }
             LicenseService licenseService = licenseServiceRef.get();
-            // 授权码管理(license_admin 受控功能):/api/license 前缀下不被激活拦截,但需授权码显式包含该功能
+            // 授权码管理(license-admin 菜单):/api/license 前缀下不被激活拦截,但需授权码显式开放该菜单
             if (path.startsWith("/api/license/admin")) {
-                licenseService.checkFeature(LicenseFeature.LICENSE_ADMIN, false);
+                licenseService.checkMenu(LicenseMenu.LICENSE_ADMIN, false);
                 return;
             }
-            // 数据比对(compare 受控功能):需已激活且授权码显式包含 compare,未授权 403
+            // 数据比对(compare 菜单):需已激活且授权码开放 compare 菜单,未授权 403
             if (path.startsWith("/api/compare-jobs")) {
-                licenseService.checkFeature(LicenseFeature.COMPARE);
+                licenseService.checkMenu(LicenseMenu.COMPARE);
                 return;
             }
             // 局域网共享出口(/api/lan/share/*)放行激活检查:供同网段其他实例 HTTP 拉取数据,peer 侧无本机授权上下文
@@ -306,8 +312,8 @@ public class WebServer {
             log.warn("非管理员访问授权码管理: {}", e.getMessage());
             ctx.status(403).json(Map.of("message", String.valueOf(e.getMessage())));
         });
-        routes.exception(LicenseFeatureRequiredException.class, (e, ctx) -> {
-            log.warn("授权码未包含受控功能: {}", e.getMessage());
+        routes.exception(LicenseMenuRequiredException.class, (e, ctx) -> {
+            log.warn("授权码未开放该菜单: {}", e.getMessage());
             ctx.status(403).json(Map.of("message", String.valueOf(e.getMessage())));
         });
         routes.exception(ServiceNotReadyException.class, (e, ctx) -> {
@@ -425,6 +431,8 @@ public class WebServer {
 
         // ---- 数据比对任务 ----
         routes.post("/api/compare-jobs", ctx -> compareCtrl.get().submit(ctx));
+        routes.post("/api/compare-jobs/mapping-suggest", ctx -> compareCtrl.get().suggestMapping(ctx));
+        routes.get("/api/compare-jobs/active", ctx -> compareCtrl.get().listActive(ctx));
         routes.get("/api/compare-jobs", ctx -> compareCtrl.get().list(ctx));
         routes.get("/api/compare-jobs/{id}", ctx -> compareCtrl.get().detail(ctx));
         routes.delete("/api/compare-jobs/{id}", ctx -> compareCtrl.get().delete(ctx));
@@ -482,6 +490,7 @@ public class WebServer {
 
         // ---- ER 关系推导与表间关系 ----
         routes.post("/api/relation-infer", ctx -> relationCtrl.get().submitInfer(ctx));
+        routes.get("/api/relation-infer-jobs/active", ctx -> relationCtrl.get().listActiveJobs(ctx));
         routes.get("/api/relation-infer-jobs", ctx -> relationCtrl.get().listJobs(ctx));
         routes.get("/api/relation-infer-jobs/{id}", ctx -> relationCtrl.get().getJob(ctx));
         routes.get("/api/relations", ctx -> relationCtrl.get().list(ctx));

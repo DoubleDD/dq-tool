@@ -33,8 +33,22 @@
       </div>
     </div>
 
-    <!-- SQL 编辑器(CodeMirror 6):行号 + 语法高亮;选中片段仅执行选中部分,无选中执行光标所在语句(模拟 DataGrip) -->
-    <div ref="editorHost" class="sql-editor" />
+    <!-- 编辑器区:CodeMirror 6(行号 + 语法高亮;选中片段仅执行选中部分,无选中执行光标所在语句,模拟 DataGrip)
+         + 右侧表清单(选定库后列出该库表 英文名+注释,与智能提示同一份拉取结果) -->
+    <div class="editor-row">
+      <div ref="editorHost" class="sql-editor" />
+      <aside v-if="showTablePanel" class="table-panel">
+        <div class="table-panel-title">表清单 · {{ sideTables.length }}</div>
+        <el-scrollbar class="table-panel-scroll">
+          <div v-for="t in sideTables" :key="t.name" class="table-panel-item"
+               :title="t.comment ? `${t.name} ${t.comment}` : t.name">
+            <span class="tp-name">{{ t.name }}</span>
+            <span v-if="t.comment" class="tp-comment">{{ t.comment }}</span>
+          </div>
+          <el-empty v-if="!sideTables.length" description="暂无表" :image-size="50" />
+        </el-scrollbar>
+      </aside>
+    </div>
     <!-- 执行目标提示:跟随光标/选中实时刷新 -->
     <div v-if="execHint" class="exec-hint">{{ execHint }}</div>
 
@@ -89,6 +103,8 @@
  * 编辑器下方实时提示当前将执行的语句。
  * 智能提示:选定数据源+库后自动拉取表清单与整库字段清单,按 数据源|库 覆盖更新到 localStorage,
  * 表(「表」徽标)/字段(「列」徽标)/关键字(「词」徽标)一眼区分。
+ * 右侧表清单:选定库后编辑器右侧列出该库的表(英文名+注释),与智能提示同一份拉取结果,
+ * 随数据源+库下拉联动刷新;多库方言(SQL Server/Kingbase)按 schema.table 限定名列出。
  * 补全元数据三级获取:浏览器 localStorage(秒出)→ 服务端 H2 缓存 → 源库;工具栏刷新按钮强制从源库
  * 拉取并覆盖 H2 与 localStorage;表数超 100 时字段按 50 表/批分批拉取(防整库一次拉超时)并渐进补齐补全项。
  * 成功记入 localStorage 历史(最近 50 条,按 SQL+数据源+库 去重只留最新;条目带 dsId/schema,
@@ -145,12 +161,18 @@ const schemas = ref([])
 const schemaLoading = ref(false)
 const selectedSchema = ref('')
 
+// ---------- 右侧表清单:选定库后展示该库的表(英文名+注释),与智能提示同一份拉取结果 ----------
+const sideTables = ref([])
+// 面板显示条件 = 已选数据源且已选库(与表清单拉取口径一致)
+const showTablePanel = computed(() => !!selectedDsId.value && !!selectedSchema.value)
+
 // 切换数据源后重拉库清单并清空已选;列表受该数据源的库过滤白名单约束(与库列表页同口径)。
 // schemasReady 记录当前加载 promise,供历史回填时等库清单就绪后再选库(防被这里的清空逻辑冲掉)
 let schemasReady = Promise.resolve()
 watch(selectedDsId, (id) => {
   selectedSchema.value = ''
   schemas.value = []
+  sideTables.value = []
   if (!id) {
     tableOptions.value = [...KEYWORD_OPTIONS]
     return
@@ -272,11 +294,11 @@ function toTableOption(label, comment) {
   return { label, type: 'class', detail: comment }
 }
 
-/** 拉本地 H2 库某 schema 的表/视图清单(应用自身库,结构量小:不分批、无服务端缓存、无 refresh);失败按空处理 */
+/** 拉本地 H2 库某 schema 的表/视图清单(原始行 [{name, comment}];应用自身库,结构量小:不分批、无服务端缓存、无 refresh);失败按空处理 */
 async function fetchLocalTables(schema) {
   const q = schema ? `?schema=${encodeURIComponent(schema)}` : ''
   const list = await api.get(`/sql-console/local-h2/tables${q}`).catch(() => [])
-  return (list || []).filter((t) => t && t.name).map((t) => toTableOption(t.name, t.comment || undefined))
+  return (list || []).filter((t) => t && t.name).map((t) => ({ name: t.name, comment: t.comment || '' }))
 }
 
 /** 拉本地 H2 库某 schema 的整库字段清单;失败按空处理 */
@@ -297,6 +319,7 @@ function toColumnOption(col, tableLabel) {
     本地 H2 库直接读本地库结构(应用自身配置库,无源库/缓存/refresh 概念)。 */
 async function loadTableCompletions(refresh = false) {
   const id = selectedDsId.value
+  sideTables.value = []
   if (!id) {
     tableOptions.value = [...KEYWORD_OPTIONS]
     return
@@ -306,9 +329,11 @@ async function loadTableCompletions(refresh = false) {
   const stale = () => atStart.id !== selectedDsId.value || atStart.schema !== selectedSchema.value
   // 本地 H2 库:结构量小,一次性拉表与字段(先上表名,字段到了再补齐),不走 localStorage/服务端缓存
   if (id === LOCAL_H2_ID) {
-    const ts = await fetchLocalTables(atStart.schema)
+    const rows = await fetchLocalTables(atStart.schema)
     if (stale()) return
+    const ts = rows.map((t) => toTableOption(t.name, t.comment || undefined))
     tableOptions.value = [...ts, ...KEYWORD_OPTIONS]
+    sideTables.value = rows
     const cs = await fetchLocalColumns(atStart.schema)
     if (stale()) return
     tableOptions.value = [...ts, ...cs, ...KEYWORD_OPTIONS]
@@ -336,6 +361,9 @@ async function loadTableCompletions(refresh = false) {
       const applyProgress = () => {
         if (stale()) return
         tableOptions.value = [[...perTables.values()].flat(), [...perColumns.values()].flat(), KEYWORD_OPTIONS].flat()
+        // 右侧表清单随每个 schema 的表清单渐进补齐(限定名 schema.table)
+        sideTables.value = [...perTables.values()].flat()
+          .map((o) => ({ name: o.label, comment: o.detail || '' }))
       }
       await Promise.all(limited.map(async (s) => {
         const ts = await fetchTables(id, s, db, refresh)
@@ -355,7 +383,10 @@ async function loadTableCompletions(refresh = false) {
     // 先表后字段:表清单先上(不等字段),字段分批渐进补齐
     const ts = await fetchTables(id, atStart.schema, null, refresh)
     tables = ts.map((t) => toTableOption(t.name, t.comment))
-    if (!stale()) tableOptions.value = [...tables, ...KEYWORD_OPTIONS]
+    if (!stale()) {
+      tableOptions.value = [...tables, ...KEYWORD_OPTIONS]
+      sideTables.value = ts
+    }
     const cs = await fetchColumnsBatched(id, atStart.schema, null, ts.map((t) => t.name), refresh, (acc) => {
       if (!stale()) tableOptions.value = [...tables, ...acc.map((c) => toColumnOption(c)), ...KEYWORD_OPTIONS]
     })
@@ -852,11 +883,18 @@ async function useHistory(item) {
   align-items: center;
   gap: 6px;
 }
+/* 编辑器 + 右侧表清单一行:编辑器吃满剩余宽度(可收缩),表清单定宽;行高继承原编辑器口径(最低 220px) */
+.editor-row {
+  flex: 1 1 auto;
+  min-height: 220px;
+  display: flex;
+  gap: 12px;
+}
 /* 编辑器外壳:边框/圆角/聚焦色对齐 el-input,--dq-sql-ident 供高亮配色引用(明暗两套);
    flex 纵向布局让 cm-editor 吃满外壳高度 */
 .sql-editor {
-  flex: 1 1 auto;
-  min-height: 220px;
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--el-border-color);
@@ -884,6 +922,51 @@ async function useHistory(item) {
   flex: 1;
   min-height: 0;
   background: transparent;
+}
+/* 右侧表清单:与编辑器同高,头部固定、列表内部滚动;两行式(表名 + 注释),配色跟随 Element 变量 */
+.table-panel {
+  flex: none;
+  width: 250px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-blank);
+  overflow: hidden;
+}
+.table-panel-title {
+  flex: none;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.table-panel-scroll {
+  flex: 1;
+  min-height: 0;
+}
+.table-panel-item {
+  padding: 5px 12px;
+}
+.table-panel-item:hover {
+  background: var(--el-fill-color-light);
+}
+.tp-name {
+  display: block;
+  font-family: 'SF Mono', Menlo, Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  color: var(--el-text-color-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tp-comment {
+  display: block;
+  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 /* 结果区按需占位(上限约半页),超出内部滚动,编辑器保持可见 */
 .result-area {

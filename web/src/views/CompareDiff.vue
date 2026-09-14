@@ -20,6 +20,7 @@
           <span>比对主键:{{ job.keyField }}</span>
           <span>对象名称:{{ job.displayField || '自动(第一个文本型字段)' }}</span>
           <span>匹配逻辑:{{ matchModeLabel(job.matchMode) }}</span>
+          <span>对比模式:{{ job.compareMode === 'COLUMN' ? '行级+列级对比' : '行级对比' }}</span>
           <span>上次比对:{{ formatDateTime(job.finishedAt) }}</span>
         </div>
 
@@ -113,7 +114,7 @@
                 <div class="object-name">{{ row.objectName || '(无名称)' }}</div>
                 <div class="object-key">
                   {{ row.objectKey }}
-                  <!-- 匹配逻辑 2/3 下标注该对象是靠名称还是大模型对齐上的,便于人工复核配对是否合理 -->
+                  <!-- 「先编码后名称+大模型归一化」下标注该对象是靠名称还是大模型对齐上的,便于人工复核配对是否合理 -->
                   <el-tag v-if="matchByOf(row)" size="small" type="warning" effect="plain" class="match-by-tag">
                     {{ matchByOf(row) }}
                   </el-tag>
@@ -177,6 +178,7 @@ import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
 import { getCompareJob, getCompareReport, listCompareDiffs, rerunCompareJob } from '../api'
 import { formatDateTime, formatNumber } from '../utils/format'
+import { ackTask } from '../stores/backgroundTasks'
 
 const route = useRoute()
 const router = useRouter()
@@ -246,9 +248,9 @@ function isFieldMismatch(d) {
 
 /** 匹配逻辑文案(与后端 CompareService.MatchMode 同一取值;老任务 null = 仅编码) */
 const MATCH_MODE_LABELS = {
-  EXACT: '编码+名称都相等',
+  EXACT: '编码+名称',
   CODE_THEN_NAME: '先编码后名称',
-  CODE_NAME_LLM: '编码/名称+大模型归一化'
+  CODE_NAME_LLM: '先编码后名称+大模型归一化'
 }
 
 function matchModeLabel(mode) {
@@ -399,12 +401,18 @@ const pagedRows = computed(() => {
 // 筛选条件变化回到第一页
 watch([diffType, targetFilter, kw], () => { page.value = 1 })
 
+/** 本页已渲染到任务终态时登记 ack:全局后台任务跟踪器不再对其弹完成/失败通知(本页自己看得见) */
+function ackIfTerminal() {
+  if (job.value && job.value.status !== 'RUNNING') ackTask('compare', jobId)
+}
+
 async function load() {
   loading.value = true
   try {
     const d = await getCompareJob(jobId)
     job.value = d?.job || null
     targets.value = d?.targets || []
+    ackIfTerminal()
     if (job.value?.status === 'RUNNING') {
       startPolling()
     } else if (job.value?.status === 'DONE') {
@@ -467,6 +475,7 @@ function startPolling() {
     targets.value = d.targets || []
     if (job.value.status !== 'RUNNING') {
       stopPolling()
+      ackIfTerminal()
       if (job.value.status === 'DONE') await Promise.all([loadReport(), loadAllDiffs()])
     }
   }, 1000)

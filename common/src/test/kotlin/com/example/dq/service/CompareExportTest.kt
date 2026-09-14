@@ -42,7 +42,7 @@ class CompareExportTest {
 
         private fun jobRow() = CompareRepository.JobRow(
             JOB_ID, "水库比对", DS_BASE, "reservoir_base", null, "reservoir_base_info",
-            "id", null, null, """["id","name","capacity"]""", "DONE", null, 3, 3, null, false, null, null, null)
+            "id", null, null, null, """["id","name","capacity"]""", "DONE", null, 3, 3, null, false, null, null, null)
 
         private fun targetRow(id: Long = 100L) = CompareRepository.TargetRow(
             id, JOB_ID, DS_TARGET, "厂商库", "reservoir_vendor", null, "t_reservoir_info", "DONE",

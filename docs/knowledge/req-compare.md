@@ -220,43 +220,56 @@
 
 ## 七、流程图
 
+> 口径截至 V50(对比模式/列级映射预生成):diff 单值截断 12000 字符;行级/列级两种对比模式只是
+> 「比多少字段、映射谁生成」的区别,执行引擎同一套(fields/mapping 驱动 + 全量分页扫描)。
+
 ### 7.1 代码层面(类/方法调用与分支)
 
 ```mermaid
 flowchart TD
     subgraph HTTP["Javalin 入口"]
         A["POST /api/compare-jobs<br/>CompareController.submit"]
+        A0["POST /api/compare-jobs/mapping-suggest<br/>CompareController.suggestMapping(列级第 4 步预生成)"]
     end
-    A --> B["CompareService.submit()<br/>同步校验(字段归一/主键列必查/displayField 解析)"]
+    A0 -->|未配置大模型| A0a["IllegalStateException → 409<br/>提示先完成 AI 配置"]
+    A0 -->|已配置| A1["逐目标串行调 LLM(AiScene.COMPARE_MAPPING)<br/>buildMappingPrompt → parseMappingSuggest<br/>(容错抽 JSON/过滤非法条目/主键同名列兜底)"]
+    A1 --> A2["返回每目标 mapping + note<br/>单目标失败只记 note 不炸整体"]
+    A --> B["CompareService.submit() 同步校验<br/>字段归一/主键列必查/displayField 解析/<br/>matchMode 归一/compareMode 归一(空=ROW)/<br/>字段映射 normalizeMapping(必须含主键)"]
     B -->|校验失败| B1["IllegalArgumentException → 400"]
-    B -->|通过| C["repo.insertJob(RUNNING,含 match_mode)<br/>+ insertTarget(PENDING)×N"]
+    B -->|通过| C["repo.insertJob(RUNNING,含 match_mode/compare_mode)<br/>+ insertTarget(PENDING,field_mapping_json)×N"]
     C --> D["executor(固定2线程池)<br/>异步 run(jobId)"]
-    A --> A1["返回 {jobId}"]
+    A --> A3["返回 {jobId}"]
 
     subgraph BG["后台线程 compare-N"]
-        D --> E["读基准列元数据<br/>归一字段/数值字段集/显示名字段"]
-        E --> F["loadRows(基准)<br/>pageRowsSql 分页5000 全量进内存"]
-        F -->|失败/超50万行| F1["repo.failJob()<br/>任务 FAILED"]
+        D --> E["读基准列元数据<br/>归一字段/数值字段集/显示名字段(老任务按规则回退)"]
+        E --> F["loadRows(基准)<br/>pageRowsSql 按主键列分页 5000 全量进内存"]
+        F -->|失败/单侧超 50 万行| F1["repo.failJob()<br/>任务 FAILED"]
         F -->|成功| G["repo.updateProgress(1)"]
         G --> H{"逐目标循环"}
-        H --> I["markTargetRunning<br/>loadRows(目标,只选存在的列)"]
-        I --> J["diffObjects(纯函数)<br/>整行快照 FieldDiff(field,base,value,matched)<br/>SAME/DIFF/MISSING/EXTRA"]
-        J --> K["insertDiffs 500/批 tx<br/>单值截4000字符"]
-        K --> L["算四项比率+target_count<br/>updateTargetStats(DONE)"]
-        I -.->|异常| M["failTarget(FAILED)<br/>记 error 继续下一目标"]
-        M --> H
-        L --> H
-        H -->|全部完成| N["finishJob(DONE)<br/>done_units 兜底写满"]
+        H --> I["markTargetRunning<br/>解析 field_mapping_json:<br/>带映射只认映射(未映射字段记「列缺失」)<br/>无映射按字段名忽略大小写自动匹配<br/>loadRows(目标,只选存在的列)"]
+        I --> J["matchObjects 纯函数<br/>第一路编码 → 第二路名称(按 match_mode)"]
+        J --> K{"match_mode = CODE_NAME_LLM ?"}
+        K -->|是| K1["aiMatchResidues 大模型补配双侧残余<br/>未配置/超 2000/批失败均降级记 note"]
+        K1 --> L["diffObjects 纯函数:整行快照<br/>FieldDiff(field,base,value,matched)<br/>SAME/DIFF/MISSING/EXTRA + 三路命中计数"]
+        K -->|否| L
+        L --> M["insertDiffs 500/批 tx<br/>object_key/name 截 500、单值截 12000"]
+        M --> N["updateTargetStats:四比率 + target_count<br/>+ code/name/ai_matched_count 三路命中"]
+        K1 -.->|llmFailed| N1["appendTargetNote 失败原因挂目标 error<br/>不炸任务"]
+        I -.->|异常| O["failTarget(FAILED)<br/>记 error 继续下一目标"]
+        O --> H
+        N --> H
+        H -->|全部完成| P["finishJob(DONE)<br/>done_units 兜底写满"]
     end
 
     subgraph QRY["查询/输出"]
-        O["detail / diffs 分页<br/>report(问题字段排行前10)<br/>exportDiff(总览+每目标明细sheet,说明列)"]
+        Q1["GET /api/compare-jobs/active 瘦出行<br/>后台任务中心 1s 轮询(进度/阶段/目标 done-total)"]
+        Q2["detail / diffs 分页<br/>report(问题字段排行前10)<br/>exportDiff(总览+每目标明细sheet,说明列)"]
     end
 
     subgraph LIFE["生命周期"]
-        P["rerun: 仅DONE/FAILED/CANCELED<br/>clearResults tx 清空后重建目标"]
-        Q["delete: RUNNING 409<br/>tx 级联删三表"]
-        R["recoverUnfinished(启动时)<br/>残留 RUNNING → FAILED"]
+        R["rerun: 仅DONE/FAILED/CANCELED<br/>clearResults tx 清空后按原目标清单重建<br/>(数据源名快照按最新刷新,已删沿用旧快照)"]
+        S["delete: RUNNING 409<br/>tx 级联删三表"]
+        T["recoverUnfinished(启动时)<br/>残留 RUNNING → FAILED"]
     end
 ```
 
@@ -264,31 +277,36 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S1["用户新建比对任务<br/>选基准表 + 对象编码/名称 + 比对字段 + 匹配逻辑 + 多个目标表"] --> S2{"提交前检查"}
-    S2 -->|目标表缺编码列| S2a["直接报错,不能提交"]
-    S2 -->|匹配逻辑 2/3 但没选对象名称| S2c["直接报错,不能提交"]
-    S2 -->|目标表缺其他比对列| S2b["允许提交<br/>该字段一律按不一致计"]
-    S2 -->|检查通过| S3["任务进入后台队列<br/>页面可离开,轮询看进度"]
-    S3 --> S4["系统读入基准表全部数据"]
-    S4 -->|基准表读失败| S4a["整个任务失败"]
-    S4 --> S5{"逐个目标表比对"}
-    S5 --> S6["按匹配逻辑认对象:<br/>①编码+名称都相等 ②先编码后名称 ③残余交大模型归一化"]
-    S6 --> S6e["算作同一对象 → 逐字段比较值"]
-    S6 --> S6a["基准有目标无 → 缺失"]
-    S6 --> S6b["目标有基准无 → 多余"]
-    S6e --> S6c["字段值不同 → 不一致"]
-    S6e --> S6d["完全一致 → 一致"]
-    S6 -->|该目标出错| S6e["只标记这个目标失败<br/>继续比下一个"]
-    S6a & S6b & S6c & S6d --> S7["算出该目标四项指标:<br/>覆盖率/字段一致率/完整率/综合评分"]
-    S7 --> S5
-    S5 -->|所有目标处理完| S8["任务完成<br/>用户看差异明细/质量报告/导出比对报告"]
-    S8 --> S9{"后续操作"}
-    S9 --> S9a["重跑:清空旧结果按原配置再来一遍"]
-    S9 --> S9b["归档:列表里隐藏,数据保留"]
-    S9 --> S9c["删除:任务和差异明细一起删掉"]
+    S0["新建比对任务:四栏级联选基准表"] --> S1{"选对比模式(V50)"}
+    S1 -->|行级 ROW(默认)| S2["默认只勾身份字段(编码+名称)<br/>字段映射第 4 步人工连线"]
+    S1 -->|列级 COLUMN| S2a["默认全选信息字段、可精简<br/>第 4 步大模型预生成映射、画布人工审核"]
+    S2 --> S3["选匹配逻辑:①编码+名称都相等 ②先编码后名称 ③编码/名称+大模型归一化"]
+    S2a --> S3
+    S3 --> S4{"提交前检查"}
+    S4 -->|目标缺编码列/映射没连主键| S4a["报错,不能提交"]
+    S4 -->|匹配逻辑 2/3 但没选对象名称| S4b["报错,不能提交"]
+    S4 -->|目标缺其他比对列| S4c["允许提交<br/>该字段一律按不一致计"]
+    S4 -->|检查通过| S5["任务进入后台(固定 2 线程)<br/>头栏指示器+任务抽屉 1s 轮询,可离开页面"]
+    S5 --> S6["系统读入基准表全部数据"]
+    S6 -->|基准读失败/超 50 万行| S6a["整个任务失败"]
+    S6 --> S7{"逐个目标表比对"}
+    S7 --> S8["按匹配逻辑认对象:<br/>先编码配 → 再名称配 → 逻辑 3 残余交大模型"]
+    S8 --> S8a["配上的对象逐字段比较(整行快照)"]
+    S8a --> S8b["有字段值不同 → 不一致"]
+    S8a --> S8c["全部一致 → 一致"]
+    S8 --> S8d["配不上:基准有目标无 → 缺失<br/>目标有基准无 → 多余"]
+    S8 -->|该目标出错| S8e["只标这个目标失败<br/>继续比下一个"]
+    S8b & S8c & S8d --> S9["算该目标四指标:<br/>覆盖率/字段一致率/完整率/综合评分<br/>+ 三路命中数(编码/名称/AI)"]
+    S9 --> S7
+    S7 -->|所有目标处理完| S10["任务完成<br/>差异明细 / 质量报告 / 导出比对报告 xlsx"]
+    S10 --> S11{"后续操作"}
+    S11 --> S11a["重跑:清空旧结果按原配置再来一遍"]
+    S11 --> S11b["归档:列表里隐藏,数据保留"]
+    S11 --> S11c["删除:任务和差异明细一起删掉"]
 ```
 
 > 值比较的宽容规则:忽略首尾空白;NULL 和空串算一致;数值字段忽略千分位逗号和小数尾零
 > (`38,333`、`38333.0`、`38333` 视为同值);单侧表超过 50 万行会拒绝比对并提示缩小范围。
 > 「算不算同一个对象」由匹配逻辑决定:编码按 trim 后区分大小写、名称按 trim 后忽略大小写比较,匹配逻辑 3 才会把
 > 编码/名称都对不上的残余交给大模型按业务含义认(简称、别名、改名等),模型失败或不配就按缺失/多余处理。
+> 行级/列级只是「比多少字段、映射谁生成」的区别,执行引擎同一套;列级映射预生成失败可退回人工连线,不阻断建任务。

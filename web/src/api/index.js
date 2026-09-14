@@ -69,6 +69,11 @@ export function getRelationInferJob(id) {
   return request.get(`/relation-infer-jobs/${id}`)
 }
 
+/** 全部未完成推导任务(跨库,后台任务中心 1s 轮询口径) */
+export function listActiveInferJobs() {
+  return request.get('/relation-infer-jobs/active', { _silent: true })
+}
+
 /** 关系列表;params: { datasourceId, dbName, schemaName, status?, table? } */
 export function listRelations(params) {
   return request.get('/relations', { params })
@@ -192,14 +197,26 @@ export function cancelMetadataSync(id) {
 // ---------- 数据比对 ----------
 // 视图结构:任务 CompareJobView / 目标指标 CompareTargetView / 差异行 CompareDiffRow,字段见后端 CompareModels.kt
 
-/** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fields[], targets[{datasourceId, db, schema, table}], displayField?};返回 {jobId} */
+/** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fields[], targets[{datasourceId, db, schema, table}], displayField?, matchMode?, compareMode?};返回 {jobId} */
 export function createCompareJob(payload) {
   return request.post('/compare-jobs', payload)
+}
+
+/** 列级对比·字段映射预生成(大模型逐目标串行产出建议,人工审核后随任务提交);
+ *  timeoutMs 按目标数放宽(后端逐目标串行调大模型,单目标最长约 120s,默认值只够 1 个目标);
+ *  返回 {targets: [{datasourceId, db, schema, table, mapping, note}]} */
+export function suggestCompareMapping(payload, timeoutMs = 130000) {
+  return request.post('/compare-jobs/mapping-suggest', payload, { timeout: timeoutMs })
 }
 
 /** 任务列表;archived=true 时含已归档(默认不含) */
 export function listCompareJobs(archived = false) {
   return request.get('/compare-jobs', { params: archived ? { archived: true } : {} })
+}
+
+/** RUNNING 任务瘦出行(后台任务中心 1s 轮询口径;compare 授权校验同前缀,未授权实例静默失败) */
+export function listActiveCompareJobs() {
+  return request.get('/compare-jobs/active', { _silent: true })
 }
 
 /** 任务详情 { job, targets };silent=true 用于轮询(失败不弹全局提示) */

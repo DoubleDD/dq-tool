@@ -1,5 +1,7 @@
 <template>
-  <!-- 关系推导对话框:选锚点字段(可配映射字段名)→ 提交推导任务 → 1s 轮询进度(关闭即停轮询) -->
+  <!-- 关系推导对话框:选锚点字段(可配映射字段名)→ 提交推导任务 → 1s 轮询进度;
+       任务后台异步执行:关闭弹窗不影响进度,由全局后台任务跟踪器接管(stores/backgroundTasks.js,头部任务入口可见、终态弹通知),
+       重开时同(数据源/库/schema/锚点表)有活动任务直接进入 running 阶段恢复现场 -->
   <el-dialog
     :model-value="modelValue"
     title="推导关联关系"
@@ -68,14 +70,15 @@
       <el-alert v-if="columnsError" type="error" :closable="false" :title="columnsError" show-icon />
     </el-form>
 
-    <!-- 运行阶段:阶段中文名 + 进度条(1s 轮询) -->
+    <!-- 运行阶段:阶段中文名 + 进度条(1s 轮询);PENDING=排队中(单线程守护排队);关弹窗任务继续跑 -->
     <div v-else-if="phase === 'running'" v-loading="!job">
       <template v-if="job">
         <div class="stage-row">
-          <span>当前阶段:{{ stageText(job.stage) }}</span>
+          <span>当前阶段:{{ job.status === 'PENDING' ? '排队中' : stageText(job.stage) }}</span>
           <span class="form-tip">{{ job.doneSteps }}/{{ job.totalSteps }}</span>
         </div>
         <el-progress :percentage="percent" :stroke-width="12" striped striped-flow />
+        <div class="form-tip" style="margin-top: 10px">任务在后台执行,关闭本弹窗不影响进度,可随时从顶部任务入口查看,完成会弹通知</div>
       </template>
     </div>
 
@@ -113,6 +116,7 @@
 <script setup>
 import { computed, onUnmounted, ref, watch } from 'vue'
 import request, { getRelationInferJob, submitRelationInfer } from '../api'
+import { backgroundTasks, watchTask, ackTask } from '../stores/backgroundTasks'
 
 // 关系推导对话框(自成闭环):打开时拉锚点表字段+查 AI 可用性(决定语义开关是否可选) →
 // 提交 POST /relation-infer → 1s 轮询任务详情(模式同 SampleExports.vue:终态停轮询) → DONE 提示候选数并 emit done;
@@ -210,6 +214,7 @@ async function submit() {
     phase.value = 'running'
     job.value = null
     startPolling(res.jobId)
+    watchTask() // 登记到全局后台任务跟踪器:关弹窗后仍可从头部任务入口看进度、收完成通知
   } catch {
     // 提交失败由响应拦截器弹出提示,停留在表单阶段
   } finally {
@@ -226,10 +231,12 @@ function startPolling(jobId) {
       job.value = detail
       if (detail.status === 'DONE') {
         stopPolling()
+        ackTask('relation-infer', jobId) // 终态由本弹窗自行消化,全局跟踪器不再重复弹通知
         phase.value = 'done'
         emit('done', detail)
       } else if (detail.status === 'FAILED') {
         stopPolling()
+        ackTask('relation-infer', jobId)
         phase.value = 'failed'
       }
     } catch { /* 单次轮询失败维持旧状态,下个周期重试 */ }
@@ -251,8 +258,22 @@ watch(() => props.modelValue, (v) => {
     job.value = null
     loadColumns()
     loadAiAvailable()
+    // 现场恢复:同一(数据源/库/schema/锚点表)已有进行中的推导任务 → 直接进入 running 阶段续传,
+    // 不再要求用户留在弹窗等(任务由全局跟踪器接管,关弹窗也不丢进度)
+    const active = backgroundTasks.list.find((t) =>
+      t.kind === 'relation-infer' &&
+      String(t.raw.datasourceId) === String(props.dsId) &&
+      (t.raw.dbName || '') === (props.db || '') &&
+      t.raw.schemaName === props.schema &&
+      t.raw.anchorTable === props.tableName
+    )
+    if (active) {
+      phase.value = 'running'
+      job.value = active.raw
+      startPolling(active.id)
+    }
   } else {
-    // 关闭对话框:停轮询(任务在后端继续跑,重开不追溯)
+    // 关闭对话框:停本弹窗轮询(任务在后端继续跑,进度与通知由全局跟踪器接管,重开按上条恢复现场)
     stopPolling()
   }
 })

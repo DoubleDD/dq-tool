@@ -1,5 +1,5 @@
 <template>
-  <!-- 选表面板:库(仅多库方言)→ schema → 带复选框的表清单(英文名/中文名/描述,挂载/添加关系表场景加「关系」下拉列),支持过滤多选;
+  <!-- 选表面板:库(仅多库方言)→ schema → 带复选框的表清单(英文名/中文名/描述,挂载/添加关系表场景加「关系」下拉列),支持过滤多选(过滤只缩窄清单,不影响已选;已选按勾选顺序置顶);
        描述取自 AI 表说明(table-doc)。挂载表/添加关系表两个对话框共用;fixedDb/fixedSchema 锁定库/schema(添加关系表场景) -->
   <el-form-item v-if="isMultiDb" label="数据库">
     <el-select v-model="db" filterable placeholder="选择数据库" style="width: 100%"
@@ -17,10 +17,11 @@
     <div class="otpl-list">
       <el-input v-model="keyword" size="small" clearable :prefix-icon="Search"
                 placeholder="按表名/注释/描述过滤" :disabled="!schema" />
-      <el-table :data="filtered" size="small" border :height="tableHeight" v-loading="tableLoading"
-                :empty-text="schema ? '该 schema 下没有表' : '请先选择 schema'"
+      <el-table ref="tableRef" :data="filtered" size="small" border :height="tableHeight" v-loading="tableLoading"
+                row-key="name" :empty-text="schema ? '该 schema 下没有表' : '请先选择 schema'"
                 @selection-change="(rows) => (selected = rows)">
-        <el-table-column type="selection" width="38" />
+        <!-- reserve-selection:过滤/刷新数据时保留已选行,配合 row-key 按表名匹配 -->
+        <el-table-column type="selection" width="38" reserve-selection />
         <el-table-column prop="name" label="英文名" min-width="170" show-overflow-tooltip />
         <el-table-column prop="comment" label="中文名" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.comment || '—' }}</template>
@@ -34,7 +35,7 @@
             </el-select>
           </template>
         </el-table-column>
-        <el-table-column prop="description" label="描述" min-width="200" show-overflow-tooltip>
+        <el-table-column prop="description" label="描述" min-width="400" show-overflow-tooltip>
           <template #default="{ row }">{{ row.description || '—' }}</template>
         </el-table-column>
       </el-table>
@@ -68,6 +69,7 @@ const fixed = computed(() => !!props.fixedSchema)
 
 const isMultiDb = computed(() => ['SQLSERVER', 'KINGBASE'].includes(props.datasource?.dbType))
 
+const tableRef = ref(null)
 const db = ref('')
 const schema = ref('')
 const keyword = ref('')
@@ -83,11 +85,19 @@ const tableLoading = ref(false)
 
 const filtered = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
-  if (!kw) return tables.value
-  return tables.value.filter((t) =>
-    t.name.toLowerCase().includes(kw) ||
-    (t.comment || '').toLowerCase().includes(kw) ||
-    (t.description || '').toLowerCase().includes(kw))
+  const list = kw
+    ? tables.value.filter((t) =>
+        t.name.toLowerCase().includes(kw) ||
+        (t.comment || '').toLowerCase().includes(kw) ||
+        (t.description || '').toLowerCase().includes(kw))
+    : tables.value
+  // 已选置顶并按勾选顺序排列(未选保持原顺序),便于查看已选;勾选状态走 row-key,与顺序无关
+  const order = new Map(selected.value.map((t, i) => [t.name, i]))
+  return [...list].sort((a, b) => {
+    const ia = order.has(a.name) ? order.get(a.name) : Number.MAX_SAFE_INTEGER
+    const ib = order.has(b.name) ? order.get(b.name) : Number.MAX_SAFE_INTEGER
+    return ia - ib
+  })
 })
 
 async function loadDatabases() {
@@ -104,6 +114,8 @@ async function loadSchemas() {
   schemas.value = []
   tables.value = []
   selected.value = []
+  // reserve-selection 下内部选中需经 tableRef 清空,直接改 selected 不会取消勾选
+  tableRef.value?.clearSelection()
   if (isMultiDb.value && !db.value) return
   schemaLoading.value = true
   try {
@@ -120,6 +132,7 @@ async function loadTables() {
   selected.value = []
   keyword.value = ''
   relKinds.value = {}
+  tableRef.value?.clearSelection()
   if (!schema.value) return
   tableLoading.value = true
   try {
@@ -154,6 +167,7 @@ function reset() {
   tables.value = []
   selected.value = []
   relKinds.value = {}
+  tableRef.value?.clearSelection()
   if (fixed.value) {
     db.value = props.fixedDb
     schema.value = props.fixedSchema

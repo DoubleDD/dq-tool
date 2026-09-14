@@ -75,6 +75,52 @@ export function markActivated(newStatus) {
 /** 懒加载资源失败后已自动刷新过一次的本会话标记(sessionStorage,随页签关闭清除) */
 const CHUNK_RELOAD_FLAG = 'dq-chunk-reload'
 
+/** 一级菜单清单(顺序=侧边栏展示顺序,与后端 LicenseMenu 一致) */
+const MENU_ITEMS = [
+  { menu: 'datasource', path: '/datasources' },
+  { menu: 'dashboard', path: '/dashboard' },
+  { menu: 'tags', path: '/tags' },
+  { menu: 'manual-collects', path: '/manual-collects' },
+  { menu: 'report-exports', path: '/report-exports' },
+  { menu: 'sample-exports', path: '/sample-exports' },
+  { menu: 'compare', path: '/compare' },
+  { menu: 'relations', path: '/relations' },
+  { menu: 'object-manage', path: '/object-manage' },
+  { menu: 'sql-console', path: '/sql-console' },
+  { menu: 'lan-share', path: '/lan-share' },
+  { menu: 'ai-usage', path: '/ai-usage' },
+  { menu: 'settings', path: '/settings' },
+  { menu: 'diagnostics', path: '/diagnostics' },
+  { menu: 'logs', path: '/logs' },
+  { menu: 'license-admin', path: '/license-admin' }
+]
+
+/**
+ * 已开放菜单 key 列表;兼容旧后端(响应无 menus 字段时按旧 features 推导,与后端 LicenseMenu 口径一致:
+ * 旧码开放除 数据比对/授权管理 外的全部菜单,两者按旧功能段显式包含恢复)
+ */
+export function grantedMenus(status) {
+  if (Array.isArray(status.menus)) return status.menus
+  const legacy = status.features || []
+  const menus = MENU_ITEMS.map((m) => m.menu).filter((k) => k !== 'compare' && k !== 'license-admin')
+  if (legacy.includes('compare')) menus.push('compare')
+  if (legacy.includes('license_admin')) menus.push('license-admin')
+  return menus
+}
+
+/** 路由路径 → 授权菜单 key;数据源下钻页归属 datasource,扫描任务域归属 dashboard;非菜单页返回 null */
+export function routeMenuKey(path) {
+  if (path === '/datasources' || path.startsWith('/datasources/')) return 'datasource'
+  if (path === '/scans' || path.startsWith('/scans/')) return 'dashboard'
+  const hit = MENU_ITEMS.find((m) => path === m.path || path.startsWith(m.path + '/'))
+  return hit ? hit.menu : null
+}
+
+/** 授权开放的首个菜单路径作首页(全部未开放时兜底 /datasources) */
+export function firstGrantedHome(menus) {
+  return MENU_ITEMS.find((m) => menus.includes(m.menu))?.path || '/datasources'
+}
+
 router.onError((error) => {
   const msg = String((error && error.message) || error)
   // 懒加载 chunk/CSS 加载失败:多为前端发版后旧页面仍开着,旧 hash 资源在新构建中已不存在。
@@ -95,17 +141,20 @@ router.beforeEach(async (to) => {
   // 系统诊断页:未激活/过期也放行(排错场景常是授权问题本身;敏感操作仍由后端逐项校验)
   if (to.path === '/diagnostics') return true
   const status = await fetchLicenseStatus()
-  const features = status.features || []
-  // 授权码管理页:仅管理员实例 + 授权码包含 license_admin 功能(未激活的管理员实例也放行);否则跳回首页
+  const menus = grantedMenus(status)
+  // 授权码管理页:仅管理员实例 + 授权码开放 license-admin 菜单(未激活的管理员实例也放行);否则跳回首页
   if (to.path === '/license-admin') {
-    return (status.admin && features.includes('license_admin')) ? true : '/'
-  }
-  // 数据比对:受控功能,授权码未包含 compare 时跳回首页(后端 403 兜底)
-  if (to.path === '/compare' || to.path.startsWith('/compare/')) {
-    return features.includes('compare') ? true : '/'
+    return status.admin && menus.includes('license-admin') ? true : firstGrantedHome(menus)
   }
   const ok = !!(status.activated && !status.expired)
-  return ok ? true : '/activate'
+  if (!ok) return '/activate'
+  // 菜单级授权:未开放菜单的页面直接输入 URL 也跳回首个开放菜单页(后端接口另有 403 兜底)
+  const key = routeMenuKey(to.path)
+  if (key && !menus.includes(key)) {
+    const home = firstGrantedHome(menus)
+    return home === to.path ? true : home
+  }
+  return true
 })
 
 export default router

@@ -32,11 +32,35 @@ data class CreateCompareJobRequest(
     /** 对象名称(显示名)字段:可选,必须属于 fields;留空 = 自动取比对字段中第一个文本型非主键字段 */
     val displayField: String? = null,
     /**
-     * 对象对齐(匹配)逻辑,一任务一套:EXACT / CODE_THEN_NAME / CODE_NAME_LLM。
-     * 留空 = EXACT(编码 + 名称都相等才算同一对象);匹配逻辑 2/3 要求显式给出对象名称字段。
+     * 对象对齐(匹配)逻辑,一任务一套。界面提供两种:EXACT(编码+名称)/ CODE_NAME_LLM(先编码后名称+
+     * 大模型归一化);CODE_THEN_NAME 为旧版选项、界面不再提供,存量任务与直接调用仍兼容。
+     * 留空 = EXACT;非 EXACT 要求显式给出对象名称字段。
      */
     val matchMode: String? = null,
+    /**
+     * 对比模式:ROW(仅行级对比,仅身份字段)/ COLUMN(行级+列级对比,全量信息字段 + 大模型预生成映射)。
+     * 留空 = ROW(与既有行为一致);未知值报 400。
+     */
+    val compareMode: String? = null,
 )
+
+/** 对比模式(compare_job.compare_mode):决定新建向导默认比对多少字段、字段映射由谁生成;执行引擎同一套 */
+enum class CompareMode(val value: String, val label: String) {
+    /** 仅行级对比:只比对对象身份字段,映射人工连线 */
+    ROW("ROW", "行级对比"),
+    /** 行级+列级对比:身份对齐(行级)基础上逐字段比对全部信息字段,映射由大模型预生成、人工审核 */
+    COLUMN("COLUMN", "行级+列级对比"),
+    ;
+
+    companion object {
+        /** 请求值归一:空 = [ROW](与既有行为一致);未知值报 [IllegalArgumentException] */
+        fun normalize(raw: String?): CompareMode {
+            val v = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return ROW
+            return entries.firstOrNull { it.value.equals(v, ignoreCase = true) }
+                ?: throw IllegalArgumentException("非法对比模式: $raw")
+        }
+    }
+}
 
 /** 比对任务列表/详情视图 */
 data class CompareJobView(
@@ -55,6 +79,8 @@ data class CompareJobView(
      * CODE_NAME_LLM(1、2 没配上的残余再交大模型归一化配)。老任务为 null,等价于「只按 code 对齐」。
      */
     val matchMode: String?,
+    /** 对比模式:ROW(仅行级)/ COLUMN(行级+列级);老任务为 null,按 ROW 解读 */
+    val compareMode: String?,
     val fields: List<String>,
     /** RUNNING/DONE/FAILED/CANCELED */
     val status: String,
@@ -76,6 +102,33 @@ data class CompareJobView(
 data class CompareJobDetailView(
     val job: CompareJobView,
     val targets: List<CompareTargetView>,
+)
+
+/**
+ * 后台任务中心轮询用的轻量活动任务行(仅 RUNNING,跨全部库):
+ * 不含比对字段清单/目标明细/数据源名解析(避免 1s 轮询重负),目标进度用 targetTotal/targetDone 计数表达
+ */
+data class CompareJobActiveView(
+    val id: Long,
+    val name: String,
+    val baseDb: String,
+    val baseSchema: String?,
+    val baseTable: String,
+    /** 对比模式:ROW(仅行级)/ COLUMN(行级+列级);老任务为 null,按 ROW 解读 */
+    val compareMode: String?,
+    /** RUNNING */
+    val status: String,
+    /** 阶段描述(人类可读,如「比对 xx 完成」) */
+    val stage: String?,
+    val totalUnits: Int,
+    val doneUnits: Int,
+    /** 进度百分比 0-100(totalUnits 为 0 时记 0) */
+    val progressPercent: Int,
+    val error: String?,
+    val startedAt: LocalDateTime?,
+    /** 目标总数 / 已出终态(DONE+FAILED)目标数 */
+    val targetTotal: Int,
+    val targetDone: Int,
 )
 
 /** 单个比对目标的指标视图 */
@@ -173,4 +226,32 @@ data class CompareReportView(
     val extraTotal: Long,
     /** 各目标字段一致率的平均值(无完成目标时为 1.0) */
     val avgFieldConsistency: Double,
+)
+
+/** 列级对比·字段映射预生成请求:基准表 + 需映射的比对字段 + 主键 + 目标表清单(mapping 字段忽略) */
+data class MappingSuggestRequest(
+    @field:NotNull val baseDatasourceId: Long?,
+    val baseDb: String?,
+    val baseSchema: String?,
+    @field:NotBlank val baseTable: String?,
+    /** 需映射的基准字段(= 比对字段);留空 = 基准表全部字段 */
+    val fields: List<String>?,
+    @field:NotBlank val keyField: String?,
+    val targets: List<CompareTargetSpec>?,
+)
+
+/** 字段映射预生成:单目标结果。mapping 为「基准字段名 → 目标列名」建议(含主键兜底),
+ *  null = 该目标未产出建议(看 note);note 为补充说明(如大模型未配置/调用失败/建议人工复核) */
+data class MappingSuggestTargetView(
+    val datasourceId: Long,
+    val db: String?,
+    val schema: String?,
+    val table: String,
+    val mapping: Map<String, String>?,
+    val note: String?,
+)
+
+/** 字段映射预生成结果:与请求 targets 同序 */
+data class MappingSuggestView(
+    val targets: List<MappingSuggestTargetView>,
 )

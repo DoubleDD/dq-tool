@@ -3,7 +3,7 @@
   <el-dialog
     :model-value="modelValue"
     title="挂载表"
-    width="960px"
+    width="1080px"
     :close-on-press-escape="false"
     @update:model-value="(v) => emit('update:modelValue', v)"
   >
@@ -11,7 +11,7 @@
       <el-form-item label="数据源">
         <el-input :model-value="datasource?.name || ''" disabled />
       </el-form-item>
-      <ObjectTablePickList ref="pickRef" :datasource="datasource" list-label="表" show-rel-kind :table-height="420" />
+      <ObjectTablePickList ref="pickRef" :datasource="datasource" list-label="表" show-rel-kind :table-height="520" />
       <el-form-item label="备注">
         <el-input v-model="remark" placeholder="可选,如挂载用途(应用到本次全部选中表)" maxlength="200" />
       </el-form-item>

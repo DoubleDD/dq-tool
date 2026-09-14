@@ -1,5 +1,5 @@
 <template>
-  <!-- 已激活实例显示授权信息与更换授权码入口;版本号始终显示(授权码管理入口在侧边栏,管理员 + 授权码含 license_admin 功能时可见) -->
+  <!-- 已激活实例显示授权信息与更换授权码入口;版本号始终显示(授权码管理入口在侧边栏,管理员 + 授权码开放 license-admin 菜单时可见) -->
   <div v-if="status && (status.activated || status.admin)" class="license-footer">
     <span v-if="status.activated" :class="{ 'license-expiring': expiringSoon, 'license-critical': expiringCritical }">
       <!-- 方案 B:客户 · 用户 · 有效期;SID/签发时间等细节见激活页 -->

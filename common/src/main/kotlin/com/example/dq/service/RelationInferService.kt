@@ -121,10 +121,13 @@ class RelationInferService(
     fun listJobs(datasourceId: Long, dbName: String?, schemaName: String): List<RelationInferJob> =
         jobRepo.listBySchema(datasourceId, dbName ?: "", schemaName)
 
+    /** 后台任务中心轮询:全部未完成任务(跨库),1s 一轮的轻量口径 */
+    fun listActiveJobs(): List<RelationInferJob> = jobRepo.listActive()
+
     fun getJob(id: Long): RelationInferJob =
         jobRepo.findById(id) ?: throw IllegalArgumentException("推导任务不存在: $id")
 
-    /** 服务重启:残留 RUNNING 任务标 FAILED(推导可重跑,不做断点续推) */
+    /** 服务重启:残留 PENDING/RUNNING 任务标 FAILED(推导可重跑,不做断点续推) */
     fun failRunningOnStartup(): Int = jobRepo.failRunningOnStartup()
 
     // ---------- 异步执行 ----------
@@ -134,6 +137,7 @@ class RelationInferService(
                          aiConfig: AiConfigService.Config?, aliasOnly: Boolean) {
         var found = 0
         try {
+            jobRepo.markRunning(jobId) // 排队结束真正开始执行:置 RUNNING 并记 started_at
             val ds = dataSourceService.get(datasourceId)
             val dialect = dialectFactory.get(ds.dbType!!)
             // 多库方言(SQL Server/Kingbase)按库分池切 catalog;其余方言 database 参数被忽略

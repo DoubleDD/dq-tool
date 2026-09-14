@@ -468,6 +468,33 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   margin-left: auto;
 }
 
+/* 后台任务指示器(头栏铃铛左侧,仅存在活动任务时渲染):旋转图标 + 单行进度文案 */
+.header .bg-task-chip {
+  flex-shrink: 0;
+  color: var(--el-color-primary);
+  padding: 0 8px;
+}
+.header .bg-task-chip:hover {
+  background: var(--el-color-primary-light-9);
+}
+.header .bg-task-chip-text {
+  margin-left: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.header .bg-task-chip .is-spinning {
+  animation: dq-bt-spin 1.2s linear infinite;
+}
+@keyframes dq-bt-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+/* 指示器 tooltip 内容:逐项一行式进度 */
+.bt-chip-line {
+  line-height: 1.7;
+  font-size: 12px;
+}
+
 .header .theme-toggle {
   color: var(--el-text-color-secondary);
 }

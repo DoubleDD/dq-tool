@@ -122,6 +122,11 @@ class LicenseCodecTest {
         assertThrows(IllegalArgumentException::class.java) {
             LicenseCodec.decodeAndVerify(signPayload("客户A|2027-06-30|extra"), kp.public)
         }
+        // 9 段:介于 8 段与 10 段之间,一律无效
+        assertThrows(IllegalArgumentException::class.java) {
+            LicenseCodec.decodeAndVerify(
+                signPayload("客户A|2027-06-30|1.5||scott|ORCL|1755000000000|scan|dashboard"), kp.public)
+        }
         // 6 段但 timestamp 非数字
         assertThrows(IllegalArgumentException::class.java) {
             LicenseCodec.decodeAndVerify(signPayload("客户A|2027-06-30|||ORCL|not-a-number"), kp.public)
@@ -149,6 +154,9 @@ class LicenseCodecTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             LicenseCodec.encode("客户A", LocalDate.now(), kp.private, features = "logs,含|竖线")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            LicenseCodec.encode("客户A", LocalDate.now(), kp.private, menus = "logs,含|竖线")
         }
     }
 
@@ -258,6 +266,46 @@ class LicenseCodecTest {
         val payload = LicenseCodec.decodeAndVerify(code, kp.public)
 
         assertNull(payload.features)
+    }
+
+    @Test
+    fun `十段新格式菜单列表与免鉴权标记往返`() {
+        val kp = genKeyPair()
+        val code = LicenseCodec.encode("某某公司", LocalDate.of(2026, 12, 31), kp.private,
+            username = "scott", timestamp = 1755000000000L,
+            menus = "datasource,dashboard,logs", bypassAuth = true)
+
+        val payload = LicenseCodec.decodeAndVerify(code, kp.public)
+
+        assertEquals("某某公司", payload.customer)
+        // 旧功能段留空解码为 null;菜单段与免鉴权标记按原值往返
+        assertNull(payload.features)
+        assertEquals("datasource,dashboard,logs", payload.menus)
+        assertTrue(payload.bypassAuth)
+    }
+
+    @Test
+    fun `十段新格式默认菜单空且不免鉴权`() {
+        val kp = genKeyPair()
+        val code = LicenseCodec.encode("某某公司", LocalDate.of(2026, 12, 31), kp.private)
+
+        val payload = LicenseCodec.decodeAndVerify(code, kp.public)
+
+        assertNull(payload.menus)
+        assertFalse(payload.bypassAuth)
+    }
+
+    @Test
+    fun `八段旧格式菜单与免鉴权为默认值`() {
+        val kp = genKeyPair()
+        val code = LicenseCodec.encode("某某公司", LocalDate.of(2026, 12, 31), kp.private,
+            username = "scott", timestamp = 1755000000000L, features = "scan,compare")
+
+        val payload = LicenseCodec.decodeAndVerify(code, kp.public)
+
+        assertEquals("scan,compare", payload.features)
+        assertNull(payload.menus)
+        assertFalse(payload.bypassAuth)
     }
 
     @Test

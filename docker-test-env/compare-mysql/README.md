@@ -10,6 +10,9 @@
 | `reservoir_base` | `reservoir_base_info` | 基准库(国标规范) | 100 |
 | `reservoir_vendor` | `t_reservoir_info` | 三方厂商库(不规范) | 101 |
 
+另有 4 张从 `test-data/水库_预览.xlsx`(辽宁省各系统水库数据导出)灌入的**真实形态测试表**,
+表结构/脏数据形态保留原样,用于跨系统比对、对象匹配、人工连线等场景,见第 9 节。
+
 ---
 
 ## 1. 快速开始
@@ -280,3 +283,29 @@ SELECT RESERVOIR_CODE, RESERVOIR_NAME FROM reservoir_vendor.t_reservoir_info WHE
   追加 `?allowPublicKeyRetrieval=true`。
 - **验证完匹配逻辑后数据对不上自检结果**:第 8 节的 `UPDATE` 是直接改厂商库的,记得 `ROLLBACK`
   或 `down -v` 重置,否则 `verify.sh` 会报缺失/多余条数不符。
+
+## 9. 水库_预览.xlsx 导入的真实测试表
+
+`test-data/水库_预览.xlsx` 是辽宁省 4 个业务系统的水库表数据导出(页签即表)。已按
+「预览目录」页签的库名/表名映射灌入实例,`dq` 账号已授权,可直接注册数据源比对:
+
+| 目标库.表 | 来源(系统 / 原库.模式.表) | 行数 | 说明 |
+|---|---|---|---|
+| `WaterSupplySMS.reservoir` | 辽宁省小型水库报汛系统 / WaterSupplySMS.dbo.reservoir | 757 | 英文表头 69 列;含 `time`、`partition` 等保留字列名 |
+| `hyd_ln.att_res_base` | 辽宁省山洪在监测预警平台 / hyd-ln.gw_hyd.att_res_base | 743 | 第 1 行英文表头(首列原名 `_`),第 2 行中文注释已写入列注释 |
+| `hyd_ln.sk_hzz` | 预览目录未登记(页签名即表名) | 741 | **中文表头 25 列**,语义与 att_res_base 前 25 列一致,天然的人工字段连线场景 |
+| `hyd_ln.LNS_RES_BUSINESS` | 辽宁省水库矩阵运管平台 / hyd-ln.LNS_RESERVOIR_BUSINESS.LNS_RES_BUSINESS | 742 | 英文表头 + 中文注释行;`RGDT` 等脏日期值保持原样 |
+
+列类型由数据推断(整数 → BIGINT、小数 → DECIMAL、日期 → DATETIME、其余 → VARCHAR/TEXT),
+带前导零的编码列(如 `stcd=02900001`)保持 VARCHAR 不丢零。
+
+> 目录里登记的 `em_td_reservoir`(prosaln)、`P201_small`、`LNS_CONSTRUCTION_BUSINESS`、
+> `LNS_SKGL_BUSINESS` 在 xlsx 里没有数据页签,未导入。
+
+重新导入(会重建这 4 张表,不影响 reservoir_base/reservoir_vendor 夹具):
+
+```bash
+python3 docker-test-env/compare-mysql/test-data/load-preview-data.py > /tmp/load-preview.sql
+docker exec -i test-mysql-compare mysql -uroot -p'Test@12345' --default-character-set=utf8mb4 \
+  < /tmp/load-preview.sql
+```

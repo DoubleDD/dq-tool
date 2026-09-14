@@ -22,8 +22,10 @@ data class LicenseStatusView(
     val admin: Boolean = false,
     /** 软件版本号(构建期注入;页脚展示) */
     val appVersion: String? = null,
-    /** 已授权功能 key 列表(基础功能恒有;受控功能 logs/license_admin 需授权码显式包含);未激活为 null */
-    val features: List<String>? = null,
+    /** 已开放菜单 key 列表(授权码勾选即侧边栏可见;旧码按旧功能段推导,见 LicenseMenu.granted);未激活为 null */
+    val menus: List<String>? = null,
+    /** 免接口鉴权标记(演示用):仅已激活未过期且授权码带标记时为 true,生效时后端跳过 dq.access-token 校验 */
+    val bypassAuth: Boolean = false,
 ) {
     companion object {
         @JvmStatic

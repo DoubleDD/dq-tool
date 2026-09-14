@@ -7,14 +7,19 @@ import com.example.dq.model.ColumnMeta
 import com.example.dq.model.CompareDiffPage
 import com.example.dq.model.CompareDiffRow
 import com.example.dq.model.CompareExportOverviewRow
+import com.example.dq.model.CompareJobActiveView
 import com.example.dq.model.CompareJobDetailView
 import com.example.dq.model.CompareJobView
+import com.example.dq.model.CompareMode
 import com.example.dq.model.CompareReportView
 import com.example.dq.model.CompareTargetSpec
 import com.example.dq.model.CompareTargetView
 import com.example.dq.model.CreateCompareJobRequest
 import com.example.dq.model.FieldDiff
 import com.example.dq.model.FieldIssueRank
+import com.example.dq.model.MappingSuggestRequest
+import com.example.dq.model.MappingSuggestTargetView
+import com.example.dq.model.MappingSuggestView
 import com.example.dq.repository.CompareRepository
 import com.example.dq.repository.TableSystemRepository
 import com.example.dq.util.ExcelCells
@@ -58,6 +63,10 @@ class CompareService(
     /** 匹配逻辑 3 的 LLM 调用点(默认走 [AiService.chat],测试可注入 fake) */
     private val aiChat: AiChat = { config, system, user ->
         AiService().chat(config, system, user, AiScene.COMPARE_MATCH)
+    },
+    /** 列级对比字段映射预生成的 LLM 调用点(默认 COMPARE_MAPPING 场景,测试可注入 fake) */
+    private val aiMappingChat: AiChat = { config, system, user ->
+        AiService().chat(config, system, user, AiScene.COMPARE_MAPPING)
     },
 ) {
 
@@ -119,6 +128,8 @@ class CompareService(
         val displayField = resolveDisplayField(req.displayField, fields, baseByName, actualKey)
         // 对象对齐匹配逻辑:一任务一套;匹配逻辑 2/3 的第二路按「对象名称」字段配对,故必须显式指定该字段
         val matchMode = normalizeMatchMode(req.matchMode)
+        // 对比模式:空 = 行级(与既有行为一致);只影响向导默认字段与映射来源,执行引擎同一套
+        val compareMode = CompareMode.normalize(req.compareMode)
         if (matchMode.requiresName && displayField == null) {
             throw IllegalArgumentException(
                 "${matchMode.label}需要按对象名称配对,请在「选择基准字段」里指定对象名称字段")
@@ -144,13 +155,14 @@ class CompareService(
         }
 
         val jobId = repo.insertJob(name, baseDsId, baseDb, req.baseSchema, baseTable,
-            actualKey, objectMapper.writeValueAsString(fields), 1 + resolved.size, displayField, matchMode.value)
+            actualKey, objectMapper.writeValueAsString(fields), 1 + resolved.size, displayField, matchMode.value,
+            compareMode.value)
         for (t in resolved) {
             repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson)
         }
         executor.execute { run(jobId) }
-        log.info("比对任务已提交: id={}, 名称={}, 基准={}.{}, 目标数={}, 匹配逻辑={}",
-            jobId, name, baseDb, baseTable, resolved.size, matchMode.value)
+        log.info("比对任务已提交: id={}, 名称={}, 基准={}.{}, 目标数={}, 匹配逻辑={}, 对比模式={}",
+            jobId, name, baseDb, baseTable, resolved.size, matchMode.value, compareMode.value)
         return jobId
     }
 
@@ -219,6 +231,79 @@ class CompareService(
         }
         executor.execute { run(jobId) }
         log.info("比对任务重跑: id={}, 目标数={}", jobId, oldTargets.size)
+    }
+
+    // ---------- 字段映射预生成(列级对比) ----------
+
+    /**
+     * 列级对比·字段映射预生成:取基准表需映射字段与逐目标表全列(本地缓存优先,断网降级同 submit),
+     * 逐目标串行交大模型产出「基准字段 → 目标列」建议([CompareMappingPrompts],解析容错/主键兜底),
+     * 人工在向导第四步画布审核后随任务提交。未配置大模型直接报错(交互场景需明确引导);
+     * 单目标失败只记 note 不炸整体。返回与请求 targets 同序
+     */
+    fun suggestMappings(req: MappingSuggestRequest): MappingSuggestView {
+        val baseDsId = req.baseDatasourceId ?: throw IllegalArgumentException("请选择基准数据源")
+        val baseTable = req.baseTable?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("基准表不能为空")
+        val keyField = req.keyField?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("请选择比对主键")
+        val specs = req.targets?.filter { it.datasourceId != null && !it.table.isNullOrBlank() }
+        if (specs.isNullOrEmpty()) throw IllegalArgumentException("请至少添加一个比对目标")
+        val config = aiConfigService?.findConfig()
+            ?: throw IllegalStateException("请先在「AI 配置」中完成大模型配置,再使用字段映射预生成")
+
+        // 定位串(库.模式.表,空段省略),prompt 里标注两侧表用
+        fun loc(db: String?, schema: String?, table: String) =
+            listOfNotNull(db?.takeIf { it.isNotBlank() }, schema?.takeIf { it.isNotBlank() }, table)
+                .joinToString(".")
+
+        // 基准侧:数据源存在 + 字段清单(请求字段归一为实际列名;留空 = 全部字段)
+        dataSourceService.get(baseDsId)
+        val baseDb = req.baseDb ?: ""
+        val baseColumns = metadataService.listTableColumns(
+            baseDsId, baseDb, effectiveSchema(req.baseSchema, baseDb), baseTable)
+        if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: $baseTable")
+        val baseByName = baseColumns.associateBy { it.name.lowercase() }
+        val fields = req.fields?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct()?.map { f ->
+            baseByName[f.lowercase()]?.name ?: throw IllegalArgumentException("基准表不存在字段: $f")
+        }?.takeIf { it.isNotEmpty() } ?: baseColumns.map { it.name }
+        if (fields.none { it.equals(keyField, ignoreCase = true) }) {
+            throw IllegalArgumentException("需映射字段必须包含比对主键: $keyField")
+        }
+        val actualKey = baseByName[keyField.lowercase()]?.name
+            ?: throw IllegalArgumentException("基准表不存在主键字段: $keyField")
+        val baseFieldItems = fields.mapNotNull { baseByName[it.lowercase()] }
+            .map { CompareMappingPrompts.columnItemOf(it) }
+        val baseLoc = loc(baseDb, req.baseSchema, baseTable)
+
+        // 逐目标:取全列 → 大模型预生成 → 解析过滤(字段在清单内/目标列存在/一对一/主键兜底)
+        val views = specs.map { spec ->
+            val dsId = spec.datasourceId!!
+            val table = spec.table!!.trim()
+            try {
+                val ds = dataSourceService.get(dsId)
+                val db = spec.db ?: ""
+                val cols = metadataService.listTableColumns(dsId, db, effectiveSchema(spec.schema, db), table)
+                if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段")
+                val prompt = CompareMappingPrompts.buildMappingPrompt(
+                    baseLoc, baseFieldItems, loc(db, spec.schema, table),
+                    cols.map { CompareMappingPrompts.columnItemOf(it) })
+                val answer = aiMappingChat.call(config, CompareMappingPrompts.SYSTEM_PROMPT, prompt)
+                val mapping = CompareMappingPrompts.parseMappingSuggest(answer, fields, cols, actualKey)
+                if (mapping.isEmpty()) {
+                    MappingSuggestTargetView(dsId, db, spec.schema, table, null,
+                        "未产出映射建议,请人工连线(可先按字段名自动匹配)")
+                } else {
+                    MappingSuggestTargetView(dsId, db, spec.schema, table, mapping,
+                        "大模型预生成 ${mapping.size} 条映射,请人工审核后再提交")
+                }
+            } catch (e: Exception) {
+                log.warn("字段映射预生成失败: ds={}, table={}", dsId, table, e)
+                MappingSuggestTargetView(dsId, spec.db, spec.schema, table, null,
+                    "预生成失败: ${e.message ?: "调用大模型失败"},请人工连线")
+            }
+        }
+        return MappingSuggestView(views)
     }
 
     // ---------- 后台执行 ----------
@@ -396,6 +481,21 @@ class CompareService(
     /** 任务列表(新的在前);includeArchived=true 时含已归档 */
     fun list(includeArchived: Boolean): List<CompareJobView> =
         repo.listJobs(includeArchived).map { toJobView(it) }
+
+    /** 后台任务中心轮询:RUNNING 任务瘦出行(跨全部库,1s 一轮;不解析比对字段 JSON/不解析数据源名) */
+    fun listActive(): List<CompareJobActiveView> {
+        val jobs = repo.listActiveJobs()
+        val counts = repo.countActiveTargets(jobs.map { it.id })
+        return jobs.map { r ->
+            val (targetTotal, targetDone) = counts[r.id] ?: (0 to 0)
+            CompareJobActiveView(
+                r.id, r.name, r.baseDb, r.baseSchema, r.baseTable,
+                r.compareMode ?: CompareMode.ROW.value, r.status, r.stage, r.totalUnits, r.doneUnits,
+                if (r.totalUnits > 0) r.doneUnits * 100 / r.totalUnits else 0,
+                r.error, r.startedAt, targetTotal, targetDone,
+            )
+        }
+    }
 
     /** 任务详情:任务字段 + 目标指标列表 */
     fun detail(id: Long): CompareJobDetailView {
@@ -816,7 +916,8 @@ class CompareService(
         }
         return CompareJobView(
             r.id, r.name, r.baseDatasourceId, dsName, r.baseDb, r.baseSchema, r.baseTable, r.keyField,
-            r.displayField, r.matchMode, parseFields(r.fieldsJson), r.status, r.stage, r.totalUnits, r.doneUnits,
+            r.displayField, r.matchMode, r.compareMode ?: CompareMode.ROW.value, parseFields(r.fieldsJson),
+            r.status, r.stage, r.totalUnits, r.doneUnits,
             if (r.totalUnits > 0) r.doneUnits * 100 / r.totalUnits else 0,
             r.error, r.archived, r.createdAt, r.startedAt, r.finishedAt,
             r.startedAt?.let { Duration.between(it, r.finishedAt ?: LocalDateTime.now()).toMillis() })
@@ -1225,16 +1326,18 @@ class CompareService(
 
 /**
  * 对象对齐(匹配)逻辑(compare_job.match_mode),一任务一套,新建向导第二步由用户选择。
- * 规则来源:对比表与基准表的身份字段(code/name)常对不上,故提供三种判定「是否同一个对象」的口径。
+ * 规则来源:对比表与基准表的身份字段(code/name)常对不上,故提供判定「是否同一个对象」的口径。
+ * 界面提供两种:[EXACT](编码+名称)与 [CODE_NAME_LLM](先编码后名称+大模型归一化);
+ * [CODE_THEN_NAME] 为旧版选项、界面不再提供,存量任务兼容保留;
  * [LEGACY] 不是用户可选项:老任务 match_mode 为空时按「只按对象编码对齐」解读,保证历史结果口径不回归。
  */
 enum class MatchMode(val value: String, val label: String) {
-    /** 规则 1:对象编码与对象名称都完全相等才算同一对象 */
-    EXACT("EXACT", "编码+名称都相等"),
-    /** 规则 2:有编码先用编码配,编码没配上的再用对象名称配 */
+    /** 选项 1(界面默认):对象编码与对象名称都完全相等才算同一对象 */
+    EXACT("EXACT", "编码+名称"),
+    /** 旧版选项(界面不再提供,存量任务兼容保留):有编码先用编码配,编码没配上的再用对象名称配 */
     CODE_THEN_NAME("CODE_THEN_NAME", "先编码后名称"),
-    /** 规则 3:编码/名称都没配上的残余再交大模型归一化配对 */
-    CODE_NAME_LLM("CODE_NAME_LLM", "编码/名称+大模型归一化"),
+    /** 选项 2:先编码配、再按名称配,都没配上的残余交大模型归一化配对 */
+    CODE_NAME_LLM("CODE_NAME_LLM", "先编码后名称+大模型归一化"),
     /** 老任务(数据库 match_mode 为空):只按对象编码对齐 */
     LEGACY("", "仅编码(老任务)"),
     ;
@@ -1276,7 +1379,7 @@ data class MatchResult(
  * - [MatchMode.LEGACY](老任务,数据库无值):只按对象编码([keyField] 的值)配对;
  * - [MatchMode.EXACT]:编码与对象名称都相等才配对;
  * - [MatchMode.CODE_THEN_NAME] / [MatchMode.CODE_NAME_LLM]:先按编码配,残余再按对象名称配
- *   (规则 3 的大模型补配在实例侧 [CompareService] 里继续做);
+ *   ([MatchMode.CODE_NAME_LLM] 的大模型归一化补配在实例侧 [CompareService] 里继续做);
  * - 编码按 trim 后**区分大小写**比较(历史口径不变),名称按 trim 后忽略大小写比较;空值不参与配对;
  *   重复键保留先出现的行;
  * - 名称字段缺失(未提供)时等效只按编码配对。

@@ -22,8 +22,8 @@
       <el-menu :default-active="activeNav" :default-openeds="openeds" class="sidebar-menu"
         :collapse="sidebarCollapsed"
         @select="onMenuSelect" @open="onMenuOpen" @close="onMenuClose">
-        <!-- 数据源:可展开的数据源树 + 标题右侧操作下拉(新增/导入/导出) -->
-        <el-sub-menu index="ds-root" class="ds-root">
+        <!-- 数据源:可展开的数据源树 + 标题右侧操作下拉(新增/导入/导出);授权码未开放 datasource 菜单时整棵隐藏 -->
+        <el-sub-menu v-if="hasMenu('datasource')" index="ds-root" class="ds-root">
           <template #title>
             <el-icon><Coin /></el-icon>
             <span>数据源</span>
@@ -85,7 +85,7 @@
           <span>{{ item.label }}</span>
           <span v-if="item.dev" class="dev-badge">dev</span>
         </el-menu-item>
-        <el-menu-item v-if="isAdmin && hasFeature('license_admin')" index="/license-admin">
+        <el-menu-item v-if="isAdmin && hasMenu('license-admin')" index="/license-admin">
           <el-icon><Key /></el-icon>
           <span>授权管理</span>
           <span class="dev-badge">dev</span>
@@ -126,6 +126,19 @@
             </el-tab-pane>
           </el-tabs>
         </div>
+        <!-- 后台任务中心:有进行中的推导/比对任务时显示聚合进度,点击打开任务抽屉(详见 stores/backgroundTasks.js) -->
+        <el-tooltip v-if="backgroundTasks.list.length" placement="bottom">
+          <template #content>
+            <div v-for="row in backgroundTasks.list" :key="row.key" class="bt-chip-line">
+              {{ kindLabel(row) }} · {{ row.stage }} {{ row.percent }}%
+            </div>
+          </template>
+          <el-button class="bg-task-chip" text @click="taskDrawerVisible = true">
+            <el-icon class="is-spinning"><Loading /></el-icon>
+            <span v-if="backgroundTasks.list.length === 1" class="bg-task-chip-text">{{ chipText }}</span>
+            <span v-else class="bg-task-chip-text">后台任务 ×{{ backgroundTasks.list.length }}</span>
+          </el-button>
+        </el-tooltip>
         <!-- 通知中心:铃铛带未读角标,点击右侧抽屉看历史通知、可清除所有 -->
         <NotificationBell />
         <el-tooltip :content="`主题:${themeModeText}(点击切换)`" placement="bottom">
@@ -148,6 +161,8 @@
     <!-- 侧边栏数据源项右侧编辑图标:就地弹编辑框(不跳数据源页,任何页面都能直接改);保存后组件内部广播
          dq-ds-list-changed,侧边栏与其他监听该事件的页面各自刷新 -->
     <DatasourceEditDialog v-model="dsEditVisible" :ds="dsEditRow" :groups="dsGroupOptions" />
+    <!-- 后台任务抽屉:由头栏任务指示器打开 -->
+    <BackgroundTasksDrawer v-model="taskDrawerVisible" />
   </el-config-provider>
 </template>
 
@@ -158,12 +173,14 @@ import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import request from './api'
 import { apiUrl, authHeaders } from './api/base'
-import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh } from '@element-plus/icons-vue'
+import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
-import { fetchLicenseStatus } from './router'
+import { backgroundTasks, initBackgroundTasks } from './stores/backgroundTasks'
+import { fetchLicenseStatus, grantedMenus, routeMenuKey, firstGrantedHome } from './router'
 import LicenseFooter from './components/LicenseFooter.vue'
 import NotificationBell from './components/NotificationBell.vue'
+import BackgroundTasksDrawer from './components/BackgroundTasksDrawer.vue'
 import DbTypeIcon from './components/DbTypeIcon.vue'
 import DatasourceEditDialog from './components/DatasourceEditDialog.vue'
 import { loadDsFavorites, sortDsByFavorite, DS_FAVORITES_CHANGED_EVENT } from './utils/dsFavorites'
@@ -175,32 +192,45 @@ initTheme()
 const THEME_MODE_TEXT = { auto: '跟随系统', light: '浅色', dark: '深色' }
 const themeModeText = computed(() => THEME_MODE_TEXT[themeState.mode])
 
+// ---- 后台任务中心:头栏指示器(单任务显示阶段+百分比,多任务显示计数)与抽屉开关 ----
+const taskDrawerVisible = ref(false)
+const KIND_LABEL = { 'relation-infer': '推导', compare: '比对' }
+function kindLabel(row) {
+  return KIND_LABEL[row.kind] || row.kind
+}
+const chipText = computed(() => {
+  const row = backgroundTasks.list[0]
+  return row ? `${kindLabel(row)} · ${row.stage} ${row.percent}%` : ''
+})
+// 挂载即启动跟踪器:先拉一轮(兜住「提交任务后刷新页面」),有活动任务才进入 1s 轮询
+onMounted(initBackgroundTasks)
+
 const route = useRoute()
 const router = useRouter()
 
-// 「数据源」为特殊导航(可展开树 + 操作下拉);其余一级功能项恒显示,标了 feature 的受控功能按授权过滤
-const licenseFeatures = ref([])
-function hasFeature(key) {
-  return licenseFeatures.value.includes(key)
+// 「数据源」为特殊导航(可展开树 + 操作下拉);所有一级菜单按授权开放列表过滤(勾选即展示,授权码未开放的隐藏)
+const licenseMenus = ref([])
+function hasMenu(key) {
+  return licenseMenus.value.includes(key)
 }
 const otherNav = computed(() => {
   const navs = [
-    { path: '/dashboard', label: '扫描记录', icon: Odometer },
-    { path: '/tags', label: '标记统计', icon: PriceTag },
-    { path: '/manual-collects', label: '人工采集', icon: Star },
-    { path: '/report-exports', label: '报告列表', icon: Download },
-    { path: '/sample-exports', label: '抽样导出', icon: Files },
-    { path: '/compare', label: '数据比对', icon: ScaleToOriginal, feature: 'compare' },
-    { path: '/relations', label: 'ER 关系', icon: Share },
-    { path: '/object-manage', label: '对象管理', icon: Folder },
-    { path: '/sql-console', label: 'SQL 控制台', icon: Monitor },
-    { path: '/lan-share', label: '局域网共享', icon: Connection },
-    { path: '/ai-usage', label: '模型用量统计', icon: TrendCharts },
-    { path: '/settings', label: '系统设置', icon: Setting },
-    { path: '/diagnostics', label: '系统诊断', icon: FirstAidKit },
-    { path: '/logs', label: '运行日志', icon: Document }
+    { path: '/dashboard', menu: 'dashboard', label: '扫描记录', icon: Odometer },
+    { path: '/tags', menu: 'tags', label: '标记统计', icon: PriceTag },
+    { path: '/manual-collects', menu: 'manual-collects', label: '人工采集', icon: Star },
+    { path: '/report-exports', menu: 'report-exports', label: '报告列表', icon: Download },
+    { path: '/sample-exports', menu: 'sample-exports', label: '抽样导出', icon: Files },
+    { path: '/compare', menu: 'compare', label: '数据比对', icon: ScaleToOriginal },
+    { path: '/relations', menu: 'relations', label: 'ER 关系', icon: Share },
+    { path: '/object-manage', menu: 'object-manage', label: '对象管理', icon: Folder },
+    { path: '/sql-console', menu: 'sql-console', label: 'SQL 控制台', icon: Monitor },
+    { path: '/lan-share', menu: 'lan-share', label: '局域网共享', icon: Connection },
+    { path: '/ai-usage', menu: 'ai-usage', label: '模型用量统计', icon: TrendCharts },
+    { path: '/settings', menu: 'settings', label: '系统设置', icon: Setting },
+    { path: '/diagnostics', menu: 'diagnostics', label: '系统诊断', icon: FirstAidKit },
+    { path: '/logs', menu: 'logs', label: '运行日志', icon: Document }
   ]
-  return navs.filter((n) => !n.feature || hasFeature(n.feature))
+  return navs.filter((n) => hasMenu(n.menu))
 })
 
 // 浏览器式返回/前进/刷新(头栏):可否回退/前进读 vue-router 写入的 history.state,
@@ -395,12 +425,12 @@ function onEditDs(ds) {
   dsEditVisible.value = true
 }
 
-// 授权管理入口仅管理员实例 + 授权码包含 license_admin 功能可见(复用路由守卫的缓存请求)
+// 授权管理入口仅管理员实例 + 授权码开放 license-admin 菜单可见(复用路由守卫的缓存请求)
 const isAdmin = ref(false)
 async function refreshLicenseMenus() {
   const status = await fetchLicenseStatus()
   isAdmin.value = !!status.admin
-  licenseFeatures.value = status.features || []
+  licenseMenus.value = grantedMenus(status)
 }
 onMounted(refreshLicenseMenus)
 
@@ -422,20 +452,20 @@ async function checkWhatsNew() {
 }
 onMounted(checkWhatsNew)
 // 更换授权码成功后(Activate/LicenseFooter 经 markActivated 广播)整体刷新侧边栏:
-// 授权功能可能变化(license_admin 入口增删),先重取状态再刷新数据源树
+// 开放菜单可能变化,先重取状态再刷新数据源树
 window.addEventListener('dq-license-changed', onLicenseChanged)
 onUnmounted(() => window.removeEventListener('dq-license-changed', onLicenseChanged))
 async function onLicenseChanged() {
   await refreshLicenseMenus()
   loadDatasources()
-  // 当前页可能因新授权失去入口权限(如正在授权管理页而新码不含 license_admin、正在数据比对页而新码不含 compare),
-  // 主动跳回首页,不等下次路由守卫拦截(留着一个永远 403 的界面没有意义)
-  const features = licenseFeatures.value
-  const lostAdmin = route.path.startsWith('/license-admin') && !(isAdmin.value && features.includes('license_admin'))
-  const lostCompare = (route.path === '/compare' || route.path.startsWith('/compare/')) && !features.includes('compare')
-  if (lostAdmin || lostCompare) {
-    router.replace('/')
-  }
+  // 当前页可能因新授权失去菜单权限(如正在授权管理页而新码未开放 license-admin),
+  // 主动跳回首个开放菜单页,不等下次路由守卫拦截(留着一个永远 403/被守卫拦的界面没有意义)
+  const menus = licenseMenus.value
+  const key = routeMenuKey(route.path)
+  const accessible = key === 'license-admin'
+    ? isAdmin.value && menus.includes(key)
+    : !key || menus.includes(key)
+  if (!accessible) router.replace(firstGrantedHome(menus))
 }
 
 // 侧边栏数据源树初始加载;进入数据源相关页(增删改后回来)时刷新

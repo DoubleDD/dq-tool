@@ -3,7 +3,7 @@
   <el-dialog
     :model-value="modelValue"
     :title="`为 ${tableName} 添加关系表`"
-    width="720px"
+    width="920px"
     :close-on-press-escape="false"
     @update:model-value="(v) => emit('update:modelValue', v)"
   >
@@ -12,7 +12,7 @@
         <el-input :model-value="datasource?.name || ''" disabled />
       </el-form-item>
       <ObjectTablePickList ref="pickRef" :datasource="datasource" list-label="关系表" :exclude-table="tableName"
-                           :fixed-db="dbName" :fixed-schema="schemaName" show-rel-kind />
+                           :fixed-db="dbName" :fixed-schema="schemaName" show-rel-kind :table-height="460" />
       <el-form-item label="备注">
         <el-input v-model="remark" placeholder="可选,如关联说明(应用到本次全部选中表)" maxlength="200" />
       </el-form-item>

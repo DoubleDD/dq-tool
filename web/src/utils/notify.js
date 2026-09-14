@@ -56,7 +56,7 @@ function reflow() {
   }
 }
 
-function open(type, text, { duration } = {}) {
+function open(type, text, { duration, onClick } = {}) {
   openQueue = openQueue.then(async () => {
     await nextTick()
     const item = { id: ++notifySeq }
@@ -65,6 +65,7 @@ function open(type, text, { duration } = {}) {
       type,
       position: 'top-right',
       duration,
+      onClick,
       customClass: `dq-notify-${item.id} dq-notify-${type}`,
       message: h(NotifyBody, {
         text,
@@ -103,9 +104,10 @@ function show(type, message, options = {}) {
   for (const [k, t] of recent) if (now - t > DEDUP_WINDOW_MS) recent.delete(k)
   let duration = options.duration ?? TYPE_DURATIONS[type] ?? 4500
   if (text.length > LONG_TEXT_LEN) duration = Math.max(duration, LONG_DURATION)
-  // 留痕到通知中心(头部铃铛抽屉),被去重跳过的重复通知不重复记录
-  addNotifyRecord({ type, title: TYPE_TITLES[type] || TYPE_TITLES.info, text })
-  open(type, text, { duration })
+  // 标题默认「操作成功/失败」等通用文案,业务可自定义(如「推导完成」);留痕到通知中心用同一标题
+  const title = options.title || TYPE_TITLES[type] || TYPE_TITLES.info
+  addNotifyRecord({ type, title, text })
+  open(type, text, { duration, onClick: options.onClick })
 }
 
 function ElMessageCompat(options) {

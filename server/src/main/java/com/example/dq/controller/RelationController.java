@@ -34,6 +34,11 @@ public class RelationController {
         ctx.json(inferService.listJobs(dsId(ctx), ctx.queryParam("dbName"), schemaName(ctx)));
     }
 
+    /** 全部未完成任务(跨库,后台任务中心 1s 轮询口径) */
+    public void listActiveJobs(Context ctx) {
+        ctx.json(inferService.listActiveJobs());
+    }
+
     /** 推导任务详情 */
     public void getJob(Context ctx) {
         ctx.json(inferService.getJob(id(ctx)));

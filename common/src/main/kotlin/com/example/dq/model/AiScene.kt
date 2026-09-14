@@ -12,6 +12,8 @@ enum class AiScene(val label: String) {
     RELATION_INFER("关系推导"),
     /** 数据比对·匹配逻辑 3:编码与名称都没配上的残余对象交大模型归一化配对 */
     COMPARE_MATCH("比对匹配"),
+    /** 数据比对·列级对比:大模型按字段名/注释预生成「基准字段 → 目标列」映射,人工审核 */
+    COMPARE_MAPPING("比对映射"),
     /** 「AI 配置」连通性测试 */
     TEST("连通测试"),
     ;

@@ -2,10 +2,10 @@ package com.example.dq.service
 
 import com.example.dq.config.AppConfig
 import com.example.dq.license.LicenseCodec
-import com.example.dq.license.LicenseFeature
+import com.example.dq.license.LicenseMenu
 import com.example.dq.model.LicenseAdminRequiredException
-import com.example.dq.model.LicenseFeatureRequiredException
 import com.example.dq.model.LicenseGenerateRequest
+import com.example.dq.model.LicenseMenuRequiredException
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.LicenseRepository
@@ -132,55 +132,75 @@ class LicenseServiceTest {
     }
 
     @Test
-    fun `激活授权码含功能列表时status透出并校验`() {
+    fun `激活授权码含菜单列表时status透出并校验`() {
         val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         val service = newServiceWithKey(
             Base64.getEncoder().encodeToString(kp.public.encoded),
             Base64.getEncoder().encodeToString(kp.private.encoded))
-        // 管理员签发:业务功能 + 受控功能 license_admin
+        // 管理员签发:显式勾选 3 个菜单(新格式无隐式基础集,未勾选的菜单一律不开放)
         val record = service.generateLicense(
-            LicenseGenerateRequest("甲公司", "2027-12-31", features = listOf("scan", "logs", "license_admin")))
+            LicenseGenerateRequest("甲公司", "2027-12-31", menus = listOf("dashboard", "compare", "license-admin")))
 
         service.activate(record.code)
         val status = service.status()
         assertTrue(status.activated)
-        // 业务功能恒有(含 logs)+ 显式包含的受控功能
-        assertEquals(
-            setOf("scan", "datasource", "excel", "report", "ai_doc", "ai_tag", "tag", "logs", "license_admin"),
-            status.features!!.toSet())
-        // logs 为基础功能恒通过;受控功能校验通过
-        service.checkFeature(LicenseFeature.LOGS)
-        service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
-        // 留档可见功能列表(按枚举声明顺序规范化)
-        assertEquals("scan,logs,license_admin", service.listLicenses().single().features)
+        assertEquals(setOf("dashboard", "compare", "license-admin"), status.menus!!.toSet())
+        // 勾选的菜单校验通过;未勾选的拒绝
+        service.checkMenu(LicenseMenu.COMPARE)
+        service.checkMenu(LicenseMenu.LICENSE_ADMIN, false)
+        assertThrows(LicenseMenuRequiredException::class.java) { service.checkMenu(LicenseMenu.LOGS) }
+        assertThrows(LicenseMenuRequiredException::class.java) { service.checkMenu(LicenseMenu.DATASOURCE) }
+        // 留档可见菜单列表(按枚举声明顺序规范化)
+        assertEquals("dashboard,compare,license-admin", service.listLicenses().single().menus)
     }
 
     @Test
-    fun `签发未勾选受控功能则status不含且校验拒绝`() {
+    fun `签发未传菜单时默认开放除数据比对与授权管理外的全部菜单`() {
         val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         val service = newServiceWithKey(
             Base64.getEncoder().encodeToString(kp.public.encoded),
             Base64.getEncoder().encodeToString(kp.private.encoded))
-        // 只签业务功能(显式传 scan),受控功能不勾
-        val record = service.generateLicense(
-            LicenseGenerateRequest("甲公司", "permanent", features = listOf("scan")))
+        val record = service.generateLicense(LicenseGenerateRequest("甲公司", "permanent"))
 
         service.activate(record.code)
         val status = service.status()
         assertTrue(status.activated)
-        // 业务功能全有(含 logs),受控功能没有
-        assertEquals(LicenseFeature.BASE_FEATURES.map { it.key }.toSet(), status.features!!.toSet())
-        // logs 为基础功能恒通过;受控功能校验拒绝
-        service.checkFeature(LicenseFeature.LOGS)
-        assertThrows(LicenseFeatureRequiredException::class.java) {
-            service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
+        // 默认:全部菜单除 数据比对/授权管理
+        val expectedSet = LicenseMenu.ALL.filter { it != LicenseMenu.COMPARE && it != LicenseMenu.LICENSE_ADMIN }.toSet()
+        assertEquals(expectedSet.map { it.key }.toSet(), status.menus!!.toSet())
+        service.checkMenu(LicenseMenu.LOGS)
+        service.checkMenu(LicenseMenu.DATASOURCE)
+        assertThrows(LicenseMenuRequiredException::class.java) {
+            service.checkMenu(LicenseMenu.COMPARE)
         }
-        // 留档 features 仅显式传入的 scan
-        assertEquals("scan", service.listLicenses().single().features)
+        assertThrows(LicenseMenuRequiredException::class.java) {
+            service.checkMenu(LicenseMenu.LICENSE_ADMIN, false)
+        }
+        // 留档 menus 为默认菜单集
+        assertEquals(LicenseMenu.encode(expectedSet), service.listLicenses().single().menus)
     }
 
     @Test
-    fun `旧格式授权码仅基础功能受控功能被拒`() {
+    fun `旧版签发端按旧功能列表推导菜单`() {
+        val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val service = newServiceWithKey(
+            Base64.getEncoder().encodeToString(kp.public.encoded),
+            Base64.getEncoder().encodeToString(kp.private.encoded))
+        // 旧版只传 features(含受控 compare):按旧口径推导菜单
+        val record = service.generateLicense(
+            LicenseGenerateRequest("甲公司", "permanent", features = listOf("scan", "compare")))
+
+        service.activate(record.code)
+        val expected = LicenseMenu.ALL.filter { it != LicenseMenu.LICENSE_ADMIN }.map { it.key }.toSet()
+        assertEquals(expected, service.status().menus!!.toSet())
+        service.checkMenu(LicenseMenu.COMPARE)
+        assertThrows(LicenseMenuRequiredException::class.java) {
+            service.checkMenu(LicenseMenu.LICENSE_ADMIN, false)
+        }
+    }
+
+    @Test
+    fun `旧格式授权码按旧功能段推导菜单`() {
         val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         val service = newServiceWithKey(Base64.getEncoder().encodeToString(kp.public.encoded))
         // 手工构造 7 段旧格式授权码(无功能段),验签通过
@@ -195,13 +215,49 @@ class LicenseServiceTest {
         service.activate(code)
         val status = service.status()
         assertTrue(status.activated)
-        // 业务功能全有(含 logs),受控功能没有
-        assertEquals(LicenseFeature.BASE_FEATURES.map { it.key }.toSet(), status.features!!.toSet())
-        assertTrue(status.features!!.contains("logs"))
-        // logs 为基础功能恒通过;受控功能校验拒绝
-        service.checkFeature(LicenseFeature.LOGS)
-        assertThrows(LicenseFeatureRequiredException::class.java) {
-            service.checkFeature(LicenseFeature.LICENSE_ADMIN, false)
+        // 无功能段:全部菜单除 数据比对/授权管理
+        val expected = LicenseMenu.ALL.filter { it != LicenseMenu.COMPARE && it != LicenseMenu.LICENSE_ADMIN }.map { it.key }.toSet()
+        assertEquals(expected, status.menus!!.toSet())
+        service.checkMenu(LicenseMenu.DASHBOARD)
+        assertThrows(LicenseMenuRequiredException::class.java) {
+            service.checkMenu(LicenseMenu.COMPARE)
         }
+        assertThrows(LicenseMenuRequiredException::class.java) {
+            service.checkMenu(LicenseMenu.LICENSE_ADMIN, false)
+        }
+        // 免鉴权默认关
+        assertFalse(status.bypassAuth)
+        assertFalse(service.isAuthBypassed())
+    }
+
+    @Test
+    fun `免鉴权标记签发激活后生效且过期不生效`() {
+        val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val privateB64 = Base64.getEncoder().encodeToString(kp.private.encoded)
+        val service = newServiceWithKey(
+            Base64.getEncoder().encodeToString(kp.public.encoded), privateB64)
+
+        // 勾选免鉴权:留档、payload、状态三者一致
+        val record = service.generateLicense(
+            LicenseGenerateRequest("甲公司", "2027-12-31", menus = listOf("dashboard"), bypassAuth = true))
+        assertTrue(record.bypassAuth)
+        assertTrue(LicenseCodec.decodeAndVerify(record.code, kp.public).bypassAuth)
+        service.activate(record.code)
+        assertTrue(service.status().bypassAuth)
+        assertTrue(service.isAuthBypassed())
+
+        // 默认不勾选:不豁免
+        val plain = service.generateLicense(LicenseGenerateRequest("乙公司", "permanent"))
+        assertFalse(plain.bypassAuth)
+        assertFalse(LicenseCodec.decodeAndVerify(plain.code, kp.public).bypassAuth)
+
+        // 过期授权码:即使带标记也不生效(直接写库构造过期激活态)
+        val expiredCode = LicenseCodec.encode("丙公司", LocalDate.of(2020, 1, 1), kp.private, bypassAuth = true)
+        licenseRepo.upsert(crypto.encrypt(expiredCode)!!, "丙公司", LocalDate.of(2020, 1, 1))
+        val reloaded = newServiceWithKey(
+            Base64.getEncoder().encodeToString(kp.public.encoded), privateB64)
+        assertTrue(reloaded.status().expired)
+        assertFalse(reloaded.status().bypassAuth)
+        assertFalse(reloaded.isAuthBypassed())
     }
 }

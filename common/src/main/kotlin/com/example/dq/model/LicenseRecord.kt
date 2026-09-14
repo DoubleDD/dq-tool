@@ -16,8 +16,12 @@ data class LicenseRecord(
     val sid: String?,
     /** 签发时间戳(epoch 毫秒,与授权码 payload 内一致) */
     val issuedAt: Long,
-    /** 授权码显式包含的功能 key(逗号分隔,可空);基础功能恒有不在其中 */
+    /** 授权码显式包含的旧功能 key(逗号分隔,可空;仅旧格式留档有值,展示时按它推导菜单) */
     val features: String?,
+    /** 授权码开放菜单 key(逗号分隔,可空;旧记录 NULL 时留档视图按 features 推导展示) */
+    val menus: String? = null,
+    /** 免接口鉴权标记(演示用;NULL=false) */
+    val bypassAuth: Boolean? = null,
     val codeEnc: String,
     val createdAt: LocalDateTime?,
 )
@@ -32,8 +36,10 @@ data class LicenseRecordView(
     val username: String?,
     val sid: String?,
     val issuedAt: Long,
-    /** 授权码显式包含的功能 key(逗号分隔,可空);基础功能恒有不在其中 */
-    val features: String?,
+    /** 留档视图统一给出开放菜单 key(逗号分隔):新记录取授权码菜单段,旧记录(NULL)按旧功能段推导 */
+    val menus: String?,
+    /** 免接口鉴权标记(演示用) */
+    val bypassAuth: Boolean = false,
     val code: String,
     val createdAt: LocalDateTime?,
 )
@@ -47,6 +53,10 @@ data class LicenseGenerateRequest(
     val serverUrl: String? = null,
     val username: String? = null,
     val sid: String? = null,
-    /** 授权码显式包含的功能 key 列表;为空表示仅基础功能(业务功能恒有)。未传/为空时服务端按基础功能处理 */
+    /** 授权码开放菜单 key 列表(勾选即客户实例侧边栏可见);为空/未传时按 features 推导,两者皆无则默认开放除 数据比对/授权管理 外的全部菜单 */
+    val menus: List<String>? = null,
+    /** 旧版签发端兼容:未传 menus 时按旧功能 key 列表(compare/license_admin 等)推导菜单 */
     val features: List<String>? = null,
+    /** 免接口鉴权标记(演示用):true 时客户实例跳过 dq.access-token 校验,默认 false */
+    val bypassAuth: Boolean? = null,
 )
