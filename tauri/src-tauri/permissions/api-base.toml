@@ -1,0 +1,8 @@
+# api_base 命令的应用层权限。
+# Tauri 2 对自定义 app 命令强制 ACL 校验,不在 capabilities 声明并在此登记权限则 IPC 直接被拒
+# (报 "api_base not allowed. Plugin not found",不进 Rust 命令、后端无记录)。
+# 新增本目录文件后必须 touch build.rs 触发 build.rs 重跑(否则不发 cargo:rerun-if-changed)。
+[[permission]]
+identifier = "allow-api-base"
+description = "允许调用 api_base 命令(前端初始化取后端 API 基址与访问令牌;后端未就绪返回 null)"
+commands.allow = ["api_base"]

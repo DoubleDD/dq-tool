@@ -1,6 +1,6 @@
 # Tauri 直载前端 · jar 转纯 API 服务 实施计划
 
-> 状态:待实施(2026-09-11 规划)。
+> 状态:**已实施**(2026-09-11):T1–T13、T15 完成并通过验证(`unzip -l` 的 `static/` 条目为 0、`make test` 全绿、`cargo check` 通过、纯 API / static-dir / token 门禁 / CORS 端到端冒烟通过);T14 真机 webview 实发 `Origin` 待三平台回填。
 > 目标形态:交付的 fat jar 不再内嵌前端,变成纯 API 服务;Tauri 从自己的 `frontendDist` 直载静态资源。
 > 关系:[浏览器访问管控-实施计划](浏览器访问管控-实施计划.md) 中「Tauri 注入随机 token」一节被本计划**激活并修正**(原方案假设 webview 通过
 > `navigate` 到后端 origin,同源;CORS 不存在,原方案的 token 与 Cookie 细节需按新架构调整)。本计划实施后,那份计划的其余部分(浏览器直连管控)仍可独立推进。
@@ -204,6 +204,13 @@ export async function initApiBase()// Tauri:轮询 invoke('api_base') 直到非�
 **回滚**:所有改动均可独立回退——T1–T3 回退即恢复内嵌静态;T4–T5 门禁默认关闭(`dq.access-token` 为空时行为完全不变);T8–T11 回退即恢复 `navigate` 到后端 origin(回到今天的同源模型)。
 
 ## 八、实测记录(T14 填)
+
+> **macOS 后端侧已验证(2026-09-11,模拟 `Origin`)**:用最终 jar 起服务后,`Origin: null`、`Origin: tauri://localhost`、`Origin: http://tauri.localhost` 均回 `Access-Control-Allow-Origin: *`;`OPTIONS` 预检带 `Access-Control-Request-Headers: x-dq-token` 不被门禁拦且回 200/`*`。
+> **仍待真机**:三平台 webview 实际发出的 `Origin` 值(尤其是否存在**完全不发 Origin** 的平台,那会绕过 CorsPlugin 直接 return,需回落 Rust loopback 反代)、日志页 SSE 实流、导出「另存为」。
+>
+> **抓取方法(已内置,无需改代码)**:配置了 `dq.access-token` 时(Tauri 必配),后端对每种不同的 `/api` 请求 `Origin` 各记一条 INFO 日志「/api 请求来源 Origin=…」(每进程去重)。三平台各跑一次 `make tauri`,看数据目录 `logs/dq-tool-*.log`(或 Rust 转发到终端的 `[backend]` 行)即可回填下表;若某平台**完全看不到该行**,即命中 §7 的「webview 不发 Origin」回落条件。
+>
+> **源码推断(Tauri 2.11.5,2026-09-11)**:`src/manager/webview.rs` 由窗口 URL 派生 `window_origin`(仅 `data:` 或无 host 时才退化为 `null`)——macOS/Linux 窗口 URL 为 `tauri://localhost`,Windows 为 wry workaround `http://tauri.localhost`(见 `src/manager/mod.rs::tauri_protocol_url`),据此三平台预期 Origin 依次为 `tauri://localhost` / `tauri://localhost` / `http://tauri.localhost`;社区实践(如 screenpipe「allow http://tauri.localhost origin for Windows」)一致。后端已对前两者及 `null` 验证 CorsPlugin 回 `*`,故 §7「某平台完全不发 Origin」的风险已很小,**实发值仍以真机日志为准**。
 
 | 平台 | webview | 实测 `Origin` 头 | 预检结果 | SSE | 备注 |
 |---|---|---|---|---|---|

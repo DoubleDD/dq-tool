@@ -23,8 +23,8 @@ PORT ?= 10001
 # 授权码绑定的软件版本:与安装包版本口径一致(去 0. 前缀,如 0.1.6 -> 1.6)
 LICENSE_VERSION ?= $(VERSION:0.%=%)
 
-# 前端构建完全交给 Gradle:dev 模式(:server:run)不构建前端(前端开发走 make dev-web);
-# release 打包由 :server:shadowJar 的前置任务 buildWebForRelease 保障 web/dist 最新且存在。
+# 前端构建:vite 产物 web/dist 由 dev(Gradle processResources)、测试与各打包脚本各自保证;
+# 交付 fat jar 不含前端(shadowJar 排除 static/**):Tauri 用 frontendDist 直载,jpackage 用 -Ddq.web.static-dir 从磁盘发。
 
 .PHONY: help \
 	dev dev-headless dev2 dev-web tauri \
@@ -44,10 +44,10 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '  make %-18s %s\n' dev-web        '前端 5173 热更新(代理 /api 到 10000)'
 	@printf '  make %-18s %s\n' tauri          'Tauri 2 套壳版(系统 WebView + Rust 侧车拉起 java 子进程)'
 	@printf '\n\033[1m构建 / 测试 / 直接跑 jar\033[0m\n'
-	@printf '  make %-18s %s\n' build          '构建前端 + 后端 fat jar(跳过测试)'
+	@printf '  make %-18s %s\n' build          '构建后端 fat jar(纯 API 服务,不含前端;跳过测试)'
 	@printf '  make %-18s %s\n' test           '全部测试(含 Testcontainers,需要 Docker)'
-	@printf '  make %-18s %s\n' run            '构建并运行 fat jar,带窗口/托盘'
-	@printf '  make %-18s %s\n' run-headless   '构建并运行 fat jar,无窗口/托盘(服务器方式)'
+	@printf '  make %-18s %s\n' run            '构建前端 + fat jar 并运行,带窗口/托盘(前端经 -Ddq.web.static-dir=web/dist 从磁盘发)'
+	@printf '  make %-18s %s\n' run-headless   '构建前端 + fat jar 并运行,无窗口/托盘(同上,服务器方式)'
 	@printf '\n\033[1m打包:浏览器 app 模式(server 安装版)\033[0m\n'
 	@printf '  make %-18s %s\n' package        'macOS dmg(构建 + 打包)'
 	@printf '  make %-18s %s\n' package-skip   'macOS dmg(跳过构建,用现有 jar 重打)'
@@ -81,23 +81,27 @@ dev2: ## 起第二个开发实例(多实例/局域网共享调试,带窗口/托�
 dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
 	cd web && npm run dev
 
-tauri: build ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车拉起 java 子进程;tauri 非 Gradle 模块,需先构建 fat jar)
+tauri: ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车;先构建 web/dist 供 frontendDist 直载,再打纯 API fat jar)
 	@[ -d tauri/node_modules ] || (cd tauri && pnpm install)
+	cd web && npm run build
+	./gradlew :server:shadowJar
 	cd tauri && npm run dev
 
 # ── 构建 / 测试 / 直接跑 jar ─────────────────────────────────────────────────
 
-build: ## 构建后端 fat jar(前端由 Gradle 的 shadowJar 前置任务 buildWebForRelease 自动构建)
+build: ## 构建后端 fat jar(纯 API 服务,不含前端;前端构建见 tauri 目标与各打包脚本)
 	./gradlew :server:shadowJar
 
 test: ## 全部测试(含 Testcontainers,需要 Docker)
 	./gradlew :common:test :server:test
 
-run: build ## 构建并运行 fat jar,带窗口/托盘(原生 -splash 启动画面;注意 -jar 模式下 -splash 按文件系统相对路径找)
-	java -XX:+UseG1GC -Xmx384m -XX:MaxRAMPercentage=50 -Djava.awt.headless=false -splash:server/src/main/resources/splash.png -jar $(JAR)
+run: build ## 构建并运行 fat jar,带窗口/托盘(jar 纯 API;前端经 -Ddq.web.static-dir=web/dist 从磁盘发)
+	cd web && npm run build
+	java -XX:+UseG1GC -Xmx384m -XX:MaxRAMPercentage=50 -Djava.awt.headless=false -Ddq.web.static-dir=web/dist -splash:server/src/main/resources/splash.png -jar $(JAR)
 
-run-headless: build ## 构建并运行 fat jar,无窗口/托盘(服务器方式)
-	java -XX:+UseG1GC -Xmx384m -XX:MaxRAMPercentage=50 -jar $(JAR)
+run-headless: build ## 构建并运行 fat jar,无窗口/托盘(服务器方式;前端经 -Ddq.web.static-dir=web/dist 从磁盘发)
+	cd web && npm run build
+	java -XX:+UseG1GC -Xmx384m -XX:MaxRAMPercentage=50 -Ddq.web.static-dir=web/dist -jar $(JAR)
 
 # ── 打包:浏览器 app 模式(server 安装版,jpackage 内嵌 JRE)─────────────────────
 

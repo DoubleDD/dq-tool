@@ -85,7 +85,7 @@
 
 ## 五、前端(web)
 
-- **新依赖**:`@antv/g6`(v5);项目当前零图库依赖,release 打包由 Gradle `buildWebForRelease` 自动覆盖,无需额外保障。
+- **新依赖**:`@antv/g6`(v5);项目当前零图库依赖,release 打包的正常前端构建已覆盖,无需额外保障(2026-09 起交付 jar 为纯 API,前端由 Tauri/jpackage 各自构建)。
 - **组件拆分**:
   - `components/RelationGraphCanvas.vue` — G6 画布(自定义边端标记近似乌鸦脚;候选虚线/确认实线/疑似多对多红色;力导向↔层次布局切换;节点三档:仅表名/仅关联字段/全字段;点表名跳字段明细新页签;点边弹确认/否决/编辑基数;「以此表为锚点继续推导」入口)。**布局不持久化**。
   - `components/RelationInferDialog.vue` — 选锚点字段(表字段多选)+ 语义匹配开关(先查 `/api/ai-config` 的 `available`,未配置则禁用+提示),提交后轮询进度。

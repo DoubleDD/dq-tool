@@ -76,7 +76,7 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } fro
 import { ElMessage } from '../utils/notify'
 import request from '../api'
 import { formatBytes, formatDateTime } from '../utils/format'
-import { isTauri } from '../utils/download'
+import { downloadFile, isTauri } from '../utils/download'
 
 const tasks = ref([])
 const keyword = ref('')
@@ -161,11 +161,9 @@ function stopPolling() {
   }
 }
 
-/** 另存为:直接走浏览器下载(GET 流式响应) */
+/** 下载:统一走 downloadFile(浏览器 window.open;Tauri 走 Rust「另存为」并带 token) */
 function download(row) {
-  const a = document.createElement('a')
-  a.href = `/api/report-exports/${row.id}/download`
-  a.click()
+  downloadFile(`/api/report-exports/${row.id}/download`)
 }
 
 // tauri 套壳环境(webview 注入 __TAURI_INTERNALS__):「另存为」走原生保存对话框,由 Rust 侧复制产物文件

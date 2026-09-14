@@ -56,6 +56,10 @@ tasks.shadowJar {
     archiveBaseName.set("dq-tool")
     archiveClassifier.set("")
     mergeServiceFiles()
+    // 交付 jar 不再内嵌任何前端资源:静态由 Tauri frontendDist(web/dist)或 jpackage 的
+    // -Ddq.web.static-dir=${APPDIR}/static 从磁盘提供,jar 此时是纯 API 服务。
+    // processResources 仍会把 web/dist 拷入 build/resources(dev/测试 classpath 用),此排除只作用于 fat jar。
+    exclude("static/**")
     manifest {
         attributes("Main-Class" to "com.example.dq.DqApplication")
     }
@@ -78,14 +82,14 @@ tasks.named<JavaExec>("run") {
     }
 }
 
-// ---- 前端构建:dev 模式与 release 打包拆开 ----
+// ---- 前端构建(dev/测试仍走 classpath,交付 jar 不含前端) ----
 // dev 模式(:server:run,make dev / dev-headless)不构建前端——前端开发走 make dev-web(vite 5173 热更新),
 // 或直接使用磁盘上已有的 web/dist;processResources 仅在有 dist 时拷入 static,缺失时跳过(API-only 调试)。
-// release 打包正确性由 buildWebForRelease 保障(见下)::server:shadowJar 前强制前端产物最新且存在,
-// 不再存在"旧版/缺失"的静默坏包(此前 buildWeb 挂在 processResources 上导致 dev 运行也被迫构建前端)。
+// 测试依赖 buildWeb 产出 web/dist,保证 WebServerSmokeTest 的 classpath 静态用例可跑。
+// 交付 jar 不再内嵌前端:shadowJar 排除 static/**,前端由 jpackage static-dir / Tauri frontendDist 提供。
 val buildWeb by tasks.registering(Exec::class) {
     group = "build"
-    description = "构建前端产物 web/dist(增量;release 打包与测试的前置)"
+    description = "构建前端产物 web/dist(增量;:server:test 的前置;打包脚本各自构建)"
 
     // 统一在 web/ 目录执行;npm 在 Windows 上是 npm.cmd,直接写 npm 会找不到
     workingDir = rootProject.layout.projectDirectory.dir("web").asFile
@@ -107,22 +111,9 @@ val buildWeb by tasks.registering(Exec::class) {
     }
 }
 
-// release 打包专用保障(新增):打 fat jar 前强制前端产物最新且存在。
-// dev 模式(:server:run)不经过本任务,因此不会触发前端构建。
-val buildWebForRelease by tasks.registering {
-    group = "build"
-    description = "release 打包保障:构建前端产物并校验 web/dist 存在(shadowJar 的前置,dev 模式不触发)"
-    dependsOn(buildWeb)
-    doLast {
-        val dist = rootProject.layout.projectDirectory.dir("web/dist").asFile
-        if (!dist.isDirectory || !dist.resolve("index.html").isFile) {
-            throw GradleException(
-                "web/dist 缺失或为空,release 打包需要前端产物。请先执行: cd web && npm install && npm run build " +
-                    "(或让 buildWeb 自动构建;若 web/node_modules 不存在会先报 npm 依赖错误)"
-            )
-        }
-    }
-}
+// 说明(2026-09):原 buildWebForRelease 任务已删除。交付 fat jar 不再内嵌前端(见 tasks.shadowJar 的 exclude),
+// 是纯 API 服务;前端产物分别由 jpackage 脚本(xcopy web/dist 到 static/,jpackage 注入 -Ddq.web.static-dir)
+// 与 Tauri 打包脚本(scripts/package-tauri-*)各自保证,Tauri 的 frontendDist 直接指向 web/dist,不再经 Gradle 中转。
 
 // 更新日志硬校验(发版强制):CHANGELOG.md 必须存在当前版本对应的 `## <展示版>` 段落
 // (展示版 = VERSION 去掉 0. 前缀,与页脚显示/页签「本次更新」口径一致;`## <原始VERSION>` 也接受)。
@@ -160,17 +151,12 @@ tasks.processResources {
         into("static")
     }
     inputs.dir(distDir).withPropertyName("webDist").optional(true)
-    // 当 buildWeb 在任务图中(release 打包 / 测试)时,确保先构建、后拷贝,拷入的始终是最新产物
+    // 当 buildWeb 在任务图中(测试)时,确保先构建、后拷贝,拷入的始终是最新产物
     mustRunAfter(buildWeb)
     // 软件版本号构建期注入 app-version.txt:去 0. 前缀(如 0.1.7 -> 1.7),与打包脚本 PKG_VERSION 口径一致;版本号源头为根目录 VERSION 文件
     filesMatching("app-version.txt") {
         expand(mapOf("appVersion" to project.version.toString().replaceFirst(Regex("^0\\."), "")))
     }
-}
-
-tasks.shadowJar {
-    // release 打包正确性:打 fat jar 前强制前端产物最新且存在(经 buildWebForRelease)
-    dependsOn(buildWebForRelease)
 }
 
 tasks.test {

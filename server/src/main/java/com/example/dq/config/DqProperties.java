@@ -1,5 +1,8 @@
 package com.example.dq.config;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class DqProperties {
 
     private final Scan scan = new Scan();
@@ -7,6 +10,9 @@ public class DqProperties {
     private final License license = new License();
     private final Desktop desktop = new Desktop();
     private final Lan lan = new Lan();
+    private final Web web = new Web();
+    /** 浏览器访问管控令牌:任一非空即开启门禁(header/query/Cookie 三选一命中放行);空 = 不限制 */
+    private final List<String> accessTokens = new ArrayList<>();
 
     public Scan getScan() {
         return scan;
@@ -26,6 +32,14 @@ public class DqProperties {
 
     public Lan getLan() {
         return lan;
+    }
+
+    public Web getWeb() {
+        return web;
+    }
+
+    public List<String> getAccessTokens() {
+        return accessTokens;
     }
 
     public static class Scan {
@@ -106,5 +120,17 @@ public class DqProperties {
         public void setDiscoveryPort(int discoveryPort) { this.discoveryPort = discoveryPort; }
         public int getAnnounceIntervalSeconds() { return announceIntervalSeconds; }
         public void setAnnounceIntervalSeconds(int announceIntervalSeconds) { this.announceIntervalSeconds = announceIntervalSeconds; }
+    }
+
+    public static class Web {
+        /**
+         * 静态资源目录(磁盘):非空且目录存在时从该目录发前端页面与 assets
+         * (jpackage 安装版由打包脚本注入 -Ddq.web.static-dir=${APPDIR}/static);
+         * 留空 = 用 classpath 内嵌静态(dev/测试)。交付 jar 默认不含内嵌静态,即纯 API 形态。
+         */
+        private String staticDir = "";
+
+        public String getStaticDir() { return staticDir; }
+        public void setStaticDir(String staticDir) { this.staticDir = staticDir; }
     }
 }

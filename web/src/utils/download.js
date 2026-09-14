@@ -1,7 +1,8 @@
 import { ElMessage } from './notify'
+import { apiUrl, isTauriEnv as isTauri } from '../api/base'
 
-/** tauri 套壳环境(webview 注入 __TAURI_INTERNALS__) */
-export const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__
+/** tauri 套壳环境(webview 注入 __TAURI_INTERNALS__);统一由 api/base 判定,此处转出保持既有引用可用 */
+export { isTauri }
 
 /**
  * 通用下载:桌面端(Tauri)弹原生保存对话框让用户自选保存位置(Rust 侧 save_download_as
@@ -11,7 +12,8 @@ export const isTauri = typeof window !== 'undefined' && !!window.__TAURI_INTERNA
  */
 export async function downloadFile(apiPath) {
   if (!isTauri) {
-    window.open(apiPath, '_blank')
+    // 浏览器同源:经 apiUrl 解析(Tauri 分支不走这里,直接把 /api/... 原样交给 Rust 拼 host)
+    window.open(apiUrl(apiPath), '_blank')
     return
   }
   try {

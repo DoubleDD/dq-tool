@@ -107,6 +107,23 @@
         var closedByUser = false
         var panel, body
 
+        /* 交付 jar 是纯 API;Tauri webview 从本地 frontendDist 直载,API 在 http://127.0.0.1:<动态端口>/api。
+           Tauri 下经 IPC api_base() 解析基址(含端口避让回填),同源(jpackage/浏览器)下用相对 /api */
+        var TAURI = !!window.__TAURI_INTERNALS__
+        var apiBase = TAURI ? null : '/api'
+        function resolveApiBase() {
+          if (!TAURI || apiBase) return Promise.resolve(apiBase)
+          return window.__TAURI_INTERNALS__.invoke('api_base')
+            .then(function (info) { if (info && info.base) apiBase = info.base; return apiBase })
+            .catch(function () { return null })
+        }
+        function apiFetch(path, opts) {
+          return resolveApiBase().then(function (base) {
+            if (!base) throw new Error('API 基址未就绪')
+            return fetch(base + path, opts)
+          })
+        }
+
         function pad(n) { return n < 10 ? '0' + n : '' + n }
         function ts() {
           var d = new Date()
@@ -138,8 +155,10 @@
         var probed = {}
         var manifestPromise = null
         function getManifest() {
+          // 纯 API 形态下没有 assets-manifest 可比对(资源在 Tauri 本地 bundle);仅同源形态比对
+          if (TAURI) return Promise.resolve(null)
           if (!manifestPromise) {
-            manifestPromise = fetch('/api/assets-manifest', { cache: 'no-store' })
+            manifestPromise = apiFetch('/assets-manifest', { cache: 'no-store' })
               .then(function (res) { return res.ok ? res.json() : null })
               .then(function (d) { return d && d.assets ? d.assets : null })
               .catch(function () { return null })
@@ -199,7 +218,7 @@
         // 服务就绪状态备用探测:即使主脚本加载失败,也能区分「资源缺失」与「服务未就绪/不可达」
         function pollHealth() {
           if (ready) return
-          fetch('/api/health', { cache: 'no-store' })
+          apiFetch('/health', { cache: 'no-store' })
             .then(function (res) {
               if (res.ok) {
                 ready = true

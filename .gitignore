@@ -51,6 +51,7 @@ license-private.key
 .pi-subagents/
 .pnpm-store/
 .gradle-home*/
+.cargo-home/
 .reasonix/
 reasonix.toml
 
