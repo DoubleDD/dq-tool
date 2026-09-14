@@ -289,7 +289,8 @@ function renderNodeHtml(d) {
     const tip = tipText ? ` title="${esc(tipText)}"` : ''
     // data-rg-column:容器层点击委托据此在 mapping 模式下派发 field-click(点字段行连线)
     const colAttr = ` data-rg-column="${esc(f.name)}" data-rg-column-table="${esc(table)}"`
-    const cursor = mapping ? 'cursor:pointer;' : ''
+    // mapping 模式字段行悬停给十字光标(正在连线的语义);ER 图字段行不可点,保持默认
+    const cursor = mapping ? 'cursor:crosshair;' : ''
     return `<div${tip}${colAttr} style="display:flex;align-items:center;height:18px;line-height:18px;padding:0 8px;font-size:11px;overflow:hidden;${style};${cursor}"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(main.replace(/\s+/g, ' '))}${tailHtml}</span>${type}</div>`
   }).join('')
   const more = hasFoldRow(table)
@@ -371,6 +372,25 @@ function fieldEndpoint(self, nodeEl, column, oppositeEl) {
   // 元素局部几何以 model 点为原点,中心即 model+半宽半高;布局坐标亦同),两种模式同一口径,直接按中心算
   const center = nodeEl.getCenter()
   const opposite = oppositeEl.getCenter()
+  // create-edge 橡皮筋辅助边:起点(source 端)钉死在「待连线字段行」的出边侧缘中点——
+  // 兜底 borderPoint 会随鼠标位置绕节点边框滑动,视觉上起点不稳;起点出边侧按表角色固定
+  // (基准表在左恒出右边、对比表在右恒出左边)。字段行记录在 pointerdown 时写入(见 onContainerPointerdown)
+  if (props.mode === 'mapping' && self.id === 'g6-create-edge-assist-edge-id' && nodeEl === self.sourceNode) {
+    const pending = fieldClickLog[fieldClickLog.length - 1]
+    const pIdx = pending && pending.table === table
+      ? visibleFields(table).findIndex((f) => f.name === pending.column)
+      : -1
+    if (pIdx >= 0) {
+      const side = table === props.anchorTable ? 1 : -1
+      const x = center[0] + side * (w / 2)
+      const y = center[1] - h / 2 + (comment ? TITLE_H_COMMENT : TITLE_H_PLAIN) + FIELD_PAD_TOP + pIdx * ROW_H + ROW_H / 2
+      return { point: [x, y, 0], side }
+    }
+  }
+  // 辅助边 target 端 = 跟随鼠标的隐藏辅助圆点:端点即圆心(鼠标位置),别拿本组件的几何常量去算边框交点
+  if (table === 'g6-create-edge-assist-node-id') {
+    return { point: [center[0], center[1], 0], side: opposite[0] >= center[0] ? 1 : -1 }
+  }
   const idx = column == null
     ? -1
     : visibleFields(table).findIndex((f) => f.name === column)
