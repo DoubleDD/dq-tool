@@ -33,7 +33,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 
 /**
  * Word 报告导出:H2 造扫描快照 → 模板渲染 → POI 读回断言。
- * 覆盖:封面/一~四章渲染、未全表扫描拦截、历史 DONE 快照回落、体积实时补算降级、
+ * 覆盖:封面/一~四章渲染、部分导出(未扫描/非 DONE 任务/覆盖不全的库进「1.3 导出说明」)、
+ * 全部无 DONE 快照仍失败聚合原因、历史 DONE 快照回落、体积实时补算降级、
  * 按标记分节、LLM 注入与占位;同时守护模板标签完整性(标签被改坏时渲染残留 {{ 或行数对不上)。
  */
 class WordReportServiceTest {
@@ -166,6 +167,8 @@ class WordReportServiceTest {
                 t.rows.joinToString("\n") { r -> r.tableCells.joinToString("|") { it.text } }
             }
             assertTrue(!allText.contains("{{") && !allText.contains("[index]"), "存在未渲染的模板标签")
+            // 库全部覆盖时不出现「导出说明」节
+            assertTrue(!text.contains("导出说明"), text)
         }
     }
 
@@ -292,24 +295,48 @@ class WordReportServiceTest {
     }
 
     @Test
-    fun `选中的库未完成全表扫描时拦截并列出库名`() {
+    fun `部分导出时未扫描库不纳入并写进导出说明,有快照库照常导出`() {
         val id = createDataSource("测试源")
         seedSchemaStat(id, "db_a", "db_c")
         seedDoneJob(id, "db_a", listOf(TableSeed("t1", 1L, 1024L)), mapOf("t1" to listOf(ColSeed("int", null, 1, 0))))
-        // db_c 没有任何扫描任务
+        // db_c 没有任何扫描任务,不阻断导出
 
-        val e = assertThrows(IllegalStateException::class.java) {
-            service.export(id, null, null, ByteArrayOutputStream())
+        render(id).use { doc ->
+            val text = paragraphs(doc)
+            // db_a 照常导出
+            assertTrue(text.contains("共计1个数据库实例"), text)
+            // 文档新增「1.3 导出说明」节,逐条列出未纳入库及原因
+            assertTrue(text.contains("1.3 导出说明"), text)
+            assertTrue(text.contains("db_c:从未扫描"), text)
         }
-        assertTrue(e.message!!.contains("db_c"), "错误信息应列出未扫描库名")
-        assertTrue(!e.message!!.contains("db_a"), "已完成的库不应出现在错误信息里")
     }
 
     @Test
-    fun `全部库都未完成扫描时拦截导出`() {
+    fun `部分导出时非 DONE 任务库的原因含任务状态与失败表清单`() {
         val id = createDataSource("测试源")
-        seedSchemaStat(id, "db_a")
-        // 任务仍是 RUNNING(未完成)
+        seedSchemaStat(id, "db_a", "db_e")
+        seedDoneJob(id, "db_a", listOf(TableSeed("t1", 1L, 1024L)), mapOf("t1" to listOf(ColSeed("int", null, 1, 0))))
+        // db_e:最近一次任务 FAILED,带任务级错误与 2 张表级错误
+        val jobId = scanRepo.insertJob(id, null, "db_e", false, null, 2)
+        val st1 = scanRepo.insertScanTable(jobId, "t_err1", null, null, null, null)
+        scanRepo.finishTable(st1, ScanStatus.FAILED, null, "列不存在")
+        val st2 = scanRepo.insertScanTable(jobId, "t_err2", null, null, null, null)
+        scanRepo.finishTable(st2, ScanStatus.FAILED, null, "查询超时")
+        scanRepo.finishJob(jobId, ScanStatus.FAILED, "批量扫描失败")
+
+        render(id).use { doc ->
+            val text = paragraphs(doc)
+            assertTrue(text.contains("共计1个数据库实例"), text)
+            assertTrue(text.contains("db_e:最近一次扫描任务未完成(状态 FAILED:批量扫描失败)"), text)
+            assertTrue(text.contains("2 张表未成功扫描:t_err1(列不存在)、t_err2(查询超时)"), text)
+        }
+    }
+
+    @Test
+    fun `全部库都没有 DONE 快照时仍失败并聚合各库原因`() {
+        val id = createDataSource("测试源")
+        seedSchemaStat(id, "db_a", "db_b")
+        // db_a 任务 RUNNING(未完成);db_b 从未扫描
         val jobId = scanRepo.insertJob(id, null, "db_a", false, null, 1)
         scanRepo.markJobRunning(jobId)
 
@@ -317,19 +344,24 @@ class WordReportServiceTest {
             service.export(id, null, null, ByteArrayOutputStream())
         }
         assertTrue(e.message!!.contains("db_a"), e.message)
+        assertTrue(e.message!!.contains("RUNNING"), e.message)
+        assertTrue(e.message!!.contains("db_b"), e.message)
+        assertTrue(e.message!!.contains("从未扫描"), e.message)
     }
 
     @Test
-    fun `快照未覆盖当前全部表时视为未全表扫描`() {
+    fun `快照覆盖不全时照常导出并记录缺口说明`() {
         val id = createDataSource("测试源")
-        // 当前库有 5 张表,最近一次 DONE 快照只扫了 1 张(如只勾选部分表扫描,或扫描后新增表)
+        // 当前库有 5 张表,最近一次 DONE 快照只扫了 1 张(扫描后新增表),不阻断导出
         schemaStatRepo.replaceAll(id, null, listOf(SchemaStatRepository.CachedStat("db_a", 5, 1024L)))
         seedDoneJob(id, "db_a", listOf(TableSeed("t1", 1L, 1024L)), mapOf("t1" to listOf(ColSeed("int", null, 1, 0))))
 
-        val e = assertThrows(IllegalStateException::class.java) {
-            service.export(id, null, null, ByteArrayOutputStream())
+        render(id).use { doc ->
+            val text = paragraphs(doc)
+            assertTrue(text.contains("共计1个数据库实例"), text)
+            assertTrue(text.contains("1.3 导出说明"), text)
+            assertTrue(text.contains("db_a:该库扫描后新增表,本次仅覆盖已扫的 1 张(共 5 张)"), text)
         }
-        assertTrue(e.message!!.contains("db_a"), e.message)
     }
 
     @Test

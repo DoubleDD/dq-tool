@@ -30,8 +30,8 @@ import java.time.format.DateTimeFormatter
  * 扫描记录导出/导入:把扫描任务连同事件/表/分段/字段明细打包成 JSON,在另一台机器的部署导入,
  * 扫描记录列表即可看到导入的历史记录(详情/字段统计照常可查)。
  * 随任务携带花钱生成的标注数据:每张表的表标记(USER 标记名字引用,定义收在文件级 tagDefs;
- * EMPTY 系统空表标记只导名字不入 tagDefs,定义由各实例迁移自建)与表描述,
- * 导入成功一个任务后随即合并进本机全局标记/描述(标记按 name 建/更新、ensure 幂等打标(含空表标记关系)、描述 upsert 覆盖),
+ * 空表/备份表等系统标记只导名字不入 tagDefs,定义由各实例迁移自建)与表描述,
+ * 导入成功一个任务后随即合并进本机全局标记/描述(标记按 name 建/更新、ensure 幂等打标(含系统标记关系)、描述 upsert 覆盖),
  * 避免换机后重新打标与重新生成描述;标注合并失败只记 warning,不影响已导入的扫描记录。
  * 跨实例对齐:数据源按名预检,导入时显式映射(文件数据源名 → 本机数据源 id,0 或缺失=跳过该数据源的全部任务);
  * 不导出任何内部 id,导入时全部重新生成。任务级幂等去重:同数据源 + db(可空等值)+ schema + 创建时间
@@ -163,9 +163,9 @@ class ScanTransferService(
                     val def = defByName[tagName]
                     val existing = tagRepo.findByName(tagName)
                     val tag = when {
-                        // 系统空表标记:定义由扫描自动维护不覆盖,但打标关系要补上(导入的历史记录不一定再扫,不补就丢空表标记)
-                        existing?.kind == TagKind.EMPTY -> existing
-                        // 文件里没有定义(空表标记不入 tagDefs)且本机不存在同名标记时无法对齐,跳过
+                        // 系统标记(空表/备份表):定义由本机迁移自建、不覆盖,但打标关系要补上(导入的历史记录不一定再扫,不补就丢系统标记)
+                        existing != null && existing.kind != TagKind.USER -> existing
+                        // 文件里没有定义(系统标记不入 tagDefs)且本机不存在同名标记时无法对齐,跳过
                         existing == null -> if (def == null) null else tagRepo.create(tagName,
                             normalizeColor(def.color), def.description?.trim()?.takeIf { it.isNotEmpty() },
                             parseTagType(def.tagType) ?: TagType.AI)
@@ -177,9 +177,9 @@ class ScanTransferService(
                         }
                         else -> existing
                     } ?: continue
-                    // 幂等:已存在的关系不重复插入(唯一键兜底);空表标记关系记系统来源,USER 标记关系记人工(导入的标注数据)
+                    // 幂等:已存在的关系不重复插入(唯一键兜底);系统标记关系记系统来源,USER 标记关系记人工(导入的标注数据)
                     tagRepo.ensureTableTag(tag.id, dsId, dbName, job.schemaName, table.tableName,
-                        if (tag.kind == TagKind.EMPTY) TagSource.SYSTEM else TagSource.MANUAL)
+                        if (tag.kind == TagKind.USER) TagSource.MANUAL else TagSource.SYSTEM)
                 }
                 val doc = table.doc?.takeIf { it.isNotBlank() }
                 if (doc != null) {
@@ -196,7 +196,7 @@ class ScanTransferService(
     private fun toExport(job: ScanRepository.JobRow, dsNames: Map<Long, String>,
                          tagDefs: LinkedHashMap<String, AnnotationTagItem>): ScanJobExport {
         val events = scanRepo.listJobEvents(job.id).map { ScanEventExport(it.status!!, ts(it.at)) }
-        // 本任务库表范围内的标注数据:表标记(含 EMPTY 系统空表标记,否则导入方不知道哪些表是空表)与表描述
+        // 本任务库表范围内的标注数据:表标记(含空表/备份表系统标记,否则导入方不知道哪些表是空表、备份表)与表描述
         val tagsByTable = tagRepo.tableTagsBySchema(job.datasourceId, job.dbName ?: "", job.schemaName)
         val docsByTable = tableDocRepo.findBySchema(job.datasourceId, job.dbName ?: "", job.schemaName)
         val tables = scanRepo.listScanTables(job.id).map { t ->
@@ -204,7 +204,7 @@ class ScanTransferService(
                 ScanColumnExport(col.columnName ?: "", col.columnType, col.columnComment, col.nullable,
                     col.defaultValue, col.keyLabel, col.totalRows, col.nullCount, col.emptyCount, col.ruleHitCount)
             }
-            // 空表标记只导名字(定义由各实例 V3 迁移自建,不入 tagDefs);USER 标记定义收进 tagDefs 供导入合并
+            // 系统标记(空表/备份表)只导名字(定义由各实例迁移自建,不入 tagDefs);USER 标记定义收进 tagDefs 供导入合并
             val tags = tagsByTable[t.tableName].orEmpty()
             for (tag in tags) {
                 if (tag.kind == TagKind.USER) {
@@ -218,7 +218,8 @@ class ScanTransferService(
         }
         return ScanJobExport(dsNames[job.datasourceId] ?: "", job.dbName, job.schemaName, job.status,
             job.forceFull, job.autoTag, job.workers, job.genDoc, job.dbVersion, job.nullRulesJson, job.totalTables,
-            job.doneTables, job.error, ts(job.createdAt), ts(job.startedAt), ts(job.finishedAt), events, tables)
+            job.doneTables, job.error, ts(job.createdAt), ts(job.startedAt), ts(job.finishedAt), events, tables,
+            job.sampleRows, job.autoTagMode.name)
     }
 
     /** 解析并校验导出文件(GBK 转存/未知字段由 TransferJson 兜底);格式不对抛 IllegalArgumentException(Web 层映射 400) */

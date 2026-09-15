@@ -17,8 +17,8 @@ import java.util.Base64
  *                menus 为逗号分隔的菜单 key 列表(10 段新格式,勾选即侧边栏可见,见 LicenseMenu);
  *                bypassAuth 为免接口鉴权标记("true"/"false",演示用:实例跳过 dq.access-token 校验);
  *                server_url 属敏感信息,仅存于授权码,禁止回传前端状态接口
- *  - 兼容旧格式:2 段 "客户名|yyyy-MM-dd"、6 段(无软件版本段)、7 段(无功能段)、8 段(无菜单/免鉴权段),
- *    解码后缺失的扩展字段为 null / false(旧码菜单按旧功能段推导,见 LicenseMenu.granted)
+ *  - 兼容旧格式:2 段 "客户名|yyyy-MM-dd"、6 段(无软件版本段)、7 段(无功能段)、8 段(无菜单/免鉴权段)、
+ *    10 段(无备注段),解码后缺失的扩展字段为 null / false(旧码菜单按旧功能段推导,见 LicenseMenu.granted)
  *  - signature = Ed25519(payload),由签发方私钥生成,程序内嵌公钥离线验证
  * DQ1 为版本前缀,便于将来格式演进。
  */

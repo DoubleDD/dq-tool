@@ -1,12 +1,16 @@
 package com.example.dq.service
 
 import com.example.dq.config.ScanConfig
+import com.example.dq.dialect.DbDialect
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.AnchorField
 import com.example.dq.model.AnchorFieldRequest
+import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DbType
 import com.example.dq.model.RelationInferJob
+import com.example.dq.model.SchemaColumn
+import com.example.dq.model.TableStat
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.RelationInferJobRepository
@@ -16,9 +20,12 @@ import com.example.dq.repository.TableRelationRepository
 import io.mockk.every
 import io.mockk.justRun
 import io.mockk.mockk
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.mockk.verify
 import com.sun.net.httpserver.HttpServer
 import org.h2.jdbcx.JdbcDataSource
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -28,7 +35,10 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import java.net.InetSocketAddress
+import java.sql.Connection
+import java.sql.DatabaseMetaData
 import java.sql.DriverManager
+import java.sql.SQLException
 import java.sql.SQLTransientConnectionException
 import java.sql.Statement
 import java.time.LocalDateTime
@@ -88,6 +98,27 @@ class RelationInferFlowTest {
 
         inferService = newInferService()
         relationService = TableRelationService(relationRepo, metaCacheRepo)
+    }
+
+    /** 本用例是否 mock 了 DialectFactory 单例(tearDown 据此还原;真实用例不触碰全局单例) */
+    private var dialectMocked = false
+
+    @AfterEach
+    fun tearDown() {
+        if (dialectMocked) {
+            unmockkObject(DialectFactory)
+            dialectMocked = false
+        }
+    }
+
+    /**
+     * 用指定方言替换 DialectFactory 单例的返回(模拟「整库字段清单一次拉取不可用」的环境);
+     * 注意须在 mock 之后再调 newInferService()——服务构造时才捕获单例引用,先捕获到的是原实例
+     */
+    private fun mockDialect(dialect: DbDialect) {
+        mockkObject(DialectFactory)
+        every { DialectFactory.get(DbType.POSTGRESQL) } returns dialect
+        dialectMocked = true
     }
 
     private fun newInferService(
@@ -335,6 +366,54 @@ class RelationInferFlowTest {
         assertEquals("FAILED", job.status)
         assertTrue(job.error!!.contains("无字段结构缓存可兜"), job.error)
         verify(exactly = 0) { dataSourceService.getConnection(any<Long>(), null) }
+    }
+
+    @Test
+    fun `整库字段清单拉取失败降级逐表 单表失败跳过该表不影响其余表`() {
+        biz { st ->
+            st.execute("""CREATE TABLE "reservoir" ("res_code" VARCHAR(50) PRIMARY KEY, "rname" VARCHAR(50))""")
+            for (i in 1..10) st.execute("""INSERT INTO "reservoir" VALUES ('R$i', 'n$i')""")
+            st.execute("""CREATE TABLE "flood_ctrl" ("fc_id" INT PRIMARY KEY, "res_code" VARCHAR(50))""")
+            for (i in 1..10) st.execute("""INSERT INTO "flood_ctrl" VALUES ($i, 'R${(i - 1) % 5 + 1}')""")
+            st.execute("""CREATE TABLE "broken_tbl" ("res_code" VARCHAR(50))""")
+            for (i in 1..3) st.execute("""INSERT INTO "broken_tbl" VALUES ('R$i')""")
+        }
+        // 模拟 SQL Server 2005- 缺 sp_columns_100(整库 getColumns 报「找不到存储过程」):
+        // 整库一次拉取抛错,逐表口径正常;broken_tbl 逐表也拉不到(单表元数据损坏),验证「跳过该表不炸整轮」
+        mockDialect(BrokenWholeSchemaColumnsDialect(failTables = setOf("broken_tbl")))
+        val svc = newInferService()
+
+        val job = submitAndAwait(service = svc)
+        // 关键:整库拉取报错不再全局失败——broken_tbl 被跳过,flood_ctrl 照常推导
+        assertEquals("DONE", job.status) { "任务失败: " + job.error }
+        assertEquals(1, job.foundCount)
+        assertTrue(job.error!!.contains("broken_tbl"), job.error) // 附注记录被跳过的表
+        assertTrue(job.error!!.contains("跳过"), job.error)
+        // 跳过的表不参与推导;正常表照常验证(值交集/基数都跑了)
+        val rel = relationService.list(DS_ID, null, SCHEMA, null, null).single()
+        assertEquals("flood_ctrl", rel.manyTable)
+        assertEquals("reservoir", rel.oneTable)
+        assertEquals("HIGH", rel.confidence)
+        // 部分结果不回填空缓存:整粒度替换会把缺失表固化,待元数据刷新/重推成功后补齐
+        assertFalse(metaCacheRepo.isSchemaColumnsReady(DS_ID, "", SCHEMA))
+        // 非连接类失败:不能写数据源连接状态标记
+        verify(exactly = 0) { dataSourceService.markConnFailure(any(), any(), any()) }
+    }
+
+    @Test
+    fun `整库与逐表字段清单全部拉取失败时任务才判失败`() {
+        biz { st ->
+            st.execute("""CREATE TABLE "reservoir" ("res_code" VARCHAR(50) PRIMARY KEY)""")
+            st.execute("""CREATE TABLE "flood_ctrl" ("fc_id" INT PRIMARY KEY, "res_code" VARCHAR(50))""")
+        }
+        mockDialect(BrokenWholeSchemaColumnsDialect(failAll = true))
+        val svc = newInferService()
+
+        val job = submitAndAwait(service = svc)
+        assertEquals("FAILED", job.status)
+        assertTrue(job.error!!.contains("逐表降级也全部失败"), job.error)
+        verify(exactly = 0) { dataSourceService.markConnFailure(any(), any(), any()) }
+        assertTrue(relationService.list(DS_ID, null, SCHEMA, null, null).isEmpty())
     }
 
     @Test
@@ -988,6 +1067,45 @@ class RelationInferFlowTest {
             assertEquals("NAME_MATCH", rel.source) // 双通道命中,名字匹配证据更硬
         } finally {
             server.stop(0)
+        }
+    }
+
+    /**
+     * 模拟「整库字段清单一次拉取不可用」的方言(等价 SQL Server 2005- 缺 sp_columns_100:
+     * JDBC getColumns 整库调用报「找不到存储过程」,而逐表口径走目录视图不受影响):
+     * listSchemaColumns(整库)抛错;表清单/逐表字段改走 JDBC DatabaseMetaData(H2 可跑),
+     * [failTables] 指定的表逐表也失败(如单表元数据被锁),[failAll] 时逐表全部失败
+     */
+    private class BrokenWholeSchemaColumnsDialect(
+        private val failTables: Set<String> = emptySet(),
+        private val failAll: Boolean = false,
+    ) : DbDialect by DialectFactory.get(DbType.POSTGRESQL) {
+
+        override fun listSchemaColumns(conn: Connection, schema: String): List<SchemaColumn> =
+            throw SQLException("找不到存储过程 'sp_columns_100'。")
+
+        override fun listTables(conn: Connection, schema: String): List<TableStat> {
+            conn.metaData.getTables(null, schema, null, null).use { rs ->
+                val tables = ArrayList<TableStat>()
+                while (rs.next()) tables.add(TableStat(rs.getString("TABLE_NAME"), null, null))
+                return tables
+            }
+        }
+
+        override fun listColumns(conn: Connection, schema: String, table: String): List<ColumnMeta> {
+            if (failAll || table in failTables) throw SQLException("模拟逐表字段拉取失败: $table")
+            val cols = ArrayList<ColumnMeta>()
+            conn.metaData.getColumns(null, schema, table, null).use { rs ->
+                while (rs.next()) {
+                    cols.add(ColumnMeta(
+                        rs.getString("COLUMN_NAME"), rs.getString("TYPE_NAME"), rs.getString("TYPE_NAME"),
+                        rs.getInt("DATA_TYPE"),
+                        rs.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls,
+                        rs.getString("COLUMN_DEF"), rs.getString("REMARKS"),
+                        false, 0, false))
+                }
+            }
+            return cols
         }
     }
 }

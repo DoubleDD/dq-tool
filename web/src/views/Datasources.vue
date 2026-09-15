@@ -61,13 +61,6 @@
       </div>
     </div>
 
-    <!-- 有数据源:轻量「下一步」提示 -->
-    <el-alert v-else-if="list.length" type="info" :closable="false" show-icon class="next-tip">
-      <template #title>
-        已连接 <b>{{ list.length }}</b> 个数据源。点击卡片查看库与表并发起扫描;进度可在顶部「扫描记录」跟进,报告在「报告列表」页下载。
-      </template>
-    </el-alert>
-
     <!-- 分组区块:一个分组一个可折叠区块,未分组排最后;全库无任何分组时退化为平铺网格(不显示区块头) -->
     <div v-if="list.length || loading" v-loading="loading">
       <el-empty v-if="!loading && !filteredList.length" description="没有匹配的数据源" :image-size="80" />

@@ -13,7 +13,8 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.TagRepository
 
 /**
- * 表标记:CRUD 校验(重名 409 / 操作空表标记 400)+ 两个统计视图组装 + 扫描完成的空表标记联动。
+ * 表标记:CRUD 校验(重名 409 / 操作系统标记 400)+ 两个统计视图组装 + 扫描完成的系统标记联动
+ * (空表按行数、备份表按表名)。
  * 异常约定与 WebServer 映射一致:IllegalArgumentException → 400,IllegalStateException → 409。
  */
 class TagService(
@@ -21,7 +22,7 @@ class TagService(
     private val dataSourceRepo: DataSourceRepository,
 ) {
 
-    /** 全部标记(含系统「空表」),带打标表数 */
+    /** 全部标记(含系统「空表」「备份表」),带打标表数 */
     fun list(): List<Tag> = tagRepo.listAll()
 
     /** AI 自动打标候选:仅 AI 类型的 USER 标记(人工用途标记不发给大模型) */
@@ -91,14 +92,14 @@ class TagService(
     fun tableTags(datasourceId: Long, database: String?, schema: String): Map<String, List<Tag>> =
         tagRepo.tableTagsBySchema(datasourceId, normalizeDb(database), schema)
 
-    /** 整体替换单表的 USER 标记(空表标记不可手动打摘),返回该表最新标记数组 */
+    /** 整体替换单表的 USER 标记(系统标记不可手动打摘),返回该表最新标记数组 */
     fun replaceTableTags(datasourceId: Long, database: String?, schema: String, table: String,
                          tagIds: List<Long>): List<Tag> {
         val ids = tagIds.distinct()
         for (tagId in ids) {
             val tag = tagRepo.findById(tagId) ?: throw IllegalArgumentException("标记不存在:$tagId")
-            if (tag.kind == TagKind.EMPTY) {
-                throw IllegalArgumentException("空表标记由扫描结果自动维护,不可手动打标")
+            if (tag.kind != TagKind.USER) {
+                throw IllegalArgumentException("${tag.name}标记由扫描结果自动维护,不可手动打标")
             }
         }
         val db = normalizeDb(database)
@@ -115,8 +116,8 @@ class TagService(
         if (ids.isEmpty()) throw IllegalArgumentException("请选择要打的标记")
         for (tagId in ids) {
             val tag = tagRepo.findById(tagId) ?: throw IllegalArgumentException("标记不存在:$tagId")
-            if (tag.kind == TagKind.EMPTY) {
-                throw IllegalArgumentException("空表标记由扫描结果自动维护,不可手动打标")
+            if (tag.kind != TagKind.USER) {
+                throw IllegalArgumentException("${tag.name}标记由扫描结果自动维护,不可手动打标")
             }
         }
         val (added, skipped) = tagRepo.ensureTableTagsBatch(ids, datasourceId, normalizeDb(database), schema, names)
@@ -134,12 +135,28 @@ class TagService(
         }
     }
 
+    /**
+     * 扫描完成联动:表名为备份/临时表(`_copy/_bak/_backup/_tmp` + 可选序号结尾,见 [BackupTableRule])
+     * 确保打上「备份表」标记,其余摘除;幂等。
+     * 与 AI 自动打标开关无关(纯表名规则,零成本),AI 自动打标对这类表直接跳过不调大模型。
+     */
+    fun syncBackupTag(datasourceId: Long, dbName: String?, schema: String, table: String) {
+        val backup = tagRepo.findBackupTag() ?: return
+        val db = normalizeDb(dbName)
+        if (BackupTableRule.isBackupTable(table)) {
+            tagRepo.ensureTableTag(backup.id, datasourceId, db, schema, table, TagSource.SYSTEM)
+        } else {
+            tagRepo.removeTableTag(backup.id, datasourceId, db, schema, table)
+        }
+    }
+
     private fun requireTag(id: Long): Tag =
         tagRepo.findById(id) ?: throw IllegalArgumentException("标记不存在:$id")
 
+    /** 系统标记(空表/备份表)由扫描联动维护,不可编辑或删除 */
     private fun requireUserKind(tag: Tag) {
-        if (tag.kind == TagKind.EMPTY) {
-            throw IllegalArgumentException("空表标记由扫描结果自动维护,不可编辑或删除")
+        if (tag.kind != TagKind.USER) {
+            throw IllegalArgumentException("${tag.name}标记由扫描结果自动维护,不可编辑或删除")
         }
     }
 

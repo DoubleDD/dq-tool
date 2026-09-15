@@ -21,6 +21,7 @@ class LicenseRecordRepository(private val jdbc: Jdbc) {
             features = rs.getString("features"),
             menus = rs.getString("menus"),
             bypassAuth = rs.getBoolean("bypass_auth"),
+            remark = rs.getString("remark"),
             codeEnc = rs.getString("code_enc"),
             createdAt = created?.toLocalDateTime(),
         )
@@ -32,12 +33,12 @@ class LicenseRecordRepository(private val jdbc: Jdbc) {
 
     fun insert(record: LicenseRecord): Long =
         jdbc.insert(
-            "INSERT INTO license_record(app_version, customer, expires_at, server_url, username, sid, issued_at, features, menus, bypass_auth, code_enc) " +
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO license_record(app_version, customer, expires_at, server_url, username, sid, issued_at, features, menus, bypass_auth, remark, code_enc) " +
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             record.appVersion, record.customer,
             record.expiresAt?.let { java.sql.Date.valueOf(it) },
             record.serverUrl, record.username, record.sid, record.issuedAt, record.features,
-            record.menus, record.bypassAuth, record.codeEnc)
+            record.menus, record.bypassAuth, record.remark, record.codeEnc)
 
     fun delete(id: Long) {
         jdbc.update("DELETE FROM license_record WHERE id=?", id)

@@ -39,6 +39,8 @@ data class ScanJobExport(
     val finishedAt: String? = null,
     val events: List<ScanEventExport> = emptyList(),
     val tables: List<ScanTableExport> = emptyList(),
+    val sampleRows: Int? = null,    // 任务级采样行数(v1 内追加字段,旧导出文件按 null 导入=全局默认)
+    val autoTagMode: String? = null, // AI 打标对已有标记表的处理模式(v1 内追加字段,旧导出文件按 null 导入=SKIP)
 )
 
 /** 任务状态变更事件(时间线) */

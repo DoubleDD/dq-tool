@@ -1,6 +1,7 @@
 package com.example.dq.service
 
 import com.example.dq.dialect.DialectFactory
+import com.example.dq.model.AutoTagMode
 import com.example.dq.model.ScanColumnView
 import com.example.dq.model.TagSource
 import com.example.dq.repository.ScanRepository
@@ -17,8 +18,11 @@ import java.util.concurrent.Executors
  * 上下文:表注释 / 字段注释 / AI 表描述;三者全空且表非空时,抽样业务数据(前 20 列、100 行、
  * 单元格截断 100 字符)一并发给大模型 —— 注意这超出了「只发元数据」的口径,复选框默认勾选即授权。
  * 候选标记只取 AI 类型的 USER 标记(MANUAL 人工用途标记不发给大模型);
- * 只增不删(幂等 ensureTableTag);表已有任一 USER 标记、未配置大模型、无候选标记时静默跳过;
- * 同一 job 内首次 LLM 调用失败后熔断,该 job 剩余表不再调用(内存 Set,不持久化)。
+ * 备份/临时表(表名 `_copy/_bak/_backup/_tmp` + 序号结尾,见 BackupTableRule)不参与 AI 打标:直接跳过不调大模型
+ * 并清掉陈旧 AI 来源标记,由扫描系统联动打「备份表」标记(TagService.syncBackupTag);
+ * 对已有标记的表按任务 autoTagMode 分支:SKIP 跳过(默认)/ APPEND 幂等追加(旧标记全保留)/
+ * OVERWRITE 先删该表 AI 来源旧标记(不碰 MANUAL/SYSTEM)再落新标记,模型返回 NONE 即覆盖为空;
+ * 未配置大模型、无候选标记时静默跳过;同一 job 内首次 LLM 调用失败后熔断,该 job 剩余表不再调用(内存 Set,不持久化)。
  */
 class AutoTagService(
     private val aiConfigService: AiConfigService,
@@ -71,6 +75,18 @@ class AutoTagService(
     }
 
     private fun autoTag(job: ScanRepository.JobRow, scanTableId: Long) {
+        val table = scanRepo.findScanTable(scanTableId) ?: return
+        val tableName = table.tableName ?: return
+        // table_tag 的 db_name 空串兜底口径与空表标记联动一致
+        val dbName = job.dbName ?: ""
+        // 备份/临时表(表名 _copy/_bak/_backup/_tmp + 序号结尾,见 BackupTableRule):由扫描系统联动直接打
+        // 「备份表」标记,不调大模型;顺手清掉历史扫描留下的 AI 来源标记(系统标记与人工标记不动)。
+        // 判定不依赖大模型配置,故先于配置/候选检查,未配置大模型时同样清理陈旧 AI 标记
+        if (BackupTableRule.isBackupTable(tableName)) {
+            tagRepo.deleteAiTableTags(job.datasourceId, dbName, job.schemaName, tableName)
+            log.debug("AI 自动打标跳过:备份表由系统联动打标 jobId={} table={}", job.id, tableName)
+            return
+        }
         val config = aiConfigService.findConfig()
         if (config == null) {
             log.debug("AI 自动打标跳过:未配置大模型 jobId={}", job.id)
@@ -81,12 +97,10 @@ class AutoTagService(
             log.debug("AI 自动打标跳过:无候选 AI 类型标记 jobId={}", job.id)
             return
         }
-        val table = scanRepo.findScanTable(scanTableId) ?: return
-        val tableName = table.tableName ?: return
-        // table_tag 的 db_name 空串兜底口径与空表标记联动一致
-        val dbName = job.dbName ?: ""
-        // 不覆盖用户标记:已有任一 USER 标记的表跳过(也避免重复扫描累积陈旧标记)
-        if (tagRepo.hasUserTag(job.datasourceId, dbName, job.schemaName, tableName)) {
+        // 不覆盖用户标记(SKIP 模式,默认):已有任一 USER 标记的表跳过(也避免重复扫描累积陈旧标记);
+        // APPEND/OVERWRITE 模式不跳过,按任务 autoTagMode 分支处理旧标记
+        if (job.autoTagMode == AutoTagMode.SKIP &&
+            tagRepo.hasUserTag(job.datasourceId, dbName, job.schemaName, tableName)) {
             log.debug("AI 自动打标跳过:表已有 USER 标记 jobId={} table={}", job.id, tableName)
             return
         }
@@ -115,8 +129,19 @@ class AutoTagService(
             log.warn("AI 自动打标调用大模型失败,本任务剩余表跳过 jobId={} table={}: {}", job.id, tableName, e.message)
             return
         }
+        // OVERWRITE:先清掉该表全部 AI 来源旧标记(不碰 MANUAL/SYSTEM),再按模型回答落新标记;
+        // 模型返回 NONE/无匹配时即「覆盖为空」
+        if (job.autoTagMode == AutoTagMode.OVERWRITE) {
+            tagRepo.deleteAiTableTags(job.datasourceId, dbName, job.schemaName, tableName)
+        }
         val tagName = parseTag(answer, candidates.map { it.name }) ?: return
         val tag = candidates.first { it.name == tagName }
+        // 表已有同一标记(任意来源)时不重复打:MERGE 会把既有关系来源改写,保留原关系不动
+        val currentTags = tagRepo.tableTagsBySchema(job.datasourceId, dbName, job.schemaName)[tableName].orEmpty()
+        if (currentTags.any { it.id == tag.id }) {
+            log.info("AI 自动打标 jobId={} table={} -> {}(表已有同标记,保留原关系)", job.id, tableName, tagName)
+            return
+        }
         tagRepo.ensureTableTag(tag.id, job.datasourceId, dbName, job.schemaName, tableName, TagSource.AI)
         log.info("AI 自动打标 jobId={} table={} -> {}", job.id, tableName, tagName)
     }

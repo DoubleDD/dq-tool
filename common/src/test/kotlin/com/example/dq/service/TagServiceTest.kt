@@ -135,6 +135,41 @@ class TagServiceTest {
     }
 
     @Test
+    fun `备份表标记随表名自动打摘且不可人工操作`() {
+        // 备份表后缀命中:打上「备份表」标记;重复联动不产生重复关系;来源与类型记系统
+        service.syncBackupTag(1L, null, "s1", "t_order_copy")
+        service.syncBackupTag(1L, null, "s1", "t_order_copy")
+        service.syncBackupTag(1L, null, "s1", "t_order_bak2")
+        var tags = service.tableTags(1L, null, "s1")["t_order_copy"]!!
+        assertEquals(1, tags.size)
+        assertEquals("备份表", tags[0].name)
+        assertEquals(TagKind.BACKUP, tags[0].kind)
+        assertEquals(TagType.SYSTEM, tags[0].tagType)
+        assertEquals(TagSource.SYSTEM, tags[0].source)
+
+        // 非备份表名:联动摘除(覆盖老版本/改名后遗留的系统标记);重复摘除不报错
+        val backup = tagRepo.findBackupTag()!!
+        tagRepo.ensureTableTag(backup.id, 1L, "", "s1", "t_plain", TagSource.SYSTEM)
+        service.syncBackupTag(1L, null, "s1", "t_plain")
+        service.syncBackupTag(1L, null, "s1", "t_plain")
+        assertEquals(setOf("t_order_copy", "t_order_bak2"), service.tableTags(1L, null, "s1").keys)
+
+        // 系统标记不可编辑/删除/手动打摘
+        assertThrows(IllegalArgumentException::class.java) { service.update(backup.id, "改名", null) }
+        assertThrows(IllegalArgumentException::class.java) { service.delete(backup.id) }
+        assertThrows(IllegalArgumentException::class.java) {
+            service.replaceTableTags(1L, null, "s1", "t1", listOf(backup.id))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            service.batchAddTableTags(1L, null, "s1", listOf("t1"), listOf(backup.id))
+        }
+
+        // 系统标记不作为 AI 自动打标候选
+        service.create("水利对象表", null)
+        assertEquals(listOf("水利对象表"), service.aiCandidates().map { it.name })
+    }
+
+    @Test
     fun `标记统计组装口径`() {
         val dsId = dsRepo.insert(DataSourceConfig().apply {
             name = "水库库"

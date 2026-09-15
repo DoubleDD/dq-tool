@@ -27,4 +27,6 @@ data class ScanJobView(
     val genDoc: Boolean = false,          // 扫描后生成表描述开关(任务创建时快照)
     val ai: ScanAiProgress = ScanAiProgress(0, 0, 0, 0),  // AI 后续分类进度(内存计数,重启清零)
     val dbVersion: String? = null,        // 目标数据库版本号(任务创建时快照;旧任务为 null)
+    val sampleRows: Int? = null,          // 任务级采样行数(NULL=用全局默认;V53 前任务为 null)
+    val autoTagMode: AutoTagMode = AutoTagMode.SKIP,  // AI 打标对已有标记表的处理模式(V54 前任务为 SKIP)
 )

@@ -76,6 +76,26 @@ object WordReportTables {
         }
     }
 
+    /** 导出说明策略:有未纳入/覆盖不全说明时,在占位处生成「1.3 导出说明」节(标题 + 引导句 + 逐条说明段落);
+     * 无说明时清空占位段(留一个空段落,与 {{tagSectionsHint}} 行为一致) */
+    class ExportNotesPolicy : RenderPolicy {
+        override fun render(eleTemplate: ElementTemplate, data: Any?, template: XWPFTemplate) {
+            val run = (eleTemplate as RunTemplate).run
+            run.setText("", 0)
+            val notes = (data as? List<*>)?.filterIsInstance<String>().orEmpty()
+            if (notes.isEmpty()) {
+                return
+            }
+            val body = BodyContainerFactory.getBodyContainer(run)
+            insertHeading(body, run, "1.3 导出说明", 1, COLOR_SECTION, 14)
+            insertBodyParagraph(body, run,
+                "本次导出存在以下未纳入或覆盖不全的数据库实例,请完成相应库的全表扫描后重新导出完整报告:")
+            for (note in notes) {
+                insertBodyParagraph(body, run, note)
+            }
+        }
+    }
+
     // ---------- 建表/段落原语 ----------
 
     /** 普通表:表头 + 数据行(调用方把合计行作为最后一行数据传入) */

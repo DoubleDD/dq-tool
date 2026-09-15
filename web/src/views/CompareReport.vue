@@ -20,16 +20,15 @@
         <el-result v-else-if="job.status === 'CANCELED'" icon="warning" title="任务已取消" sub-title="可在任务列表重新比对" />
 
         <template v-else-if="report">
-          <!-- 厂商质量指标卡 -->
+          <!-- 业务系统质量指标卡 -->
           <el-card shadow="never" class="report-card">
             <template #header>
               <div class="card-header">
-                <span>厂商质量指标</span>
-                <span class="card-tip">综合评分 = 覆盖率 40% + 字段一致率 40% + 完整率 20%</span>
+                <span>业务系统质量指标</span>
               </div>
             </template>
             <el-table :data="report.targets" border>
-              <el-table-column label="厂商" min-width="140">
+              <el-table-column label="业务系统" min-width="140">
                 <template #default="{ row }">
                   <div>{{ row.dsName || `数据源 ${row.datasourceId}` }}</div>
                   <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ (row.db ? row.db + '.' : '') + (row.schema || '') + '.' + row.table }}</div>
@@ -64,46 +63,36 @@
               <el-table-column label="多余记录" width="90" align="right">
                 <template #default="{ row }"><MetricCell :target="row" :value="num(row.extraCount)" /></template>
               </el-table-column>
-              <el-table-column label="综合评分" min-width="200">
-                <template #default="{ row }">
-                  <el-tooltip v-if="row.status === 'FAILED'" :content="row.error || '比对失败'" placement="top" :show-after="200">
-                    <el-tag type="danger" size="small">比对失败</el-tag>
-                  </el-tooltip>
-                  <span v-else-if="row.score != null" class="score-cell">
-                    <el-progress :percentage="scorePercent(row.score)" :color="scoreColor(row.score)" :stroke-width="10" style="flex: 1" :show-text="false" />
-                    <span class="score-num" :style="{ color: scoreColor(row.score) }">{{ (row.score * 100).toFixed(1) }}</span>
-                  </span>
-                  <span v-else style="color: var(--el-text-color-secondary)">—</span>
-                </template>
-              </el-table-column>
             </el-table>
           </el-card>
 
           <!-- 问题字段排行卡:横向条,按不一致次数降序 -->
           <el-card shadow="never" class="report-card">
             <template #header>
-              <div class="card-header"><span>问题字段排行</span><span class="card-tip">按各厂商字段不一致次数合计降序(前 10)</span></div>
+              <div class="card-header"><span>问题字段排行</span><span class="card-tip">按各业务系统字段不一致次数合计降序(前 10)</span></div>
             </template>
             <div v-if="report.fieldIssues?.length" class="bar-list">
               <div v-for="f in report.fieldIssues" :key="f.field" class="bar-row">
-                <span class="bar-name" :title="f.field">{{ f.field }}</span>
+                <span class="bar-name field-name" :title="f.comment ? `${f.field}(${f.comment})` : f.field">
+                  {{ f.field }}<span v-if="f.comment" class="field-comment">({{ f.comment }})</span>
+                </span>
                 <div class="bar-track">
                   <div class="bar-fill bar-fill-danger" :style="{ width: barWidth(f.count, maxIssueCount) }" />
                 </div>
                 <span class="bar-num">{{ formatNumber(f.count) }}</span>
               </div>
             </div>
-            <el-empty v-else description="没有不一致字段,各厂商字段全部一致" :image-size="60" />
+            <el-empty v-else description="没有不一致字段,各业务系统字段全部一致" :image-size="60" />
           </el-card>
 
-          <!-- 记录缺失/多余卡:按厂商两条横向条(缺失红/多余绿),宽度按相对最大值归一 -->
+          <!-- 记录缺失/多余卡:按业务系统两条横向条(缺失红/多余绿),宽度按相对最大值归一 -->
           <el-card shadow="never" class="report-card">
             <template #header>
               <div class="card-header"><span>记录缺失 / 多余</span><span class="card-tip">按基准表主键对齐:缺失=基准有目标无,多余=目标有基准无</span></div>
             </template>
             <div v-if="missExtraRows.length" class="bar-list">
               <div v-for="r in missExtraRows" :key="r.id" class="me-row">
-                <span class="bar-name" :title="r.name">{{ r.name }}</span>
+                <span class="bar-name me-name" :title="r.name">{{ r.name }}</span>
                 <div class="me-bars">
                   <div class="bar-track">
                     <div class="bar-fill bar-fill-danger" :style="{ width: barWidth(r.missing, maxMissExtra) }" />
@@ -115,7 +104,7 @@
                 <span class="bar-num">缺失 {{ formatNumber(r.missing) }} · 多余 {{ formatNumber(r.extra) }}</span>
               </div>
             </div>
-            <el-empty v-else description="各厂商记录与基准表完全对齐,无缺失/多余" :image-size="60" />
+            <el-empty v-else description="各业务系统记录与基准表完全对齐,无缺失/多余" :image-size="60" />
           </el-card>
         </template>
       </template>
@@ -166,21 +155,9 @@ function num(v) {
   return v == null ? '—' : formatNumber(v)
 }
 
-function scorePercent(score) {
-  return Math.min(100, Math.round((score || 0) * 100))
-}
-
-/** 评分配色:≥95 绿,≥90 橙,其余红 */
-function scoreColor(score) {
-  const s = (score || 0) * 100
-  if (s >= 95) return 'var(--el-color-success)'
-  if (s >= 90) return 'var(--el-color-warning)'
-  return 'var(--el-color-danger)'
-}
-
 const maxIssueCount = computed(() => Math.max(1, ...(report.value?.fieldIssues || []).map((f) => f.count)))
 
-// 缺失/多余行(仅完成的厂商参与)
+// 缺失/多余行(仅完成的业务系统参与)
 const missExtraRows = computed(() =>
   (report.value?.targets || [])
     .filter((t) => t.status === 'DONE')
@@ -249,14 +226,20 @@ onActivated(load)
   color: var(--el-text-color-secondary);
 }
 
-.score-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* 问题字段排行:字段名 + 中文字段名(字段注释),放宽列宽 */
+.field-name {
+  width: 260px;
 }
-.score-num {
-  flex: none;
-  font-weight: 600;
+.field-comment {
+  color: var(--el-text-color-secondary);
+}
+
+/* 记录缺失/多余:系统名列占行宽 70%,允许换行完整显示(不省略号截断) */
+.me-name {
+  width: 70% !important;
+  max-width: none;
+  white-space: normal !important;
+  line-height: 1.4;
 }
 
 /* 横向条列表(问题字段排行 / 缺失多余共用) */
@@ -273,7 +256,7 @@ onActivated(load)
 }
 .bar-name {
   flex: none;
-  width: 180px;
+  width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

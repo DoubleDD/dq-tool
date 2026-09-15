@@ -193,16 +193,16 @@
           </el-select>
           <el-button type="primary" :disabled="!dsId" style="margin-left: auto" @click="tagDialogVisible = true">打标</el-button>
         </div>
-        <!-- 当前表已打标记:含系统自动维护的「空表」标记;手工打标走上方「打标」弹窗 -->
+        <!-- 当前表已打标记:含系统自动维护的「空表」「备份表」标记;手工打标走上方「打标」弹窗 -->
         <el-table :data="filteredTableTags" v-loading="tagsLoading" border>
           <el-table-column type="index" label="序号" width="60" />
           <el-table-column label="标记" min-width="160">
             <template #default="{ row }">
               <el-tag
-                :type="row.kind === 'EMPTY' ? 'info' : undefined"
-                :effect="row.kind === 'EMPTY' ? 'plain' : 'dark'"
-                :color="row.kind === 'EMPTY' ? undefined : row.color"
-                :style="row.kind === 'EMPTY' ? {} : { borderColor: row.color }"
+                :type="row.kind !== 'USER' ? 'info' : undefined"
+                :effect="row.kind !== 'USER' ? 'plain' : 'dark'"
+                :color="row.kind !== 'USER' ? undefined : row.color"
+                :style="row.kind !== 'USER' ? {} : { borderColor: row.color }"
               >{{ row.name }}</el-tag>
             </template>
           </el-table-column>
@@ -371,7 +371,7 @@
             </div>
           </div>
           <!-- 节点点击面板:右上角悬浮卡片——表名全称(有注释时标题为注释,长注释自动换行)、字段列表(英文名/中文名/类型,
-               点开面板时按表懒拉)、节点颜色行(取色器 + 标记[点标记把标记色设为节点色,空表固定排最后] + 恢复默认) -->
+               点开面板时按表懒拉)、节点颜色行(取色器 + 标记[点标记把标记色设为节点色,系统标记固定排最后] + 恢复默认) -->
           <div v-if="graphPanelTable" class="graph-node-panel">
             <div class="graph-node-panel-head">
               <span class="graph-node-panel-title" :title="graphPanelComment || graphPanelTable">{{ graphPanelComment || graphPanelTable }}</span>
@@ -393,7 +393,7 @@
               </el-table>
               <div v-else-if="!graphPanelColumnsLoading" class="graph-node-panel-cols-empty">暂无字段元数据</div>
             </div>
-            <!-- 节点颜色行:取色器在最前,标记随后(空表标记固定排最后),恢复默认收尾;
+            <!-- 节点颜色行:取色器在最前,标记随后(空表/备份表等系统标记固定排最后),恢复默认收尾;
                  中心节点(本表)颜色固定主题蓝,不提供改色(替换为说明文字) -->
             <div class="graph-node-panel-color">
               <span v-if="graphPanelIsAnchor" class="graph-node-panel-hint">中心节点固定为主题色,不可改色</span>
@@ -567,12 +567,12 @@ const onlyEmpty = ref(false)
 // 当前表的人工采集状态:采集记录 id(null=未采集)
 const collectId = ref(null)
 const collectLoading = ref(false)
-// 「标签」页签:当前表已打标记(含系统空表标记),懒加载
+// 「标签」页签:当前表已打标记(含空表/备份表系统标记),懒加载
 const tableTags = ref([])
 const tagsLoading = ref(false)
 const tagsLoaded = ref(false)     // 标记是否已加载(懒加载)
 const tagKeyword = ref('')        // 标记名过滤
-const tagSourceFilter = ref('')   // 打标类型过滤:MANUAL 人工打标 / SYSTEM 系统打标(含 AI 自动打标与空表联动),空=全部
+const tagSourceFilter = ref('')   // 打标类型过滤:MANUAL 人工打标 / SYSTEM 系统打标(含 AI 自动打标与空表/备份表联动),空=全部
 const tagDialogVisible = ref(false)
 // 「ER 关系」页签:该表星型图(恒含候选边),懒加载(首次切入才拉图数据)
 const erGraph = ref({ nodes: [], edges: [] })
@@ -641,7 +641,7 @@ const filteredTableTags = computed(() => {
   return list
 })
 
-/** 打标类型展示文案:人工打标(手动勾选)/ 系统打标(AI 自动打标、空表联动) */
+/** 打标类型展示文案:人工打标(手动勾选)/ 系统打标(AI 自动打标、空表/备份表联动) */
 function tagSourceLabel(tag) {
   return tag.source === 'MANUAL' ? '人工打标' : '系统打标'
 }
@@ -756,7 +756,7 @@ async function loadTags() {
   }
 }
 
-/** 打标保存:接口返回该表最新标记数组(含空表标记),就地回填 */
+/** 打标保存:接口返回该表最新标记数组(含空表/备份表系统标记),就地回填 */
 function onTagsSaved(tags) {
   tableTags.value = tags
 }
@@ -1201,8 +1201,8 @@ function stableColorIndex(name, n) {
 /** 节点显示色 = 颜色筛选的判定色,取色优先级:
  *  1. 中心节点(本表)固定主题蓝——视觉锚点,不随标记色/自定义色变动;
  *  2. 用户自定义色(面板改色,localStorage 持久化);
- *  3. 标记色:优先「空表」以外的标记——空表标记 kind=EMPTY 是系统兜底标记,颜色不代表业务分类,
- *     只有该表仅有空表标记时才用它(多标记时务必让位给业务标记);
+ *  3. 标记色:优先业务标记(USER)——空表/备份表等系统标记的颜色只作兜底,颜色不代表业务分类,
+ *     只有该表仅有系统标记时才用它(多标记时务必让位给业务标记;备份表优先于空表);
  *  4. 完全无标记:按表名稳定伪随机取一个蓝以外的颜色,避免与中心节点的主题蓝混淆;
  *  面板改色即改这里,故有颜色筛选时改色结果随之变化(需重建) */
 function graphNodeColor(table) {
@@ -1210,7 +1210,7 @@ function graphNodeColor(table) {
   const custom = graphCustomColors.value[graphColorKey(table)]
   if (custom) return custom
   const tags = (graphTagsMap.value[table] || []).filter((t) => t?.color)
-  const biz = tags.find((t) => t.kind !== 'EMPTY')
+  const biz = tags.find((t) => t.kind === 'USER') || tags.find((t) => t.kind === 'BACKUP')
   if (biz) return biz.color
   if (tags.length) return tags[0].color
   return GRAPH_FALLBACK_COLORS[stableColorIndex(table, GRAPH_FALLBACK_COLORS.length)]
@@ -1244,9 +1244,9 @@ const graphColorOptions = computed(() =>
 const graphPanelComment = computed(() =>
   (graphData.value.nodes || []).find((n) => n.name === graphPanelTable.value)?.comment || '')
 const graphPanelTags = computed(() => graphTagsMap.value[graphPanelTable.value] || [])
-/** 面板标记排序:空表标记(系统维护,kind=EMPTY)固定排最后,其余保持原顺序 */
+/** 面板标记排序:系统标记(空表/备份表,kind != USER)固定排最后,其余保持原顺序 */
 const graphPanelTagsSorted = computed(() =>
-  [...graphPanelTags.value].sort((a, b) => Number(a.kind === 'EMPTY') - Number(b.kind === 'EMPTY')))
+  [...graphPanelTags.value].sort((a, b) => Number(a.kind !== 'USER') - Number(b.kind !== 'USER')))
 const graphPanelHasCustom = computed(() => !!graphCustomColors.value[graphColorKey(graphPanelTable.value)])
 /** 面板当前是否为中心节点(本表):中心节点颜色固定主题蓝,面板不提供改色 */
 const graphPanelIsAnchor = computed(() => graphPanelTable.value === tableName)

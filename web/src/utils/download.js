@@ -1,8 +1,8 @@
 import { ElMessage } from './notify'
-import { apiUrl, isTauriEnv as isTauri } from '../api/base'
+import { apiUrl, isTauriEnv } from '../api/base'
 
-/** tauri 套壳环境(webview 注入 __TAURI_INTERNALS__);统一由 api/base 判定,此处转出保持既有引用可用 */
-export { isTauri }
+/** tauri 套壳环境(webview 注入 __TAURI_INTERNALS__);统一由 api/base 判定,此处转出一个布尔值保持既有引用可用 */
+export const isTauri = isTauriEnv()
 
 /**
  * 通用下载:桌面端(Tauri)弹原生保存对话框让用户自选保存位置(Rust 侧 save_download_as

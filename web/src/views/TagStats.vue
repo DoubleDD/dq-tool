@@ -1,6 +1,6 @@
 <template>
   <div class="page-card tag-stats">
-    <!-- 左侧:标记列表(含系统「空表」标记),支持新建/编辑/删除 -->
+    <!-- 左侧:标记列表(含系统「空表」「备份表」标记),支持新建/编辑/删除 -->
     <div class="tag-panel">
       <div class="tag-panel-title">
         <span>标记列表</span>
@@ -17,11 +17,11 @@
             <el-tooltip :content="tag.description" :disabled="!tag.description" placement="top" :show-after="200">
               <span class="tag-name" :title="tag.name">{{ tag.name }}</span>
             </el-tooltip>
-            <el-tag v-if="tag.kind === 'EMPTY'" size="small" type="info">系统</el-tag>
+            <el-tag v-if="tag.kind !== 'USER'" size="small" type="info">系统</el-tag>
             <el-tag v-else-if="tag.tagType === 'AI'" size="small" type="success" effect="plain" title="类型 1:AI 自动打标候选">可用于AI打标</el-tag>
             <el-tag v-else size="small" type="info" effect="plain" title="类型 2:不作为 AI 自动打标候选">仅用于人工打标</el-tag>
             <span class="tag-count">{{ formatNumber(tag.tableCount ?? 0) }}</span>
-            <span v-if="tag.kind !== 'EMPTY'" class="tag-actions">
+            <span v-if="tag.kind === 'USER'" class="tag-actions">
               <el-button link type="primary" :icon="Edit" title="编辑" @click.stop="startEdit(tag)" />
               <el-button link type="danger" :icon="Delete" title="删除" @click.stop="removeTag(tag)" />
             </span>
@@ -101,7 +101,7 @@
       </template>
     </div>
 
-    <!-- 标记新建/编辑弹窗(系统「空表」标记不可编辑) -->
+    <!-- 标记新建/编辑弹窗(系统「空表」「备份表」标记不可编辑) -->
     <el-dialog
       v-model="tagDialogVisible"
       :title="tagDialogMode === 'create' ? '新建标记' : '编辑标记'"
@@ -155,7 +155,7 @@ const currentTag = ref(null)
 const stats = ref(null)
 const statsLoading = ref(false)
 
-// 标记管理:新建/编辑弹窗(系统「空表」标记不可编辑)
+// 标记管理:新建/编辑弹窗(系统「空表」「备份表」标记不可编辑)
 const tagDialogVisible = ref(false)
 const tagDialogMode = ref('create') // 'create' | 'edit'
 const editingId = ref(null)

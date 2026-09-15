@@ -25,7 +25,9 @@ import java.time.format.DateTimeFormatter
  * - 取每库最近一次 DONE 扫描快照(支持历史快照:重扫进行中/最近任务失败时回落到更早的 DONE 任务,
  *   不要求为导出重新扫描——大库扫一遍很慢)
  * - 空表 = 0 行;空字段 = 有值数为 0;有值率分桶按 scan_column.fillRate
- * - 选中的库必须已完成全表扫描(快照覆盖当前全部表且无失败表),否则 409 拦截列出库名提示先扫描
+ * - 部分导出:有 DONE 快照的库照常导出;无 DONE 快照的库不纳入,原因逐条写进文档「1.3 导出说明」
+ *   (从未扫描 / 最近一次任务状态 + 任务级与表级错误);快照表数 < 当前表数(扫描后新增表)不阻断,
+ *   仅记录缺口说明;所选库全部没有 DONE 快照时任务失败,error 聚合各库原因
  * - 快照里缺失的数据实时补算:表体积(size_bytes 为 null,如 Oracle 受限账号看不到段视图)回业务库元数据实时查询
  * - 实例描述取库级描述(schema_doc,库列表页可编辑)
  * - 第三章按 USER 表标记分节,打标表逐表取最近 DONE 快照(未扫描的表跳过不计);2.2 分组表已删(与 2.1 重复)
@@ -86,33 +88,35 @@ class WordReportService(
         }
         // 历史 DONE 快照:每库最近一次完成的任务(重扫进行中/最近失败不影响导出)
         val latestDone = scanRepository.latestDoneJobsBySchema(datasourceId, database)
+        // 最近一次任务(不限状态):无 DONE 快照的库取失败原因用
+        val latestAll = scanRepository.latestJobsBySchema(datasourceId, database)
 
-        // 全表扫描校验:快照存在、无失败表、且覆盖当前全部表(表数以 schema_stat 缓存为准,未知时跳过该项)
+        // 部分导出:有 DONE 快照的库照常导出;无 DONE 快照的库不纳入,原因逐条收进文档「导出说明」
+        // (覆盖不全只记缺口说明不阻断;所选库全部没有 DONE 快照时才失败,error 聚合各库原因)
         val docs = schemaDocRepo.findByDatasource(datasourceId, database ?: "")
         val jobTables = ArrayList<Pair<String, List<ScanTableView>>>(schemas.size)
-        // 未通过校验的库逐库给出具体原因,用户能直接知道下一步做什么(而不是只有库名)
-        val incomplete = ArrayList<String>()
+        val exportNotes = ArrayList<String>(schemas.size)
         for (s in schemas) {
             val name = s.name!!
             val job = latestDone[name]
-            val tables = job?.let { scanRepository.listScanTables(it.id) }.orEmpty()
-            val reason = when {
-                job == null -> "从未扫描"
-                tables.any { it.status != ScanStatus.DONE } ->
-                    "有 " + tables.count { it.status != ScanStatus.DONE } + " 张表未成功扫描"
-                s.tableCount != null && tables.size < s.tableCount!! ->
-                    "扫描覆盖不全(已扫 " + tables.size + "/" + s.tableCount + " 张表)"
-                else -> null
+            if (job == null) {
+                exportNotes.add(noDoneExportNote(name, latestAll[name]))
+                continue
             }
-            if (reason != null) {
-                incomplete.add("$name($reason)")
-            } else {
-                jobTables.add(name to tables)
+            val tables = scanRepository.listScanTables(job.id)
+            jobTables.add(name to tables)
+            // 快照表数 < 当前表数(扫描后新增表/当时只扫了部分表)不阻断导出,记录缺口说明
+            if (s.tableCount != null && tables.size < s.tableCount!!) {
+                exportNotes.add("$name:该库扫描后新增表,本次仅覆盖已扫的 ${tables.size} 张(共 ${s.tableCount} 张)")
             }
         }
-        if (incomplete.isNotEmpty()) {
+        if (jobTables.isEmpty()) {
             throw IllegalStateException(
-                "以下库不满足导出条件,请先在数据源页对这些库完成全表扫描再导出扫描报告: " + incomplete.joinToString("、"))
+                "所选库均没有已完成的扫描快照,无法导出扫描报告: " + exportNotes.joinToString("、"))
+        }
+        if (exportNotes.isNotEmpty()) {
+            log.warn("Word 报告部分导出: datasourceId={}, db={}, 未纳入/覆盖不全说明=[{}]",
+                datasourceId, database, exportNotes.joinToString("; "))
         }
 
         // 进度总步数:逐库聚合 N + 标记节 LLM S + 固定分析段 8 + 渲染 1
@@ -126,6 +130,8 @@ class WordReportService(
         }
 
         val data = buildRenderData(ds, aggs)
+        // 导出说明:未纳入/覆盖不全的库及原因,由 ExportNotesPolicy 在「二、」标题前生成「1.3 导出说明」节
+        data["exportNotes"] = exportNotes
         // 第三章:按 USER 标记分节(只统计本次导出范围内的库)
         val sections = buildTagSections(datasourceId, database, ds, aggs.map { it.name }.toSet(), docs, progress)
         data["tagSectionsHint"] = if (sections.isEmpty()) "当前数据源没有可用的用户标记数据,可在表列表打标后重新导出。" else ""
@@ -147,6 +153,7 @@ class WordReportService(
                     .bind("redundancyTable", groupTable)
                     .bind("largeTable", groupTable)
                     .bind("tagSections", WordReportTables.TagSectionsPolicy())
+                    .bind("exportNotes", WordReportTables.ExportNotesPolicy())
                     .build()
                 XWPFTemplate.compile(input, config).render(data).writeAndClose(out)
             }
@@ -155,8 +162,27 @@ class WordReportService(
             throw e
         }
         progress.step("渲染 Word 文档")
-        log.info("Word 报告已导出: datasourceId={}, db={}, 库数={}, 标记节数={}",
-            datasourceId, database, aggs.size, sections.size)
+        log.info("Word 报告已导出: datasourceId={}, db={}, 库数={}, 标记节数={}, 导出说明条数={}",
+            datasourceId, database, aggs.size, sections.size, exportNotes.size)
+    }
+
+    /** 无 DONE 快照库的不纳入原因:从未扫描;或最近一次任务的状态 + 任务级错误 + 未成功扫描的表(限量 5 张) */
+    private fun noDoneExportNote(name: String, latestJob: ScanRepository.JobRow?): String {
+        val job = latestJob ?: return "$name:从未扫描"
+        val sb = StringBuilder("$name:最近一次扫描任务未完成(状态 ${job.status}")
+        job.error?.takeIf { it.isNotBlank() }?.let { sb.append(":").append(it.take(100)) }
+        sb.append(")")
+        val badTables = scanRepository.listScanTables(job.id).filter { it.status != ScanStatus.DONE }
+        if (badTables.isNotEmpty()) {
+            sb.append(",其中 ").append(badTables.size).append(" 张表未成功扫描:")
+            sb.append(badTables.take(5).joinToString("、") { t ->
+                t.tableName + (t.error?.takeIf { it.isNotBlank() }?.let { "(${it.take(80)})" } ?: "")
+            })
+            if (badTables.size > 5) {
+                sb.append(" 等 ").append(badTables.size).append(" 张")
+            }
+        }
+        return sb.toString()
     }
 
     /** 进度步进器:总步数在任务拆解后一次性确定 */
@@ -210,7 +236,7 @@ class WordReportService(
             if (!t.comment.isNullOrBlank()) {
                 tableComments++
             }
-            if (BACKUP_RE.containsMatchIn(tableName)) {
+            if (BackupTableRule.isBackupTable(tableName)) {
                 backups.add(tableName)
             } else if (SHARD_RE.containsMatchIn(tableName)) {
                 shards.add(tableName)
@@ -603,8 +629,7 @@ class WordReportService(
         val TYPE_EXAMPLES = listOf("Varchar、char、text", "Int、bigint、tinyint", "Decimal、float、double",
             "Datetime、timestamp", "-")
 
-        /** 备份表:_copy/_bak/_backup/_tmp 结尾(可带序号) */
-        val BACKUP_RE = Regex("_(copy|bak|backup|tmp)\\d*$", RegexOption.IGNORE_CASE)
+        /** 备份表口径见 BackupTableRule(_copy/_bak/_backup/_tmp + 可选序号结尾),与扫描系统联动打标同一份规则 */
 
         /** 分表:_MMdd/_yyyyMM/_yyyyMMdd 等 4/6/8 位数字日期后缀 */
         val SHARD_RE = Regex("_(\\d{4}|\\d{6}|\\d{8})$")

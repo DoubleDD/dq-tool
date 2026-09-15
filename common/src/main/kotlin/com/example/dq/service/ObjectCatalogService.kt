@@ -106,6 +106,73 @@ class ObjectCatalogService(
     }
 
     /**
+     * 移动目录到其它目录下(变更所属目录):目标父目录必须存在且同属该数据源,不能是自身或其子孙
+     * (从目标父目录沿祖先链上溯查环),新同级下重名 400;移动到原父目录(含根)为 no-op;
+     * 落库追加为新同级末尾,之后可经同级重排再调整顺序
+     */
+    fun moveDir(id: Long, parentId: Long?) {
+        val dir = catalogRepo.findDir(id) ?: throw IllegalArgumentException("目录不存在:$id")
+        val pid = parentId ?: 0L
+        if (pid == id) throw IllegalArgumentException("不能移动到自身目录下")
+        if (pid > 0) {
+            val parent = catalogRepo.findDir(pid)
+                ?: throw IllegalArgumentException("目标父目录不存在:$pid")
+            if (parent.datasourceId != dir.datasourceId) {
+                throw IllegalArgumentException("目标父目录不属于该数据源:$pid")
+            }
+            var cursor: ObjectCatalogRepository.DirRow? = parent
+            while (cursor != null) {
+                if (cursor.id == id) throw IllegalArgumentException("不能移动到自身或其子目录下")
+                cursor = if (cursor.parentId == 0L) null else catalogRepo.findDir(cursor.parentId)
+            }
+        }
+        if (pid == dir.parentId) return
+        if (catalogRepo.existsSiblingDir(dir.datasourceId, pid, dir.name, excludeId = id)) {
+            throw IllegalArgumentException("目标目录下已存在同名目录:${dir.name}")
+        }
+        catalogRepo.moveDir(id, pid, dir.datasourceId)
+    }
+
+    /** 移动挂载表到其它目录(变更所属目录):目标目录必须存在且与挂载表同属一个数据源;目标已挂载同四元组表 400;同目录 no-op */
+    fun moveTable(id: Long, dirId: Long) {
+        val table = catalogRepo.findTableById(id) ?: throw IllegalArgumentException("挂载记录不存在:$id")
+        if (table.dirId == dirId) return
+        val target = catalogRepo.findDir(dirId) ?: throw IllegalArgumentException("目标目录不存在:$dirId")
+        val curDir = catalogRepo.findDir(table.dirId)
+            ?: throw IllegalArgumentException("挂载记录所在目录不存在:${table.dirId}")
+        if (target.datasourceId != curDir.datasourceId) {
+            throw IllegalArgumentException("目标目录不属于该数据源:$dirId")
+        }
+        if (catalogRepo.findTable(dirId, table.dbName, table.schemaName, table.tableName) != null) {
+            throw IllegalArgumentException("目标目录已挂载该表:${table.tableName}")
+        }
+        catalogRepo.moveTable(id, dirId)
+    }
+
+    /** 移动关系表到其它挂载表下(变更所属挂载表):目标挂载表必须存在且与关系表同属一个数据源(经各自目录比对);
+     * 不能指向目标挂载表自身(同四元组,与登记口径一致),目标已登记同四元组关系 400;同挂载表 no-op */
+    fun moveRelation(id: Long, objectTableId: Long) {
+        val rel = catalogRepo.findRelById(id) ?: throw IllegalArgumentException("关系记录不存在:$id")
+        if (rel.objectTableId == objectTableId) return
+        val target = catalogRepo.findTableById(objectTableId)
+            ?: throw IllegalArgumentException("目标挂载表不存在:$objectTableId")
+        val curMount = catalogRepo.findTableById(rel.objectTableId)
+            ?: throw IllegalArgumentException("关系记录所属挂载表不存在:${rel.objectTableId}")
+        val curDir = catalogRepo.findDir(curMount.dirId)
+        val targetDir = catalogRepo.findDir(target.dirId)
+        if (curDir?.datasourceId != targetDir?.datasourceId) {
+            throw IllegalArgumentException("目标挂载表与关系表不属于同一数据源")
+        }
+        if (rel.dbName == target.dbName && rel.schemaName == target.schemaName && rel.tableName == target.tableName) {
+            throw IllegalArgumentException("关系表不能指向挂载表自身")
+        }
+        if (catalogRepo.findRel(objectTableId, rel.dbName, rel.schemaName, rel.tableName) != null) {
+            throw IllegalArgumentException("目标挂载表已登记该关系表:${rel.tableName}")
+        }
+        catalogRepo.moveRel(id, objectTableId)
+    }
+
+    /**
      * 同级目录重排(页面拖动排序):orderedIds 为该数据源同一父目录下同级目录按期望顺序排列的 id 列表。
      * 列表内不允许重复,且必须全部属于该父级(否则 400);未列出的同级目录按当前顺序追加在末尾
      * (并发新增兜底),最终把同级 sort_order 连续重写为 0..n-1。

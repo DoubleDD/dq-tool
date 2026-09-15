@@ -203,10 +203,11 @@ data class CompareDiffPage(
     val size: Int,
 )
 
-/** 问题字段排行项:按 DIFF 明细中字段出现次数降序 */
+/** 问题字段排行项:按 DIFF 明细中字段出现次数降序;comment 为基准表字段注释(中文字段名,无注释为 null) */
 data class FieldIssueRank(
     val field: String,
     val count: Long,
+    val comment: String? = null,
 )
 
 /** 比对质量报告:目标指标 + 问题字段排行 + 汇总 */

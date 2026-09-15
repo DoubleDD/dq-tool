@@ -48,7 +48,7 @@ export async function exportErRelationExcel({ dsId, db, schema, table, filename,
     if (!c?.table || !c?.name) continue
     colComments[`${c.table.toLowerCase()}|${c.name.toLowerCase()}`] = c.comment || ''
   }
-  // 表名 -> 标记清单(含系统空表标记,按 id 升序);「标签」列取名字、顿号连接
+  // 表名 -> 标记清单(含空表/备份表系统标记,按 id 升序);「标签」列取名字、顿号连接
   const tags = {}
   for (const [name, list] of Object.entries(tagMap || {})) {
     const sorted = (list || []).slice().sort((a, b) => a.id - b.id)

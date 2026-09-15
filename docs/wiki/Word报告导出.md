@@ -2,7 +2,7 @@
 
 > dq-tool 项目文档,索引见根 [AGENTS.md](../../AGENTS.md)。
 
-**异步任务**:导出耗时(逐库聚合 + 逐节 LLM 分析),点击「导出扫描报告」只提交任务,在「报告列表」页签查看进度与产物。库列表页复用复选框选库(未勾选时弹窗确认后默认导出全部已完成全表扫描的库;勾选未完成全表扫描的库任务会 FAILED 并逐库列出原因——从未扫描/有 N 张表未成功扫描/扫描覆盖不全)、表列表页导出当前库(`schemas` 限定范围)。
+**异步任务**:导出耗时(逐库聚合 + 逐节 LLM 分析),点击「导出扫描报告」只提交任务,在「报告列表」页签查看进度与产物。库列表页复用复选框选库(未勾选时弹窗确认后默认导出全部已完成全表扫描的库;勾选未扫描的库不再整单失败,见下方「部分导出」)、表列表页导出当前库(`schemas` 限定范围)。
 
 - 提交:`POST /api/datasources/{dsId}/report/exports?db=` body `{schemas:[...]}`(null=全部)→ `{taskId}`;列表:`GET /api/report-exports`;操作:`GET /api/report-exports/{id}/download`(浏览器环境显示「下载」)、`POST .../open`(调系统软件打开,顺序 MS Office → WPS → 默认关联,`util/SystemOpen.kt` 纯 ProcessBuilder 实现,不用 AWT)、`POST .../reveal`(打开文件目录并选中);tauri 套壳环境(检测 `window.__TAURI_INTERNALS__`)显示「另存为」,走 Rust 自定义命令 `save_report_as`(原生保存对话框 + 从数据目录复制产物,见 tauri/AGENTS.md)
 - 任务落 `report_export` 表(V9):状态机 PENDING→RUNNING→DONE/FAILED,进度(progress_done/total + stage 阶段文字)由内核 `WordReportService.export` 的 onProgress 回调落库(总步数=逐库聚合 N + 标记节 S + 固定分析 8 + 渲染 1);单线程队列执行(`WordReportExportService`),服务重启时未完成任务置 FAILED
@@ -20,7 +20,7 @@
 
 - 各节分析文字由大模型生成(prompt 带代码算好的精确数字,统一 `analysis()` 入口,未配置/失败渲染「(待人工编写)」占位,LLM 调用点构造器可注入 fake)
 - 数据取每库最近一次 **DONE 历史快照**(重扫进行中/最近失败自动回落更早 DONE 任务,不为导出重扫),空表=0 行、空字段=有值数 0,与 Excel 导出同口径
-- **选中的库必须已完成全表扫描(快照覆盖当前全部表且无失败表),否则任务 FAILED 列出库名提示先扫描**
+- **部分导出**:有 DONE 快照的库照常导出;无 DONE 快照的库不纳入,原因逐条写进文档新增「1.3 导出说明」节(模板 `{{exportNotes}}` 占位符 + `WordReportTables.ExportNotesPolicy`,位于第一章末尾、二章标题前;从未扫描 / 最近一次任务状态 + scan_job.error + 该任务内非 DONE 表的表名+scan_table.error(限量 5 张));快照表数 < schema_stat 表数(扫描后新增表)不阻断,仅记录缺口说明「本次仅覆盖已扫的 X 张(共 Y 张)」;**所选库全部没有 DONE 快照时任务 FAILED**,error 聚合各库原因(导出服务截断 2000 字符落库);部分导出记 warn 日志
 - 快照缺失的表体积(size_bytes 为 null)实时回业务库元数据补算,失败降级为部分合计并记 warn
 - 「实例描述」列取库级描述(`schema_doc` 表 V8 迁移,库列表页可编辑,`PUT /api/datasources/{dsId}/schemas/{schema}/description`)
 - 模板标签改造脚本 `scripts/make-word-template.py`(第一章)+ `scripts/make-word-template-ch234.py`(封面+二~四章;{{schemas}} 等循环锚点在表头首格独立 run,循环行用 `[col]` 语法)

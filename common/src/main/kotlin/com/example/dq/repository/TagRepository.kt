@@ -35,6 +35,10 @@ class TagRepository(private val jdbc: Jdbc) {
     fun findEmptyTag(): Tag? =
         jdbc.queryOne("SELECT * FROM tag_def WHERE kind='EMPTY'", mapper = mapper)
 
+    /** 系统备份表标记(V55 迁移保证存在);口径同 findEmptyTag */
+    fun findBackupTag(): Tag? =
+        jdbc.queryOne("SELECT * FROM tag_def WHERE kind='BACKUP'", mapper = mapper)
+
     fun create(name: String, color: String, description: String? = null, tagType: TagType = TagType.AI): Tag {
         val id = jdbc.insert("INSERT INTO tag_def(name, color, kind, description, tag_type) VALUES (?,?,'USER',?,?)",
             name, color, description, tagType.code)
@@ -56,7 +60,7 @@ class TagRepository(private val jdbc: Jdbc) {
         jdbc.update("DELETE FROM tag_def WHERE id=?", id)
     }
 
-    /** 导出用:USER 标记的表级打标关系行(带标记名;EMPTY 系统标记由扫描自动维护,不导出) */
+    /** 导出用:USER 标记的表级打标关系行(带标记名;空表/备份表系统标记由扫描自动维护,不导出) */
     data class TableTagExportRow(val datasourceId: Long, val dbName: String, val schemaName: String,
                                  val tableName: String, val tagName: String)
 
@@ -84,7 +88,7 @@ class TagRepository(private val jdbc: Jdbc) {
     }
 
     /**
-     * 整体替换单表的 USER 标记(不动 EMPTY 系统标记关系),同一事务内先删后插。
+     * 整体替换单表的 USER 标记(不动空表/备份表系统标记关系),同一事务内先删后插。
      * tagIds 的合法性(存在且为 USER)由 service 层校验。
      */
     fun replaceUserTags(datasourceId: Long, dbName: String, schema: String, table: String, tagIds: Collection<Long>) {
@@ -149,6 +153,12 @@ class TagRepository(private val jdbc: Jdbc) {
         jdbc.update("DELETE FROM table_tag WHERE tag_id=? AND datasource_id=? AND db_name=? " +
                 "AND schema_name=? AND table_name=?",
             tagId, datasourceId, dbName, schema, table)
+    }
+
+    /** 删除该表全部 AI 来源打标关系(不碰 MANUAL/SYSTEM 行);AI 自动打标 OVERWRITE 模式用 */
+    fun deleteAiTableTags(datasourceId: Long, dbName: String, schema: String, table: String) {
+        jdbc.update("DELETE FROM table_tag WHERE datasource_id=? AND db_name=? AND schema_name=? " +
+                "AND table_name=? AND source=?", datasourceId, dbName, schema, table, TagSource.AI)
     }
 
     /** 该表是否已有任一 USER 标记;AI 自动打标的跳过判定(不覆盖用户手动选择) */

@@ -37,6 +37,10 @@ import java.util.concurrent.Executors
  * 数据源回源不可达降级(与元数据浏览同口径):名字匹配回源取字段清单失败时写数据源 conn_status 标记
  *   (util/ConnectionFailureClassifier 分类)并降级读本地 meta_schema_column 缓存(可能只有部分表的 per-table 缓存),
  *   验证阶段据此跳过连接尝试,候选按「未验证」入库(remark 注明,交集率/置信度留空);一张缓存都没有则任务判失败;
+ * 整库字段清单一次拉取失败(如 SQL Server 2005- 缺存储过程 sp_columns_100,getColumns 整库调用直接报错)
+ *   时降级逐表拉取(单表口径走各方言 listColumns,如 SQL Server 走目录视图不受影响):
+ *   单表失败只跳过该表(记 error 日志并附注任务),其余表照常推导,不回填空缓存(避免部分结果被整粒度替换固化);
+ *   逐表也全部失败才任务判失败;
  *   已标记不可达且实测在 [KNOWN_DOWN_TTL] 内时本轮连连接都不取(直接读缓存推导,省一次连接池超时等待),
  *   超窗后重新实测一次(标记不会永久生效,恢复后最多 TTL 自动恢复);回源成功时此前 ERROR 标记自愈为 OK;
  * 两条通道候选合并去重(同一字段对 source 优先 NAME_MATCH;已存在候选对不重复验证/插入,已确认不被降级;
@@ -147,7 +151,7 @@ class RelationInferService(
 
             // 1. 名字匹配:整库字段清单(缓存优先,未就绪实时拉取并回填;回源不可达则写数据源标记并降级读缓存)
             jobRepo.updateStage(jobId, RelationInferStage.NAME_MATCH.name)
-            val (schemaColumns, offline) = schemaColumns(datasourceId, dbParam, dbName, schema, dialect, knownDown)
+            val (schemaColumns, offline) = schemaColumns(jobId, datasourceId, dbParam, dbName, schema, dialect, knownDown)
 
             // 锚点字段本名按缓存中的实际大小写归一(唯一键/验证 SQL 用实际名);映射名保持用户写法
             val anchorSpecs = anchorFields.map { spec ->
@@ -353,11 +357,13 @@ class RelationInferService(
      * 回源连接失败(网络不可达/认证失败等,经 [ConnectionFailureClassifier] 判定)时写数据源 conn_status 标记
      * 并降级返回已有缓存(可能只有部分表的 per-table 缓存),offline=true 供验证阶段跳过连接尝试;
      * 一张缓存都没有则原样抛出(任务判失败);非连接类异常不降级,避免掩盖真实错误。
+     * 整库一次拉取的非连接类失败(如 SQL Server 2005- 缺 sp_columns_100)不在此抛——
+     * 由 [fetchSchemaColumnsTolerant] 降级逐表拉取,单表失败跳过该表,全失败才上抛。
      * [knownDown]=true(数据源在「已知不可达」新鲜窗口内)时不做回源尝试,直接读缓存——缓存空则失败并给出可操作提示。
      *
      * @return (字段清单, 本轮是否按「数据源不可达」处理——offline 时验证阶段连连接都不取)
      */
-    private fun schemaColumns(datasourceId: Long, dbParam: String?, dbName: String, schema: String,
+    private fun schemaColumns(jobId: Long, datasourceId: Long, dbParam: String?, dbName: String, schema: String,
                               dialect: DbDialect, knownDown: Boolean): Pair<List<SchemaColumn>, Boolean> {
         if (metaCacheRepo.isSchemaColumnsReady(datasourceId, dbName, schema)) {
             val cached = cachedSchemaColumns(datasourceId, dbName, schema)
@@ -376,9 +382,9 @@ class RelationInferService(
                 datasourceId, dbName, schema, cached.map { it.table }.distinct().size, cached.size)
             return cached to true
         }
-        val fresh = try {
+        val (fresh, complete) = try {
             dataSourceService.getConnection(datasourceId, dbParam).use { conn ->
-                dialect.listSchemaColumns(conn, schema)
+                fetchSchemaColumnsTolerant(jobId, conn, dialect, schema)
             }
         } catch (e: Exception) {
             if (!ConnectionFailureClassifier.isConnectionFailure(e)) throw e
@@ -391,6 +397,13 @@ class RelationInferService(
             return cached to true
         }
         markConnRecovered(datasourceId)
+        if (!complete) {
+            // 逐表降级且有表被跳过:本轮用已拉到的部分结果推导(offline=false,验证照常连库),
+            // 但不回填空缓存——整粒度替换会把缺失表固化,待「数据源」页刷新元数据或重推成功后自然补齐
+            log.warn("关系推导: 数据源 {} 库 {}/{} 字段清单部分表拉取失败,共 {} 个字段,本轮不回填空缓存",
+                datasourceId, dbName, schema, fresh.size)
+            return fresh to false
+        }
         log.info("关系推导: 数据源 {} 库 {}/{} 字段清单缓存未就绪,实时拉取 {} 张表 {} 个字段并回填缓存",
             datasourceId, dbName, schema, fresh.map { it.table }.distinct().size, fresh.size)
         val ordinals = HashMap<String, Int>()
@@ -400,6 +413,48 @@ class RelationInferService(
             MetaCacheRepository.CachedSchemaColumn(c.table, ord, c.name, c.type, c.comment)
         })
         return fresh to false
+    }
+
+    /**
+     * 整库字段清单拉取(容错):优先整库一次拉取;失败时(如 SQL Server 2005- 缺存储过程 sp_columns_100,
+     * JDBC getColumns 整库调用直接报错,而逐表口径走各方言 listColumns——SQL Server 走目录视图不受影响)
+     * 降级逐表拉取——单表失败只跳过该表(记 error 日志并附注任务),其余表照常推导,不炸整轮;
+     * 逐表也全部失败才抛异常(任务判失败,与「无缓存可兜」同口径,给出可操作提示)。
+     *
+     * @return 字段清单 to 是否完整;不完整(有表被跳过)时调用方不回填空缓存,避免部分结果被整粒度替换固化
+     */
+    private fun fetchSchemaColumnsTolerant(jobId: Long, conn: Connection, dialect: DbDialect,
+                                           schema: String): Pair<List<SchemaColumn>, Boolean> {
+        try {
+            return dialect.listSchemaColumns(conn, schema) to true
+        } catch (e: Exception) {
+            log.error("关系推导: 任务 {} 整库字段清单一次拉取失败,降级逐表拉取(单表失败跳过该表,不影响其余表): {}",
+                jobId, e.message, e)
+        }
+        val tables = dialect.listTables(conn, schema) // 表清单也拉不到属全局失败,原样上抛
+        val columns = ArrayList<SchemaColumn>()
+        val failedTables = ArrayList<String>()
+        for (t in tables) {
+            val table = t.name ?: continue
+            try {
+                dialect.listColumns(conn, schema, table).forEach {
+                    columns.add(SchemaColumn(table, it.name, it.displayType, it.comment ?: ""))
+                }
+            } catch (te: Exception) {
+                failedTables.add(table)
+                log.error("关系推导: 任务 {} 表 {} 字段清单拉取失败,跳过该表: {}", jobId, table, te.message, te)
+            }
+        }
+        if (columns.isEmpty() && failedTables.isNotEmpty()) {
+            throw IllegalStateException("整库字段清单拉取失败,逐表降级也全部失败(${failedTables.size} 张表)," +
+                "请检查数据库版本/权限后重试,或先在「数据源」页刷新元数据")
+        }
+        if (failedTables.isNotEmpty()) {
+            jobRepo.appendNote(jobId, "字段清单逐表拉取:${failedTables.size} 张表失败已跳过(" +
+                failedTables.take(10).joinToString(",") + (if (failedTables.size > 10) " 等" else "") +
+                "),这些表本轮不参与推导,恢复后重新推导即可")
+        }
+        return columns to failedTables.isEmpty()
     }
 
     /** 本地字段清单缓存读成 SchemaColumn(含 per-table 分批缓存的部分数据) */

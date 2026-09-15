@@ -113,8 +113,8 @@ const props = defineProps({
   mode: { type: String, default: 'relation' },
   // mapping 模式:当前待连线的基准字段名(该行高亮,提示「点它再点对侧字段」)
   activeColumn: { type: String, default: '' },
-  // mapping 模式:锚点表(基准表)里**参与比对的基准字段**——曾做常亮底色高亮,用户反馈干扰观看已移除,
-  // 目前仅保留接口(参与比对的口径由向导第二步与提交校验兜底),不再影响画布渲染
+  // mapping 模式:锚点表(基准表)里**参与比对的基准字段**——文字常亮高亮(主题色+加粗,不改背景),
+  // 不管有没有连线都亮;对比表字段不受此参数影响(连了线才亮)
   highlightColumns: { type: Array, default: () => [] }
 })
 
@@ -267,7 +267,8 @@ function nodeSize(table, comment) {
 
 /** 节点 HTML:标题(有中文名时中文名为主、英文表名小字在下;标题可点跳字段明细) + 字段行(关联字段高亮);
  *  超 maxFieldRows 折叠为「+N 个字段」操作行(点击就地展开全量,展开后该行变「收起字段」);
- *  选中态 = 正文色深描边 + 主题色光环;锚点表(本表/星型中心)恒为主题色底纹,任何状态下都一眼可辨;
+ *  选中态 = 正文色深描边 + 主题色光环;ER 图锚点表(本表/星型中心)恒为主题色底纹;
+ *  mapping 模式基准表去底纹只留主题色描边(靠边框 + 基准字段文字高亮辨认);
  *  根 div 带 data-rg-node 标记,容器层点击委托按它判定「点节点选中」 */
 function renderNodeHtml(d) {
   const c = themeColors()
@@ -280,11 +281,12 @@ function renderNodeHtml(d) {
   const rows = visibleFields(table)
   const fieldHtml = rows.map((f) => {
     const isActive = mapping && isAnchor && props.activeColumn && f.name === props.activeColumn
-    // 基准字段不再做底色/左竖条高亮(用户反馈整表淡蓝底太干扰观看)——基准表字段行与普通行同款式,
-    // 连过线的字段照旧主题色加粗;是否参与比对的口径由向导第二步与提交校验兜底
+    // 字段高亮一律走文字(主题色+加粗)、不改背景:基准表里参与比对的字段(highlightColumns)不管有没有
+    // 连线都常亮;对比表只有连了线的字段才亮,没连线的保持次要灰——一眼区分「要比的」与「已映射的」
+    const isBaseField = mapping && isAnchor && props.highlightColumns.includes(f.name)
     const style = isActive
       ? `color:${c.primary};font-weight:600;background:${c.primary}26;border-radius:3px`
-      : f.related ? `color:${c.primary};font-weight:600` : `color:${c.textSecondary}`
+      : (f.related || isBaseField) ? `color:${c.primary};font-weight:600` : `color:${c.textSecondary}`
     // 字段名口径三档:chinese=仅中文注释(无注释回退英文名);english=仅英文名;both=中文在前、英文名更淡尾随;
     // 超长随行截断「…」;整行 title 恒带 英文名+完整注释,hover 即可查看全文
     const main = props.fieldNameMode === 'english' ? f.name : (f.comment || f.name)
@@ -298,7 +300,7 @@ function renderNodeHtml(d) {
     // mapping 模式字段行悬停给十字光标(正在连线的语义);ER 图字段行不可点,保持默认
     const cursor = mapping ? 'cursor:crosshair;' : ''
     // mapping 模式给每个字段行加上下 0.5px 发丝分隔线(表格感;1px 近距离视觉比节点边框还抢;
-    // 颜色用 --el-border-color 常规边框灰——lighter 灰叠在基准字段淡蓝底上几乎不可见)。
+    // 颜色用 --el-border-color 常规边框灰——lighter 灰叠在 active 行的淡色底上几乎不可见)。
     // 用 background-image 渐变实现:Chrome 会把 border-width:0.5px 计算值取整成 1px,边框做不到真半像素;
     // 行高不加边框仍是 18px(边端点/节点高度按 ROW_H=18 推算,撑高会端点对不齐)。
     // 放在 ${style} 之后:基准字段的 background 简写会清掉 background-image,后者补上两者兼得;
@@ -323,12 +325,13 @@ function renderNodeHtml(d) {
   const subHtml = subText
     ? `<div style="height:14px;line-height:14px;padding:0 8px;font-size:11px;color:${c.textSecondary};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subText)}</div>` : ''
   const border = isSelected ? `2px solid ${c.text}` : isAnchor ? `2px solid ${c.primary}` : `1px solid ${c.borderDarker}`
-  // 光环:选中与锚点同语言(主题色 20% 淡环);锚点另有主题色底纹 + 主题色描边/标题,始终一眼可辨
-  const ring = isSelected || isAnchor ? `box-shadow:0 0 0 3px ${c.primary}33;` : ''
-  // 锚点底纹:根底 = 主题色 8% 淡 tint;有字段行时标题行叠 15% 更深一档(无字段行时标题透明,直接透出根底)
-  const titleBg = fields.length ? `background:${isAnchor ? `${c.primary}26` : c.fill};` : ''
+  // 光环:选中与锚点同语言(主题色 20% 淡环);ER 图锚点另有主题色底纹 + 主题色描边/标题,始终一眼可辨;
+  // mapping 模式基准表按用户要求只留主题色描边(去底纹/光环),靠边框与加粗字段文字辨认
+  const ring = isSelected || (isAnchor && !mapping) ? `box-shadow:0 0 0 3px ${c.primary}33;` : ''
+  // 锚点底纹(仅 ER 图):根底 = 主题色 8% 淡 tint;有字段行时标题行叠 15% 更深一档(无字段行时标题透明,直接透出根底)
+  const titleBg = fields.length ? `background:${isAnchor && !mapping ? `${c.primary}26` : c.fill};` : ''
   const titleTip = mapping ? '点击字段行连线;拖动画布可移动表' : '双击打开字段明细'
-  return `<div data-rg-node="${esc(table)}" style="width:${NODE_W}px;height:100%;box-sizing:border-box;background:${isAnchor ? `${c.primary}14` : c.bg};border:${border};border-radius:6px;overflow:hidden;${ring}">
+  return `<div data-rg-node="${esc(table)}" style="width:${NODE_W}px;height:100%;box-sizing:border-box;background:${isAnchor && !mapping ? `${c.primary}14` : c.bg};border:${border};border-radius:6px;overflow:hidden;${ring}">
   <div class="rg-node-title" data-rg-table="${esc(table)}" title="${titleTip}" style="height:${subText ? 34 : 32}px;line-height:${subText ? 20 : 32}px;padding:${subText ? '6px' : '0'} 8px;font-size:13px;font-weight:600;color:${isAnchor ? c.primary : c.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;${fields.length ? `border-bottom:1px solid ${c.border};${titleBg}` : ''}">${esc(titleText)}${subHtml}</div>
   <div style="padding-top:4px">${fieldHtml}${more}</div>
 </div>`
@@ -648,8 +651,9 @@ register(ExtensionCategory.LAYOUT, 'er-dagre-grid', ErDagreGridLayout)
 
 // ---------- mapping 模式布局 mapping-row ----------
 // 字段映射不需要层次关系图:第 1 个节点(基准表,锚点)固定在左,其余节点(各对比表)在右侧
-// **一行等距水平排开**,且所有卡片中心都落在同一条水平中心线(y=0)上。
-// 表多时靠画布缩放/平移(适应画布/鸟瞰图)容纳,而不是折行——折行会破坏「同一条中心线」。
+// **一行等距水平排开**,且所有卡片顶边落在同一条水平线上(顶部对齐——卡片高度差很大时,
+// 中心对齐会让矮卡片悬浮在半空,连线上下跨度也大;顶对齐从第一行字段就开始水平对照)。
+// 表多时靠画布缩放/平移(适应画布/鸟瞰图)容纳,而不是折行——折行会破坏「同一条顶线」。
 //
 // 坐标是**纯函数算好写进节点样式**的(buildData 里调用),布局类只把同一份坐标回吐:
 // G6 对 html 节点只认数据级 style.x/y(布局结果异步回填,不会同步到 DOM),且该口径下
@@ -667,12 +671,12 @@ function mappingRowPositions(nodes, opts = {}) {
   const gapX = opts.ranksep ?? 160
   const anchor = nodes[0]
   const [aw, ah] = sizeOf(anchor)
-  out.set(String(anchor.id), { x: -aw / 2, y: -ah / 2 }) // 锚点中心 = (0, 0)
+  const top = -ah / 2 // 顶对齐:所有卡片顶边与锚点顶边同线
+  out.set(String(anchor.id), { x: -aw / 2, y: top })
   let x = aw / 2 + gapX
   for (const n of nodes.slice(1)) {
     const [w, h] = sizeOf(n)
-    // y = -h/2:卡片中心落在锚点中心所在的水平中心线上(卡片高度不同也能对齐)
-    out.set(String(n.id), { x, y: -h / 2 })
+    out.set(String(n.id), { x, y: top })
     x += w + gapX
   }
   return out

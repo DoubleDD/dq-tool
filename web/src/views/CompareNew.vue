@@ -107,7 +107,7 @@
             @toggle="toggleTarget"
           />
         </div>
-        <!-- 右列:已添加比对系统清单 + 任务摘要(摘要占剩余高度,内容超出时卡内滚动) -->
+        <!-- 右列:已添加比对系统清单 -->
         <div class="step3-side">
           <div class="target-panel">
             <div class="target-panel-head">
@@ -117,28 +117,15 @@
             <div class="target-list">
               <div v-for="(t, i) in targets" :key="i" class="target-item">
                 <span class="target-index">{{ i + 1 }}</span>
-                <span class="target-label" :title="targetLabel(t)">{{ targetLabel(t) }}</span>
+                <span class="target-label" :title="targetLabel(t)">
+                  <span class="target-ds">{{ targetDs(t)?.name || '' }}</span>
+                  <span class="target-loc">{{ targetLoc(t) }}</span>
+                </span>
                 <el-button link type="danger" @click="targets.splice(i, 1)">删除</el-button>
               </div>
               <div v-if="!targets.length" class="target-empty">还没有比对系统,请在左侧选好库/模式后,点表名右侧的 + 加入(至少 1 个)</div>
             </div>
           </div>
-          <!-- 任务摘要:提交前最终确认。label-width + nowrap 固定标签列,避免比对字段/比对系统
-               内容过长时(table-layout:auto)把标签列压成一字一行 -->
-          <el-descriptions class="step3-summary" :column="1" border size="small" label-width="96px" title="任务摘要">
-            <el-descriptions-item label="任务名称">{{ form.name }}</el-descriptions-item>
-            <el-descriptions-item label="基准数据源">{{ baseDs?.name || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="基准表">{{ baseTableLabel }}</el-descriptions-item>
-            <el-descriptions-item label="比对主键">{{ keyField }}</el-descriptions-item>
-            <el-descriptions-item label="匹配逻辑">{{ matchModeLabel }}</el-descriptions-item>
-            <el-descriptions-item label="比对字段">{{ selectedNames.length }} 个:{{ selectedNames.join('、') }}</el-descriptions-item>
-            <el-descriptions-item label="对象名称">{{ displayField || '—(无可用文本字段)' }}</el-descriptions-item>
-            <el-descriptions-item label="比对系统">
-              <div v-for="(t, i) in targets" :key="i">{{ targetLabel(t) }}</div>
-              <span v-if="!targets.length">—</span>
-            </el-descriptions-item>
-            <el-descriptions-item label="任务类型">长时任务</el-descriptions-item>
-          </el-descriptions>
         </div>
       </div>
     </div>
@@ -372,11 +359,16 @@ function targetMultiDb(t) {
   return ['SQLSERVER', 'KINGBASE'].includes(targetDs(t)?.dbType)
 }
 
+/** 目标定位串:库/模式.表(多库方言带 db 前缀)。右列清单里与数据源名分两行展示,避免单行截断 */
+function targetLoc(t) {
+  const schemaPart = t.db ? `${t.db}.${t.schema}` : t.schema
+  return `${schemaPart ? schemaPart + '.' : ''}${t.table}`
+}
+
 function targetLabel(t) {
   const ds = targetDs(t)
   if (!ds || !t.table) return ''
-  const schemaPart = t.db ? `${t.db}.${t.schema}` : t.schema
-  return `${ds.name} · ${schemaPart ? schemaPart + '.' : ''}${t.table}`
+  return `${ds.name} · ${targetLoc(t)}`
 }
 
 /** 是否与基准表完全同源(数据源+库+模式+表都相同):该组合禁止作为比对系统 */
@@ -682,7 +674,7 @@ onMounted(async () => {
   color: var(--el-text-color-secondary);
 }
 
-/* 步骤 3:左侧级联面板 + 添加按钮,右侧「已添加比对系统 + 任务摘要」两卡竖排 */
+/* 步骤 3:左侧级联面板 + 添加按钮,右侧「已添加比对系统」卡 */
 .step3-layout {
   display: flex;
   gap: 24px;
@@ -750,9 +742,19 @@ onMounted(async () => {
 .target-item .target-label {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.4;
+}
+/* 两行各自单行省略(整卡 title 有完整串),第二行库.表弱化显示 */
+.target-item .target-label > span {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+.target-item .target-loc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 .target-empty {
   padding: 8px;
@@ -769,17 +771,6 @@ onMounted(async () => {
   background: var(--el-color-primary-light-8);
   color: var(--el-color-primary);
   font-size: 12px;
-}
-/* 摘要卡:占右列剩余高度,内容(字段全列)超出时卡片内滚动,不撑破固定高度的卡片 */
-.step3-summary {
-  flex: 1 1 auto;
-  width: 100%;
-  min-height: 0;
-  overflow: auto;
-}
-/* 标签列固定宽 + 不换行:否则比对字段等内容过长时会被 table-layout:auto 压成一字一行 */
-.step3-summary :deep(.el-descriptions__label) {
-  white-space: nowrap;
 }
 
 .wizard-actions {

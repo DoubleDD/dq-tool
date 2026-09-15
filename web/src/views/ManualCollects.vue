@@ -52,10 +52,10 @@
               :key="tag.id"
               size="small"
               class="table-tag"
-              :type="tag.kind === 'EMPTY' ? 'info' : undefined"
-              :effect="tag.kind === 'EMPTY' ? 'plain' : 'dark'"
-              :color="tag.kind === 'EMPTY' ? undefined : tag.color"
-              :style="tag.kind === 'EMPTY' ? {} : { borderColor: tag.color }"
+              :type="tag.kind !== 'USER' ? 'info' : undefined"
+              :effect="tag.kind !== 'USER' ? 'plain' : 'dark'"
+              :color="tag.kind !== 'USER' ? undefined : tag.color"
+              :style="tag.kind !== 'USER' ? {} : { borderColor: tag.color }"
             >{{ tag.name }}</el-tag>
           </template>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>

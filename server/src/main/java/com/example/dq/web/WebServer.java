@@ -474,10 +474,13 @@ public class WebServer {
         routes.post("/api/object-dirs/sort", ctx -> objectCatalogCtrl.get().sortDirs(ctx));
         routes.put("/api/object-dirs/{id}", ctx -> objectCatalogCtrl.get().renameDir(ctx));
         routes.delete("/api/object-dirs/{id}", ctx -> objectCatalogCtrl.get().deleteDir(ctx));
+        routes.post("/api/object-dirs/{id}/move", ctx -> objectCatalogCtrl.get().moveDir(ctx));
         routes.post("/api/object-dirs/{id}/tables", ctx -> objectCatalogCtrl.get().mountTable(ctx));
         routes.delete("/api/object-tables/{id}", ctx -> objectCatalogCtrl.get().unmount(ctx));
+        routes.post("/api/object-tables/{id}/move", ctx -> objectCatalogCtrl.get().moveTable(ctx));
         routes.post("/api/object-tables/{id}/relations", ctx -> objectCatalogCtrl.get().addRelation(ctx));
         routes.delete("/api/object-table-relations/{id}", ctx -> objectCatalogCtrl.get().removeRelation(ctx));
+        routes.post("/api/object-table-relations/{id}/move", ctx -> objectCatalogCtrl.get().moveRelation(ctx));
 
         // ---- 标记与描述数据导出/导入(跨机器迁移) ----
         routes.get("/api/annotations/export", ctx -> annotationCtrl.get().export(ctx));

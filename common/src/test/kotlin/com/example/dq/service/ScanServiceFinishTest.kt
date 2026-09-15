@@ -2,6 +2,7 @@ package com.example.dq.service
 
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
+import com.example.dq.model.AutoTagMode
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DbType
 import com.example.dq.model.ScanStatus
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Test
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 
 /**
  * ScanService.finish 手动结束(H2 内存库):AI 后续挂起导致进度卡 99% 时,
@@ -178,5 +180,21 @@ class ScanServiceFinishTest {
         } catch (expected: IllegalStateException) {
             // 预期:只有已取消/已中断/失败的任务才能续扫
         }
+    }
+
+    @Test
+    fun `任务级采样行数与打标模式随job行持久化并在视图暴露`() {
+        val jobId = scanRepo.insertJob(dsId, null, "s1", false, "[]", 1, autoTag = true,
+            sampleRows = 5000, autoTagMode = AutoTagMode.OVERWRITE)
+
+        val job = scanService.getJob(jobId)
+        assertEquals(5000, job.sampleRows)
+        assertEquals(AutoTagMode.OVERWRITE, job.autoTagMode)
+
+        // V53/V54 之前的老任务:采样行数 NULL(=全局默认)、模式 SKIP(=老行为)
+        val legacyId = scanRepo.insertJob(dsId, null, "s1", false, "[]", 1)
+        val legacy = scanService.getJob(legacyId)
+        assertNull(legacy.sampleRows)
+        assertEquals(AutoTagMode.SKIP, legacy.autoTagMode)
     }
 }

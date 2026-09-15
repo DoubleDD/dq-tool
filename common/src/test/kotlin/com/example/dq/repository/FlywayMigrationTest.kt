@@ -40,6 +40,10 @@ class FlywayMigrationTest {
         Jdbc(ds).queryOne("SELECT COUNT(*) FROM tag_def WHERE name='空表' AND kind='EMPTY'") {
             it.getLong(1)
         }.let { assertEquals(1L, it) }
+        // 系统「备份表」标记随 V55 迁移自动插入(tag_type=0 系统标记,不作为 AI 候选)
+        Jdbc(ds).queryOne("SELECT COUNT(*) FROM tag_def WHERE name='备份表' AND kind='BACKUP' AND tag_type=0") {
+            it.getLong(1)
+        }.let { assertEquals(1L, it) }
         // 迁移历史:V1~V4(flyway 表名为小写带引号,H2 中需原样引用;history 表还含建表标记行,按版本号过滤)
         Jdbc(ds).queryOne(
             """SELECT COUNT(*) FROM "flyway_schema_history" WHERE "version" IN ('1','2','3','4') AND "success" = TRUE""",
@@ -88,6 +92,10 @@ class FlywayMigrationTest {
         assertTrue(tableExists(ds, "tag_def"))
         assertTrue(tableExists(ds, "table_tag"))
         jdbc.queryOne("SELECT COUNT(*) FROM tag_def WHERE name='空表' AND kind='EMPTY'") {
+            it.getLong(1)
+        }.let { assertEquals(1L, it) }
+        // V55 增量:系统「备份表」标记,老库升级路径同样生效(升级前若已有同名人工标记会被合并为系统标记)
+        jdbc.queryOne("SELECT COUNT(*) FROM tag_def WHERE name='备份表' AND kind='BACKUP'") {
             it.getLong(1)
         }.let { assertEquals(1L, it) }
         // V2 补列恢复 db_mode(否则 DataSourceService 读该列会报列不存在)

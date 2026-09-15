@@ -463,9 +463,11 @@ class WebServerSmokeTest {
         activateLicense();
         HttpResponse<String> resp = get("/api/tags");
         assertEquals(200, resp.statusCode(), resp.body());
-        // kind 序列化为枚举名
+        // kind 序列化为枚举名;空表与备份表都是迁移自建的系统标记
         assertTrue(resp.body().contains("\"name\":\"空表\""), resp.body());
         assertTrue(resp.body().contains("\"kind\":\"EMPTY\""), resp.body());
+        assertTrue(resp.body().contains("\"name\":\"备份表\""), resp.body());
+        assertTrue(resp.body().contains("\"kind\":\"BACKUP\""), resp.body());
     }
 
     @Test

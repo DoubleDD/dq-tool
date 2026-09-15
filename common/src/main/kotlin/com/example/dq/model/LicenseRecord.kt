@@ -22,6 +22,8 @@ data class LicenseRecord(
     val menus: String? = null,
     /** 免接口鉴权标记(演示用;NULL=false) */
     val bypassAuth: Boolean? = null,
+    /** 签发方备注(仅管理端留档展示,不写入授权码) */
+    val remark: String? = null,
     val codeEnc: String,
     val createdAt: LocalDateTime?,
 )
@@ -40,6 +42,8 @@ data class LicenseRecordView(
     val menus: String?,
     /** 免接口鉴权标记(演示用) */
     val bypassAuth: Boolean = false,
+    /** 签发方备注(仅管理端留档展示,不写入授权码) */
+    val remark: String? = null,
     val code: String,
     val createdAt: LocalDateTime?,
 )
@@ -59,4 +63,6 @@ data class LicenseGenerateRequest(
     val features: List<String>? = null,
     /** 免接口鉴权标记(演示用):true 时客户实例跳过 dq.access-token 校验,默认 false */
     val bypassAuth: Boolean? = null,
+    /** 签发方备注(仅管理端留档展示,不写入授权码 payload) */
+    val remark: String? = null,
 )

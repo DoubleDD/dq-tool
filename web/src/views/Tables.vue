@@ -117,10 +117,10 @@
               :key="tag.id"
               size="small"
               class="table-tag"
-              :type="tag.kind === 'EMPTY' ? 'info' : undefined"
-              :effect="tag.kind === 'EMPTY' ? 'plain' : 'dark'"
-              :color="tag.kind === 'EMPTY' ? undefined : tag.color"
-              :style="tag.kind === 'EMPTY' ? {} : { borderColor: tag.color }"
+              :type="tag.kind !== 'USER' ? 'info' : undefined"
+              :effect="tag.kind !== 'USER' ? 'plain' : 'dark'"
+              :color="tag.kind !== 'USER' ? undefined : tag.color"
+              :style="tag.kind !== 'USER' ? {} : { borderColor: tag.color }"
             >{{ tag.name }}</el-tag>
           </template>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>
@@ -224,75 +224,16 @@
     </el-table>
     </div>
 
-    <el-dialog v-model="scanDialogVisible" title="开始扫描" width="640px" destroy-on-close :close-on-press-escape="false">
-      <el-form label-width="110px">
-        <el-form-item label="扫描范围">
-          <span v-if="singleTable">仅扫描表:{{ singleTable }}</span>
-          <span v-else-if="selectedTables.length">已选 {{ selectedTables.length }} 张表</span>
-          <span v-else>未选择表,将扫描全库</span>
-        </el-form-item>
-        <el-form-item label="强制全量">
-          <el-switch v-model="scanForm.forceFull" />
-          <div class="form-tip">超过阈值的表不做采样,逐行精确统计</div>
-        </el-form-item>
-        <el-form-item label="表大小上限">
-          <div style="width: 100%">
-            <el-input-number v-model="scanForm.maxSizeValue" :min="1" placeholder="不限制"
-                             controls-position="right" style="width: 160px" />
-            <el-select v-model="scanForm.maxSizeUnit" style="width: 80px; margin-left: 8px">
-              <el-option label="MB" value="MB" />
-              <el-option label="GB" value="GB" />
-            </el-select>
-            <div class="form-tip">只扫描不超过该大小的表(按元数据估算的数据+索引大小),留空表示不限制</div>
-            <div v-if="skippedBySize" class="form-tip" style="color: var(--el-color-warning)">
-              当前范围内有 {{ skippedBySize }} 张表超过上限,将被跳过
-            </div>
-          </div>
-        </el-form-item>
-        <el-form-item label="AI 自动打标">
-          <el-checkbox v-model="scanForm.autoTag">扫描完成后由大模型自动打标</el-checkbox>
-          <el-tooltip placement="top" :show-after="200">
-            <template #content>
-              <div>每张表扫描完成后,由大模型根据表注释/字段注释/表描述,从标记列表中选择最合适的标记自动打上(只增不删,已有标记的表不覆盖)</div>
-              <div>表无任何注释时会抽样 100 行业务数据一并发送给大模型;未配置大模型时自动跳过</div>
-            </template>
-            <el-icon style="vertical-align: -2px; margin-left: 4px"><QuestionFilled /></el-icon>
-          </el-tooltip>
-        </el-form-item>
-        <el-form-item label="生成表描述">
-          <el-checkbox v-model="scanForm.genDoc">扫描完成后由大模型生成表描述</el-checkbox>
-          <el-tooltip placement="top" :show-after="200">
-            <template #content>
-              <div>每张表扫描完成后,由大模型根据表结构生成表描述;已有描述的表不覆盖</div>
-              <div>未配置大模型时自动跳过</div>
-            </template>
-            <el-icon style="vertical-align: -2px; margin-left: 4px"><QuestionFilled /></el-icon>
-          </el-tooltip>
-        </el-form-item>
-        <el-form-item label="并发线程数">
-          <el-input-number v-model="scanForm.workers" :min="1" :max="128" placeholder="默认"
-                           controls-position="right" style="width: 160px" />
-          <div class="form-tip">扫描并发 worker 线程数,留空使用配置默认值({{ defaultWorkers ?? '—' }});增大可加速但会增加数据库负载</div>
-        </el-form-item>
-        <el-form-item label="空值规则">
-          <div style="width: 100%">
-            <div v-for="(rule, idx) in scanForm.nullRules" :key="idx" class="rule-row">
-              <el-input v-model="rule.column" placeholder="列名(* 表示所有列)" style="width: 180px" />
-              <el-input v-model="rule.valuesText" placeholder="视为空的取值,逗号分隔" style="flex: 1" />
-              <el-button link type="danger" @click="scanForm.nullRules.splice(idx, 1)">删除</el-button>
-            </div>
-            <el-button link type="primary" @click="scanForm.nullRules.push({ column: '', valuesText: '' })">
-              + 添加规则
-            </el-button>
-            <div class="form-tip">例如:列名 *,取值 0,-1 表示所有列中值为 0 或 -1 的也视为空</div>
-          </div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="scanDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitScan">提交扫描</el-button>
-      </template>
-    </el-dialog>
+    <!-- 开始扫描:共享扫描对话框(字段/提交逻辑全量内聚在组件内) -->
+    <ScanDialog
+      v-model="scanDialogVisible"
+      :datasource-id="dsId"
+      :schema="schema"
+      :database="db"
+      :fixed-table="singleTable"
+      :selected-tables="selectedTables"
+      :scope-tables="scopeTables"
+    />
 
     <!-- 手动编辑表描述 -->
     <el-dialog v-model="docEditVisible" :title="`编辑描述 - ${docEditTable}`" width="560px" append-to-body :close-on-press-escape="false">
@@ -338,7 +279,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from '../utils/notify'
 import { ArrowDown, QuestionFilled, Refresh, Setting } from '@element-plus/icons-vue'
@@ -346,12 +287,12 @@ import request, { submitReportExport } from '../api'
 import TableTagDialog from '../components/TableTagDialog.vue'
 import BatchTagDialog from '../components/BatchTagDialog.vue'
 import RelationInferDialog from '../components/RelationInferDialog.vue'
+import ScanDialog from '../components/ScanDialog.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import ExportButton from '../components/ExportButton.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
-import { confirmAiUsable } from '../utils/aiCheck'
 
 const route = useRoute()
 const router = useRouter()
@@ -365,7 +306,7 @@ const loading = ref(false)
 const refreshing = ref(false)
 // 本次表清单是否来自「数据源不可达降级读本地缓存」(响应头 X-Dq-Cache-Fallback)
 const cacheFallback = ref(false)
-// Word 报告导出中状态(只导出当前库,未扫描时后端拦截提示)
+// Word 报告导出中状态(只导出当前库;导出校验在后台任务内进行,失败原因见「报告列表」页签)
 const exporting = ref(false)
 
 /** 导出当前库的 Word 数据调研报告(异步任务,单库范围;提交后到「报告列表」页查看) */
@@ -487,7 +428,7 @@ const docEditTable = ref('')
 const docEditText = ref('')
 const docEditSaving = ref(false)
 
-// 整个库的表→标记 map(表名 -> [{id,name,color,kind}]),含系统驱动的空表标记
+// 整个库的表→标记 map(表名 -> [{id,name,color,kind}]),含系统驱动的空表/备份表标记
 const tableTags = ref({})
 // 当前库下已使用的标记列表(从 tableTags 提取去重,按 id 排序),供标记筛选下拉
 const availableTags = computed(() => {
@@ -604,27 +545,8 @@ async function onBatchTagged() {
 }
 
 const scanDialogVisible = ref(false)
-const submitting = ref(false)
-// maxSizeValue 为空(null)表示不限制表大小
-const scanForm = reactive({ forceFull: true, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB', autoTag: true, genDoc: true, workers: null })
-// 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走
+// 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走(字段/提交逻辑内聚在 ScanDialog 组件,打开时组件自行重置默认值)
 const singleTable = ref('')
-
-// 配置默认的并发 worker 线程数,扫描弹窗中展示并作为「并发线程数」默认值;首次打开扫描对话框时拉取并缓存
-const defaultWorkers = ref(null)
-let scanDefaultsFetched = false
-async function fetchScanDefaults() {
-  if (scanDefaultsFetched) return
-  scanDefaultsFetched = true
-  try {
-    const cfg = await request.get('/scans/defaults')
-    defaultWorkers.value = cfg.defaultWorkers ?? null
-    // 首次拉取到默认值后回填弹窗(用户尚未填写时);拉取失败则留空,提交时按后端默认处理
-    if (scanForm.workers == null) scanForm.workers = defaultWorkers.value
-  } catch {
-    // 拉取失败不影响扫描,弹窗中默认值显示 "-"
-  }
-}
 
 // 行数取值:非采样的最新完成扫描给的是 COUNT(*) 精确值,优先于元数据估算;
 // 采样表的 totalRows 只是采样行数,不能当作全表行数,仍用估算值
@@ -650,23 +572,10 @@ const emptyTables = computed(() => tables.value.filter((t) => !effectiveRows(t).
 const totalEstRows = computed(() => tables.value.reduce((sum, t) => sum + (effectiveRows(t).value || 0), 0))
 const totalSizeBytes = computed(() => tables.value.reduce((sum, t) => sum + (effectiveSize(t) || 0), 0))
 
-// 当前扫描范围内的表:单表 > 勾选 > 全库
+// 当前扫描范围内的表:单表 > 勾选 > 全库(供 ScanDialog 的大小上限跳过提示)
 const scopeTables = computed(() => {
   if (singleTable.value) return tables.value.filter((t) => t.name === singleTable.value)
   return selectedTables.value.length ? selectedTables.value : tables.value
-})
-
-// 表大小上限换算成字节;未设置返回 null
-function maxSizeBytes() {
-  if (!scanForm.maxSizeValue) return null
-  return scanForm.maxSizeValue * (scanForm.maxSizeUnit === 'GB' ? 1073741824 : 1048576)
-}
-
-// 范围内将被大小上限跳过的表数量(大小未知的表不参与统计)
-const skippedBySize = computed(() => {
-  const limit = maxSizeBytes()
-  if (!limit) return 0
-  return scopeTables.value.filter((t) => t.sizeBytes != null && t.sizeBytes > limit).length
 })
 
 const filteredTables = computed(() => {
@@ -773,8 +682,8 @@ function goRunningJob(row) {
 
 // 行内"扫描"按钮:只扫这一张表
 function scanSingle(row) {
-  openScanDialog()
   singleTable.value = row.name
+  scanDialogVisible.value = true
 }
 
 // 生成单表 AI 说明;大模型响应较慢,单请求超时放宽到 130s(后端读超时 120s)
@@ -875,51 +784,7 @@ function goTableDetail(row) {
 
 function openScanDialog() {
   singleTable.value = ''
-  scanForm.forceFull = true
-  scanForm.nullRules = []
-  scanForm.maxSizeValue = null
-  scanForm.maxSizeUnit = 'GB'
-  // AI 相关默认勾选:未配置大模型时后端自动跳过
-  scanForm.autoTag = true
-  scanForm.genDoc = true
-  scanForm.workers = defaultWorkers.value
-  fetchScanDefaults()
   scanDialogVisible.value = true
-}
-
-async function submitScan() {
-  // 勾选了 AI 功能先校验可用性,不可用由用户决定是否继续(继续则后端静默跳过 AI)
-  if (!(await confirmAiUsable(scanForm))) return
-  const nullRules = scanForm.nullRules
-    .filter((r) => r.column.trim() && r.valuesText.trim())
-    .map((r) => ({
-      column: r.column.trim(),
-      values: r.valuesText.split(',').map((v) => v.trim()).filter(Boolean)
-    }))
-    .filter((r) => r.values.length > 0)
-
-  submitting.value = true
-  try {
-    const res = await request.post('/scans', {
-      datasourceId: /^\d+$/.test(String(dsId)) ? Number(dsId) : dsId,
-      schema,
-      database: db || null,
-      tables: singleTable.value ? [singleTable.value] : (selectedTables.value.length ? selectedTables.value.map((t) => t.name) : null),
-      forceFull: scanForm.forceFull,
-      nullRules,
-      maxTableSizeBytes: maxSizeBytes(),
-      autoTag: scanForm.autoTag,
-      genDoc: scanForm.genDoc,
-      workers: scanForm.workers || null,
-    })
-    ElMessage.success('扫描任务已提交')
-    scanDialogVisible.value = false
-    // 带上库名标签,供页签标题展示
-    const schemaLabel = db ? `${db}.${schema}` : schema
-    router.push(`/scans/${res.jobId}?schema=${encodeURIComponent(schemaLabel)}`)
-  } finally {
-    submitting.value = false
-  }
 }
 
 // 首次挂载标记:onActivated 在首次挂载后也会触发,避免与 onMounted 重复加载
@@ -987,16 +852,5 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
-}
-.rule-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 8px;
-}
-.form-tip {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.4;
 }
 </style>

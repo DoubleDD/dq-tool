@@ -495,6 +495,13 @@ html.dark .sidebar-menu .el-menu-item.is-active {
   font-size: 12px;
 }
 
+/* 任务中心常驻入口(铃铛左侧):与相邻头栏按钮对齐,角标默认贴右上角 */
+.header .task-center-badge {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
 .header .theme-toggle {
   color: var(--el-text-color-secondary);
 }

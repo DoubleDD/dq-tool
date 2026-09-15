@@ -2,9 +2,12 @@ package com.example.dq.controller;
 
 import com.example.dq.model.ObjectBatchResult;
 import com.example.dq.model.ObjectDirCreateRequest;
+import com.example.dq.model.ObjectDirMoveRequest;
 import com.example.dq.model.ObjectDirRenameRequest;
 import com.example.dq.model.ObjectDirSortRequest;
+import com.example.dq.model.ObjectRelMoveRequest;
 import com.example.dq.model.ObjectTableMountRequest;
+import com.example.dq.model.ObjectTableMoveRequest;
 import com.example.dq.model.ObjectTableRelRequest;
 import com.example.dq.service.ObjectCatalogService;
 import com.example.dq.web.Validators;
@@ -46,6 +49,24 @@ public class ObjectCatalogController {
     public void sortDirs(Context ctx) {
         ObjectDirSortRequest req = Validators.validate(ctx.bodyAsClass(ObjectDirSortRequest.class));
         service.reorderDirs(req.getDatasourceId(), req.getParentId(), req.getOrderedIds());
+    }
+
+    /** 移动目录:body {parentId(可空=根)};目标是自身/其子孙目录、跨数据源、同级重名均 400 */
+    public void moveDir(Context ctx) {
+        ObjectDirMoveRequest req = Validators.validate(ctx.bodyAsClass(ObjectDirMoveRequest.class));
+        service.moveDir(id(ctx), req.getParentId());
+    }
+
+    /** 移动挂载表到其它目录:body {dirId} */
+    public void moveTable(Context ctx) {
+        ObjectTableMoveRequest req = Validators.validate(ctx.bodyAsClass(ObjectTableMoveRequest.class));
+        service.moveTable(id(ctx), req.getDirId());
+    }
+
+    /** 移动关系表到其它挂载表下:body {objectTableId} */
+    public void moveRelation(Context ctx) {
+        ObjectRelMoveRequest req = Validators.validate(ctx.bodyAsClass(ObjectRelMoveRequest.class));
+        service.moveRelation(id(ctx), req.getObjectTableId());
     }
 
     /** 删除目录:级联删除子孙目录与挂载/关系记录,返回 {dirs, tables, rels} 级联统计 */

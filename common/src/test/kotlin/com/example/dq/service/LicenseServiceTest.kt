@@ -231,6 +231,24 @@ class LicenseServiceTest {
     }
 
     @Test
+    fun `备注仅留档展示不写入授权码`() {
+        val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val service = newService(Base64.getEncoder().encodeToString(kp.private.encoded))
+
+        // 带备注签发:留档与视图可见,授权码 payload 不变(解码成功即 10 段,无备注段)
+        val record = service.generateLicense(
+            LicenseGenerateRequest("甲公司", "2027-12-31", remark = "  张三对接的演示码  "))
+        assertEquals("张三对接的演示码", record.remark)
+        val payload = LicenseCodec.decodeAndVerify(record.code, kp.public)
+        assertEquals("甲公司", payload.customer)
+        assertEquals("张三对接的演示码", service.listLicenses().single().remark)
+
+        // 空白备注按 NULL 存
+        val blank = service.generateLicense(LicenseGenerateRequest("乙公司", "permanent", remark = "   "))
+        assertNull(blank.remark)
+    }
+
+    @Test
     fun `免鉴权标记签发激活后生效且过期不生效`() {
         val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         val privateB64 = Base64.getEncoder().encodeToString(kp.private.encoded)

@@ -20,6 +20,9 @@
       <el-table-column prop="sid" label="SID" width="100" show-overflow-tooltip>
         <template #default="{ row }">{{ row.sid || '—' }}</template>
       </el-table-column>
+      <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.remark || '—' }}</template>
+      </el-table-column>
       <el-table-column prop="serverUrl" label="server_url" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">{{ row.serverUrl || '—' }}</template>
       </el-table-column>
@@ -57,8 +60,8 @@
         </el-form-item>
         <el-form-item label="有效期">
           <el-radio-group v-model="form.permanent">
-            <el-radio :value="false">指定日期</el-radio>
             <el-radio :value="true">永久授权</el-radio>
+            <el-radio :value="false">指定日期</el-radio>
           </el-radio-group>
           <el-date-picker
             v-if="!form.permanent"
@@ -74,6 +77,9 @@
         </el-form-item>
         <el-form-item label="用户名">
           <el-input v-model="form.username" placeholder="选填" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="form.remark" placeholder="选填,仅管理端留档展示,不写入授权码" />
         </el-form-item>
         <el-form-item label="菜单">
           <div class="menu-head">
@@ -148,7 +154,7 @@ function toggleAllMenus(checked) {
   form.value.menus = checked ? MENUS.map((m) => m.key) : []
 }
 
-const form = ref({ customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', menus: MENUS.map((m) => m.key), bypassAuth: false })
+const form = ref({ customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', remark: '', menus: MENUS.map((m) => m.key), bypassAuth: false })
 
 const canGenerate = computed(() =>
   form.value.customer.trim() && (form.value.permanent || form.value.expiresDate))
@@ -166,7 +172,7 @@ async function load() {
 
 function openGenerate() {
   // 默认全勾(客户实例菜单全开放),按需取消勾选;免鉴权默认关,仅演示场景开启
-  form.value = { customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', menus: MENUS.map((m) => m.key), bypassAuth: false }
+  form.value = { customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', remark: '', menus: MENUS.map((m) => m.key), bypassAuth: false }
   generateVisible.value = true
 }
 
@@ -179,6 +185,7 @@ async function onGenerate() {
       expires: f.permanent ? 'permanent' : f.expiresDate,
       serverUrl: f.serverUrl.trim() || null,
       username: f.username.trim() || null,
+      remark: f.remark.trim() || null,
       menus: f.menus,
       bypassAuth: f.bypassAuth
     })

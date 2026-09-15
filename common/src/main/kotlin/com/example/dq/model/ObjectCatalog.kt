@@ -72,6 +72,19 @@ data class ObjectDirSortRequest(
     @field:NotEmpty val orderedIds: List<Long>?,
 )
 
+/** 移动目录请求(变更所属目录);parentId 可空,null=根(等价 0)。目标不能是自身或其子孙目录,同级重名 400 */
+data class ObjectDirMoveRequest(val parentId: Long?)
+
+/** 移动挂载表到其它目录请求;目标目录已挂载同四元组表 400 */
+data class ObjectTableMoveRequest(
+    @field:NotNull val dirId: Long?,
+)
+
+/** 移动关系表到其它挂载表下请求(变更所属挂载表);不能指向目标挂载表自身,目标已登记同四元组关系 400 */
+data class ObjectRelMoveRequest(
+    @field:NotNull val objectTableId: Long?,
+)
+
 /** 挂载表单项:relKind 可空,INCLUDE=包含 / ASSOC=关联(非法值由内核 400) */
 data class ObjectTableMountItem(
     @field:NotBlank val tableName: String?,

@@ -119,7 +119,7 @@
           <el-tag size="small" :type="statusTagType(row.status)">{{ statusText(row.status) }}</el-tag>
         </template>
       </el-table-column>
-      <!-- 两端表的标记:一眼看出该关系涉及的表属于哪些标记(与表列表页标记列同款样式,空表标记浅色区分) -->
+      <!-- 两端表的标记:一眼看出该关系涉及的表属于哪些标记(与表列表页标记列同款样式,空表/备份表等系统标记浅色区分) -->
       <el-table-column label="标记" min-width="180">
         <template #default="{ row }">
           <template v-if="rowTags(row).length">
@@ -128,10 +128,10 @@
               :key="`${tag.id}`"
               size="small"
               class="rb-tag"
-              :type="tag.kind === 'EMPTY' ? 'info' : undefined"
-              :effect="tag.kind === 'EMPTY' ? 'plain' : 'dark'"
-              :color="tag.kind === 'EMPTY' ? undefined : tag.color"
-              :style="tag.kind === 'EMPTY' ? {} : { borderColor: tag.color }"
+              :type="tag.kind !== 'USER' ? 'info' : undefined"
+              :effect="tag.kind !== 'USER' ? 'plain' : 'dark'"
+              :color="tag.kind !== 'USER' ? undefined : tag.color"
+              :style="tag.kind !== 'USER' ? {} : { borderColor: tag.color }"
             >{{ tag.name }}</el-tag>
           </template>
           <span v-else style="color: var(--el-text-color-placeholder)">-</span>

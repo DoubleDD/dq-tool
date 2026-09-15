@@ -12,6 +12,8 @@
    表头「序号」格首部插入独立 run 的 {{schemas}} 标签(LoopRowTableRenderPolicy 的循环锚点,
    循环模板行 = 标签所在行的下一行,即第一行示例数据行改写的 [col] 标签行),
    合计行 4 个数据格填 {{sumTables}}/{{sumColumns}}/{{sumRows}}/{{sumSize}}
+3. 「二、数据质量总览」标题段之前插入 {{exportNotes}} 占位段(部分导出的「1.3 导出说明」,
+   由 WordReportTables.ExportNotesPolicy 渲染;无说明时渲染为空段落)
 
 注意:全文只能有这一个 {{schemas}} 标签;循环行里不要再放(模板行渲染后被删除,残留的第二个标签会渲染失败)。
 """
@@ -99,6 +101,17 @@ def main():
     sum_cells = target.rows[-1].cells
     for cell, tag in zip(sum_cells[-4:], SUM_TAGS):
         set_cell_text(cell, tag)
+
+    # ---- 1.2 之后的「导出说明」占位段(部分导出说明,ExportNotesPolicy 渲染) ----
+    if not any('{{exportNotes}}' in p.text for p in doc.paragraphs):
+        hit = False
+        for p in doc.paragraphs:
+            if p.text.strip() == '二、数据质量总览':
+                p.insert_paragraph_before('{{exportNotes}}')
+                hit = True
+                break
+        if not hit:
+            raise SystemExit('未找到「二、数据质量总览」标题段落')
 
     doc.save(path)
     print('模板改造完成:', path)

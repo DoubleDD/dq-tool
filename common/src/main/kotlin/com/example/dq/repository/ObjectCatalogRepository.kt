@@ -99,6 +99,30 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
         jdbc.update("UPDATE object_dir SET name=?, updated_at=CURRENT_TIMESTAMP WHERE id=?", name, id)
 
     /**
+     * 移动目录到新的父目录下(调用方已校验环/重名/归属);sort_order 取新同级当前最大序号+1,
+     * 即追加为新同级末尾(与 insertDir 默认顺序口径一致),移动后可通过同级重排再调整
+     */
+    fun moveDir(id: Long, newParentId: Long, datasourceId: Long) {
+        jdbc.tx { conn ->
+            val order = conn.prepareStatement(
+                "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM object_dir WHERE datasource_id=? AND parent_id=?",
+            ).use { ps ->
+                ps.setLong(1, datasourceId)
+                ps.setLong(2, newParentId)
+                ps.executeQuery().use { rs -> rs.next(); rs.getInt(1) }
+            }
+            conn.prepareStatement(
+                "UPDATE object_dir SET parent_id=?, sort_order=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            ).use { ps ->
+                ps.setLong(1, newParentId)
+                ps.setInt(2, order)
+                ps.setLong(3, id)
+                check(ps.executeUpdate() == 1) { "目录不存在:$id" }
+            }
+        }
+    }
+
+    /**
      * 级联删除一组目录(调用方已收集好含自身的全部子孙 id):tx 内按依赖序删 关系→挂载→目录。
      * 返回 [IntArray] [删除挂载数, 删除关系数];目录删除数恒等于入参个数(目录已确认存在)。
      */
@@ -159,6 +183,10 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
     fun updateRelKind(id: Long, relKind: String): Int =
         jdbc.update("UPDATE object_table SET rel_kind=? WHERE id=?", relKind, id)
 
+    /** 移动挂载表到其它目录(调用方已校验归属与重复);表序仍按挂载时间(created_at 不变) */
+    fun moveTable(id: Long, newDirId: Long): Int =
+        jdbc.update("UPDATE object_table SET dir_id=? WHERE id=?", newDirId, id)
+
     /** 取消挂载:tx 内先删其关系记录再删挂载;返回删除的关系数。挂载不存在时抛 IllegalStateException(调用方先校验) */
     fun deleteTableWithRels(id: Long): Int =
         jdbc.tx { conn ->
@@ -187,6 +215,14 @@ class ObjectCatalogRepository(private val jdbc: Jdbc) {
         jdbc.queryOne("SELECT id, object_table_id, db_name, schema_name, table_name, remark, rel_kind, created_at " +
                 "FROM object_table_rel WHERE object_table_id=? AND db_name=? AND schema_name=? AND table_name=?",
             objectTableId, dbName, schema, table) { rs -> mapRel(rs) }
+
+    fun findRelById(id: Long): RelRow? =
+        jdbc.queryOne("SELECT id, object_table_id, db_name, schema_name, table_name, remark, rel_kind, created_at " +
+                "FROM object_table_rel WHERE id=?", id) { rs -> mapRel(rs) }
+
+    /** 移动关系表到其它挂载表下(调用方已校验);关系序仍按登记时间(created_at 不变) */
+    fun moveRel(id: Long, newObjectTableId: Long): Int =
+        jdbc.update("UPDATE object_table_rel SET object_table_id=? WHERE id=?", newObjectTableId, id)
 
     fun insertRel(objectTableId: Long, dbName: String, schema: String, table: String, remark: String?, relKind: String?): Long =
         jdbc.insert("INSERT INTO object_table_rel(object_table_id, db_name, schema_name, table_name, remark, rel_kind) " +

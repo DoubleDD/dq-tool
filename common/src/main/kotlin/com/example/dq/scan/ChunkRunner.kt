@@ -197,7 +197,7 @@ class ChunkRunner(
                 autoTag(job, table)
                 genDoc(job, table)
             }
-            syncEmptyTag(job, table.tableName, totalRows)
+            syncSystemTags(job, table.tableName, totalRows)
             checkJobCompletion(table.jobId)
         } catch (e: Exception) {
             log.error("表结果聚合失败 scanTableId={}", table.id, e)
@@ -206,12 +206,13 @@ class ChunkRunner(
         }
     }
 
-    /** 空表标记联动:表 DONE 后按行数自动打/摘「空表」;联动失败只记日志,不影响扫描结果 */
-    private fun syncEmptyTag(job: ScanRepository.JobRow, tableName: String, totalRows: Long) {
+    /** 系统标记联动:表 DONE 后空表按行数、备份表按表名自动打/摘;联动失败只记日志,不影响扫描结果 */
+    private fun syncSystemTags(job: ScanRepository.JobRow, tableName: String, totalRows: Long) {
         try {
             tagService.syncEmptyTag(job.datasourceId, job.dbName, job.schemaName, tableName, totalRows)
+            tagService.syncBackupTag(job.datasourceId, job.dbName, job.schemaName, tableName)
         } catch (e: Exception) {
-            log.warn("空表标记联动失败 jobId={} table={}: {}", job.id, tableName, e.message)
+            log.warn("系统标记联动失败 jobId={} table={}: {}", job.id, tableName, e.message)
         }
     }
 
@@ -247,7 +248,7 @@ class ChunkRunner(
             val job = repo.findJob(table.jobId)
             repo.finishTable(scanTableId, ScanStatus.DONE, 0L, null)
             if (job != null) {
-                syncEmptyTag(job, table.tableName ?: "", 0L)
+                syncSystemTags(job, table.tableName ?: "", 0L)
             }
             if (!alreadyCounted) {
                 checkJobCompletion(table.jobId)

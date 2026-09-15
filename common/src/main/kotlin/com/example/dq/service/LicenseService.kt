@@ -124,6 +124,8 @@ class LicenseService(
         val menus = LicenseMenu.encode(menuSet).ifBlank { null }
         // 免接口鉴权标记(演示用):签发后该实例所有请求跳过 dq.access-token 校验
         val bypassAuth = req.bypassAuth == true
+        // 备注仅管理端留档展示,不写入授权码 payload
+        val remark = req.remark?.trim()?.ifBlank { null }
         val issuedAt = System.currentTimeMillis()
         val code = LicenseCodec.encode(customer, expiresAt, key,
             appVersion = appVersion, serverUrl = serverUrl.orEmpty(),
@@ -133,7 +135,7 @@ class LicenseService(
             id = 0, appVersion = appVersion, customer = customer, expiresAt = expiresAt,
             serverUrl = serverUrl, username = username, sid = sid,
             issuedAt = issuedAt, features = null, menus = menus, bypassAuth = bypassAuth,
-            codeEnc = crypto.encrypt(code)!!, createdAt = null)
+            remark = remark, codeEnc = crypto.encrypt(code)!!, createdAt = null)
         val id = recordRepo.insert(record)
         return toView(record.copy(id = id))
     }
@@ -158,6 +160,7 @@ class LicenseService(
             // 旧留档(NULL)按旧功能段推导开放菜单,与新码口径一致
             menus = record.menus ?: LicenseMenu.encode(LicenseMenu.fromLegacyFeatures(record.features)),
             bypassAuth = record.bypassAuth == true,
+            remark = record.remark,
             code = crypto.decrypt(record.codeEnc)!!, createdAt = record.createdAt)
 
     /** 从库中加载并校验(库里被手改导致验签失败时按未激活处理) */

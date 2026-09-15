@@ -1,11 +1,14 @@
 package com.example.dq.model
 
-/** 标记类型:USER 用户标记 / EMPTY 系统空表标记(扫描自动驱动,用户不可编辑) */
-enum class TagKind { USER, EMPTY }
+/**
+ * 标记类型:USER 用户标记 / EMPTY 系统空表标记 / BACKUP 系统备份表标记。
+ * 后两者由扫描自动驱动(空表按行数,备份表按表名),用户不可编辑或删除,统称系统标记(kind != USER)。
+ */
+enum class TagKind { USER, EMPTY, BACKUP }
 
 /**
  * 标记类型(用途),code 落库 tag_def.tag_type:
- * SYSTEM(0) 系统标记(空表,kind=EMPTY)/ AI(1) 可用于 AI 打标(自动打标候选)/ MANUAL(2) 仅用于人工打标
+ * SYSTEM(0) 系统标记(空表/备份表,kind != USER)/ AI(1) 可用于 AI 打标(自动打标候选)/ MANUAL(2) 仅用于人工打标
  */
 enum class TagType(val code: Int) {
     SYSTEM(0), AI(1), MANUAL(2);
@@ -17,7 +20,7 @@ enum class TagType(val code: Int) {
     }
 }
 
-/** 表级打标关系的来源(table_tag.source):MANUAL 人工打标 / AI 自动打标 / SYSTEM 系统联动(空表标记) */
+/** 表级打标关系的来源(table_tag.source):MANUAL 人工打标 / AI 自动打标 / SYSTEM 系统联动(空表、备份表标记) */
 object TagSource {
     const val MANUAL = "MANUAL"
     const val AI = "AI"

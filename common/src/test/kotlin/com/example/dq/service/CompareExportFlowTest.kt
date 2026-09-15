@@ -120,33 +120,53 @@ class CompareExportFlowTest {
             assertEquals(1.0, overview.getRow(2).getCell(5).numericCellValue)
             assertTrue(overview.getRow(2).getCell(8).stringCellValue.contains("行数相差 1"),
                 overview.getRow(2).getCell(8).stringCellValue)
-            // 总览 1 条差异数据(1 个目标)对应 1 个明细 sheet,该系统全部差异都在里面
-            assertEquals(2, wb.numberOfSheets)
-            assertTrue(wb.getSheetName(1).startsWith("1_"), wb.getSheetName(1))
-            val detail = wb.getSheetAt(1)
-            // 精简版:第 1 行上下文 + 空行 + 表头(字段注释做中文列名,无注释回落字段名)
-            assertTrue(detail.getRow(0).getCell(0).stringCellValue.contains("主键 reservoir_code"),
-                detail.getRow(0).getCell(0).stringCellValue)
-            assertEquals(listOf("reservoir_code", "reservoir_name", "说明"),
-                (0..2).map { detail.getRow(2).getCell(it).stringCellValue })
-            // 一行一个差异对象:缺失 3 + 多余 4 + 不一致 5 = 12 行
+            // 总览 1 条差异数据(1 个目标)对应 1 个明细 sheet + 行级对比明细 + 字段级差异汇总
+            assertEquals(4, wb.numberOfSheets)
+            assertEquals("行级对比明细", wb.getSheetName(1))
+            assertEquals("字段级差异汇总", wb.getSheetName(2))
+            assertTrue(wb.getSheetName(3).startsWith("1_"), wb.getSheetName(3))
+            // 行级对比明细:首行即表头,一行一个「对象 × 比对目标」;R001 按编码配上,业务侧名称取目标真实值
+            val rowLevel = wb.getSheetAt(1)
+            assertEquals(listOf("基准表英文名", "基准表中文名", "基准编码", "基准名称",
+                "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明"),
+                (0..8).map { rowLevel.getRow(0).getCell(it).stringCellValue })
+            assertEquals(listOf("reservoir_base_info", "水库基础信息表", "R001", "水库1",
+                "t_reservoir_info", "", "R001", "改名水库1",
+                "reservoir_name: 基准「水库1」→ 目标「改名水库1」"),
+                (0..8).map { rowLevel.getRow(1).getCell(it).stringCellValue })
+            // 缺失 3 + 多余 4 + 不一致 5 = 12 行
+            val expectedRows = target.missingCount!! + target.extraCount!! + target.fieldMismatchCount!!
+            assertEquals(expectedRows, rowLevel.lastRowNum)
+            // 字段级差异汇总:reservoir_code 无不一致(3 缺失 + 4 多余),reservoir_name 不一致 5 次
+            val fieldSummary = wb.getSheetAt(2)
+            assertEquals(listOf("reservoir_code", "reservoir_name"),
+                (1..2).map { fieldSummary.getRow(it).getCell(2).stringCellValue })
+            assertEquals(7.0, fieldSummary.getRow(1).getCell(4).numericCellValue)   // 3+4+0
+            assertEquals(12.0, fieldSummary.getRow(2).getCell(4).numericCellValue)  // 3+4+5
+            assertEquals(5.0, fieldSummary.getRow(2).getCell(7).numericCellValue)
+            val detail = wb.getSheetAt(3)
+            // 字段级明细:首行即表头(对象编码/名称 + 基准/业务两块各三列 + 差异原因),无上下文/图例行
+            assertEquals(listOf("reservoir_code", "reservoir_name", "基准表字段", "字段中文", "基准表值",
+                "业务表字段名", "业务表中文", "业务表值", "差异原因"),
+                (0..8).map { detail.getRow(0).getCell(it).stringCellValue })
+            // 一行一个「对象 × 不一致字段」:不一致 5 字段 + 缺失 3 + 多余 4 = 12 行
             val expected = target.missingCount!! + target.extraCount!! + target.fieldMismatchCount!!
-            assertEquals(expected, lastDataRow(detail) - 2)
-            // 明细按 不一致 → 缺失 → 多余 排列:首行是字段级不一致,说明逐字段标注「基准 → 目标」方向
-            assertEquals("R001", detail.getRow(3).getCell(0).stringCellValue)
-            assertTrue(detail.getRow(3).getCell(2).stringCellValue.contains("→"),
-                detail.getRow(3).getCell(2).stringCellValue)
-            // 缺失对象整行只有基准侧值,说明写「基准有目标无」
-            val missingRow = (3..3 + expected).first { detail.getRow(it).getCell(0).stringCellValue == "R091" }
-            assertEquals("基准有目标无", detail.getRow(missingRow).getCell(2).stringCellValue)
-            // 多余对象只出目标侧值,说明写「目标有基准无」
-            assertEquals("目标有基准无", detail.getRow(missingRow + 5).getCell(2).stringCellValue)
+            assertEquals(expected, lastDataRow(detail))
+            // 明细按 不一致 → 缺失 → 多余 排列:首行是 R001 的 reservoir_name 字段级不一致
+            assertEquals(listOf("R001", "水库1", "reservoir_name", "", "水库1",
+                "reservoir_name", "", "改名水库1", "文本不一致"),
+                (0..8).map { detail.getRow(1).getCell(it).stringCellValue })
+            // 缺失对象一对象一行,字段六列留空,差异原因写「基准有目标无」
+            val missingRow = (1..1 + expected).first { detail.getRow(it).getCell(0).stringCellValue == "R091" }
+            assertEquals("基准有目标无", detail.getRow(missingRow).getCell(8).stringCellValue)
+            // 多余对象差异原因写「目标有基准无」
+            assertEquals("目标有基准无", detail.getRow(missingRow + 5).getCell(8).stringCellValue)
         } finally {
             wb.close()
         }
     }
 
-    /** 明细 sheet 最后一行数据行号(第 1 行上下文 + 空行 + 表头,数据紧随其后) */
+    /** 明细 sheet 最后一行数据行号(首行即表头,数据紧随其后) */
     private fun lastDataRow(detail: org.apache.poi.ss.usermodel.Sheet): Int = detail.lastRowNum
 
     private fun awaitDone(jobId: Long) {

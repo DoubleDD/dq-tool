@@ -149,6 +149,11 @@ export function deleteObjectDir(id) {
   return request.delete(`/object-dirs/${id}`)
 }
 
+/** 移动目录到其它目录下(变更所属目录);parentId 传 0/null=根目录 */
+export function moveObjectDir(id, parentId) {
+  return request.post(`/object-dirs/${id}/move`, { parentId })
+}
+
 /** 目录批量挂载表;payload: { dbName(可空), schemaName, items[{tableName, relKind(可空)}], remark };响应 {mounted, existing} */
 export function mountObjectTable(dirId, payload) {
   return request.post(`/object-dirs/${dirId}/tables`, payload)
@@ -159,6 +164,11 @@ export function unmountObjectTable(id) {
   return request.delete(`/object-tables/${id}`)
 }
 
+/** 移动挂载表到其它目录(变更所属目录) */
+export function moveObjectTable(id, dirId) {
+  return request.post(`/object-tables/${id}/move`, { dirId })
+}
+
 /** 挂载表批量添加关系表;payload: { dbName(可空), schemaName, items[{tableName, relKind?}], remark };响应 {mounted, existing} */
 export function addObjectTableRelation(objectTableId, payload) {
   return request.post(`/object-tables/${objectTableId}/relations`, payload)
@@ -167,6 +177,11 @@ export function addObjectTableRelation(objectTableId, payload) {
 /** 删除关系表 */
 export function deleteObjectTableRelation(id) {
   return request.delete(`/object-table-relations/${id}`)
+}
+
+/** 移动关系表到其它挂载表下(变更所属挂载表) */
+export function moveObjectRelation(id, objectTableId) {
+  return request.post(`/object-table-relations/${id}/move`, { objectTableId })
 }
 
 // ---------- 元数据批量同步 ----------

@@ -1,6 +1,7 @@
 package com.example.dq.service
 
 import com.example.dq.dialect.DialectFactory
+import com.example.dq.model.AutoTagMode
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
@@ -91,8 +92,12 @@ class ScanService(
         // 无论是否自定义都调用 resize,保证每次扫描的池大小与本次任务设定一致(避免上次设置残留)
         val workers = req.workers?.let { it.coerceIn(1, 128) }
         executor.resize(workers ?: systemSettings.scanSettings().workers)
+        // 任务级采样行数:非法值(<1)钳到 1,与系统设置保存口径一致;null 表示用全局默认(规划采样表时回落)
+        val sampleRows = req.sampleRows?.coerceAtLeast(1)
+        // AI 打标对已有标记表的处理模式:非法值按 SKIP(老行为)
+        val autoTagMode = AutoTagMode.parse(req.autoTagMode)
         val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size,
-            req.autoTag, workers, req.genDoc ?: true, dbVersion)
+            req.autoTag, workers, req.genDoc ?: true, dbVersion, sampleRows, autoTagMode)
         val scanTableIds = ArrayList<Long>()
         for (t in targets) {
             scanTableIds.add(
@@ -160,7 +165,8 @@ class ScanService(
                 }
                 repo.markTablePlanned(
                     scanTableId, chunkKey?.name,
-                    sampled, if (sampled) settings.sampleRows else null, ranges.size
+                    // 采样行数快照:任务级配置优先,未配置回落全局默认;执行侧(ChunkRunner)按表级快照取值
+                    sampled, if (sampled) job.sampleRows?.toLong() ?: settings.sampleRows else null, ranges.size
                 )
             }
             val chunkIds = ArrayList<Long>()
@@ -253,7 +259,8 @@ class ScanService(
             j.id, j.datasourceId, dsName, dbType, j.dbName, j.schemaName, j.status,
             j.forceFull, rules, j.totalTables, j.doneTables, progress(j, tables), j.error,
             j.createdAt, j.startedAt, j.finishedAt, events, tables, j.workers,
-            j.autoTag, j.genDoc, aiTracker.progress(j.id), j.dbVersion
+            j.autoTag, j.genDoc, aiTracker.progress(j.id), j.dbVersion,
+            j.sampleRows, j.autoTagMode
         )
     }
 

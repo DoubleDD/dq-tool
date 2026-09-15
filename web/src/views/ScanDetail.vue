@@ -7,6 +7,7 @@
           <el-button v-if="job.status === 'RUNNING'" type="danger" :loading="acting" @click="onCancel">取消</el-button>
           <el-button v-if="job.status === 'RUNNING'" type="warning" :loading="acting" @click="onFinish">结束任务</el-button>
           <el-button v-if="['CANCELED', 'INTERRUPTED', 'FAILED'].includes(job.status)" type="primary" :loading="acting" @click="onResume">继续扫描</el-button>
+          <el-button @click="scanDialogVisible = true">单表扫描</el-button>
           <ExportButton :job-id="jobId" />
         </div>
       </div>
@@ -42,8 +43,8 @@
         <el-table-column type="index" label="序号" width="60" />
         <el-table-column prop="tableName" label="表名" min-width="180" sortable show-overflow-tooltip>
           <template #default="{ row }">
-            <el-link v-if="row.status === 'DONE'" type="primary" @click="goColumns(row)">{{ row.tableName }}</el-link>
-            <span v-else>{{ row.tableName }}</span>
+            <!-- 已完成/未完成行均可点击:带 jobId 进字段明细页,未完成行展示结构与已有统计(TableDetail 有兜底) -->
+            <el-link type="primary" @click="goColumns(row)">{{ row.tableName }}</el-link>
           </template>
         </el-table-column>
         <el-table-column label="进度" width="200" sortable :sort-method="(a, b) => chunkPercent(a) - chunkPercent(b)">
@@ -104,6 +105,15 @@
     <el-dialog v-model="detail.visible" :title="detail.title" width="640px">
       <pre class="detail-content">{{ detail.content }}</pre>
     </el-dialog>
+
+    <!-- 单表扫描:从当前任务表清单中选一张重新扫描(共享 ScanDialog,默认强制全量开、大小上限留空) -->
+    <ScanDialog
+      v-model="scanDialogVisible"
+      :datasource-id="job?.datasourceId"
+      :schema="job?.schemaName"
+      :database="job?.dbName || ''"
+      :selectable-tables="jobTableNames"
+    />
   </div>
 </template>
 
@@ -117,6 +127,7 @@ import request from '../api'
 import ExportButton from '../components/ExportButton.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import ScanProgressBar from '../components/ScanProgressBar.vue'
+import ScanDialog from '../components/ScanDialog.vue'
 import { formatDateTime, formatDuration, formatNumber, statusTagType, statusText } from '../utils/format'
 import { setScanSchema, setScanDs, syncTab } from '../stores/tabs'
 const route = useRoute()
@@ -126,6 +137,10 @@ const jobId = route.params.jobId
 const job = ref(null)
 const loading = ref(false)
 const acting = ref(false)
+// 「单表扫描」对话框:从当前任务表清单中选一张重新扫描
+const scanDialogVisible = ref(false)
+// 当前任务表名清单,供 ScanDialog 的单表下拉选择
+const jobTableNames = computed(() => (job.value?.tables || []).map((t) => t.tableName))
 
 /** 失败原因详情弹窗状态 */
 const detail = ref({ visible: false, title: '', content: '' })

@@ -43,14 +43,14 @@ const props = defineProps({
   schema: String,
   db: { type: String, default: '' },
   tableName: { type: String, default: '' },
-  // 该表当前全部标记(含空表标记),勾选初始值只取其中的 USER 标记
+  // 该表当前全部标记(含空表/备份表系统标记),勾选初始值只取其中的 USER 标记
   currentTags: { type: Array, default: () => [] }
 })
 const emit = defineEmits(['update:modelValue', 'saved'])
 
 const loading = ref(false)
 const saving = ref(false)
-// 全部 USER 标记(空表标记是系统驱动,不参与勾选)
+// 全部 USER 标记(空表/备份表标记是系统驱动,不参与勾选)
 const userTags = ref([])
 const checkedTagIds = ref([])
 // 就地新建区(共享组件),弹窗打开时 reset 清掉上次输入

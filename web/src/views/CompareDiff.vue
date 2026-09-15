@@ -60,7 +60,7 @@
             </template>
           </el-alert>
 
-          <!-- 筛选行:差异类型 + 厂商 + 关键字 -->
+          <!-- 筛选行:差异类型 + 业务系统 + 关键字 -->
           <div class="filter-bar">
             <el-radio-group v-model="diffType" size="small">
               <el-radio-button value="">全部</el-radio-button>
@@ -71,15 +71,15 @@
               <el-radio-button value="EXTRA">对象多余</el-radio-button>
             </el-radio-group>
             <el-radio-group v-model="targetFilter" size="small">
-              <el-radio-button value="">全部厂商</el-radio-button>
+              <el-radio-button value="">全部业务系统</el-radio-button>
               <el-radio-button v-for="t in doneTargets" :key="t.id" :value="String(t.id)">{{ t.dsName || `数据源 ${t.datasourceId}` }}</el-radio-button>
             </el-radio-group>
             <el-input v-model="kwInput" size="small" clearable placeholder="对象名称或编码" style="width: 220px" />
           </div>
 
           <!--
-            明细表格:行 = 对象(各 target 按 objectKey 合并后的并集),列 = 对象 / 基准信息 / 每厂商一列状态。
-            实现取舍:diffs API 按 target 过滤分页,多厂商同屏逐行请求太重;这里对每个 DONE target 全量拉取
+            明细表格:行 = 对象(各 target 按 objectKey 合并后的并集),列 = 对象 / 基准信息 / 每业务系统一列状态。
+            实现取舍:diffs API 按 target 过滤分页,多业务系统同屏逐行请求太重;这里对每个 DONE target 全量拉取
             (分页 5000/页循环拉完,上限与后端一致 50 万行),前端按 objectKey 内存合并、过滤与分页。
             典型量级(几百~几万行)下一次性加载比分页逐查更简单可控;超大数据量时加载会慢,以 loading 态兜底。
           -->
@@ -192,7 +192,7 @@ const diffsLoading = ref(false)
 let timer = null
 
 // 筛选:差异类型(''/SAME/NOT_SAME/DIFF/MISSING/EXTRA,默认 NOT_SAME「差异」只展示非完全一致行)、
-// 厂商('' = 全部)、关键字(防抖 300ms);NOT_SAME 为组合筛选:该对象在所选范围内存在任一非 SAME 的厂商(含 DIFF/MISSING/EXTRA)
+// 业务系统('' = 全部)、关键字(防抖 300ms);NOT_SAME 为组合筛选:该对象在所选范围内存在任一非 SAME 的业务系统(含 DIFF/MISSING/EXTRA)
 const diffType = ref('NOT_SAME')
 const targetFilter = ref('')
 const kwInput = ref('')
@@ -212,12 +212,12 @@ const mergedRows = ref([])
 
 const doneTargets = computed(() => targets.value.filter((t) => t.status === 'DONE'))
 const failedTargets = computed(() => targets.value.filter((t) => t.status === 'FAILED'))
-// 选了具体厂商时只显示该厂商列
+// 选了具体业务系统时只显示该业务系统列
 const visibleTargets = computed(() =>
   targetFilter.value ? doneTargets.value.filter((t) => String(t.id) === targetFilter.value) : doneTargets.value
 )
 
-/** 表定位串:db.schema.table(库/模式可空时省略对应段);表头第二行与厂商单元格 tooltip 共用 */
+/** 表定位串:db.schema.table(库/模式可空时省略对应段);表头第二行与业务系统单元格 tooltip 共用 */
 function tableLabel(t) {
   const schemaPart = t.db ? `${t.db}.${t.schema || ''}` : (t.schema || '')
   return schemaPart ? `${schemaPart}.${t.table}` : t.table
@@ -267,7 +267,7 @@ function matchByOf(row) {
   return ''
 }
 
-/** 厂商单元格状态 tag:一致绿 / N 项不一致橙 / 缺失红 / 多余灰 */
+/** 业务系统单元格状态 tag:一致绿 / N 项不一致橙 / 缺失红 / 多余灰 */
 function statusTag(t) {
   switch (t.diffType) {
     case 'SAME': return { type: 'success', text: '一致' }
@@ -288,7 +288,7 @@ function firstDiff(row) {
 }
 
 /**
- * 展开行 → 字段级明细:字段 / 基准值 / 各厂商值。
+ * 展开行 → 字段级明细:字段 / 基准值 / 各业务系统值。
  * DIFF/MISSING/EXTRA 行的 diff_json 都是整行快照,因此每格都能取到真实值
  * (该侧确实不存在的值为 null,界面显示「(空)」);SAME 行不落快照,取不到值时显示「一致」。
  * 无任何快照(全 SAME / 旧格式的 MISSING、EXTRA)时返回空数组,回落到 expandTip 文案。
@@ -298,7 +298,7 @@ function expandRows(row) {
   const snapOf = (t) => row.byTarget[t.id]?.diffs || []
   // 该行是否存在整行快照
   if (!doneTargets.value.some((t) => snapOf(t).length)) return []
-  // 各字段基准值:任一厂商快照里的 base(各厂商基准一致)
+  // 各字段基准值:任一业务系统快照里的 base(各业务系统基准一致)
   const baseOf = {}
   for (const t of doneTargets.value) {
     for (const d of snapOf(t)) {
@@ -340,9 +340,9 @@ function expandRows(row) {
 
 /**
  * 字段级明细单元格样式:问题单元格给整格底色高亮(与导出核对表同款观感)。
- * columnIndex 0=序号 / 1=字段 / 2=基准值 / 3 起为厂商列,顺序与 visibleTargets 一致
+ * columnIndex 0=序号 / 1=字段 / 2=基准值 / 3 起为业务系统列,顺序与 visibleTargets 一致
  * (列结构改动时这里要同步改;前置列数 = 3)
- * 高亮口径:基准值列=该行多余(基准侧为空);厂商列=不一致字段,或该对象缺失(目标侧为空)
+ * 高亮口径:基准值列=该行多余(基准侧为空);业务系统列=不一致字段,或该对象缺失(目标侧为空)
  */
 function diffCellClass({ row: r, columnIndex }) {
   if (columnIndex === 2) return r.baseMismatch ? 'mismatch-cell' : ''
@@ -350,10 +350,10 @@ function diffCellClass({ row: r, columnIndex }) {
   return t && r.perTarget[t.id]?.mismatch ? 'mismatch-cell' : ''
 }
 
-/** 无字段明细可展示时的提示(按该行各厂商状态归纳) */
+/** 无字段明细可展示时的提示(按该行各业务系统状态归纳) */
 function expandTip(row) {
   const types = new Set(Object.values(row.byTarget).map((s) => s.diffType))
-  if (types.size === 1 && types.has('SAME')) return '该对象在所有比对厂商完全一致'
+  if (types.size === 1 && types.has('SAME')) return '该对象在所有比对业务系统完全一致'
   const parts = []
   for (const t of doneTargets.value) {
     const st = row.byTarget[t.id]
@@ -365,8 +365,8 @@ function expandTip(row) {
 }
 
 /**
- * 差异类型命中:NOT_SAME(差异)= 该对象在筛选范围内存在任一非 SAME 的厂商;
- * 指定厂商时只看该厂商(该厂商无此行时不命中),全部厂商时任一厂商命中即保留
+ * 差异类型命中:NOT_SAME(差异)= 该对象在筛选范围内存在任一非 SAME 的业务系统;
+ * 指定业务系统时只看该业务系统(该业务系统无此行时不命中),全部业务系统时任一业务系统命中即保留
  */
 function typeHit(row, type) {
   if (type === 'NOT_SAME') {
@@ -380,7 +380,7 @@ function typeHit(row, type) {
   return Object.values(row.byTarget).some((s) => s.diffType === type)
 }
 
-/** 筛选后的行:指定厂商时按该厂商状态过滤,全部厂商时任一厂商命中即保留 */
+/** 筛选后的行:指定业务系统时按该业务系统状态过滤,全部业务系统时任一业务系统命中即保留 */
 const filteredRows = computed(() => {
   const k = kw.value.trim().toLowerCase()
   return mergedRows.value.filter((row) => {
@@ -429,7 +429,7 @@ async function loadReport() {
   } catch { /* 拦截器已提示 */ }
 }
 
-/** 拉取全部 DONE 厂商的差异明细并内存合并(每厂商 5000/页循环拉完) */
+/** 拉取全部 DONE 业务系统的差异明细并内存合并(每业务系统 5000/页循环拉完) */
 async function loadAllDiffs() {
   diffsLoading.value = true
   mergedRows.value = []
@@ -454,7 +454,7 @@ async function loadAllDiffs() {
   }
 }
 
-/** 单厂商全量差异:5000/页循环拉取(与后端单侧 50 万行上限配套,封顶 100 页防失控) */
+/** 单业务系统全量差异:5000/页循环拉取(与后端单侧 50 万行上限配套,封顶 100 页防失控) */
 async function fetchTargetDiffs(targetId) {
   const all = []
   const PAGE_SIZE = 5000

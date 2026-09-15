@@ -139,6 +139,22 @@
             <span v-else class="bg-task-chip-text">后台任务 ×{{ backgroundTasks.list.length }}</span>
           </el-button>
         </el-tooltip>
+        <!-- 任务中心常驻入口(铃铛旁):任何时候可点开抽屉查看全部进行中的后台任务;有任务时角标计数 -->
+        <el-tooltip placement="bottom">
+          <template #content>
+            <template v-if="backgroundTasks.list.length">
+              <div v-for="row in backgroundTasks.list" :key="row.key" class="bt-chip-line">
+                {{ kindLabel(row) }} · {{ row.stage }} {{ row.percent }}%
+              </div>
+            </template>
+            <span v-else>任务中心:暂无进行中的后台任务</span>
+          </template>
+          <el-badge :value="backgroundTasks.list.length" :hidden="!backgroundTasks.list.length" class="task-center-badge">
+            <el-button text circle @click="taskDrawerVisible = true">
+              <el-icon><List /></el-icon>
+            </el-button>
+          </el-badge>
+        </el-tooltip>
         <!-- 通知中心:铃铛带未读角标,点击右侧抽屉看历史通知、可清除所有 -->
         <NotificationBell />
         <el-tooltip :content="`主题:${themeModeText}(点击切换)`" placement="bottom">
@@ -173,7 +189,7 @@ import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import request from './api'
 import { apiUrl, authHeaders } from './api/base'
-import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading } from '@element-plus/icons-vue'
+import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, List, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { backgroundTasks, initBackgroundTasks } from './stores/backgroundTasks'

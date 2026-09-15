@@ -25,8 +25,12 @@ import com.example.dq.repository.TableSystemRepository
 import com.example.dq.util.ExcelCells
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
+import org.apache.poi.ss.usermodel.CellStyle
+import org.apache.poi.ss.usermodel.FillPatternType
 import org.apache.poi.xssf.streaming.SXSSFSheet
 import org.apache.poi.xssf.streaming.SXSSFWorkbook
+import org.apache.poi.xssf.usermodel.XSSFCellStyle
+import org.apache.poi.xssf.usermodel.XSSFColor
 import org.slf4j.LoggerFactory
 import java.io.OutputStream
 import java.math.BigDecimal
@@ -535,9 +539,13 @@ class CompareService(
     /**
      * 差异导出(按客户既有核对表格式):
      * - sheet 1「总览」:一行一个系统(首行基准表),列口径见 [EXPORT_OVERVIEW_HEADERS]
-     * - 总览里有几条差异数据(即几个比对目标)就跟着几个明细 sheet:sheet 名「序号_系统名」,
-     *   序号与总览行顺序一一对应;每个 sheet 装该系统**全部**差异,粒度为字段级
-     *   (DIFF 行把创建任务时勾选的每个不一致字段各列一行,MISSING/EXTRA 整行一条)
+     * - sheet 2「行级对比明细」:一行一个「对象 × 比对目标」,基准/业务两侧各带 表英文名/表中文名/编码/名称,
+     *   末列差异说明(见 [writeRowLevelSheet])
+     * - sheet 3「字段级差异汇总」:一行一个「比对目标 × 基准字段」,统计差异数量并按 缺失/多余/不一致
+     *   三类拆分(见 [writeFieldSummarySheet])
+     * - 其后每个比对目标一个字段级明细 sheet:sheet 名「序号_系统名」,序号与总览行顺序一一对应;
+     *   每个 sheet 装该系统**全部**差异,一行一个「对象 × 不一致字段」
+     *   (DIFF 逐不一致字段展开,MISSING/EXTRA 一对象一行)
      *
      * 明细行数受 Excel 单表上限约束(1,048,576 行),超过 [MAX_ROWS_PER_SHEET] 时截断并在 sheet 内标注;
      * 系统数超过 Excel 的 sheet 上限(65530)时直接报错,避免导出损坏的文件。
@@ -551,19 +559,31 @@ class CompareService(
         val counts = repo.countForExport(jobId)
         val context = exportContext(job, targets)
         val overview = buildOverviewRows(job, targets, counts, context)
+        // 每目标差异明细只读一次:行级/字段级汇总与逐目标明细 sheet 复用同一份
+        val diffsByTarget = LinkedHashMap<Long, List<CompareRepository.DiffRow>>()
+        for (t in targets) diffsByTarget[t.id] = repo.listDiffsForExport(jobId, t.id)
 
         SXSSFWorkbook(SXSSF_ROW_WINDOW).use { wb ->
+            // 差异高亮样式(与前端差异明细页问题格同一底色 #ffebee):一眼定位不一致单元格
+            val diffStyle = wb.createCellStyle()
+            (diffStyle as XSSFCellStyle).apply {
+                fillPattern = FillPatternType.SOLID_FOREGROUND
+                setFillForegroundColor(XSSFColor(DIFF_FILL_RGB, null))
+            }
             writeOverviewSheet(wb, overview)
-            // 总览里的每个目标行一个明细 sheet,序号与总览行顺序一致;每目标明细只从库读一次
-            val used = mutableSetOf(OVERVIEW_SHEET_NAME)
+            // 行级对比明细(固定第二个 sheet):一行一个「对象 × 比对目标」
+            writeRowLevelSheet(wb, job, targets, diffsByTarget, context)
+            // 字段级差异汇总(固定第三个 sheet):一行一个「比对目标 × 基准字段」
+            writeFieldSummarySheet(wb, job, targets, diffsByTarget, context)
+            // 总览里的每个目标行一个明细 sheet,序号与总览行顺序一致
+            val used = mutableSetOf(OVERVIEW_SHEET_NAME, ROW_LEVEL_SHEET_NAME, FIELD_SUMMARY_SHEET_NAME)
             var idx = 0
             for (t in targets) {
-                val diffs = repo.listDiffsForExport(jobId, t.id)
+                val diffs = diffsByTarget[t.id].orEmpty()
                 if (diffs.isEmpty()) continue
                 val sheet = wb.createSheet(
                     ExcelCells.sheetName("${++idx}_${t.dsName ?: "数据源" + t.datasourceId}", used))
-                writeDiffDetailSheet(sheet, job, t, counts[t.id].orEmpty(), overviewSummary(overview, t.id),
-                    diffs, context)
+                writeDiffDetailSheet(sheet, job, t, diffs, context, diffStyle)
                 sheet.flushRows() // 行写盘,避免多个 sheet 同时驻留内存(临时文件由 wb.close() 统一清理)
             }
             wb.write(out)
@@ -634,6 +654,10 @@ class CompareService(
         fun fieldHeader(datasourceId: Long, db: String, table: String, field: String): String =
             columnComments[key(datasourceId, db, table)]?.get(field.lowercase()) ?: field
 
+        /** 字段注释原文:无注释返回 null(明细 sheet 中文列留空,不回落字段名) */
+        fun fieldComment(datasourceId: Long, db: String, table: String, field: String): String? =
+            columnComments[key(datasourceId, db, table)]?.get(field.lowercase())
+
         companion object {
             /** 上下文键:数据源 + 库 + 表名(库名/表名忽略大小写) */
             fun key(datasourceId: Long, db: String, table: String): String =
@@ -677,20 +701,22 @@ class CompareService(
                 log.debug("导出取所属系统失败(忽略): 数据源{} 库{} schema{}: {}", dsId, db, schema, e.message)
             }
         }
-        // 明细表头的字段注释:无注释的字段回落字段名,取不到只记 debug
-        for (t in targets) {
-            val tableKey = ExportContext.key(t.datasourceId, t.dbName, t.tableName)
-            if (columnComments.containsKey(tableKey)) continue
+        // 明细表头的字段注释:无注释的字段回落字段名,取不到只记 debug;
+        // 对象分组 sheet 的表头按基准口径取中文列名,基准表也要预取
+        fun loadColumnComments(dsId: Long, db: String, schema: String, table: String) {
+            val tableKey = ExportContext.key(dsId, db, table)
+            if (columnComments.containsKey(tableKey)) return
             try {
-                columnComments[tableKey] = metadataService.listTableColumns(
-                    t.datasourceId, t.dbName.ifBlank { null },
-                    effectiveSchema(t.schemaName, t.dbName), t.tableName)
+                columnComments[tableKey] = metadataService.listTableColumns(dsId, db.ifBlank { null }, schema, table)
                     .filter { !it.comment.isNullOrBlank() }
                     .associate { it.name.lowercase() to it.comment!! }
             } catch (e: Exception) {
-                log.debug("导出取字段注释失败(忽略): 数据源{} 库{} 表{}: {}",
-                    t.datasourceId, t.dbName, t.tableName, e.message)
+                log.debug("导出取字段注释失败(忽略): 数据源{} 库{} 表{}: {}", dsId, db, table, e.message)
             }
+        }
+        loadColumnComments(job.baseDatasourceId, job.baseDb, effectiveSchema(job.baseSchema, job.baseDb), job.baseTable)
+        for (t in targets) {
+            loadColumnComments(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName)
         }
         return ExportContext(comments, systems, fallbackSystem, columnComments)
     }
@@ -717,71 +743,225 @@ class CompareService(
     }
 
     /**
-     * 明细 sheet(精简版,对齐客户既有核对表):
-     * - 第 1 行:单行上下文 `系统 · 目标表 ← 基准表 · 主键 · 目标 N 行/基准 M 行 · 差异构成`,第 2 行留空
-     * - 第 3 行:表头 = 各行 diff_json 出现过的字段(创建任务时勾选的基准表字段,用字段注释做中文名,
-     *   无注释回落字段名)+ 末列「说明」
-     * - 其后一行一个差异对象,一格一个对象:字段取该字段的目标取值(缺失行没有目标取值则显示基准值),
-     *   用「说明」解释差异:MISSING→「基准有目标无」、EXTRA→「目标有基准无」、
-     *   DIFF→「中文列名: 基准「基准值」→ 目标「目标值」」(见 [describeDiff])
+     * 行级对比明细 sheet(固定第二个 sheet,始终生成):一行一个「对象 × 比对目标」的行级差异。
+     * - 首行即表头:基准表英文名/基准表中文名/基准编码/基准名称 + 对比业务表英文名/对比业务表中文名/
+     *   业务表编码/业务表名称 + 末列「差异说明」;表中文名取表注释,取不到留空
+     * - 编码/名称取双侧各自取值:DIFF 行业务侧优先取 diff_json 里目标侧真实值(靠名称/大模型配上的对象
+     *   两侧编码不同,差异照常体现;老紧凑格式没有该字段快照时回落基准侧);MISSING 行业务侧留空、
+     *   EXTRA 行基准侧留空(object_key/object_name 此时即目标侧取值)
+     * - 只列身份层面有差异的行:编码/名称是「选择基准字段」里指定的对齐键,DIFF 行两侧都一致的
+     *   直接跳过(其字段级不一致在各目标明细 sheet 体现);MISSING/EXTRA 行天然是身份差异,始终列出
+     * - 差异说明:DIFF 只展开身份字段(编码/名称)的差异(见 [describeDiff],字段名取基准表注释;
+     *   其余字段的不一致属列级口径,不在此展开),MISSING/EXTRA 写「基准有目标无」/「目标有基准无」
+     *
+     * 行数超 [MAX_ROWS_PER_SHEET] 时截断并追加说明行(Excel 单表上限兜底)。
+     */
+    private fun writeRowLevelSheet(wb: SXSSFWorkbook, job: CompareRepository.JobRow,
+                                   targets: List<CompareRepository.TargetRow>,
+                                   diffsByTarget: Map<Long, List<CompareRepository.DiffRow>>,
+                                   ctx: ExportContext) {
+        val sheet = wb.createSheet(ROW_LEVEL_SHEET_NAME)
+        var r = 0
+        val head = sheet.createRow(r++)
+        ROW_LEVEL_HEADERS.forEachIndexed { i, h -> head.createCell(i).setCellValue(h) }
+
+        val baseComment = ctx.comment(job.baseDatasourceId, job.baseDb, job.baseTable).orEmpty()
+        var written = 0
+        var truncated = false
+        loop@ for (t in targets) {
+            val targetComment = ctx.comment(t.datasourceId, t.dbName, t.tableName).orEmpty()
+            for (row in diffsByTarget[t.id].orEmpty()) {
+                if (written >= MAX_ROWS_PER_SHEET) {
+                    truncated = true
+                    break@loop
+                }
+                val rowMap = parseValueMap(row.diffJson)
+                val extra = row.diffType == "EXTRA"
+                // 业务侧编码/名称:DIFF 从 diff_json 取目标侧真实值(缺快照/缺列时回落基准侧),MISSING 留空
+                val targetCode = if (row.diffType == "DIFF")
+                    rowMap[job.keyField]?.value?.takeIf { it != MISSING_COLUMN_MARK } ?: row.objectKey
+                else null
+                val targetName = if (row.diffType == "DIFF")
+                    job.displayField?.let { rowMap[it]?.value?.takeIf { v -> v != MISSING_COLUMN_MARK } }
+                        ?: row.objectName
+                else null
+
+                // 行级 sheet 只呈现对象身份(编码/名称)层面的差异:身份两字段是「选择基准字段」里
+                // 指定的对齐键,DIFF 行两侧编码、名称都一致时,差异纯属字段级(各目标明细 sheet 已展开),
+                // 此处不再占位
+                if (row.diffType == "DIFF" &&
+                    row.objectKey.orEmpty() == targetCode.orEmpty() &&
+                    row.objectName.orEmpty() == targetName.orEmpty()) continue
+
+                val excelRow = sheet.createRow(r++)
+                excelRow.createCell(0).setCellValue(job.baseTable)
+                excelRow.createCell(1).setCellValue(baseComment)
+                excelRow.createCell(2).setCellValue(if (extra) "" else row.objectKey.orEmpty())
+                excelRow.createCell(3).setCellValue(if (extra) "" else row.objectName.orEmpty())
+                excelRow.createCell(4).setCellValue(t.tableName)
+                excelRow.createCell(5).setCellValue(targetComment)
+                excelRow.createCell(6).setCellValue(if (extra) row.objectKey.orEmpty() else targetCode.orEmpty())
+                excelRow.createCell(7).setCellValue(if (extra) row.objectName.orEmpty() else targetName.orEmpty())
+                // 差异说明只写身份字段(编码/名称)的差异:其余字段的不一致属列级口径,
+                // 由字段级差异汇总与各目标明细 sheet 展开,行级 sheet 不重复
+                val identityMap = rowMap.filterKeys { it == job.keyField || it == job.displayField }
+                excelRow.createCell(8).setCellValue(describeDiff(row.diffType, identityMap) { f ->
+                    ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, f)
+                })
+                written++
+            }
+        }
+        if (truncated) {
+            sheet.createRow(r).createCell(0)
+                .setCellValue("(差异行数超过 $MAX_ROWS_PER_SHEET 行,已截断;完整明细请用差异明细页面筛选查看)")
+        }
+        sheet.flushRows()
+    }
+
+    /**
+     * 字段级差异汇总 sheet(固定第三个 sheet,始终生成):一行一个「比对目标 × 基准字段」,
+     * 统计该字段的差异数量并按 缺失/多余/不一致 三类拆分(差异相对基准而言):
+     * - 首行即表头:业务表英文名/业务表中文名 + 基准表字段/字段中文(无注释留空)+
+     *   差异数量/缺失/多余/不一致(数值列)
+     * - 不一致 = 该字段在 DIFF 行里的不一致次数(口径同 [FieldDiff.isMismatch],含目标缺列);
+     *   缺失/多余 = 该目标的 MISSING/EXTRA 对象数(对象级差异,整行缺失/多余即每个比对字段都缺/多,
+     *   故同目标各字段同值);差异数量 = 缺失 + 多余 + 不一致 三类合计
+     * - 行 = 任务勾选字段(无差异字段也列出,计 0),差异里出现过的其余字段兜底追加在末尾
+     */
+    private fun writeFieldSummarySheet(wb: SXSSFWorkbook, job: CompareRepository.JobRow,
+                                       targets: List<CompareRepository.TargetRow>,
+                                       diffsByTarget: Map<Long, List<CompareRepository.DiffRow>>,
+                                       ctx: ExportContext) {
+        val sheet = wb.createSheet(FIELD_SUMMARY_SHEET_NAME)
+        var r = 0
+        val head = sheet.createRow(r++)
+        FIELD_SUMMARY_HEADERS.forEachIndexed { i, h -> head.createCell(i).setCellValue(h) }
+
+        val fields = parseFields(job.fieldsJson)
+        var truncated = false
+        loop@ for (t in targets) {
+            val rows = diffsByTarget[t.id].orEmpty()
+            val missing = rows.count { it.diffType == "MISSING" }
+            val extra = rows.count { it.diffType == "EXTRA" }
+            // 字段 → 不一致次数(仅 DIFF 行,逐不一致字段计数)
+            val mismatchByField = LinkedHashMap<String, Int>()
+            for (row in rows) {
+                if (row.diffType != "DIFF") continue
+                for (d in parseValueMap(row.diffJson).values.filter { it.isMismatch() }) {
+                    mismatchByField.merge(d.field, 1, Int::plus)
+                }
+            }
+            val columns = fields + mismatchByField.keys.filter { it !in fields }
+            val targetComment = ctx.comment(t.datasourceId, t.dbName, t.tableName).orEmpty()
+            for (f in columns) {
+                if (r - 1 >= MAX_ROWS_PER_SHEET) {
+                    truncated = true
+                    break@loop
+                }
+                val mismatch = mismatchByField[f] ?: 0
+                val excelRow = sheet.createRow(r++)
+                excelRow.createCell(0).setCellValue(t.tableName)
+                excelRow.createCell(1).setCellValue(targetComment)
+                excelRow.createCell(2).setCellValue(f)
+                excelRow.createCell(3).setCellValue(
+                    ctx.fieldComment(job.baseDatasourceId, job.baseDb, job.baseTable, f).orEmpty())
+                ExcelCells.cell(excelRow.createCell(4), missing + extra + mismatch)
+                ExcelCells.cell(excelRow.createCell(5), missing)
+                ExcelCells.cell(excelRow.createCell(6), extra)
+                ExcelCells.cell(excelRow.createCell(7), mismatch)
+            }
+        }
+        if (truncated) {
+            sheet.createRow(r).createCell(0)
+                .setCellValue("(行数超过 $MAX_ROWS_PER_SHEET 行,已截断)")
+        }
+        sheet.flushRows()
+    }
+
+    /**
+     * 明细 sheet(字段级差异明细,对齐客户既有核对表):
+     * - 首行即表头(无上下文/图例行):对象编码/对象名称(取基准表字段注释做中文列名,无注释回落字段名,
+     *   无显示名字段时名称列为「对象名称」)+ 基准表块(基准表字段/字段中文/基准表值)+
+     *   业务表块(业务表字段名/业务表中文/业务表值)+ 末列「差异原因」
+     * - 其后一行一个「对象 × 不一致字段」:DIFF 行逐不一致字段各出一行,两侧块分别填字段英文名、
+     *   中文注释(无注释留空)、取值——业务表字段名按任务字段映射还原目标列名(无映射按同名);
+     *   差异格红底 = 基准/业务两个取值格标红;目标缺列时业务侧字段名/中文/值都留空、差异原因写
+     *   「业务表无此列」。
+     *   MISSING/EXTRA 一对象一行,字段六列留空、整行标红,差异原因写「基准有目标无」/「目标有基准无」
      *
      * 行数超 [MAX_ROWS_PER_SHEET] 时截断并追加说明行(Excel 单表上限兜底)。
      */
     private fun writeDiffDetailSheet(sheet: SXSSFSheet, job: CompareRepository.JobRow,
-                                     t: CompareRepository.TargetRow, counts: Map<String, Int>,
-                                     summary: CompareExportOverviewRow?,
-                                     rows: List<CompareRepository.DiffRow>, ctx: ExportContext) {
-        val system = summary?.systemName ?: t.dsName ?: "数据源${t.datasourceId}"
-        val targetTable = listOfNotNull(t.dbName.takeIf { it.isNotBlank() }, t.tableName).joinToString(".")
-        val baseTable = listOfNotNull(job.baseDb.takeIf { it.isNotBlank() }, job.baseTable).joinToString(".")
-        val context = buildString {
-            append(system).append(" · ").append(targetTable).append(" ← ").append(baseTable)
-            append(" · 主键 ").append(job.keyField)
-            append(" · ").append(countDesc(summary))
-            append(" · ").append(countComposition(counts))
-        }
-        sheet.createRow(0).createCell(0).setCellValue(context) // 第 2 行留空
+                                     t: CompareRepository.TargetRow,
+                                     rows: List<CompareRepository.DiffRow>, ctx: ExportContext,
+                                     diffStyle: CellStyle) {
+        // 业务表字段名 = 任务字段映射(基准字段 → 目标列名,忽略大小写)里的目标列,无映射按基准字段同名
+        val mapping = parseMapping(t.fieldMappingJson).mapKeys { it.key.lowercase() }
 
-        // 列 = 各行 diff_json 出现过的字段,按创建任务时的字段顺序排(字段级粒度即这几个基准表字段);
-        // 老任务/异常数据没有 diff_json 时兜底用任务勾选的全部字段列
-        val fields = parseFields(job.fieldsJson)
-        val seen = LinkedHashSet<String>()
-        rows.forEach { seen.addAll(parseValueMap(it.diffJson).keys) }
-        val columns = (
-            if (seen.isEmpty()) fields
-            else fields.filter { it in seen } + seen.filter { it !in fields }
-            ).toMutableList()
-
-        var r = 2
+        var r = 0
         val head = sheet.createRow(r++)
-        columns.forEachIndexed { i, f ->
-            head.createCell(i).setCellValue(ctx.fieldHeader(t.datasourceId, t.dbName, t.tableName, f))
+        head.createCell(0).setCellValue(ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, job.keyField))
+        head.createCell(1).setCellValue(job.displayField?.takeIf { it.isNotBlank() }
+            ?.let { ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, it) } ?: OBJECT_NAME_HEADER)
+        DETAIL_BLOCK_HEADERS.forEachIndexed { i, h -> head.createCell(2 + i).setCellValue(h) }
+
+        /** 写一行:对象编码/名称 + 差异原因恒有;[d] 非空为 DIFF 字段级行(填两侧块、两个取值格标红),为空为缺失/多余整对象行(字段六列留空、整行标红) */
+        fun writeRow(row: CompareRepository.DiffRow, d: FieldDiff?, reason: String) {
+            val excelRow = sheet.createRow(r++)
+            excelRow.createCell(0).setCellValue(row.objectKey.orEmpty())
+            excelRow.createCell(1).setCellValue(row.objectName.orEmpty())
+            if (d != null) {
+                val targetColumn = mapping[d.field.lowercase()] ?: d.field
+                // 目标缺列:业务侧字段名/中文/值都留空(业务表没有该列,差异原因已写「业务表无此列」),
+                // 不展示按同名推出来的列名,也不展示内部标记
+                val missingColumn = d.value == MISSING_COLUMN_MARK
+                excelRow.createCell(2).setCellValue(d.field)
+                excelRow.createCell(3).setCellValue(
+                    ctx.fieldComment(job.baseDatasourceId, job.baseDb, job.baseTable, d.field).orEmpty())
+                val baseCell = excelRow.createCell(4)
+                baseCell.setCellValue(d.base.orEmpty())
+                excelRow.createCell(5).setCellValue(if (missingColumn) "" else targetColumn)
+                excelRow.createCell(6).setCellValue(
+                    if (missingColumn) ""
+                    else ctx.fieldComment(t.datasourceId, t.dbName, t.tableName, targetColumn).orEmpty())
+                val targetCell = excelRow.createCell(7)
+                targetCell.setCellValue(if (missingColumn) "" else d.value.orEmpty())
+                baseCell.cellStyle = diffStyle
+                targetCell.cellStyle = diffStyle
+            }
+            excelRow.createCell(DETAIL_LAST_COL).setCellValue(reason)
+            // 缺失/多余整行标红:在全部内容格就位后补样式(createCell 会覆盖已存在的格子,不能提前建空格)
+            if (d == null) {
+                for (c in 0..DETAIL_LAST_COL) (excelRow.getCell(c) ?: excelRow.createCell(c)).cellStyle = diffStyle
+            }
         }
-        head.createCell(columns.size).setCellValue(LAST_COLUMN_HEADER)
 
         var written = 0
         var truncated = false
-        for (row in rows) {
-            if (written >= MAX_ROWS_PER_SHEET) {
-                truncated = true
-                break
+        loop@ for (row in rows) {
+            when (row.diffType) {
+                "DIFF" -> {
+                    // 一字段一行:逐不一致字段展开;老数据/异常没有字段级明细时兜底一行
+                    val mismatched = parseValueMap(row.diffJson).values.filter { it.isMismatch() }
+                    if (mismatched.isEmpty()) {
+                        if (written >= MAX_ROWS_PER_SHEET) { truncated = true; break@loop }
+                        writeRow(row, null, "字段不一致")
+                        written++
+                        continue@loop
+                    }
+                    for (d in mismatched) {
+                        if (written >= MAX_ROWS_PER_SHEET) { truncated = true; break@loop }
+                        writeRow(row, d,
+                            if (d.value == MISSING_COLUMN_MARK) REASON_MISSING_COLUMN else REASON_TEXT_DIFF)
+                        written++
+                    }
+                }
+                else -> { // MISSING/EXTRA:一对象一行,字段六列留空
+                    if (written >= MAX_ROWS_PER_SHEET) { truncated = true; break@loop }
+                    writeRow(row, null, if (row.diffType == "MISSING") "基准有目标无" else "目标有基准无")
+                    written++
+                }
             }
-            val excelRow = sheet.createRow(r++)
-            val rowMap = parseValueMap(row.diffJson)
-            columns.forEachIndexed { i, f ->
-                val cell = rowMap[f]
-                // 字段取值:优先目标侧(一行一格一个对象);缺失行没有目标值则显示基准值
-                excelRow.createCell(i).setCellValue(
-                    when {
-                        cell == null -> ""
-                        row.diffType == "EXTRA" -> cell.value.orEmpty()
-                        cell.value == null -> cell.base.orEmpty()
-                        else -> cell.value
-                    })
-            }
-            excelRow.createCell(columns.size).setCellValue(
-                describeDiff(row.diffType, rowMap) { f -> ctx.fieldHeader(t.datasourceId, t.dbName, t.tableName, f) })
-            written++
         }
         if (truncated) {
             sheet.createRow(r).createCell(0)
@@ -821,29 +1001,6 @@ class CompareService(
                 .ifEmpty { "字段不一致" }
         }
 
-    /** 目标「条数」描述:目标 N 行 / 基准 M 行;缺数时给出可读占位 */
-    private fun countDesc(summary: CompareExportOverviewRow?): String {
-        val target = summary?.rowCount?.toString() ?: "—"
-        val base = summary?.let { s ->
-            // 基准行数 = 目标行数 − 与基准差;差为空说明两侧有一侧缺数,退回 — 展示
-            if (s.rowCount != null && s.diffFromBase != null) (s.rowCount - s.diffFromBase).toString() else "—"
-        } ?: "—"
-        return "目标 $target 行 / 基准 $base 行"
-    }
-
-    /** 差异构成描述:缺失 x 条、多余 y 条、不一致 z 条 */
-    private fun countComposition(counts: Map<String, Int>): String {
-        if (counts.isEmpty()) return "无差异"
-        return DIFF_TYPE_ORDER.mapNotNull { type ->
-            val n = counts[type] ?: 0
-            if (n <= 0) null else "${DIFF_TYPE_LABELS[type] ?: type} $n 条"
-        }.joinToString("、").ifEmpty { "无差异" }
-    }
-
-    /** 取单目标总览行(明细 sheet 的条数/差异原因与总览保持同一口径) */
-    private fun overviewSummary(overview: List<CompareExportOverviewRow>, targetId: Long): CompareExportOverviewRow? =
-        overview.firstOrNull { it.targetId == targetId }
-
     /** 老任务没有 target_count 时兜底:匹配数 + 多余数(等于目标侧实际行数) */
     private fun fallbackTargetCount(t: CompareRepository.TargetRow): Int? =
         if (t.matchedCount != null && t.extraCount != null) t.matchedCount + t.extraCount else null
@@ -868,9 +1025,9 @@ class CompareService(
         return parts.joinToString(";")
     }
 
-    /** 质量报告:目标指标 + 问题字段排行(解析 DIFF 行 diff_json 按字段计数取前 10)+ 汇总 */
+    /** 质量报告:目标指标 + 问题字段排行(解析 DIFF 行 diff_json 按字段计数取前 10,带基准表字段中文名)+ 汇总 */
     fun report(jobId: Long): CompareReportView {
-        repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
+        val job = repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
         val targets = repo.listTargets(jobId).map { toTargetView(it) }
         val counts = repo.countByDiffType(jobId)
         val fieldCounts = HashMap<String, Long>()
@@ -880,10 +1037,20 @@ class CompareService(
                 if (d.isMismatch()) fieldCounts.merge(d.field, 1L, Long::plus)
             }
         }
+        // 排行项的中文字段名:基准表字段注释,取不到为 null(前端回落只显示字段名),失败静默降级
+        val fieldComments = try {
+            metadataService.listTableColumns(job.baseDatasourceId, job.baseDb.ifBlank { null },
+                effectiveSchema(job.baseSchema, job.baseDb), job.baseTable)
+                .filter { !it.comment.isNullOrBlank() }
+                .associate { it.name.lowercase() to it.comment!! }
+        } catch (e: Exception) {
+            log.debug("报告取字段注释失败(忽略): jobId={}: {}", jobId, e.message)
+            emptyMap()
+        }
         val fieldIssues = fieldCounts.entries
             .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key })
             .take(FIELD_ISSUE_TOP_N)
-            .map { FieldIssueRank(it.key, it.value) }
+            .map { FieldIssueRank(it.key, it.value, fieldComments[it.key.lowercase()]) }
         val consistencies = targets.mapNotNull { it.fieldConsistency }
         return CompareReportView(
             targets = targets,
@@ -1083,22 +1250,47 @@ class CompareService(
 
         private val DIFF_TYPES = setOf("SAME", "DIFF", "MISSING", "EXTRA")
 
-        private val DIFF_TYPE_LABELS = mapOf(
-            "SAME" to "一致", "DIFF" to "不一致", "MISSING" to "缺失", "EXTRA" to "多余")
-
         /** 导出总览 sheet 名(固定第一个 sheet) */
         const val OVERVIEW_SHEET_NAME = "总览"
+
+        /** 行级对比明细 sheet 名(固定第二个 sheet) */
+        private const val ROW_LEVEL_SHEET_NAME = "行级对比明细"
+
+        /** 字段级差异汇总 sheet 名(固定第三个 sheet) */
+        private const val FIELD_SUMMARY_SHEET_NAME = "字段级差异汇总"
+
+        /** 字段级差异汇总表头:按「比对目标 × 基准字段」统计差异数量,并按 缺失/多余/不一致 三类拆分 */
+        private val FIELD_SUMMARY_HEADERS = listOf(
+            "业务表英文名", "业务表中文名", "基准表字段", "字段中文", "差异数量", "缺失", "多余", "不一致")
+
+        /** 行级对比明细表头:基准/业务两侧各 表英文名/表中文名/编码/名称 + 差异说明 */
+        private val ROW_LEVEL_HEADERS = listOf(
+            "基准表英文名", "基准表中文名", "基准编码", "基准名称",
+            "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明")
 
         /** 总览 sheet 表头(与客户既有核对表列口径一致) */
         private val EXPORT_OVERVIEW_HEADERS = listOf(
             "表中文名", "表英文名称", "所属系统", "条数", "数据最新更新时间", "与基准差", "匹配编码数",
             "差异条数", "差异原因")
 
-        /** 明细 sheet 末列表头:解释该行差异(缺失/多余/字段级不一致) */
-        private const val LAST_COLUMN_HEADER = "说明"
+        /** 差异格红底色(与前端差异明细页问题格同一底色 #ffebee) */
+        private val DIFF_FILL_RGB = byteArrayOf(0xFF.toByte(), 0xEB.toByte(), 0xEE.toByte())
 
-        /** 差异构成展示顺序 */
-        private val DIFF_TYPE_ORDER = listOf("MISSING", "EXTRA", "DIFF")
+        /** 明细 sheet 表头(对象编码/名称两列之后的固定七列):基准/业务两块各 字段英文名/中文名/值 + 差异原因 */
+        private val DETAIL_BLOCK_HEADERS = listOf(
+            "基准表字段", "字段中文", "基准表值", "业务表字段名", "业务表中文", "业务表值", "差异原因")
+
+        /** 明细 sheet 末列(差异原因)列号:对象编码/名称 + 固定七列 */
+        private const val DETAIL_LAST_COL = 8
+
+        /** 明细 sheet 无显示名字段时「对象名称」列表头兜底 */
+        private const val OBJECT_NAME_HEADER = "对象名称"
+
+        /** 差异原因:字段取值不一致(对齐客户既有核对表口径) */
+        private const val REASON_TEXT_DIFF = "文本不一致"
+
+        /** 差异原因:目标表缺该列 */
+        private const val REASON_MISSING_COLUMN = "业务表无此列"
 
         /** 「数据最新更新时间」当前未采集,导出统一占位 */
         private const val DATA_UPDATED_AT_PLACEHOLDER = "—"

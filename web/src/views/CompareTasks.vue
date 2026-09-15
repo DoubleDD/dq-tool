@@ -49,23 +49,23 @@
           <span v-else style="color: var(--el-text-color-secondary)">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="120" align="center">
+      <!-- 状态与进度合并为一列:状态标签在上,运行中下方显示进度条与阶段文案 -->
+      <el-table-column label="状态 / 进度" width="150" align="center">
         <template #default="{ row }">
-          <el-tooltip v-if="row.status === 'FAILED' && row.error" :content="row.error" placement="top" :show-after="200">
-            <el-tag :type="statusTagType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
-          </el-tooltip>
-          <el-tag v-else :type="statusTagType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
-          <el-tag v-if="row.archived" size="small" type="info" plain style="margin-left: 4px">已归档</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="进度" min-width="170">
-        <template #default="{ row }">
-          <!-- 进度条与阶段文案纵向排列,与抽样导出页同一写法 -->
-          <span v-if="row.status === 'RUNNING'" style="display: inline-flex; flex-direction: column; gap: 2px; vertical-align: middle">
-            <el-progress :percentage="row.progressPercent || 0" :stroke-width="10" style="width: 130px" />
-            <span style="color: var(--el-text-color-secondary); font-size: 12px">{{ row.stage || '运行中' }}</span>
-          </span>
-          <span v-else style="color: var(--el-text-color-secondary)">—</span>
+          <div style="display: inline-flex; flex-direction: column; align-items: center; gap: 4px">
+            <div>
+              <el-tooltip v-if="row.status === 'FAILED' && row.error" :content="row.error" placement="top" :show-after="200">
+                <el-tag :type="statusTagType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
+              </el-tooltip>
+              <el-tag v-else :type="statusTagType(row.status)" size="small">{{ statusText(row.status) }}</el-tag>
+              <el-tag v-if="row.archived" size="small" type="info" plain style="margin-left: 4px">已归档</el-tag>
+            </div>
+            <!-- 进度条与阶段文案纵向排列,与抽样导出页同一写法 -->
+            <template v-if="row.status === 'RUNNING'">
+              <el-progress :percentage="row.progressPercent || 0" :stroke-width="10" style="width: 130px" />
+              <span style="color: var(--el-text-color-secondary); font-size: 12px">{{ row.stage || '运行中' }}</span>
+            </template>
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="发起时间" width="165" class-name="nowrap-cell">

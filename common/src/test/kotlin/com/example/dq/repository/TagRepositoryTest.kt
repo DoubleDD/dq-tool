@@ -3,6 +3,7 @@ package com.example.dq.repository
 import com.example.dq.model.ScanColumnView
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.TagKind
+import com.example.dq.model.TagSource
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -179,6 +180,32 @@ class TagRepositoryTest {
 
         // 全局打标表数跨标记去重:t1/t2/t3/t4 = 4(t2 打两个标记只算一次)
         assertEquals(4, repo.countCoveredTables())
+    }
+
+    @Test
+    fun `删除AI来源标记只清AI行不碰MANUAL与SYSTEM`() {
+        val tagA = repo.create("标记A", "#409EFF")
+        val tagB = repo.create("标记B", "#67C23A")
+        val empty = repo.findEmptyTag()!!
+        repo.ensureTableTag(tagA.id, 1L, "", "s1", "t1", TagSource.AI)
+        repo.ensureTableTag(tagB.id, 1L, "", "s1", "t1", TagSource.MANUAL)
+        repo.ensureTableTag(empty.id, 1L, "", "s1", "t1", TagSource.SYSTEM)
+        // 同库另一张表也打了 AI 标记:四元组隔离,不应被删
+        repo.ensureTableTag(tagA.id, 1L, "", "s1", "t2", TagSource.AI)
+
+        repo.deleteAiTableTags(1L, "", "s1", "t1")
+
+        val t1 = repo.tableTagsBySchema(1L, "", "s1")["t1"]!!.sortedBy { it.name }
+        assertEquals(listOf("标记B", "空表"), t1.map { it.name })
+        assertEquals(TagSource.MANUAL, t1.first { it.name == "标记B" }.source)
+        assertEquals(TagSource.SYSTEM, t1.first { it.name == "空表" }.source)
+        // 其他表的 AI 标记不受影响
+        val t2 = repo.tableTagsBySchema(1L, "", "s1")["t2"]!!
+        assertEquals(listOf("标记A"), t2.map { it.name })
+        assertEquals(TagSource.AI, t2[0].source)
+        // 再删一次幂等空操作(t1 剩 2 行 + t2 剩 1 行)
+        repo.deleteAiTableTags(1L, "", "s1", "t1")
+        assertEquals(3, count("table_tag"))
     }
 
     /** 造一条 DONE 扫描快照:任务 + 表(totalRows)+ 指定数量的字段结果 */

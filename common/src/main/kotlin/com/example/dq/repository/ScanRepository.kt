@@ -1,5 +1,6 @@
 package com.example.dq.repository
 
+import com.example.dq.model.AutoTagMode
 import com.example.dq.model.ChunkRecord
 import com.example.dq.model.ScanChunkExport
 import com.example.dq.model.ScanColumnView
@@ -19,7 +20,7 @@ class ScanRepository(private val jdbc: Jdbc) {
                       val totalTables: Int, val doneTables: Int, val error: String?, val autoTag: Boolean,
                       val workers: Int?, val genDoc: Boolean,
                       val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?,
-                      val dbVersion: String?)
+                      val dbVersion: String?, val sampleRows: Int?, val autoTagMode: AutoTagMode)
 
     private val jobMapper: (ResultSet) -> JobRow = { rs ->
         JobRow(
@@ -29,7 +30,8 @@ class ScanRepository(private val jdbc: Jdbc) {
             rs.getString("error"), rs.getBoolean("auto_tag"),
             rs.getObject("workers") as? Int, rs.getBoolean("gen_doc"),
             ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"),
-            rs.getString("db_version"))
+            rs.getString("db_version"),
+            rs.getObject("sample_rows") as? Int, AutoTagMode.parse(rs.getString("auto_tag_mode")))
     }
 
     private fun ts(rs: ResultSet, col: String): LocalDateTime? {
@@ -39,11 +41,14 @@ class ScanRepository(private val jdbc: Jdbc) {
 
     fun insertJob(datasourceId: Long, dbName: String?, schema: String, forceFull: Boolean, nullRulesJson: String?,
                   totalTables: Int, autoTag: Boolean = false, workers: Int? = null, genDoc: Boolean = true,
-                  dbVersion: String? = null): Long {
+                  dbVersion: String? = null, sampleRows: Int? = null,
+                  autoTagMode: AutoTagMode = AutoTagMode.SKIP): Long {
         val jobId = jdbc.insert(
-            "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, total_tables, auto_tag, workers, gen_doc, db_version) " +
-                    "VALUES (?,?,?,'PENDING',?,?,?,?,?,?,?)",
-            datasourceId, dbName, schema, forceFull, nullRulesJson, totalTables, autoTag, workers, genDoc, dbVersion)
+            "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, total_tables, " +
+                    "auto_tag, workers, gen_doc, db_version, sample_rows, auto_tag_mode) " +
+                    "VALUES (?,?,?,'PENDING',?,?,?,?,?,?,?,?,?)",
+            datasourceId, dbName, schema, forceFull, nullRulesJson, totalTables, autoTag, workers, genDoc, dbVersion,
+            sampleRows, autoTagMode.name)
         insertJobEvent(jobId, ScanStatus.PENDING)
         return jobId
     }
@@ -288,11 +293,13 @@ class ScanRepository(private val jdbc: Jdbc) {
         jdbc.tx { conn ->
             val jobId = insertReturningId(conn,
                 "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, " +
-                        "total_tables, done_tables, error, auto_tag, workers, gen_doc, created_at, started_at, finished_at, db_version) " +
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "total_tables, done_tables, error, auto_tag, workers, gen_doc, created_at, started_at, finished_at, " +
+                        "db_version, sample_rows, auto_tag_mode) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 datasourceId, job.dbName?.takeIf { it.isNotBlank() }, job.schemaName, job.status.name, job.forceFull,
                 job.nullRules, job.totalTables, job.doneTables, job.error, job.autoTag, job.workers, job.genDoc,
-                parseTs(job.createdAt), parseTs(job.startedAt), parseTs(job.finishedAt), job.dbVersion)
+                parseTs(job.createdAt), parseTs(job.startedAt), parseTs(job.finishedAt), job.dbVersion,
+                job.sampleRows, AutoTagMode.parse(job.autoTagMode).name)
             for (event in job.events) {
                 updateOn(conn, "INSERT INTO scan_job_event(job_id, status, created_at) VALUES (?,?,?)",
                     jobId, event.status.name, parseTs(event.createdAt))

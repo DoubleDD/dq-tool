@@ -281,6 +281,100 @@ class ObjectCatalogServiceTest {
     }
 
     @Test
+    fun `移动目录变更所属且防环防重名`() {
+        val dsId = newDs("生产库")
+        val a = service.createDir(dsId, 0, "a")
+        val b = service.createDir(dsId, 0, "b")
+        val a1 = service.createDir(dsId, a, "a1")
+        val a1x = service.createDir(dsId, a1, "a1x")
+
+        // 移动到其它目录/根,parentId 随之更新
+        service.moveDir(a1x, b)
+        assertEquals(b, catalogRepo.findDir(a1x)!!.parentId)
+        service.moveDir(a1x, 0)
+        assertEquals(0, catalogRepo.findDir(a1x)!!.parentId)
+        service.moveDir(a1x, null)   // 已在根下:null 等价 0,no-op
+        assertEquals(0, catalogRepo.findDir(a1x)!!.parentId)
+        // 移动到原父目录 no-op
+        service.moveDir(a1, a)
+        assertEquals(a, catalogRepo.findDir(a1)!!.parentId)
+        // 移动后追加为新同级末尾(默认同级顺序=创建时间口径,重排接口可再调)
+        val c = service.createDir(dsId, 0, "c")
+        service.moveDir(c, a)
+        assertEquals(listOf("a1", "c"), service.loadTree(dsId).children.first { it.id == a }.children.map { it.name })
+
+        // 非法:目录不存在/目标是自身/目标是子孙(含间接)/跨数据源/同级重名
+        assertThrows(IllegalArgumentException::class.java) { service.moveDir(9999, 0) }
+        assertThrows(IllegalArgumentException::class.java) { service.moveDir(a, a) }
+        service.moveDir(a1x, a1)   // 先放回 a 的子孙链,再验证移向子孙被防环拦截
+        assertThrows(IllegalArgumentException::class.java) { service.moveDir(a, a1) }
+        assertThrows(IllegalArgumentException::class.java) { service.moveDir(a, a1x) }
+        val otherDir = service.createDir(newDs("库二"), 0, "x")
+        assertThrows(IllegalArgumentException::class.java) { service.moveDir(a, otherDir) }
+        // 新同级重名 400:b 下已有同名目录 a
+        service.createDir(dsId, b, "a")
+        assertThrows(IllegalArgumentException::class.java) { service.moveDir(a, b) }
+    }
+
+    @Test
+    fun `移动挂载表变更所属目录`() {
+        val dsId = newDs("生产库")
+        val d1 = service.createDir(dsId, 0, "d1")
+        val d2 = service.createDir(dsId, 0, "d2")
+        val t = service.mountTable(d1, null, "s", "t1", null)
+        service.addRelation(t.id, null, "s", "r1", null)
+
+        // 移动到其它目录,其关系表跟随挂载记录
+        service.moveTable(t.id, d2)
+        assertEquals(d2, catalogRepo.findTableById(t.id)!!.dirId)
+        val node = service.loadTree(dsId).children.first { it.id == d2 }
+        assertEquals("t1", node.tables[0].tableName)
+        assertEquals(listOf("r1"), node.tables[0].relations.map { it.tableName })
+        // 同目录 no-op
+        service.moveTable(t.id, d2)
+        assertEquals(d2, catalogRepo.findTableById(t.id)!!.dirId)
+
+        // 非法:挂载不存在/目标目录不存在/跨数据源/目标已挂载同四元组表
+        assertThrows(IllegalArgumentException::class.java) { service.moveTable(9999, d2) }
+        assertThrows(IllegalArgumentException::class.java) { service.moveTable(t.id, 9999) }
+        val otherDs = newDs("库二")
+        val otherDir = service.createDir(otherDs, 0, "x")
+        assertThrows(IllegalArgumentException::class.java) { service.moveTable(t.id, otherDir) }
+        service.mountTable(d1, null, "s", "t1", null)
+        assertThrows(IllegalArgumentException::class.java) { service.moveTable(t.id, d1) }
+    }
+
+    @Test
+    fun `移动关系表变更所属挂载表`() {
+        val dsId = newDs("生产库")
+        val d1 = service.createDir(dsId, 0, "d1")
+        val m1 = service.mountTable(d1, null, "s", "t1", null)
+        val m2 = service.mountTable(d1, null, "s", "t2", null)
+        val r = service.addRelation(m1.id, null, "s", "r1", null)
+
+        // 移动到其它挂载表
+        service.moveRelation(r.id, m2.id)
+        assertEquals(m2.id, catalogRepo.findRelById(r.id)!!.objectTableId)
+        val tables = service.loadTree(dsId).children[0].tables
+        assertTrue(tables.first { it.tableName == "t1" }.relations.isEmpty())
+        assertEquals(listOf("r1"), tables.first { it.tableName == "t2" }.relations.map { it.tableName })
+        // 同挂载表 no-op
+        service.moveRelation(r.id, m2.id)
+        assertEquals(m2.id, catalogRepo.findRelById(r.id)!!.objectTableId)
+
+        // 非法:关系不存在/目标挂载不存在/跨数据源/指向目标自身/目标已登记同四元组
+        assertThrows(IllegalArgumentException::class.java) { service.moveRelation(9999, m1.id) }
+        assertThrows(IllegalArgumentException::class.java) { service.moveRelation(r.id, 9999) }
+        val otherDs = newDs("库二")
+        val otherMount = service.mountTable(service.createDir(otherDs, 0, "x"), null, "s", "t9", null)
+        assertThrows(IllegalArgumentException::class.java) { service.moveRelation(r.id, otherMount.id) }
+        val mRel = service.mountTable(d1, null, "s", "r1", null)
+        assertThrows(IllegalArgumentException::class.java) { service.moveRelation(r.id, mRel.id) }
+        service.addRelation(m1.id, null, "s", "r1", null)
+        assertThrows(IllegalArgumentException::class.java) { service.moveRelation(r.id, m1.id) }
+    }
+
+    @Test
     fun `挂载表关系类型relKind校验与重复挂载修正`() {
         val dsId = newDs("生产库")
         val dir = service.createDir(dsId, 0, "业务域")

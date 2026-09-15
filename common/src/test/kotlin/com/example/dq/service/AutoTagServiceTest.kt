@@ -3,6 +3,7 @@ package com.example.dq.service
 import com.example.dq.config.AiDefaults
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
+import com.example.dq.model.AutoTagMode
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DbType
 import com.example.dq.model.ScanColumnView
@@ -87,8 +88,9 @@ class AutoTagServiceTest {
     }
 
     /** 建一个 job + 一张 DONE 表(表注释非空,打标不触发抽样) */
-    private fun newDoneTable(table: String, autoTag: Boolean = true): Pair<Long, Long> {
-        val jobId = scanRepo.insertJob(dsId, null, "s1", false, "[]", 1, autoTag)
+    private fun newDoneTable(table: String, autoTag: Boolean = true,
+                             autoTagMode: AutoTagMode = AutoTagMode.SKIP): Pair<Long, Long> {
+        val jobId = scanRepo.insertJob(dsId, null, "s1", false, "[]", 1, autoTag, autoTagMode = autoTagMode)
         val tableId = scanRepo.insertScanTable(jobId, table, 100L, null, "订单表", null)
         scanRepo.finishTable(tableId, ScanStatus.DONE, 100L, null)
         return jobId to tableId
@@ -255,5 +257,154 @@ class AutoTagServiceTest {
         assertEquals(1, chatCalls.size)
         assertFalse(tagRepo.hasUserTag(dsId, "", "s1", "t1"))
         assertFalse(tagRepo.hasUserTag(dsId, "", "s1", "t2"))
+    }
+
+    // ---------- autoTagMode 三模式 ----------
+
+    @Test
+    fun `AutoTagMode解析空白与非法值回落SKIP`() {
+        assertEquals(AutoTagMode.SKIP, AutoTagMode.parse(null))
+        assertEquals(AutoTagMode.SKIP, AutoTagMode.parse(""))
+        assertEquals(AutoTagMode.SKIP, AutoTagMode.parse("乱写"))
+        assertEquals(AutoTagMode.APPEND, AutoTagMode.parse("append"))
+        assertEquals(AutoTagMode.OVERWRITE, AutoTagMode.parse(" Overwrite "))
+    }
+
+    @Test
+    fun `APPEND模式表已有手动标记时追加AI标记且旧标记保留`() {
+        val service = newService(configuredAi)
+        tagService.create("订单", null)
+        val manual = tagService.create("用户", null)
+        val (jobId, tableId) = newDoneTable("t_order", autoTagMode = AutoTagMode.APPEND)
+        tagRepo.ensureTableTag(manual.id, dsId, "", "s1", "t_order")
+        chatAnswer = "订单"
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        assertEquals(1, chatCalls.size)
+        val tags = tagRepo.tableTagsBySchema(dsId, "", "s1")["t_order"]!!.sortedBy { it.name }
+        assertEquals(listOf("用户", "订单"), tags.map { it.name })
+        assertEquals(TagSource.MANUAL, tags.first { it.name == "用户" }.source)
+        assertEquals(TagSource.AI, tags.first { it.name == "订单" }.source)
+    }
+
+    @Test
+    fun `OVERWRITE模式只替换AI旧标记且人工标记保留`() {
+        val service = newService(configuredAi)
+        val oldAi = tagService.create("订单", null)
+        tagService.create("用户", null)
+        val manual = tagService.create("人工档", null)
+        val (jobId, tableId) = newDoneTable("t_order", autoTagMode = AutoTagMode.OVERWRITE)
+        tagRepo.ensureTableTag(oldAi.id, dsId, "", "s1", "t_order", TagSource.AI)
+        tagRepo.ensureTableTag(manual.id, dsId, "", "s1", "t_order", TagSource.MANUAL)
+        chatAnswer = "用户"
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        assertEquals(1, chatCalls.size)
+        val tags = tagRepo.tableTagsBySchema(dsId, "", "s1")["t_order"]!!.sortedBy { it.name }
+        assertEquals(listOf("人工档", "用户"), tags.map { it.name })
+        assertEquals(TagSource.MANUAL, tags.first { it.name == "人工档" }.source)
+        assertEquals(TagSource.AI, tags.first { it.name == "用户" }.source)
+    }
+
+    @Test
+    fun `OVERWRITE模式模型返回NONE时清空AI旧标记不动人工标记`() {
+        val service = newService(configuredAi)
+        tagService.create("订单", null)
+        val oldAi = tagService.create("旧AI标", null)
+        val manual = tagService.create("人工档", null)
+        val (jobId, tableId) = newDoneTable("t_order", autoTagMode = AutoTagMode.OVERWRITE)
+        tagRepo.ensureTableTag(oldAi.id, dsId, "", "s1", "t_order", TagSource.AI)
+        tagRepo.ensureTableTag(manual.id, dsId, "", "s1", "t_order", TagSource.MANUAL)
+        chatAnswer = "NONE"
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        assertEquals(1, chatCalls.size)
+        val tags = tagRepo.tableTagsBySchema(dsId, "", "s1")["t_order"]!!
+        assertEquals(listOf("人工档"), tags.map { it.name })
+        assertEquals(TagSource.MANUAL, tags[0].source)
+    }
+
+    @Test
+    fun `OVERWRITE模式选中已有手动标记时保留原关系不改写来源`() {
+        val service = newService(configuredAi)
+        tagService.create("订单", null)
+        val manual = tagService.create("用户", null)
+        val (jobId, tableId) = newDoneTable("t_order", autoTagMode = AutoTagMode.OVERWRITE)
+        tagRepo.ensureTableTag(manual.id, dsId, "", "s1", "t_order", TagSource.MANUAL)
+        chatAnswer = "用户"
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        val tags = tagRepo.tableTagsBySchema(dsId, "", "s1")["t_order"]!!
+        assertEquals(listOf("用户"), tags.map { it.name })
+        assertEquals(TagSource.MANUAL, tags[0].source)
+    }
+
+    @Test
+    fun `SKIP模式表已有USER标记时不动旧标记`() {
+        val service = newService(configuredAi)
+        tagService.create("订单", null)
+        val manual = tagService.create("用户", null)
+        // 上一任务打的 AI 旧标记
+        val oldAi = tagService.create("旧AI标", null)
+        val (jobId, tableId) = newDoneTable("t_order") // 默认 SKIP
+        tagRepo.ensureTableTag(manual.id, dsId, "", "s1", "t_order", TagSource.MANUAL)
+        tagRepo.ensureTableTag(oldAi.id, dsId, "", "s1", "t_order", TagSource.AI)
+        chatAnswer = "订单"
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        assertTrue(chatCalls.isEmpty()) // SKIP 且已有 USER 标记:不调 LLM
+        val tags = tagRepo.tableTagsBySchema(dsId, "", "s1")["t_order"]!!.sortedBy { it.name }
+        assertEquals(listOf("旧AI标", "用户"), tags.map { it.name })
+        assertEquals(TagSource.AI, tags.first { it.name == "旧AI标" }.source)
+        assertEquals(TagSource.MANUAL, tags.first { it.name == "用户" }.source)
+    }
+
+    // ---------- 备份表 ----------
+
+    @Test
+    fun `备份表不调LLM且清理陈旧AI标记`() {
+        val service = newService(configuredAi)
+        tagService.create("订单", null)
+        val oldAi = tagService.create("旧AI标", null)
+        val (jobId, tableId) = newDoneTable("t_order_copy")
+        tagRepo.ensureTableTag(oldAi.id, dsId, "", "s1", "t_order_copy", TagSource.AI)
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        assertTrue(chatCalls.isEmpty())                                  // 备份表不消耗大模型调用
+        assertFalse(tagRepo.hasUserTag(dsId, "", "s1", "t_order_copy"))  // 陈旧 AI 标记被清掉
+    }
+
+    @Test
+    fun `备份表各后缀命名都不调LLM`() {
+        val service = newService(configuredAi)
+        tagService.create("订单", null)
+        val (jobId, _) = newDoneTable("t_order_bak2")
+        val job = scanRepo.findJob(jobId)!!
+        for (name in listOf("t_order_copy1", "t_order_backup", "t_order_tmp9")) {
+            val id = scanRepo.insertScanTable(jobId, name, 100L, null, "订单表", null)
+            scanRepo.finishTable(id, ScanStatus.DONE, 100L, null)
+            service.runSafely(job, id)
+        }
+
+        assertTrue(chatCalls.isEmpty())
+    }
+
+    @Test
+    fun `未配置大模型时备份表同样清理陈旧AI标记`() {
+        val service = newService(AiDefaults()) // 页面与默认配置都为空
+        val oldAi = tagService.create("旧AI标", null)
+        val (jobId, tableId) = newDoneTable("t_order_copy")
+        tagRepo.ensureTableTag(oldAi.id, dsId, "", "s1", "t_order_copy", TagSource.AI)
+
+        service.runSafely(scanRepo.findJob(jobId)!!, tableId)
+
+        assertTrue(chatCalls.isEmpty())
+        assertFalse(tagRepo.hasUserTag(dsId, "", "s1", "t_order_copy"))
     }
 }
