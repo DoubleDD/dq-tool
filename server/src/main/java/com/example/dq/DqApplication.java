@@ -10,6 +10,9 @@ import com.example.dq.config.StartupLog;
 import com.example.dq.config.StartupStage;
 import com.example.dq.config.TrayManager;
 import com.example.dq.env.ServiceEnv;
+import com.example.dq.model.ErrorLevel;
+import com.example.dq.model.ErrorSource;
+import com.example.dq.web.ErrorCenterHolder;
 import com.example.dq.web.WebServer;
 
 import java.io.IOException;
@@ -23,9 +26,12 @@ public class DqApplication {
     public static void main(String[] args) throws Exception {
         // 启动早期日志必须最先初始化:Windows 安装版无控制台,双击后的每一步都要落文件(数据目录同级 logs/startup.log)
         StartupLog.init();
-        // 非 main 线程的未捕获异常(AWT 事件线程、看门狗线程等)默认只打 stderr,安装版看不到,统一落 startup.log
-        Thread.setDefaultUncaughtExceptionHandler((thread, e) ->
-                StartupLog.log("线程 " + thread.getName() + " 未捕获异常", e));
+        // 非 main 线程的未捕获异常(AWT 事件线程、看门狗线程等)默认只打 stderr,安装版看不到,统一落 startup.log;
+        // 同时上报错误中心(内核就绪前为 no-op,由错误中心自身落 logs/error-spool.jsonl 兜底)
+        Thread.setDefaultUncaughtExceptionHandler((thread, e) -> {
+            StartupLog.log("线程 " + thread.getName() + " 未捕获异常", e);
+            ErrorCenterHolder.report(e, "线程:" + thread.getName(), "未捕获异常(默认处理器)");
+        });
         // 与原 Spring Boot 行为一致:默认 headless,只有显式 -Djava.awt.headless=false(打包脚本/make 注入)
         // 才启用窗口/托盘;必须在任何 AWT 类加载前设置
         if (System.getProperty("java.awt.headless") == null) {
@@ -184,6 +190,9 @@ public class DqApplication {
         } catch (Throwable t) {
             // 安装版无控制台,未捕获异常必须落文件;同时保留 stderr 输出(开发/服务器部署排障)
             StartupLog.log("启动失败,进程即将退出(startup.log=" + StartupLog.file() + ")", t);
+            // 错误中心:内核未就绪时自身会落 logs/error-spool.jsonl,就绪后回灌,启动失败不丢线索
+            ErrorCenterHolder.report(ErrorSource.STARTUP, ErrorLevel.FATAL, t.getClass().getName(),
+                    "启动失败,进程即将退出: " + t.getMessage(), t, "启动流程", "startup.log=" + StartupLog.file());
             // 失败同样输出耗时统计:排障时能直接看到卡在哪个阶段之后
             StartupLog.logTiming();
             t.printStackTrace();

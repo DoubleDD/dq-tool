@@ -11,18 +11,20 @@ class DmDialect : AbstractDialect() {
 
     companion object {
         /** 总大小 = 表段 + 该表全部索引段;存储信息取表空间,注释取 ALL_TAB_COMMENTS */
-        internal fun listTablesSql(withSize: Boolean): String {
+        internal fun listTablesSql(withSize: Boolean, tableNames: Collection<String>? = null): String {
             val sizeExpr = if (withSize)
                 "(SELECT SUM(s.bytes) FROM all_segments s WHERE s.owner = t.owner " +
                 "  AND (s.segment_name = t.table_name OR s.segment_name IN " +
                 "    (SELECT i.index_name FROM all_indexes i WHERE i.owner = t.owner AND i.table_name = t.table_name)))"
             else
                 "NULL"
+            val nameFilter = if (tableNames.isNullOrEmpty()) ""
+            else " AND t.table_name IN (" + tableNames.joinToString(", ") { "?" } + ")"
             return "SELECT t.table_name, t.num_rows, " + sizeExpr + ", " +
                     "t.tablespace_name, NVL(c.comments, '') " +
                     "FROM all_tables t " +
                     "LEFT JOIN all_tab_comments c ON c.owner = t.owner AND c.table_name = t.table_name " +
-                    "WHERE t.owner = ? ORDER BY t.table_name"
+                    "WHERE t.owner = ?" + nameFilter + " ORDER BY t.table_name"
         }
     }
 
@@ -91,20 +93,29 @@ class DmDialect : AbstractDialect() {
     }
 
     @Throws(SQLException::class)
-    override fun listTables(conn: Connection, schema: String): List<TableStat> {
+    override fun listTables(conn: Connection, schema: String): List<TableStat> =
+        listTablesInternal(conn, schema, null)
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String, tableNames: Collection<String>): List<TableStat> =
+        listTablesInternal(conn, schema, tableNames)
+
+    private fun listTablesInternal(conn: Connection, schema: String, tableNames: Collection<String>?): List<TableStat> {
         try {
-            return queryTables(conn, schema, listTablesSql(true))
+            return queryTables(conn, schema, listTablesSql(true, tableNames), tableNames)
         } catch (e: SQLException) {
             // 部分 DM 实例或受限账号没有 ALL_SEGMENTS 视图,降级为不统计表大小
-            return queryTables(conn, schema, listTablesSql(false))
+            return queryTables(conn, schema, listTablesSql(false, tableNames), tableNames)
         }
     }
 
     @Throws(SQLException::class)
-    private fun queryTables(conn: Connection, schema: String, sql: String): List<TableStat> {
+    private fun queryTables(conn: Connection, schema: String, sql: String,
+                            tableNames: Collection<String>?): List<TableStat> {
         val tables = ArrayList<TableStat>()
         conn.prepareStatement(sql).use { ps ->
             ps.setString(1, schema)
+            bindNames(ps, 2, tableNames)
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     val rows = rs.getLong(2)

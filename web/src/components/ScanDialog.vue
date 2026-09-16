@@ -4,14 +4,7 @@
     <el-form label-width="110px">
       <el-form-item label="扫描范围">
         <div style="width: 100%">
-          <!-- 单表选择模式(扫描详情页):从传入表清单中选一张重新扫描 -->
-          <template v-if="selectableTables && selectableTables.length">
-            <el-select v-model="scanForm.table" placeholder="选择要扫描的表" style="width: 280px">
-              <el-option v-for="t in selectableTables" :key="t" :label="t" :value="t" />
-            </el-select>
-            <div class="form-tip">从当前任务的表清单中选择一张表重新扫描</div>
-          </template>
-          <span v-else-if="scopeLabel">{{ scopeLabel }}</span>
+          <span v-if="scopeLabel">{{ scopeLabel }}</span>
           <template v-else>
             <span v-if="fixedTable">仅扫描表:{{ fixedTable }}</span>
             <span v-else-if="selectedTables.length">已选 {{ selectedTables.length }} 张表</span>
@@ -55,7 +48,7 @@
           <el-icon style="vertical-align: -2px; margin-left: 4px"><QuestionFilled /></el-icon>
         </el-tooltip>
       </el-form-item>
-      <el-form-item v-if="scanForm.autoTag" label="已有标签的表">
+      <el-form-item v-if="scanForm.autoTag" label="旧标签处理">
         <div style="width: 100%">
           <el-radio-group v-model="scanForm.autoTagMode">
             <el-radio value="SKIP">跳过</el-radio>
@@ -115,7 +108,6 @@ import { confirmAiUsable } from '../utils/aiCheck'
  * 采样行数(sampleRows,留空=全局默认)与 AI 打标模式(autoTagMode,对已有标记的表 跳过/追加/覆盖)。
  * 模式:
  * - 默认:扫 props.schema/props.database,范围 单表(fixedTable)> 勾选(selectedTables)> 全库;
- * - selectableTables:范围变为表清单下拉,选一张重新扫描(扫描详情页);
  * - targets(整库多目标,库列表页批量扫描):逐库提交后不跳转,emit submitted(null)。
  * 提交成功:单目标跳 /scans/:jobId;AI 可用性校验走 confirmAiUsable。
  */
@@ -132,8 +124,6 @@ const props = defineProps({
   scopeTables: { type: Array, default: null },
   /** 自定义范围文案(库列表整库批量扫描) */
   scopeLabel: { type: String, default: '' },
-  /** 表名清单:范围项变为单表下拉选择(扫描详情页「单表扫描」) */
-  selectableTables: { type: Array, default: null },
   /** 整库多目标(库列表页批量扫描):[{ schema, database }],逐库提交、不跳转 */
   targets: { type: Array, default: null },
 })
@@ -144,7 +134,7 @@ const submitting = ref(false)
 // maxSizeValue/sampleRows 为空(null)表示不限制/用全局默认
 const scanForm = reactive({
   forceFull: true, nullRules: [], maxSizeValue: null, maxSizeUnit: 'GB',
-  autoTag: true, autoTagMode: 'SKIP', genDoc: true, workers: null, sampleRows: null, table: '',
+  autoTag: true, autoTagMode: 'SKIP', genDoc: true, workers: null, sampleRows: null,
 })
 
 // 打开弹窗时重置表单(默认值与原先两页内联弹窗一致:强制全量开、AI 默认勾选、大小上限留空)
@@ -160,7 +150,6 @@ watch(() => props.modelValue, (visible) => {
   scanForm.genDoc = true
   scanForm.workers = defaultWorkers.value
   scanForm.sampleRows = null
-  scanForm.table = ''
   fetchScanDefaults()
 })
 
@@ -195,9 +184,8 @@ const skippedBySize = computed(() => {
   return list.filter((t) => t.sizeBytes != null && t.sizeBytes > limit).length
 })
 
-// 提交范围:单表选择 > 单表定死 > 勾选 > 整库(null)
+// 提交范围:单表定死 > 勾选 > 整库(null)
 const targetTables = computed(() => {
-  if (scanForm.table) return [scanForm.table]
   if (props.fixedTable) return [props.fixedTable]
   return props.selectedTables.length ? props.selectedTables.map((t) => t.name) : null
 })
@@ -228,10 +216,6 @@ function buildPayload() {
 }
 
 async function submit() {
-  if (props.selectableTables && props.selectableTables.length && !scanForm.table) {
-    ElMessage.warning('请先选择要扫描的表')
-    return
-  }
   // 勾选了 AI 功能先校验可用性,不可用由用户决定是否继续(继续则后端静默跳过 AI)
   if (!(await confirmAiUsable(scanForm))) return
   submitting.value = true

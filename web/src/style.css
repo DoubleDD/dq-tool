@@ -62,6 +62,9 @@
   /* 数据比对差异明细:不一致单元格整格底色 + 左侧标记条(对齐导出核对表观感) */
   --dq-diff-cell-bg: #ffebee;
   --dq-diff-cell-accent: #de9313;
+  /* 字段缺失单元格(目标表无此列):蓝灰底,与不一致的红底区分开 */
+  --dq-missing-col-cell-bg: #eceff1;
+  --dq-missing-col-cell-accent: #78909c;
 }
 
 /* ---------- 深色主题(html.dark,配合 EP 官方暗色变量包) ---------- */
@@ -136,6 +139,9 @@ html.dark {
   /* 数据比对差异明细:暗色下同色系压暗,保证文字可读且不刺眼 */
   --dq-diff-cell-bg: #3d2429;
   --dq-diff-cell-accent: #e6a23c;
+  /* 字段缺失单元格:暗色下同色系压暗 */
+  --dq-missing-col-cell-bg: #2e3438;
+  --dq-missing-col-cell-accent: #90a4ae;
 }
 
 body {

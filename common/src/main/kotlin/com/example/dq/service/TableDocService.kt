@@ -1,6 +1,5 @@
 package com.example.dq.service
 
-import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.TableDocView
 import com.example.dq.model.TableStat
@@ -8,34 +7,34 @@ import com.example.dq.repository.TableDocRepository
 import java.sql.SQLException
 import java.time.LocalDateTime
 
-/** AI 表说明:生成(实时查目标库元数据 → 大模型)与查询(本地 H2) */
+/** AI 表说明:生成(结构元数据走 MetadataService 缓存优先 → 大模型)与查询(本地 H2) */
 class TableDocService(
     private val repository: TableDocRepository,
     private val aiConfigService: AiConfigService,
     private val aiService: AiService,
-    private val dataSourceService: DataSourceService,
-    private val dialectFactory: DialectFactory,
+    private val metadataService: MetadataService,
 ) {
 
     /** 表列表页展示用:表名 -> 说明,本地查询不连业务库 */
     fun list(datasourceId: Long, database: String?, schema: String): Map<String, String> =
         repository.findBySchema(datasourceId, normalizeDb(database), schema)
 
-    /** 生成单表说明并落库;库差异只经 dialect,无库特定分支;扫描触发的生成传 scanJobId 关联用量统计 */
+    /**
+     * 生成单表说明并落库;库差异只经 dialect(收敛在 MetadataService),无库特定分支;
+     * 扫描触发的生成传 scanJobId 关联用量统计。
+     *
+     * 表/字段结构走 [MetadataService] 的缓存优先路径:首次联网访问从原始库回源并即时落 H2 缓存,
+     * 数据源不可达时若有缓存则降级读缓存(与元数据浏览同一口径),不再直接独占业务库连接。
+     */
     @Throws(SQLException::class)
     @JvmOverloads
     fun generate(datasourceId: Long, database: String?, schema: String, table: String,
                  scanJobId: Long? = null): TableDocView {
         val aiConfig = aiConfigService.requireConfig()
-        val ds = dataSourceService.get(datasourceId)
-        val dialect = dialectFactory.get(ds.dbType!!)
-        val (stat, columns) = dataSourceService.getConnection(datasourceId, database).use { conn ->
-            val s: TableStat = dialect.listTables(conn, schema)
-                .firstOrNull { it.name == table }
-                ?: throw IllegalArgumentException("表不存在:$table")
-            val cols: List<ColumnMeta> = dialect.listColumns(conn, schema, table)
-            s to cols
-        }
+        val stat: TableStat = metadataService.listTables(datasourceId, database, schema)
+            .firstOrNull { it.name == table }
+            ?: throw IllegalArgumentException("表不存在:$table")
+        val columns: List<ColumnMeta> = metadataService.listTableColumns(datasourceId, database, schema, table)
         val description: String
         try {
             description = aiService.describeTable(aiConfig, stat, columns, scanJobId)

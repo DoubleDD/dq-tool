@@ -30,7 +30,8 @@ class ChangelogService(config: AppConfig) {
 
         /**
          * 解析 CHANGELOG.md 文本为版本条目列表(纯函数,便于单测)。
-         * `#` 一级标题(文件题)忽略;`##` 二级标题切段;段内保留非空原始行(trim 后)。
+         * `#` 一级标题(文件题)忽略;`##` 二级标题切段;段内文本原样收集为 Markdown 正文
+         * (只去掉行尾空白以兼容 CRLF,保留空行与行首缩进,前端交给 Markdown 渲染器解析)。
          */
         fun parse(text: String?): List<ChangelogEntry> {
             if (text.isNullOrBlank()) return emptyList()
@@ -41,19 +42,18 @@ class ChangelogService(config: AppConfig) {
 
             fun flush() {
                 val v = version ?: return
-                entries.add(ChangelogEntry(v, date, lines.toList()))
+                entries.add(ChangelogEntry(v, date, lines.joinToString("\n").trim()))
             }
 
             for (raw in text.lineSequence()) {
-                val line = raw.trim()
-                val m = HEADING.matchEntire(line)
+                val m = HEADING.matchEntire(raw.trim())
                 if (m != null) {
                     flush()
                     version = m.groupValues[1]
                     date = m.groupValues[2].ifBlank { null }
                     lines = mutableListOf()
-                } else if (version != null && line.isNotEmpty()) {
-                    lines.add(line)
+                } else if (version != null) {
+                    lines.add(raw.trimEnd())
                 }
             }
             flush()

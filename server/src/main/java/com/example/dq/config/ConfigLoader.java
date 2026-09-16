@@ -85,6 +85,9 @@ public final class ConfigLoader {
         dq.getLan().setDiscoveryPort(getInt(yaml, "dq.lan.discovery-port", dq.getLan().getDiscoveryPort()));
         dq.getLan().setAnnounceIntervalSeconds(getInt(yaml, "dq.lan.announce-interval-seconds",
                 dq.getLan().getAnnounceIntervalSeconds()));
+        // 错误中心保留策略(错误记录量级可控,默认 30 天 / 单表 2 万条)
+        dq.getError().setRetentionDays(getInt(yaml, "dq.error.retention-days", dq.getError().getRetentionDays()));
+        dq.getError().setMaxRecords(getInt(yaml, "dq.error.max-records", dq.getError().getMaxRecords()));
 
         AiProperties ai = new AiProperties();
         ai.setBaseUrl(getString(yaml, "ai.base-url", null));

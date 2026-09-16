@@ -189,7 +189,7 @@ import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import request from './api'
 import { apiUrl, authHeaders } from './api/base'
-import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, List, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading } from '@element-plus/icons-vue'
+import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, List, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading, Warning } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { backgroundTasks, initBackgroundTasks } from './stores/backgroundTasks'
@@ -244,6 +244,7 @@ const otherNav = computed(() => {
     { path: '/ai-usage', menu: 'ai-usage', label: '模型用量统计', icon: TrendCharts },
     { path: '/settings', menu: 'settings', label: '系统设置', icon: Setting },
     { path: '/diagnostics', menu: 'diagnostics', label: '系统诊断', icon: FirstAidKit },
+    { path: '/errors', menu: 'error-center', label: '错误中心', icon: Warning },
     { path: '/logs', menu: 'logs', label: '运行日志', icon: Document }
   ]
   return navs.filter((n) => hasMenu(n.menu))

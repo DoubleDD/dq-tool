@@ -347,6 +347,40 @@ class DialectSqlGenTest {
     }
 
     @Test
+    fun `表清单 按表名过滤只查指定表`() {
+        // Oracle/DM:过滤条件拼在 owner 之后,不过滤时不带 IN 片段
+        val oracle = OracleDialect.listTablesSql("all_segments", listOf("T1", "T2"))
+        assertTrue(oracle.contains("AND t.table_name IN (?, ?)"), oracle)
+        assertFalse(OracleDialect.listTablesSql("all_segments").contains("IN (?"))
+        assertTrue(OracleDialect.listTablesSql(23, true, listOf("T1")).contains("AND t.table_name IN (?)"))
+        assertTrue(OracleDialect.listTablesSql(19, false, listOf("T1")).contains("AND t.table_name IN (?)"))
+
+        val dm = DmDialect.listTablesSql(true, listOf("T1"))
+        assertTrue(dm.contains("AND t.table_name IN (?)"), dm)
+        assertFalse(DmDialect.listTablesSql(true).contains("IN (?"))
+    }
+
+    @Test
+    fun `连接超时属性 各驱动键名与单位`() {
+        assertEquals(mapOf("connectTimeout" to "15000", "socketTimeout" to "1800000"),
+                MySqlDialect().connectionTimeoutProperties(15_000, 1_800_000))
+        // PG 系(含金仓/瀚高)以秒为单位,向上取整
+        assertEquals(mapOf("connectTimeout" to "15", "socketTimeout" to "1800"),
+                PostgresDialect().connectionTimeoutProperties(15_000, 1_800_000))
+        assertEquals(mapOf("connectTimeout" to "1", "socketTimeout" to "1"),
+                PostgresDialect().connectionTimeoutProperties(1, 1))
+        assertEquals(mapOf("oracle.net.CONNECT_TIMEOUT" to "15000", "oracle.jdbc.ReadTimeout" to "1800000"),
+                OracleDialect().connectionTimeoutProperties(15_000, 1_800_000))
+        assertEquals(mapOf("loginTimeout" to "15", "socketTimeout" to "1800000"),
+                SqlServerDialect().connectionTimeoutProperties(15_000, 1_800_000))
+        // <=0 表示不限制:对应键不出现在属性里
+        assertTrue(MySqlDialect().connectionTimeoutProperties(0, 0).isEmpty())
+        assertTrue(OracleDialect().connectionTimeoutProperties(-1, 0).isEmpty())
+        // 未覆盖方言(达梦)不干预,返回空
+        assertTrue(DmDialect().connectionTimeoutProperties(15_000, 1_800_000).isEmpty())
+    }
+
+    @Test
     fun `Oracle边界值 12c起OFFSET_FETCH`() {
         val oracle = OracleDialect()
         val sql = oracle.boundaryQuerySql("\"S\".\"t\"", "\"id\"", null, 100L, pk("id", Types.BIGINT), 12)

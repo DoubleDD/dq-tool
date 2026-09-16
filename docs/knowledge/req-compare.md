@@ -41,10 +41,10 @@
   - 至少一个有效目标(datasourceId 非空且 table 非空白);
   - 请求字段名归一为**基准表实际列名**(忽略大小写映射,`baseByName`);
   - 每个目标:表必须存在、**必须含主键列**(缺主键列直接报错);
-  - ⚠️ 目标缺**其他**比对列**不报错**——允许提交,比对时记「列缺失」按不一致计;
+  - ⚠️ 目标缺**其他**比对列**不报错**——允许提交,比对时记「字段缺失」按不一致计;
   - `displayField`(对象名称字段)可选:指定则必须属于比对字段且存在于基准表(`resolveDisplayField`)。
   - `matchMode`(对象匹配逻辑)可选:空 = `EXACT`;给出非法值 → 400「非法匹配逻辑: …」;
-    `CODE_THEN_NAME`/`CODE_NAME_LLM` **必须能解析出对象名称字段**,否则 400「…需要按对象名称配对,请在「选择基准字段」里指定对象名称字段」。
+    `CODE_THEN_NAME`/`CODE_NAME_LLM` **必须能解析出对象名称字段**,否则 400「…需要按对象名称配对,请在「选择基准表」里指定对象名称字段」。
 - 落库:任务置 RUNNING、total=1+目标数,目标置 PENDING,随即提交线程池后台执行;`match_mode` 一并落库。
 
 ### 3.2 run — 后台执行体
@@ -113,7 +113,7 @@
   - DIFF 行:base=基准值、value=目标真实值(一致字段也有值),matched 标定是否一致;
   - MISSING 行:base=基准值、value 全 null(目标整行不存在),matched 恒 false;
   - EXTRA 行:base 全 null(基准整行不存在)、value=目标真实值,matched 恒 false;
-  - 目标缺列:命中行该字段 value 置 `«列缺失»` 特殊标记、matched=false。
+  - 目标缺列:命中行该字段 value 置 `«字段缺失»` 特殊标记、matched=false。
 - **老数据兼容**:`matched` 为 null 的旧数据按旧契约「value 非空即不一致」解读(`FieldDiff.isMismatch`,`:577`),
   老任务(只有不一致字段的紧凑 diff_json)仍能正常展示与导出。
 - 字段比较 `valuesEqual`(`:925`):
@@ -151,7 +151,7 @@
 - **sheet 1「总览」**:一行一个系统,首行基准表;列口径(表中文名/表英文名称/所属系统/条数/数据最新更新时间/与基准差/匹配编码数/差异条数/差异原因);
   表中文名取表注释,所属系统取 `table_system` 登记(回落数据源名),数据最新更新时间未采集统一占位「—」,
   差异条数 = 非 SAME 差异行数合计,差异原因按差异构成自动拼写(与基准完全一致 / 缺失多余明细 / 行数相差);
-- **之后每个有差异的目标一个明细 sheet**(名「序号_系统名」,序号与总览行一一对应):
+- **之后每个有差异的目标一个明细 sheet**(名「序号_表名_数据源名」,序号与总览行一一对应,表名靠前防 31 字符截断):
   - 第 1 行单行上下文:`系统 · 目标表 ← 基准表 · 主键 · 目标 N 行/基准 M 行 · 差异构成`;
   - 第 3 行表头 = diff_json 出现过的字段(**字段注释做中文列名**,无注释回落字段名)+ 末列「说明」;
   - 一行一个差异对象,**一格一个对象**:字段列取目标取值(缺失行取基准值);
@@ -229,7 +229,7 @@
 flowchart TD
     subgraph HTTP["Javalin 入口"]
         A["POST /api/compare-jobs<br/>CompareController.submit"]
-        A0["POST /api/compare-jobs/mapping-suggest<br/>CompareController.suggestMapping(列级第 4 步预生成)"]
+        A0["POST /api/compare-jobs/mapping-suggest<br/>CompareController.suggestMapping(列级第 3 步预生成)"]
     end
     A0 -->|未配置大模型| A0a["IllegalStateException → 409<br/>提示先完成 AI 配置"]
     A0 -->|已配置| A1["逐目标串行调 LLM(AiScene.COMPARE_MAPPING)<br/>buildMappingPrompt → parseMappingSuggest<br/>(容错抽 JSON/过滤非法条目/主键同名列兜底)"]
@@ -246,7 +246,7 @@ flowchart TD
         F -->|失败/单侧超 50 万行| F1["repo.failJob()<br/>任务 FAILED"]
         F -->|成功| G["repo.updateProgress(1)"]
         G --> H{"逐目标循环"}
-        H --> I["markTargetRunning<br/>解析 field_mapping_json:<br/>带映射只认映射(未映射字段记「列缺失」)<br/>无映射按字段名忽略大小写自动匹配<br/>loadRows(目标,只选存在的列)"]
+        H --> I["markTargetRunning<br/>解析 field_mapping_json:<br/>带映射只认映射(未映射字段记「字段缺失」)<br/>无映射按字段名忽略大小写自动匹配<br/>loadRows(目标,只选存在的列)"]
         I --> J["matchObjects 纯函数<br/>第一路编码 → 第二路名称(按 match_mode)"]
         J --> K{"match_mode = CODE_NAME_LLM ?"}
         K -->|是| K1["aiMatchResidues 大模型补配双侧残余<br/>未配置/超 2000/批失败均降级记 note"]
@@ -278,13 +278,13 @@ flowchart TD
 ```mermaid
 flowchart TD
     S0["新建比对任务:四栏级联选基准表"] --> S1{"选对比模式(V50)"}
-    S1 -->|行级 ROW(默认)| S2["默认只勾身份字段(编码+名称)<br/>字段映射第 4 步人工连线"]
-    S1 -->|列级 COLUMN| S2a["默认全选信息字段、可精简<br/>第 4 步大模型预生成映射、画布人工审核"]
-    S2 --> S3["选匹配逻辑:①编码+名称都相等 ②先编码后名称 ③编码/名称+大模型归一化"]
+    S1 -->|行级 ROW(默认)| S2["第 3 步人工连线(一般只连身份字段)<br/>有连线的基准字段即比对字段"]
+    S1 -->|列级 COLUMN| S2a["第 3 步大模型预生成映射、画布人工审核<br/>有连线的基准字段即比对字段"]
+    S2 --> S3["选匹配逻辑:①编码+名称都相等 ②先编码后名称+大模型归一化"]
     S2a --> S3
     S3 --> S4{"提交前检查"}
     S4 -->|目标缺编码列/映射没连主键| S4a["报错,不能提交"]
-    S4 -->|匹配逻辑 2/3 但没选对象名称| S4b["报错,不能提交"]
+    S4 -->|选了大模型归一化但没选对象名称| S4b["报错,不能提交"]
     S4 -->|目标缺其他比对列| S4c["允许提交<br/>该字段一律按不一致计"]
     S4 -->|检查通过| S5["任务进入后台(固定 2 线程)<br/>头栏指示器+任务抽屉 1s 轮询,可离开页面"]
     S5 --> S6["系统读入基准表全部数据"]

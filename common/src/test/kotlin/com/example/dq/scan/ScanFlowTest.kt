@@ -112,7 +112,9 @@ class ScanFlowTest {
             TagService(tagRepo, dsRepo), tagRepo, scanRepo, TableDocRepository(jdbc),
             dataSourceService, dialectFactory, aiTracker)
         val aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
-        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, dialectFactory)
+        metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, SchemaDocRepository(jdbc),
+            metaCacheRepo)
+        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), metadataService)
         val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, aiTracker)
         val systemSettingsService = SystemSettingsService(SystemSettingsRepository(jdbc), config)
         val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
@@ -120,8 +122,6 @@ class ScanFlowTest {
         scanService = ScanService(scanRepo, dsRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
             dialectFactory, systemSettingsService, executor, chunkRunner, autoTagService, scanDocService, aiTracker)
         exportService = ExportService(scanService, tableDocRepo)
-        metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, SchemaDocRepository(jdbc),
-            metaCacheRepo)
     }
 
     @Test
@@ -426,6 +426,72 @@ class ScanFlowTest {
         assertEquals(ROWS.toLong(), job.tables!!.first { it.tableName == "users" }.totalRows)
         // 续扫探测到 victim 无字段,无字段标记重新打上
         assertTrue(metaCacheRepo.isNoColumns(dsId, "", "dqtest", "victim"))
+    }
+
+    @Test
+    fun `单表扫描 只拉该表且不冲掉全量表缓存`() {
+        seed(MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, "mysql")
+        val dsId = dataSourceService.create(DataSourceRequest(
+            "it-mysql-single", MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, null, null))
+        fun ddl(sql: String) = DriverManager.getConnection(MYSQL.jdbcUrl, MYSQL.username, MYSQL.password)
+            .use { conn -> conn.createStatement().use { it.execute(sql) } }
+        try {
+            // 临时表 + 全量拉一次:本地表缓存 = users + orders
+            ddl("DROP TABLE IF EXISTS orders")
+            ddl("CREATE TABLE orders(id BIGINT PRIMARY KEY, amount INT)")
+            ddl("INSERT INTO orders VALUES(1,10),(2,20)")
+            val allNames = metadataService.listTables(dsId, null, "dqtest").map { it.name }
+            assertTrue(allNames.containsAll(listOf("users", "orders")), "全量表清单: $allNames")
+
+            // 业务库删掉 orders(本地缓存仍留着它),再只扫 users:
+            // 过滤字典查询只回 users;mergeTables 局部合并不得把 orders 从缓存删掉(区别于 replaceTables 整粒度覆盖)
+            ddl("DROP TABLE orders")
+            val jobId = scanService.createScan(ScanRequest(dsId, "dqtest", null, listOf("users"), true, listOf(), null))
+            val job = awaitDone(jobId)
+            assertEquals(ScanStatus.DONE, job.status) { "任务失败: " + job.error }
+            assertEquals(listOf("users"), job.tables!!.map { it.tableName })
+
+            val cached = metaCacheRepo.listTables(dsId, "", "dqtest").map { it.tableName }
+            assertTrue(cached.contains("orders"), "单表扫描不应把全量表缓存冲成部分清单: $cached")
+            assertTrue(cached.contains("users"))
+        } finally {
+            runCatching { ddl("DROP TABLE IF EXISTS orders") }
+        }
+    }
+
+    @Test
+    fun `单表扫描 选中的表不存在时任务落FAILED`() {
+        val dsId = dataSourceService.create(DataSourceRequest(
+            "it-mysql-single-missing", MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, null, null))
+        // 建任务即刻返回(不再同步校验),校验失败由后台引导落到任务 error
+        val jobId = scanService.createScan(ScanRequest(dsId, "dqtest", null, listOf("no_such_table"), true, listOf(), null))
+        val job = awaitDone(jobId)
+        assertEquals(ScanStatus.FAILED, job.status)
+        assertTrue(job.error!!.contains("选中的表在库中不存在"), "错误信息: " + job.error)
+    }
+
+    @Test
+    fun `扫描从原始库覆盖陈旧缓存 不信任本地结构`() {
+        seed(MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, "mysql")
+        val dsId = dataSourceService.create(DataSourceRequest(
+            "it-mysql-overwrite", MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, null, null))
+        // 预置与现实不符的本地缓存:虚构 ghost 表、users 字段全错且带「无字段」标记
+        metaCacheRepo.replaceTables(dsId, "", "dqtest", listOf(
+            MetaCacheRepository.CachedTable("ghost", null, null, null, null),
+            MetaCacheRepository.CachedTable("users", "旧注释", null, null, null)))
+        metaCacheRepo.replaceColumns(dsId, "", "dqtest", "users", listOf(
+            MetaCacheRepository.CachedColumn(0, "bogus", "VARCHAR", "varchar(1)", 12, true, null, null, false, 0, false)))
+        metaCacheRepo.setNoColumns(dsId, "", "dqtest", "users", true)
+
+        val jobId = scanService.createScan(ScanRequest(dsId, "dqtest", null, listOf("users"), true, listOf(), null))
+        val job = awaitDone(jobId)
+        assertEquals(ScanStatus.DONE, job.status) { "任务失败: " + job.error }
+
+        // 扫描结构只从原始库读:本地陈旧字段被覆盖,「无字段」标记被真实结果纠正
+        val cols = metaCacheRepo.listColumns(dsId, "", "dqtest", "users").map { it.columnName }
+        assertTrue(cols.containsAll(listOf("id", "name", "status", "remark")), "字段应被原始库覆盖: $cols")
+        assertFalse(cols.contains("bogus"))
+        assertFalse(metaCacheRepo.isNoColumns(dsId, "", "dqtest", "users"))
     }
 
     /** 造数:name 每 10 行 NULL、每 7 行空串;status 每 10 行 NULL、每 20 行 0、每 20 行错开 -1;remark 每 20 行 'N/A' */

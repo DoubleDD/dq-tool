@@ -13,6 +13,13 @@ data class ScanConfig(
     val sizeThresholdBytes: Long = 10_737_418_240L,
     val sampleRows: Long = 100_000L,
     val statementTimeoutSeconds: Int = 1800,
+    /**
+     * 业务库 JDBC 建连超时(秒);<=0 表示不限制。
+     * 不设置时由驱动默认值决定(Oracle thin 实测可卡 80s+ 才报错),半死/拥塞的库会把请求线程拖死。
+     */
+    val dbConnectTimeoutSeconds: Int = 15,
+    /** 业务库单次网络读取/查询超时(秒);<=0 表示不限制。兜住挂死的元数据查询,与 statementTimeoutSeconds 同量级 */
+    val dbReadTimeoutSeconds: Int = 1800,
 )
 
 /** AI 大模型接口默认配置:页面「AI 配置」未设置的字段逐字段回落到这里 */
@@ -58,6 +65,10 @@ data class AppConfig(
     val appVersion: String = "",
     /** 局域网共享默认配置 */
     val lan: LanConfig = LanConfig(),
+    /** 错误中心保留天数(启动就绪时按 last_seen 清理,最小 1 天) */
+    val errorRetentionDays: Int = 30,
+    /** 错误中心单表上限(超出按 last_seen 删最旧,最小 100 条) */
+    val errorMaxRecords: Int = 20_000,
 ) {
     /** H2 文件库连接串,与原工程一致 */
     val h2JdbcUrl: String
@@ -97,6 +108,8 @@ data class AppConfig(
                     sizeThresholdBytes = long("dq.scan.size-threshold-bytes") ?: 10_737_418_240L,
                     sampleRows = long("dq.scan.sample-rows") ?: 100_000L,
                     statementTimeoutSeconds = int("dq.scan.statement-timeout-seconds") ?: 1800,
+                    dbConnectTimeoutSeconds = int("dq.scan.db-connect-timeout-seconds") ?: 15,
+                    dbReadTimeoutSeconds = int("dq.scan.db-read-timeout-seconds") ?: 1800,
                 ),
                 securitySecret = str("dq.security.secret") ?: "change-me-32bytes-secret-key-0000",
                 // 公钥改为文件存放:dq.license.public-key-file 指向公钥文件(支持 ${user.home});未配时兼容内联 dq.license.public-key
@@ -128,6 +141,8 @@ data class AppConfig(
                     discoveryPort = int("dq.lan.discovery-port") ?: 17386,
                     announceIntervalSeconds = int("dq.lan.announce-interval-seconds") ?: 5,
                 ),
+                errorRetentionDays = int("dq.error.retention-days") ?: 30,
+                errorMaxRecords = int("dq.error.max-records") ?: 20_000,
             )
         }
     }

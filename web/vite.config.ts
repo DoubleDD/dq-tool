@@ -38,6 +38,7 @@ export default defineConfig({
       'vue',
       'vue-router',
       'axios',
+      'marked',
       'element-plus',
       '@element-plus/icons-vue',
       'codemirror',

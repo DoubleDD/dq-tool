@@ -11,6 +11,8 @@ public class DqProperties {
     private final Desktop desktop = new Desktop();
     private final Lan lan = new Lan();
     private final Web web = new Web();
+    /** 错误中心(统一错误收集)保留策略 */
+    private final ErrorCenter error = new ErrorCenter();
     /** 浏览器访问管控令牌:任一非空即开启门禁(header/query/Cookie 三选一命中放行);空 = 不限制 */
     private final List<String> accessTokens = new ArrayList<>();
 
@@ -38,6 +40,10 @@ public class DqProperties {
         return web;
     }
 
+    public ErrorCenter getError() {
+        return error;
+    }
+
     public List<String> getAccessTokens() {
         return accessTokens;
     }
@@ -55,6 +61,10 @@ public class DqProperties {
         private long sampleRows = 100_000L;
         /** 单条统计 SQL 超时(秒) */
         private int statementTimeoutSeconds = 1800;
+        /** 业务库 JDBC 建连超时(秒);<=0 不限制 */
+        private int dbConnectTimeoutSeconds = 15;
+        /** 业务库单次网络读取/查询超时(秒);<=0 不限制 */
+        private int dbReadTimeoutSeconds = 1800;
 
         public int getWorkers() { return workers; }
         public void setWorkers(int workers) { this.workers = workers; }
@@ -68,6 +78,10 @@ public class DqProperties {
         public void setSampleRows(long sampleRows) { this.sampleRows = sampleRows; }
         public int getStatementTimeoutSeconds() { return statementTimeoutSeconds; }
         public void setStatementTimeoutSeconds(int statementTimeoutSeconds) { this.statementTimeoutSeconds = statementTimeoutSeconds; }
+        public int getDbConnectTimeoutSeconds() { return dbConnectTimeoutSeconds; }
+        public void setDbConnectTimeoutSeconds(int dbConnectTimeoutSeconds) { this.dbConnectTimeoutSeconds = dbConnectTimeoutSeconds; }
+        public int getDbReadTimeoutSeconds() { return dbReadTimeoutSeconds; }
+        public void setDbReadTimeoutSeconds(int dbReadTimeoutSeconds) { this.dbReadTimeoutSeconds = dbReadTimeoutSeconds; }
     }
 
     public static class Security {
@@ -132,5 +146,18 @@ public class DqProperties {
 
         public String getStaticDir() { return staticDir; }
         public void setStaticDir(String staticDir) { this.staticDir = staticDir; }
+    }
+
+    /** 错误中心(统一错误收集)保留策略 */
+    public static class ErrorCenter {
+        /** 保留天数:启动就绪时删除 last_seen 早于该天数的记录(最小 1 天) */
+        private int retentionDays = 30;
+        /** 单表上限:超出按 last_seen 删最旧(最小 100 条) */
+        private int maxRecords = 20000;
+
+        public int getRetentionDays() { return retentionDays; }
+        public void setRetentionDays(int retentionDays) { this.retentionDays = retentionDays; }
+        public int getMaxRecords() { return maxRecords; }
+        public void setMaxRecords(int maxRecords) { this.maxRecords = maxRecords; }
     }
 }

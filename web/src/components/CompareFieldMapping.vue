@@ -1,6 +1,6 @@
 <script setup>
 /**
- * 字段映射(新建比对任务第四步):用 ER 关系图那套画布(`RelationGraphCanvas` 的 mapping 模式)人工连线,
+ * 字段映射(新建比对任务第三步):用 ER 关系图那套画布(`RelationGraphCanvas` 的 mapping 模式)人工连线,
  * 确定「基准表字段 ↔ 各对比表字段」的对应关系。复用的能力:
  * - 表节点 = 同 ER 图一致的表卡片(标题 + 字段行 + 类型 + 注释,**字段全量展开**、不做「+N 个字段」折叠),
  *   基准表只留主题色描边(无背景底纹),靠描边 + 基准字段文字高亮辨认;
@@ -8,7 +8,8 @@
  * - 布局 = mapping-row:基准表锚定左侧,各对比表在右侧一行水平等距排开、卡片**顶边同线**(顶部对齐),
  *   可用滚轮/工具栏缩放、拖动画布,节点可拖动 —— 表多时靠画布缩放/平移而不是让某一列单独滚动(这正是 ER 图的操作方式);
  * - 交互:走 G6 内置 `create-edge`(trigger=click)——点一侧字段行(节点)再点另一侧即连线,
- *   画布自带橡皮筋辅助边;点连线本身删除;工具条可按名称自动匹配/清空。
+ *   画布自带橡皮筋辅助边;点连线本身进入选中态(加粗变红),画布底部浮出删除确认条
+ *   (展示两端字段名,与 ER 图选中操作条同款),点「删除」才断;工具条可按名称自动匹配/清空。
  *
  * v-model = 数组(与 targets 同序),元素为 { 基准字段名: 目标列名 };未映射的基准字段比对时按「列缺失」计。
  */
@@ -24,9 +25,6 @@ const props = defineProps({
   targets: { type: Array, default: () => [] },
   // 比对主键(基准表列名):每个对比表都必须连上它,否则无法按主键对齐
   keyField: { type: String, default: '' },
-  // 向导第二步勾选的基准字段(基准表里参与比对的字段):传给画布的 highlightColumns 接口——
-  // 基准表里这些字段文字常亮高亮(主题色+加粗,不改背景),不管有没有连线都亮
-  baseColumns: { type: Array, default: () => [] },
   // [{ name, comment }] 数组(与 targets 同序)
   modelValue: { type: Array, default: () => [] }
 })
@@ -76,7 +74,7 @@ function autoMatchFor(ti) {
   return out
 }
 
-/** 拉基准表与各对比表字段 + 各表中文注释(表清单接口,按 schema 分组共享请求);基准表未选全不发请求(第四步用 v-show,向导第一步时组件已挂载) */
+/** 拉基准表与各对比表字段 + 各表中文注释(表清单接口,按 schema 分组共享请求);基准表未选全不发请求(第三步用 v-show,向导第一步时组件已挂载) */
 async function loadColumns() {
   if (!baseReady.value) {
     baseFields.value = []
@@ -124,6 +122,16 @@ async function loadColumns() {
 function mappingOf(ti) {
   return props.modelValue?.[ti] || {}
 }
+
+// 基准字段不再预选:有连线的基准字段即比对字段。连线并集交给画布 highlightColumns 常亮
+// (文字高亮:主题色+加粗,不改背景),没连线的保持次要灰——一眼看出哪些基准字段参与比对
+const connectedBaseColumns = computed(() => {
+  const set = new Set()
+  for (const m of props.modelValue || []) {
+    for (const bf of Object.keys(m || {})) set.add(bf)
+  }
+  return [...set]
+})
 
 /** 该字段名在哪个对比表里被连过(反向索引,用于连线判重) */
 function targetIndexOf(key) {
@@ -209,8 +217,39 @@ function onMappingConnect({ manyTable, oneColumn, manyColumn }) {
 }
 
 function onEdgeClick(edge) {
-  removeEdge(edge)
+  // 点连线不直接删:置选中态(画布加粗变红),底部浮出操作条展示两端字段名,点「删除」才删
+  pendingEdge.value = edge
 }
+
+// 待确认删除的连线(选中态):点另一条连线直接切换;连线被「映射管理/清空连线」等外部途径删掉时条自动收起
+const pendingEdge = ref(null)
+const pendingEdgeId = computed(() => (pendingEdge.value ? String(pendingEdge.value.id) : ''))
+
+/** 操作条文案:两端字段名,注释优先(业务可读),括号带英文字段名 */
+const pendingEdgeText = computed(() => {
+  const edge = pendingEdge.value
+  if (!edge) return ''
+  const b = columnComment(baseKey.value, edge.oneColumn)
+  const t = columnComment(edge.manyTable, edge.manyColumn)
+  const bText = b ? `${b}(${edge.oneColumn})` : edge.oneColumn
+  const tText = t ? `${t}(${edge.manyColumn})` : edge.manyColumn
+  return `${bText} → ${tText}`
+})
+
+/** 操作条「删除」:断开连线并收起操作条 */
+function confirmRemoveEdge() {
+  if (!pendingEdge.value) return
+  removeEdge(pendingEdge.value)
+  pendingEdge.value = null
+}
+
+// 连线状态一变就核对选中条:待删的线已不在映射里(被映射管理/清空连线干掉)则收起
+watch(() => props.modelValue, () => {
+  const edge = pendingEdge.value
+  if (!edge) return
+  const ti = targetIndexOf(edge.manyTable)
+  if (ti < 0 || mappingOf(ti)[edge.oneColumn] !== edge.manyColumn) pendingEdge.value = null
+}, { deep: true })
 
 function autoMatchAll() {
   emit('update:modelValue', props.targets.map((t, ti) => autoMatchFor(ti)))
@@ -266,7 +305,7 @@ function columnComment(tableKey, colName) {
   return hit?.comment || ''
 }
 
-/** 删一条映射(单行/批量共用):按 v-model 全量重写,画布随状态重建自动断开对应连线 */
+/** 删一条映射(单行/批量共用):按 v-model 全量重写,画布按 id 差集就地断开对应连线(不整图重建) */
 function deleteMappings(rows) {
   if (!rows.length) return
   const next = props.targets.map((t, i) => ({ ...mappingOf(i) }))
@@ -296,6 +335,12 @@ const targetStats = computed(() => props.targets.map((t, ti) => {
 
 const missingKeyCount = computed(() => targetStats.value.filter((s) => !s.keyed).length)
 
+// 没连主键的对比表清单:工具条警告数字看不出是哪几张表,悬浮 title 点名
+const missingKeyLabels = computed(() => props.targets
+  .filter((_, ti) => !targetStats.value[ti]?.keyed)
+  .map((t) => t.label || t.table)
+  .join('、'))
+
 watch(() => props.targets.map((t) => nodeKey(t)).join(','), () => loadColumns())
 watch(() => [props.base?.datasourceId, props.base?.db, props.base?.schema, props.base?.table].join('|'),
   () => loadColumns(), { immediate: true })
@@ -314,9 +359,9 @@ defineExpose({ missingKeyCount })
         映射管理{{ manageRows.length ? `(${manageRows.length})` : '' }}
       </el-button>
       <span class="cm-tip">
-        点一侧字段行、再点另一侧字段行即可连线(整行都可点);点连线本身删除。
+        点一侧字段行、再点另一侧字段行即可连线(整行都可点);点连线本身选中,底部确认后删除。
       </span>
-      <span v-if="missingKeyCount" class="cm-warn">有 {{ missingKeyCount }} 个对比表还没连「{{ keyField }}」</span>
+      <span v-if="missingKeyCount" class="cm-warn" :title="missingKeyLabels">有 {{ missingKeyCount }} 个对比表还没连「{{ keyField }}」</span>
     </div>
     <!-- 复用 ER 关系图画布(mapping 模式):表卡片 + 字段对齐曲线边 + mapping-columns 布局,可缩放/拖动;
          等两侧字段都拉到再挂载:首帧即带完整字段行数,节点高度一次算准 -->
@@ -328,7 +373,8 @@ defineExpose({ missingKeyCount })
       :nodes="nodes"
       :edges="edges"
       :anchor-table="baseKey"
-      :highlight-columns="baseColumns"
+      :highlight-columns="connectedBaseColumns"
+      :selected-edge-id="pendingEdgeId"
       level="all"
       :columns-map="columnsMap"
       field-name-mode="both"
@@ -336,9 +382,21 @@ defineExpose({ missingKeyCount })
       :default-zoom="1"
       @mapping-connect="onMappingConnect"
       @edge-click="onEdgeClick"
-    />
+      @canvas-click="pendingEdge = null"
+    >
+      <!-- 连线删除确认条(底部居中悬浮,与 ER 图「选中表操作条」同款毛玻璃浮条):点连线置选中态后浮出,
+           展示两端字段名;点「删除」断开,点「取消」/点画布空白/点另一条连线 收起或切换。
+           走画布的 overlay 插槽落进全屏根节点内——全屏只渲染全屏元素及其后代,挂外面全屏后看不到 -->
+      <template #overlay>
+        <div v-if="pendingEdge" class="cm-edgebar">
+          <span class="cm-edgebar-text" :title="pendingEdgeText">{{ pendingEdgeText }}</span>
+          <el-button size="small" type="warning" @click="confirmRemoveEdge">删除</el-button>
+          <el-button size="small" @click="pendingEdge = null">取消</el-button>
+        </div>
+      </template>
+    </RelationGraphCanvas>
     <!-- 字段映射管理(参考 ER 图「关系管理」):全量映射清单,按对比系统/关键字筛选,单行删除与批量删除;
-         删除即断开画布对应连线(直接改 v-model,画布随状态重建),随时可重连 -->
+         删除即断开画布对应连线(直接改 v-model,画布就地断线),随时可重连 -->
     <el-dialog v-model="manageVisible" title="字段映射管理" width="1080px" top="8vh">
       <div class="cm-mng-filter">
         <el-select v-model="manageTargetFilter" style="width: 230px">
@@ -399,6 +457,35 @@ defineExpose({ missingKeyCount })
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+}
+/* 连线删除确认条:底部居中悬浮,与 ER 图选中操作条同一套毛玻璃浮条样式 */
+.cm-edgebar {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--el-bg-color) 72%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--el-border-color-darker);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-light);
+  z-index: 10;
+}
+.cm-edgebar :deep(.el-button) {
+  margin-left: 0;
+}
+.cm-edgebar-text {
+  max-width: 480px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--el-text-color-regular);
 }
 .cm-toolbar {
   display: flex;

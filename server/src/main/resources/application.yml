@@ -11,6 +11,8 @@ dq:
     size-threshold-bytes: 10737418240   # 超过该体积(10GB)默认采样
     sample-rows: 100000        # 采样行数
     statement-timeout-seconds: 1800     # 单条统计 SQL 超时
+    db-connect-timeout-seconds: 15      # 业务库 JDBC 建连超时(秒);<=0 不限制。半死库不再让请求卡到驱动默认(可达 80s+)
+    db-read-timeout-seconds: 1800       # 业务库单次网络读取/查询超时(秒);<=0 不限制。兜住挂死的元数据查询
   security:
     secret: change-me-32bytes-secret-key-0000   # 数据源密码对称加密密钥(本地部署自行修改)
   desktop:

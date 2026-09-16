@@ -10,12 +10,27 @@ import java.math.BigDecimal
 import java.math.MathContext
 import java.sql.Connection
 import java.sql.DatabaseMetaData
+import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
 import java.util.TreeMap
 import java.util.regex.Pattern
 /** 各方言的通用实现:元数据读取、分段规划、统计 SQL 模板 */
 abstract class AbstractDialect : DbDialect {
+
+    /**
+     * 生成 ` AND <col> IN (?,?,...)` 片段(表名过滤用);names 为空返回空串。
+     * 绑定参数按 names 顺序追加在既有参数之后,配合 [bindNames] 使用。
+     */
+    protected fun tableNameInClause(column: String, names: Collection<String>?): String =
+        if (names.isNullOrEmpty()) "" else " AND " + column + " IN (" + names.joinToString(", ") { "?" } + ")"
+
+    /** 从 1-based 的 startIndex 起依次绑定 names,返回下一个可用下标 */
+    protected fun bindNames(ps: PreparedStatement, startIndex: Int, names: Collection<String>?): Int {
+        var i = startIndex
+        names?.forEach { ps.setString(i++, it) }
+        return i
+    }
 
     companion object {
         private val log = org.slf4j.LoggerFactory.getLogger(AbstractDialect::class.java)

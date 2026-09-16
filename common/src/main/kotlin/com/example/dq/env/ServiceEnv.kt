@@ -12,6 +12,7 @@ import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.MetaSyncRepository
+import com.example.dq.repository.MetaWriteQueue
 import com.example.dq.repository.LicenseRepository
 import com.example.dq.repository.ManualCollectRepository
 import com.example.dq.repository.ObjectCatalogRepository
@@ -42,6 +43,7 @@ import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
 import com.example.dq.service.DbStructExportService
 import com.example.dq.service.DiagnosticsService
+import com.example.dq.service.ErrorCenterService
 import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
@@ -99,11 +101,18 @@ class ServiceEnv(val config: AppConfig) {
     private val jdbc = Jdbc(dataSource)
     private val aiUsageJdbc = Jdbc(aiUsageDataSource)
 
+    /**
+     * 元数据缓存统一写队列(meta_* / schema_stat):全局单线程串行,
+     * 对 H2 元数据表禁止并发写(扫描多 worker 刷不同粒度时不再互相等锁/踩唯一键)。
+     * 手工导入(MetadataTransferService)结构缓存也共用它。
+     */
+    private val metaWriteQueue = MetaWriteQueue()
+
     // 仓储
     val dataSourceRepo = DataSourceRepository(jdbc)
     val scanRepo = ScanRepository(jdbc)
-    val schemaStatRepo = SchemaStatRepository(jdbc)
-    val metaCacheRepo = MetaCacheRepository(jdbc)
+    val schemaStatRepo = SchemaStatRepository(jdbc, metaWriteQueue)
+    val metaCacheRepo = MetaCacheRepository(jdbc, metaWriteQueue)
     val schemaDocRepo = SchemaDocRepository(jdbc)
     val tableDocRepo = TableDocRepository(jdbc)
     val tableSystemRepo = TableSystemRepository(jdbc)
@@ -149,14 +158,16 @@ class ServiceEnv(val config: AppConfig) {
     val scanAiTracker = ScanAiTracker(scanRepo)
     val autoTagService = AutoTagService(aiConfigService, aiService, tagService, tagRepo, scanRepo,
         tableDocRepo, dataSourceService, dialectFactory, scanAiTracker)
-    val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, dataSourceService, dialectFactory)
+    /** 元数据浏览/缓存编排:缓存优先 + 回源覆盖 + 不可达降级;结构写缓存统一走 metaWriteQueue */
+    val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
+    /** AI 表说明:表/字段结构复用 metadataService 的缓存优先路径(不再直连业务库绕过缓存) */
+    val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, metadataService)
     val tableSystemService = TableSystemService(tableSystemRepo)
     val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, scanAiTracker)
     private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
         tagService, autoTagService, scanDocService, scanAiTracker)
     val scanService = ScanService(scanRepo, dataSourceRepo, schemaStatRepo, metaCacheRepo, dataSourceService,
         dialectFactory, systemSettingsService, executor, chunkRunner, autoTagService, scanDocService, scanAiTracker)
-    val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     val metaSyncService = MetaSyncService(metaSyncRepo, metadataService, dataSourceService, dialectFactory)
     val previewService = PreviewService(dataSourceService, dialectFactory, systemSettingsService)
     val sqlConsoleService = SqlConsoleService(dataSourceService, systemSettingsService, dialectFactory)
@@ -165,7 +176,8 @@ class ServiceEnv(val config: AppConfig) {
     val annotationTransferService = AnnotationTransferService(tagRepo, tableDocRepo, tableSystemRepo, dataSourceRepo)
     /** 元数据缓存导入导出:结构缓存整粒度替换 + 派生标注按自然键合并,供离线使用 ER/图谱/对象管理 */
     val metadataTransferService = MetadataTransferService(jdbc, dataSourceRepo, crypto, dataSourceService, metaSyncRepo,
-        tagRepo, tableDocRepo, schemaDocRepo, tableSystemRepo, manualCollectRepo, tableRelationRepo, objectCatalogRepo)
+        tagRepo, tableDocRepo, schemaDocRepo, tableSystemRepo, manualCollectRepo, tableRelationRepo, objectCatalogRepo,
+        metaWriteQueue)
     val scanTransferService = ScanTransferService(scanRepo, dataSourceRepo, tagRepo, tableDocRepo)
     /** 局域网共享:UDP 发现(纯网络,不做持久化)+ 拉取导入编排;start(httpPort) 由壳层在内核就绪后调用 */
     val lanDiscoveryService = LanDiscoveryService(config.lan)
@@ -185,6 +197,8 @@ class ServiceEnv(val config: AppConfig) {
     val diagnosticsService = DiagnosticsService(config, dataSourceService, dataSourceRepo, licenseService,
         aiConfigService, scanRepo, reportExportRepo)
     val changelogService = ChangelogService(config)
+    /** 统一错误收集(前端/后端/数据库/任务/启动):server 侧采集器与未捕获异常处理共用,页面「错误中心」读它 */
+    val errorCenterService = ErrorCenterService(config, jdbc)
     val tableRelationService = TableRelationService(tableRelationRepo, metaCacheRepo)
     val relationInferService = RelationInferService(tableRelationRepo, relationInferJobRepo, metaCacheRepo,
         dataSourceService, systemSettingsService, dialectFactory, aiConfigService, tableDocRepo, aiService)
@@ -211,10 +225,14 @@ class ServiceEnv(val config: AppConfig) {
         relationInferJobRepo.failRunningOnStartup()
         metaSyncService.recoverUnfinished()
         compareService.recoverUnfinished()
+        // 错误中心最后就绪:此前(建表/迁移/恢复期)产生的错误已落 logs/error-spool.jsonl,此处回灌入库并执行保留策略
+        errorCenterService.markReady()
     }
 
     fun shutdown() {
         lanShareService.stop()
+        // 先停在途元数据写入,再关 H2 连接池(避免写任务拿到已关闭的池)
+        metaWriteQueue.shutdown()
         aiUsageDataSource.close()
         dataSource.close()
     }

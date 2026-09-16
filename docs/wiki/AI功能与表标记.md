@@ -14,7 +14,7 @@
 - **OVERWRITE(全量覆盖)**:不跳过,先删该表全部 **AI 来源**旧标记关系(`TagRepository.deleteAiTableTags`,不碰 MANUAL/SYSTEM 行)再按模型回答落新标记,回答 NONE/无匹配即「覆盖为空」。
 - 三模式共用的边界:模型选中的标记表上已有同标记(其他来源)时不重复打——`ensureTableTag` 的 MERGE 会把既有关系来源改写,保留原关系不动;LLM 调用失败时不清旧标记(删除发生在拿到回答之后)。
 - **备份表不参与 AI 打标**:表名以 `_copy`/`_bak`/`_backup`/`_tmp` + 可选序号结尾(不区分大小写,`BackupTableRule` 全项目唯一口径,与 Word 报告「数据冗余分析」同一份规则)的表,由扫描系统联动直接打「备份表」标记,AI 自动打标**直接跳过、不调大模型**(判定不依赖大模型配置,故先于配置/候选检查),并顺手清掉该表历史扫描留下的 AI 来源标记(source=AI;人工 MANUAL 与系统标记不动):这类备份/临时表本就无需业务分类,跳过既省 token 又避免陈旧 AI 标记与新系统标记并存。
-未配置大模型/无候选标记静默跳过,同 job 首次 LLM 失败后熔断剩余表;前端共享扫描对话框 `ScanDialog.vue` 有复选(默认勾选),勾选时出现「已有标签的表」单选组(跳过/增量追加/全量覆盖),**提交扫描前前端统一校验 AI 可用性**(`utils/aiCheck.js confirmAiUsable`:先查 `GET /api/ai-config` 的 available 即合并默认配置后有效配置完整,完整再 `POST /api/ai-config/test` 传 {} 实测已存生效配置),不可用弹确认框「将跳过 AI 相关功能」,用户选继续则照常提交、AI 部分由后端静默跳过,选取消留在弹窗。打标与「生成表描述」同属扫描的 AI 收尾阶段:经 `ScanAiTracker` 计数,全部表终态且 AI 清零前任务不收尾(详见 [扫描与Excel导出](扫描与Excel导出.md))。
+未配置大模型/无候选标记静默跳过,同 job 首次 LLM 失败后熔断剩余表;前端共享扫描对话框 `ScanDialog.vue` 有复选(默认勾选),勾选时出现「旧标签处理」单选组(跳过/增量追加/全量覆盖),**提交扫描前前端统一校验 AI 可用性**(`utils/aiCheck.js confirmAiUsable`:先查 `GET /api/ai-config` 的 available 即合并默认配置后有效配置完整,完整再 `POST /api/ai-config/test` 传 {} 实测已存生效配置),不可用弹确认框「将跳过 AI 相关功能」,用户选继续则照常提交、AI 部分由后端静默跳过,选取消留在弹窗。打标与「生成表描述」同属扫描的 AI 收尾阶段:经 `ScanAiTracker` 计数,全部表终态且 AI 清零前任务不收尾(详见 [扫描与Excel导出](扫描与Excel导出.md))。
 
 ## 备份表系统标记
 

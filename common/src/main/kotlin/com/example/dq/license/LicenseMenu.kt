@@ -23,6 +23,7 @@ enum class LicenseMenu(val key: String, val label: String) {
     AI_USAGE("ai-usage", "模型用量统计"),
     SETTINGS("settings", "系统设置"),
     DIAGNOSTICS("diagnostics", "系统诊断"),
+    ERROR_CENTER("error-center", "错误中心"),
     LOGS("logs", "运行日志"),
     LICENSE_ADMIN("license-admin", "授权管理"),
     ;

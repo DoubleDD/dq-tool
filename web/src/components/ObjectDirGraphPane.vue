@@ -5,7 +5,8 @@
            节点尺寸分档 锚点目录 = 1.5 × 目录节点 > 表节点(挂载表与关系表同尺寸,仅颜色区分:关系表 success 色;两档默认 50/30 可在工具栏「调试」面板实时调节);边长分档 目录↔目录 S1=150 = 3 × 目录→表/表→关系表 S2=50,
            长边弱短边强、叶子斥力大,collide 按节点尺寸防重叠,节点可拖拽自动归位);
        边 = 挂载/归属边(父目录→子目录、目录→挂载表、挂载表→登记关系表,status=MOUNT 灰色实线) + ER 推导关系边
-           (listRelations 按 (库,schema) 分组拉取,过滤两端都在目录表集合(含关系表)内的边);
+           (listRelations 按 (库,schema) 分组拉取,过滤两端都在目录表集合(含关系表)内的边;
+           默认不显示,工具栏「ER 关系」开关勾选后才叠加——与列表/关系图只看挂载结构的口径对齐);
        渲染复用表详情「图谱」页签的 TableGraphCanvas(圆形节点星型图,只读) -->
   <div class="odg-pane" v-loading="loading">
     <TableGraphCanvas
@@ -33,6 +34,11 @@
       <template #toolbar>
         <el-tooltip content="图谱样式与力导参数" placement="bottom">
           <el-button size="small" :icon="Setting" @click="debugVisible = !debugVisible" />
+        </el-tooltip>
+      </template>
+      <template #toolbar-right>
+        <el-tooltip content="叠加 ER 推导的已确认关系边" placement="bottom">
+          <el-checkbox v-model="showErEdges" size="small">ER 关系</el-checkbox>
         </el-tooltip>
       </template>
     </TableGraphCanvas>
@@ -121,7 +127,8 @@ import { Close, Refresh, Setting } from '@element-plus/icons-vue'
 import request, { listRelations } from '../api'
 import TableGraphCanvas from './TableGraphCanvas.vue'
 
-// 口径:目录子树挂载表 + 登记关系表之间已推导的 ER 关系(仅已确认边,候选关系不混入图谱);
+// 口径:目录子树挂载表 + 登记关系表之间已推导的 ER 关系(仅已确认边,候选关系不混入图谱;
+//  ER 边由工具栏「ER 关系」开关控制,默认关闭;关闭时不发 listRelations 请求);
 //  表跨多个 (库,schema) 时按组分别拉关系再合并;节点以表名为键,跨 schema 同名表合并(与 RelationGraphCanvas 口径一致)
 const props = defineProps({
   dsId: { type: [String, Number], required: true },
@@ -323,8 +330,13 @@ const tableByName = computed(() => {
 
 // ---------- 关系数据 ----------
 const allEdges = ref([])
+// 工具栏「ER 关系」开关:默认不叠加 ER 推导边(与列表/关系图只看挂载结构的口径对齐),勾选后才拉取并显示
+const showErEdges = ref(false)
 // ER 推导边固定只显示已确认关系(候选关系去 ER 推导页处理,图谱不混入)
-const visibleEdges = computed(() => [...mountEdges.value, ...allEdges.value.filter((e) => e.status === 'CONFIRMED')])
+const visibleEdges = computed(() => [
+  ...mountEdges.value,
+  ...(showErEdges.value ? allEdges.value.filter((e) => e.status === 'CONFIRMED') : [])
+])
 
 // 防陈旧响应:目录快速切换时旧请求后返回不覆盖新数据
 let loadSeq = 0
@@ -333,7 +345,7 @@ let loadSeq = 0
 async function loadRelations() {
   const seq = ++loadSeq
   const tables = [...dirTables.value, ...dirRels.value.map((x) => x.rel)]
-  if (!props.dir || !tables.length) {
+  if (!props.dir || !tables.length || !showErEdges.value) {
     allEdges.value = []
     return
   }
@@ -370,8 +382,8 @@ async function loadRelations() {
   }
 }
 
-// 目录/数据源变化(目录对象在整树重拉后引用必变)→ 重拉关系
-watch(() => [props.dir, props.dsId], loadRelations, { immediate: true })
+// 目录/数据源/ER 开关变化(目录对象在整树重拉后引用必变)→ 重拉关系
+watch(() => [props.dir, props.dsId, showErEdges.value], loadRelations, { immediate: true })
 
 // ---------- 交互 ----------
 const emptyText = computed(() => {

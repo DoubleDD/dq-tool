@@ -21,7 +21,9 @@ public final class KernelConfigAdapter {
                 s.getRowThreshold(),
                 s.getSizeThresholdBytes(),
                 s.getSampleRows(),
-                s.getStatementTimeoutSeconds());
+                s.getStatementTimeoutSeconds(),
+                s.getDbConnectTimeoutSeconds(),
+                s.getDbReadTimeoutSeconds());
         AiProperties ai = config.ai();
         AiDefaults aiDefaults = new AiDefaults(
                 nullToEmpty(ai.getApiKey()),
@@ -53,7 +55,9 @@ public final class KernelConfigAdapter {
                 new LanConfig(
                         dq.getLan().isEnabled(),
                         dq.getLan().getDiscoveryPort(),
-                        dq.getLan().getAnnounceIntervalSeconds()));
+                        dq.getLan().getAnnounceIntervalSeconds()),
+                dq.getError().getRetentionDays(),
+                dq.getError().getMaxRecords());
     }
 
     private static String nullToEmpty(String value) {

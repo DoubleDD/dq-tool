@@ -120,20 +120,22 @@ class CompareExportFlowTest {
             assertEquals(1.0, overview.getRow(2).getCell(5).numericCellValue)
             assertTrue(overview.getRow(2).getCell(8).stringCellValue.contains("行数相差 1"),
                 overview.getRow(2).getCell(8).stringCellValue)
-            // 总览 1 条差异数据(1 个目标)对应 1 个明细 sheet + 行级对比明细 + 字段级差异汇总
-            assertEquals(4, wb.numberOfSheets)
+            // 总览 1 条差异数据(1 个目标)对应 1 个明细 sheet + 行级对比明细 + 字段级差异汇总 + 数据级字段对比汇总 + 列级对比明细
+            assertEquals(6, wb.numberOfSheets)
             assertEquals("行级对比明细", wb.getSheetName(1))
             assertEquals("字段级差异汇总", wb.getSheetName(2))
-            assertTrue(wb.getSheetName(3).startsWith("1_"), wb.getSheetName(3))
+            assertEquals("数据级字段对比差异总览", wb.getSheetName(3))
+            assertEquals("列级对比明细", wb.getSheetName(4))
+            assertTrue(wb.getSheetName(5).startsWith("1_t_reservoir_info"), wb.getSheetName(5))
             // 行级对比明细:首行即表头,一行一个「对象 × 比对目标」;R001 按编码配上,业务侧名称取目标真实值
             val rowLevel = wb.getSheetAt(1)
             assertEquals(listOf("基准表英文名", "基准表中文名", "基准编码", "基准名称",
-                "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明"),
-                (0..8).map { rowLevel.getRow(0).getCell(it).stringCellValue })
+                "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明", "差异类型"),
+                (0..9).map { rowLevel.getRow(0).getCell(it).stringCellValue })
             assertEquals(listOf("reservoir_base_info", "水库基础信息表", "R001", "水库1",
                 "t_reservoir_info", "", "R001", "改名水库1",
-                "reservoir_name: 基准「水库1」→ 目标「改名水库1」"),
-                (0..8).map { rowLevel.getRow(1).getCell(it).stringCellValue })
+                "reservoir_name: 基准「水库1」→ 目标「改名水库1」", "不一致"),
+                (0..9).map { rowLevel.getRow(1).getCell(it).stringCellValue })
             // 缺失 3 + 多余 4 + 不一致 5 = 12 行
             val expectedRows = target.missingCount!! + target.extraCount!! + target.fieldMismatchCount!!
             assertEquals(expectedRows, rowLevel.lastRowNum)
@@ -141,26 +143,28 @@ class CompareExportFlowTest {
             val fieldSummary = wb.getSheetAt(2)
             assertEquals(listOf("reservoir_code", "reservoir_name"),
                 (1..2).map { fieldSummary.getRow(it).getCell(2).stringCellValue })
-            assertEquals(7.0, fieldSummary.getRow(1).getCell(4).numericCellValue)   // 3+4+0
-            assertEquals(12.0, fieldSummary.getRow(2).getCell(4).numericCellValue)  // 3+4+5
-            assertEquals(5.0, fieldSummary.getRow(2).getCell(7).numericCellValue)
-            val detail = wb.getSheetAt(3)
-            // 字段级明细:首行即表头(对象编码/名称 + 基准/业务两块各三列 + 差异原因),无上下文/图例行
-            assertEquals(listOf("reservoir_code", "reservoir_name", "基准表字段", "字段中文", "基准表值",
-                "业务表字段名", "业务表中文", "业务表值", "差异原因"),
-                (0..8).map { detail.getRow(0).getCell(it).stringCellValue })
+            assertEquals(7.0, fieldSummary.getRow(1).getCell(5).numericCellValue)   // 3+4+0
+            assertEquals(12.0, fieldSummary.getRow(2).getCell(5).numericCellValue)  // 3+4+5
+            assertEquals(5.0, fieldSummary.getRow(2).getCell(8).numericCellValue)
+            val detail = wb.getSheetAt(5)
+            // 字段级明细:首行即表头(定位列 + 对象编码/名称 + 基准/业务两块各三列 + 差异原因),无上下文/图例行;
+            // 定位列:厂商库已登记所属系统「厂商运管系统」;MySQL 单库口径 db 留空(schema 即库,不出「模式」列)
+            val detailPrefix = listOf("厂商运管系统", "", "t_reservoir_info", "")
+            assertEquals(listOf("业务系统名称", "库", "表名", "表中文名", "reservoir_code", "reservoir_name",
+                "基准表字段", "字段中文", "基准表值", "业务表字段名", "业务表中文", "业务表值", "差异原因"),
+                (0..12).map { detail.getRow(0).getCell(it).stringCellValue })
             // 一行一个「对象 × 不一致字段」:不一致 5 字段 + 缺失 3 + 多余 4 = 12 行
             val expected = target.missingCount!! + target.extraCount!! + target.fieldMismatchCount!!
             assertEquals(expected, lastDataRow(detail))
             // 明细按 不一致 → 缺失 → 多余 排列:首行是 R001 的 reservoir_name 字段级不一致
-            assertEquals(listOf("R001", "水库1", "reservoir_name", "", "水库1",
+            assertEquals(detailPrefix + listOf("R001", "水库1", "reservoir_name", "", "水库1",
                 "reservoir_name", "", "改名水库1", "文本不一致"),
-                (0..8).map { detail.getRow(1).getCell(it).stringCellValue })
+                (0..12).map { detail.getRow(1).getCell(it).stringCellValue })
             // 缺失对象一对象一行,字段六列留空,差异原因写「基准有目标无」
-            val missingRow = (1..1 + expected).first { detail.getRow(it).getCell(0).stringCellValue == "R091" }
-            assertEquals("基准有目标无", detail.getRow(missingRow).getCell(8).stringCellValue)
+            val missingRow = (1..1 + expected).first { detail.getRow(it).getCell(4).stringCellValue == "R091" }
+            assertEquals("基准有目标无", detail.getRow(missingRow).getCell(12).stringCellValue)
             // 多余对象差异原因写「目标有基准无」
-            assertEquals("目标有基准无", detail.getRow(missingRow + 5).getCell(8).stringCellValue)
+            assertEquals("目标有基准无", detail.getRow(missingRow + 5).getCell(12).stringCellValue)
         } finally {
             wb.close()
         }

@@ -11,6 +11,7 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
+import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.TableDocRepository
@@ -69,7 +70,8 @@ class ScanDocServiceTest {
         val dsRepo = DataSourceRepository(jdbc)
         val dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
         val aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
-        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, DialectFactory)
+        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(),
+            MetadataService(dataSourceService, DialectFactory, scanRepo, SchemaStatRepository(jdbc), SchemaDocRepository(jdbc), MetaCacheRepository(jdbc)))
         return ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, aiTracker) { _, _, _, table, _ ->
             genCalls.add(table)
             genError?.let { throw it }
@@ -157,7 +159,8 @@ class ScanDocServiceTest {
         val dsRepo = DataSourceRepository(jdbc)
         val dataSourceService = DataSourceService(dsRepo, crypto, DialectFactory, config, SchemaStatRepository(jdbc), MetaCacheRepository(jdbc))
         val aiConfigService = AiConfigService(AiConfigRepository(jdbc), crypto, config, AiService())
-        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, DialectFactory)
+        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(),
+            MetadataService(dataSourceService, DialectFactory, scanRepo, SchemaStatRepository(jdbc), SchemaDocRepository(jdbc), MetaCacheRepository(jdbc)))
         val service = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, aiTracker) { _, _, _, table, _ ->
             genCalls.add(table)
             entered.countDown()

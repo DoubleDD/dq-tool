@@ -11,6 +11,7 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
+import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaInit
 import com.example.dq.repository.SchemaStatRepository
 import com.example.dq.repository.SystemSettingsRepository
@@ -71,7 +72,8 @@ class ExportServiceTest {
         val tagService = TagService(tagRepo, dsRepo)
         val autoTagService = AutoTagService(aiConfigService, AiService(), tagService, tagRepo, scanRepo,
             tableDocRepo, dataSourceService, DialectFactory, aiTracker)
-        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(), dataSourceService, DialectFactory)
+        val tableDocService = TableDocService(tableDocRepo, aiConfigService, AiService(),
+            MetadataService(dataSourceService, DialectFactory, scanRepo, schemaStatRepo, SchemaDocRepository(jdbc), metaCacheRepo))
         val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, aiTracker)
         val systemSettingsService = SystemSettingsService(SystemSettingsRepository(jdbc), config)
         val chunkRunner = ChunkRunner(scanRepo, dataSourceService, DialectFactory, systemSettingsService, executor,

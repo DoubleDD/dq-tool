@@ -31,17 +31,15 @@
     >
       <!-- 业务工具透传:字段数/导出等由调用方按需给 -->
       <template #toolbar><slot name="toolbar" /></template>
-      <template #legend>
-        <!-- mapping 模式:图例换成连线操作提示(关系三态图例在字段映射场景无意义) -->
-        <div v-if="mode === 'mapping'" class="rg-legend">
-          <span>点一侧字段行、再点另一侧字段行即可连线;点连线本身删除</span>
-        </div>
-        <div v-else class="rg-legend">
-          <span class="rg-legend-item"><i class="rg-line rg-line-confirmed" />确认</span>
-          <span class="rg-legend-item"><i class="rg-line rg-line-candidate" />候选</span>
-          <span class="rg-legend-item"><i class="rg-line rg-line-suspect" />疑似多对多</span>
-        </div>
+      <template v-if="mode !== 'mapping'" #legend>
+        <span class="rg-legend-item"><i class="rg-line rg-line-confirmed" />确认</span>
+        <span class="rg-legend-item"><i class="rg-line rg-line-candidate" />候选</span>
+        <span class="rg-legend-item"><i class="rg-line rg-line-suspect" />疑似多对多</span>
       </template>
+      <!-- 全屏内浮层必须进底座根节点(.bgc-wrap,全屏只渲染全屏元素及其后代):
+           悬停连线浮层(mapping)+ 调用方 overlay 插槽(字段映射的连线删除确认条)走默认插槽落进底座根内 -->
+      <div v-show="edgeTip.show" class="rg-edgetip" :style="{ left: edgeTip.x + 'px', top: edgeTip.y + 'px' }">{{ edgeTip.text }}</div>
+      <slot name="overlay" />
     </BaseGraphCanvas>
     <!-- 选中操作条(底部居中悬浮):点节点/Shift 点选/Shift 拖动框选后出现;
          「删除」= 否决选中表的所有关系(与「候选管理-批量否决」同口径:候选/确认均转否决),成功后 emit changed 由父级刷新图;
@@ -55,13 +53,11 @@
       </el-tooltip>
       <el-button size="small" @click="clearSelection">取消</el-button>
     </div>
-    <!-- 悬停连线浮层(mapping):显示两端字段名(注释优先),人工审核连线去向;fixed 定位跟随鼠标 -->
-    <div v-show="edgeTip.show" class="rg-edgetip" :style="{ left: edgeTip.x + 'px', top: edgeTip.y + 'px' }">{{ edgeTip.text }}</div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { BaseLayout, CubicHorizontal, ExtensionCategory, Polyline, register } from '@antv/g6'
 import dagre from 'dagre'
@@ -115,15 +111,18 @@ const props = defineProps({
   activeColumn: { type: String, default: '' },
   // mapping 模式:锚点表(基准表)里**参与比对的基准字段**——文字常亮高亮(主题色+加粗,不改背景),
   // 不管有没有连线都亮;对比表字段不受此参数影响(连了线才亮)
-  highlightColumns: { type: Array, default: () => [] }
+  highlightColumns: { type: Array, default: () => [] },
+  // mapping 模式:选中态连线 id(父级在删除确认期间传入,该线加粗变红;空串 = 无选中)
+  selectedEdgeId: { type: String, default: '' }
 })
 
 // edge-click:点边(传 TableRelation);node-click:点节点(传表名);node-open:双击节点表名(传表名,跳字段明细);
 // field-click:mapping 模式点字段行(传 { table, column });mapping-connect:mapping 模式 create-edge 新建边完成(传两端表+字段);
+// canvas-click:点画布空白(mapping 模式父级据此收起连线删除确认条);
 // update:level / update:edgeType:工具栏档位/线形切换(配 v-model 用);
 // export-drawio:工具栏「导出 drawio」(第 5 个图标位;调用方经 exportData() 取数据并下载);
 // changed:批量否决成功 { action: 'reject', ids },父级据此剔除这些边并刷新图(与关系抽屉单条操作同口径)
-const emit = defineEmits(['edge-click', 'node-click', 'node-open', 'field-click', 'mapping-connect', 'update:level', 'update:edgeType', 'export-drawio', 'changed'])
+const emit = defineEmits(['edge-click', 'node-click', 'node-open', 'field-click', 'mapping-connect', 'canvas-click', 'update:level', 'update:edgeType', 'export-drawio', 'changed'])
 
 const baseRef = ref(null)
 // 边 id -> TableRelation(点边时回查原始数据)
@@ -164,6 +163,8 @@ function onSelectionChange(ids) {
  *  (setSelection 只在有变化时发事件:回灌那次发一次,之后状态一致不再发,不会循环) */
 function onRendered() {
   if (selectedTables.value.size) baseRef.value?.setSelection([...selectedTables.value])
+  // mapping 模式:边不进 graphData,首次挂载/结构重建后在这里把连线就地补挂
+  syncEdgesInPlace()
 }
 
 /** 清空选中:本地集合与底座选中态一起清(底座 clearSelection 会再发一次 selection-change,幂等) */
@@ -869,8 +870,11 @@ function applyEdgeHover(rel) {
   const g = baseRef.value?.getGraph()
   if (!g) return
   try {
-    const key = g.context.element.getElement(String(rel.id))?.getShape('key')
-    if (key) key.style.lineWidth = 2.8
+    // 选中态(删除确认中)的线保持选中样式,悬停不覆盖
+    if (String(rel.id) !== props.selectedEdgeId) {
+      const key = g.context.element.getElement(String(rel.id))?.getShape('key')
+      if (key) key.style.lineWidth = 2.8
+    }
   } catch {
     // 边刚被删除/重建,忽略
   }
@@ -889,8 +893,11 @@ function clearEdgeHover() {
   const g = baseRef.value?.getGraph()
   if (g && hoverEdgeRel) {
     try {
-      const key = g.context.element.getElement(String(hoverEdgeRel.id))?.getShape('key')
-      if (key) key.style.lineWidth = 1.8
+      // 选中态(删除确认中)的线不还原成普通线宽
+      if (String(hoverEdgeRel.id) !== props.selectedEdgeId) {
+        const key = g.context.element.getElement(String(hoverEdgeRel.id))?.getShape('key')
+        if (key) key.style.lineWidth = 1.8
+      }
     } catch {
       // 边已不存在
     }
@@ -903,6 +910,46 @@ function clearEdgeHover() {
   hoverEdgeId = ''
   if (edgeTip.value.show) edgeTip.value = { ...edgeTip.value, show: false }
 }
+
+// ---------- mapping 选中连线:点线不直接删,父级弹删除确认期间该线加粗变红(选中态) ----------
+// 记住原线宽/颜色以便取消时还原;边随 v-model 重建(删除确认后)时原样式引用自然失效,try/catch 兜底
+let selectedEdgeSaved = null
+
+function applyEdgeSelected(id) {
+  clearEdgeSelected()
+  const g = baseRef.value?.getGraph()
+  if (!g || !id) return
+  try {
+    const key = g.context.element.getElement(String(id))?.getShape('key')
+    if (!key) return
+    selectedEdgeSaved = { id, lineWidth: key.style.lineWidth ?? 1.8, stroke: key.style.stroke }
+    key.style.lineWidth = 3.2
+    key.style.stroke = themeColors().danger
+  } catch {
+    selectedEdgeSaved = null
+  }
+}
+
+function clearEdgeSelected() {
+  const g = baseRef.value?.getGraph()
+  if (g && selectedEdgeSaved) {
+    try {
+      const key = g.context.element.getElement(selectedEdgeSaved.id)?.getShape('key')
+      if (key) {
+        key.style.lineWidth = selectedEdgeSaved.lineWidth
+        if (selectedEdgeSaved.stroke) key.style.stroke = selectedEdgeSaved.stroke
+      }
+    } catch {
+      // 边已删除/重建,无需还原
+    }
+  }
+  selectedEdgeSaved = null
+}
+
+watch(() => props.selectedEdgeId, (id) => {
+  if (id) applyEdgeSelected(id)
+  else clearEdgeSelected()
+})
 
 /** 指针下最近的连线(按曲线采样距离,阈值与命中宽度同量级,除以 zoom) */
 function pickEdgeAt(clientX, clientY) {
@@ -976,6 +1023,48 @@ function repaintInPlace() {
   baseRef.value?.repaint(buildData())
 }
 
+/**
+ * mapping 模式连线就地同步:按 id 差集增删边 + draw,不走底座整体重建(重建会闪屏、视口跳动)。
+ * 边不进 graphData(见 graphData 注释),初次由 onRendered 补挂,之后 props.edges 一变就在这里落地;
+ * create-edge 的橡皮筋临时边(map-tmp:*)不在 props.edges 里,差集时自然被收敛移除(与旧重建口径一致)
+ */
+async function syncEdgesInPlace() {
+  if (props.mode !== 'mapping') return
+  const g = baseRef.value?.getGraph()
+  if (!g) return
+  if (createEdgePending()) return // 橡皮筋进行中不动模型,onFinish 后 props.edges 更新会再来一次
+  // 点边回查表随连线状态重建(即使本次无边差集,relById 也要与最新 edges 对齐)
+  relById = new Map()
+  const want = new Map()
+  for (const r of props.edges) {
+    const id = String(r.id)
+    relById.set(id, r)
+    want.set(id, {
+      id,
+      source: r.oneTable,
+      target: r.manyTable,
+      data: { oneColumn: r.oneColumn, manyColumn: r.manyColumn },
+      style: mappingEdgeStyle(r.manyTable)
+    })
+  }
+  let cur = []
+  try {
+    cur = g.getEdgeData().map((e) => String(e.id))
+  } catch {
+    return
+  }
+  const curSet = new Set(cur)
+  const removeIds = cur.filter((id) => !want.has(id))
+  const addList = [...want.values()].filter((e) => !curSet.has(e.id))
+  if (!removeIds.length && !addList.length) return
+  if (removeIds.length) g.removeEdgeData(removeIds)
+  if (addList.length) g.addEdgeData(addList)
+  await g.draw()
+}
+
+// mapping 模式:连线增删就地应用(整图不重建,视口/节点位置不动、不闪屏)
+watch(() => props.edges, () => syncEdgesInPlace(), { deep: true })
+
 // 字段行点击日志(最近几次):create-edge 行为只给节点 id,字段名要从容器点击委托里带上来的记录取;
 // 只认「最后两次点击」,避免点到节点标题/空白后拿旧记录错连
 let fieldClickLog = []
@@ -1017,7 +1106,7 @@ function onCreateEdge(edge) {
   }
 }
 
-/** 新建边完成:交给调用方落状态(父级更新映射后整图按状态重建:正式边以 map:表:字段 落模型,临时边被收敛移除) */
+/** 新建边完成:交给调用方落状态(父级更新映射后由 watch 就地同步:正式边以 map:表:字段 落模型,临时边被收敛移除) */
 function onFinishEdge(edge) {
   emit('mapping-connect', {
     oneTable: edge.source,
@@ -1025,6 +1114,8 @@ function onFinishEdge(edge) {
     oneColumn: edge.data?.oneColumn,
     manyColumn: edge.data?.manyColumn
   })
+  // 兜底:若 watch 触发时橡皮筋辅助节点还没收掉(syncEdgesInPlace 被跳过),下一拍再补一次(差集幂等)
+  nextTick(() => syncEdgesInPlace())
 }
 
 /** 平行边(同一对表多条关系)处理:仅「仅表名」档位需要按曲率分开——
@@ -1037,9 +1128,21 @@ function parallelEdgeTransforms() {
 // 底座输入:数据/配置均为 computed,props(含 level)变化 → data 变化触发底座整体重建
 // (底座 refresh 每次重建重放 transforms,level 切换后平行边处理随之更新;重建后按 fit 口径重新定位);
 // 触碰 themeState.dark:亮/暗主题切换时重算(节点/边颜色取自主题变量),底座整体重建换色
+//
+// mapping 模式例外:连线增删是高频操作,整体重建会闪屏且视口跳动——边不进 graphData,
+// 结构输入(节点集合/尺寸/主题)没变时沿用上次对象引用(底座 watch 不触发),
+// 连线由 syncEdgesInPlace 按 id 差集就地增删(addEdgeData/removeEdgeData + draw)
+let mappingDataCache = null
 const graphData = computed(() => {
-  void themeState.dark
-  return buildData()
+  const d = buildData()
+  if (props.mode !== 'mapping') {
+    void themeState.dark // ER 模式:亮/暗主题切换时重算(节点/边颜色取自主题变量),底座整体重建换色
+    return d
+  }
+  const key = `${themeState.dark}|${JSON.stringify(d.nodes)}`
+  if (mappingDataCache?.key === key) return mappingDataCache.data
+  mappingDataCache = { key, data: { nodes: d.nodes, edges: [] } }
+  return mappingDataCache.data
 })
 const graphOptions = computed(() => ({
   node: {
@@ -1094,9 +1197,11 @@ function onEdgeClick(id) {
   if (rel) emit('edge-click', rel)
 }
 
-/** 点画布空白(底座 canvas-click):清空选中(框选松手后补发的那次 click 已由底座吞掉,不会误清,见 BaseGraphCanvas) */
+/** 点画布空白(底座 canvas-click):清空选中(框选松手后补发的那次 click 已由底座吞掉,不会误清,见 BaseGraphCanvas);
+ *  同时转发给父级——mapping 模式用来收起连线删除确认条 */
 function onCanvasClick() {
   clearSelection()
+  emit('canvas-click')
 }
 
 /** 底部操作条「删除」:否决选中表的所有关系——与「候选管理-批量否决」同一接口与口径

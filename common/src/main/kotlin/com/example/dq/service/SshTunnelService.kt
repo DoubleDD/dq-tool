@@ -98,7 +98,8 @@ class SshTunnelService {
         } catch (e: Exception) {
             try {
                 ssh.disconnect()
-            } catch (_: Exception) {
+            } catch (closeFailure: Exception) {
+                log.debug("转发失败后断开 SSH 会话失败(忽略,不影响原错误上抛): {}", closeFailure.message)
             }
             throw e
         }
@@ -128,7 +129,8 @@ class SshTunnelService {
         } catch (e: Exception) {
             try {
                 ssh.disconnect()
-            } catch (_: Exception) {
+            } catch (closeFailure: Exception) {
+                log.debug("一次性隧道转发失败后断开 SSH 会话失败(忽略): {}", closeFailure.message)
             }
             throw e
         }
@@ -167,7 +169,8 @@ class SshTunnelService {
                 // 认证失败先断开再抛错,避免半开连接泄漏
                 try {
                     ssh.disconnect()
-                } catch (_: Exception) {
+                } catch (closeFailure: Exception) {
+                    log.debug("认证失败后断开 SSH 会话失败(忽略): {}", closeFailure.message)
                 }
                 throw e
             }
@@ -224,7 +227,8 @@ class SshTunnelService {
         } catch (e: Exception) {
             try {
                 serverSocket.close()
-            } catch (_: Exception) {
+            } catch (closeFailure: Exception) {
+                log.debug("本地端口转发失败后关闭 ServerSocket 失败(忽略): {}", closeFailure.message)
             }
             throw e
         }

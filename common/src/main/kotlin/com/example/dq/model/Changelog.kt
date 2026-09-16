@@ -5,8 +5,11 @@ data class ChangelogEntry(
     val version: String,
     /** 发布日期(标题括号内,可空) */
     val date: String?,
-    /** 段落内原始文本行(去空行、逐项 trim;前端按 `- `/`* `/`### ` 前缀轻渲染) */
-    val lines: List<String>,
+    /**
+     * 段落正文的**原始 Markdown**(去掉版本标题行,段首段尾空行已 trim;
+     * 段内空行与行首缩进原样保留,交给前端 Markdown 渲染器解析)
+     */
+    val markdown: String,
 )
 
 /** 更新日志概览:当前版本号 + 全部版本条目(文件顺序,最新在前) */

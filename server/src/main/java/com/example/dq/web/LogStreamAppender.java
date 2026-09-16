@@ -73,7 +73,8 @@ public class LogStreamAppender extends UnsynchronizedAppenderBase<ILoggingEvent>
     private void appendThrowable(StringBuilder sb, IThrowableProxy proxy, String indent) {
         sb.append(indent).append(proxy.getClassName()).append(": ").append(proxy.getMessage()).append('\n');
         for (StackTraceElementProxy ste : proxy.getStackTraceElementProxyArray()) {
-            sb.append(indent).append("\tat ").append(ste.toString()).append('\n');
+            // StackTraceElementProxy.toString() 自带 "at " 前缀,不要再补,否则输出 "at at ..."
+            sb.append(indent).append('\t').append(ste).append('\n');
         }
         if (proxy.getCause() != null) {
             sb.append(indent).append("Caused by: ");

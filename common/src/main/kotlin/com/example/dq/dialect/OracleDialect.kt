@@ -64,33 +64,58 @@ class OracleDialect : AbstractDialect() {
 
         /**
          * 按段视图来源生成表清单 SQL。
+         *
+         * 体积用「先把段按 owner+segment_name 聚合、再 LEFT JOIN」而不是逐表相关子查询:
+         * 旧写法对 all_tables 每一行都要跑一遍 all_segments/all_indexes 的 `OR ... IN (子查询)`,
+         * 组合复杂度约 O(表数 × 段数),大 schema(如 APEX_* 上千张表)上字典查询会拖到几十秒;
+         * 聚合版对每张段视图只扫一遍。
+         *
          * @param segView all_segments / dba_segments(全 schema)、user_segments(仅当前用户)、null(不统计大小)
+         * @param tableNames 仅这些表(null/空 = 全 schema)
          */
-        internal fun listTablesSql(segView: String?): String {
-            val sizeExpr = when (segView) {
-                null -> "NULL"
-                "user_segments" ->
-                    "CASE WHEN t.owner = SYS_CONTEXT('USERENV','SESSION_USER') THEN " +
-                    "(SELECT SUM(s.bytes) FROM user_segments s " +
-                    "  WHERE s.segment_name = t.table_name OR s.segment_name IN " +
-                    "    (SELECT i.index_name FROM all_indexes i WHERE i.owner = t.owner AND i.table_name = t.table_name)) END"
-                else ->
-                    "(SELECT SUM(s.bytes) FROM " + segView + " s WHERE s.owner = t.owner " +
-                    "  AND (s.segment_name = t.table_name OR s.segment_name IN " +
-                    "    (SELECT i.index_name FROM all_indexes i WHERE i.owner = t.owner AND i.table_name = t.table_name)))"
+        internal fun listTablesSql(segView: String?, tableNames: Collection<String>? = null): String {
+            val nameFilter = if (tableNames.isNullOrEmpty()) ""
+            else " AND t.table_name IN (" + tableNames.joinToString(", ") { "?" } + ")"
+            val commentExpr = "(SELECT c.comments FROM all_tab_comments c " +
+                    "WHERE c.owner = t.owner AND c.table_name = t.table_name)"
+            val header = "SELECT t.table_name, t.num_rows, "
+            val tail = ", t.tablespace_name, " + commentExpr + " FROM all_tables t "
+            val where = " WHERE t.owner = ?" + nameFilter + " ORDER BY t.table_name"
+            if (segView == null) {
+                return header + "NULL" + tail + where
             }
-            return "SELECT t.table_name, t.num_rows, " + sizeExpr + ", t.tablespace_name, " +
-                    "(SELECT c.comments FROM all_tab_comments c WHERE c.owner = t.owner AND c.table_name = t.table_name) " +
-                    "FROM all_tables t WHERE t.owner = ? ORDER BY t.table_name"
+            if (segView == "user_segments") {
+                // user_segments 无 owner 列,只回当前用户一行;非当前用户 schema 的大小按未知(NULL)
+                val sizeExpr = "CASE WHEN t.owner = SYS_CONTEXT('USERENV','SESSION_USER') THEN " +
+                        "CASE WHEN ts.bytes IS NULL AND ix.bytes IS NULL THEN NULL " +
+                        "ELSE NVL(ts.bytes, 0) + NVL(ix.bytes, 0) END END"
+                val tableAgg = "LEFT JOIN (SELECT s.segment_name, SUM(s.bytes) AS bytes FROM user_segments s " +
+                        "GROUP BY s.segment_name) ts ON ts.segment_name = t.table_name "
+                val indexAgg = "LEFT JOIN (SELECT i.table_name, SUM(s.bytes) AS bytes FROM all_indexes i " +
+                        "JOIN user_segments s ON s.segment_name = i.index_name " +
+                        "WHERE i.owner = SYS_CONTEXT('USERENV','SESSION_USER') " +
+                        "GROUP BY i.table_name) ix ON ix.table_name = t.table_name "
+                return header + sizeExpr + tail + tableAgg + indexAgg + where
+            }
+            val sizeExpr = "CASE WHEN ts.bytes IS NULL AND ix.bytes IS NULL THEN NULL " +
+                    "ELSE NVL(ts.bytes, 0) + NVL(ix.bytes, 0) END"
+            val tableAgg = "LEFT JOIN (SELECT s.owner, s.segment_name, SUM(s.bytes) AS bytes FROM " +
+                    segView + " s GROUP BY s.owner, s.segment_name) ts " +
+                    "ON ts.owner = t.owner AND ts.segment_name = t.table_name "
+            val indexAgg = "LEFT JOIN (SELECT i.owner, i.table_name, SUM(s.bytes) AS bytes FROM all_indexes i " +
+                    "JOIN " + segView + " s ON s.owner = i.owner AND s.segment_name = i.index_name " +
+                    "GROUP BY i.owner, i.table_name) ix ON ix.owner = t.owner AND ix.table_name = t.table_name "
+            return header + sizeExpr + tail + tableAgg + indexAgg + where
         }
 
         /**
          * 23ai 起 ALL_SEGMENTS 被移除;低版本仍用 ALL_SEGMENTS(可统计任意 schema)。
          * withSize=false 时不统计大小(受限账号所有段视图均不可见时的降级)
          */
-        internal fun listTablesSql(major: Int, withSize: Boolean = true): String {
-            if (!withSize) return listTablesSql(null)
-            return listTablesSql(if (major >= 23) "user_segments" else "all_segments")
+        internal fun listTablesSql(major: Int, withSize: Boolean = true,
+                                   tableNames: Collection<String>? = null): String {
+            if (!withSize) return listTablesSql(null, tableNames)
+            return listTablesSql(if (major >= 23) "user_segments" else "all_segments", tableNames)
         }
 
         /** 指定段视图的体积聚合 SQL;user_segments 无 owner 列,只回当前用户一行 */
@@ -277,8 +302,23 @@ class OracleDialect : AbstractDialect() {
         return emptyMap()
     }
 
+    /** Oracle thin 驱动:建连与单次网络读取超时(毫秒);不设置时驱动默认几乎不设上限,半死库可卡到分钟级 */
     @Throws(SQLException::class)
-    override fun listTables(conn: Connection, schema: String): List<TableStat> {
+    override fun connectionTimeoutProperties(connectTimeoutMs: Int, readTimeoutMs: Int): Map<String, String> =
+        buildMap {
+            if (connectTimeoutMs > 0) put("oracle.net.CONNECT_TIMEOUT", connectTimeoutMs.toString())
+            if (readTimeoutMs > 0) put("oracle.jdbc.ReadTimeout", readTimeoutMs.toString())
+        }
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String): List<TableStat> =
+        listTablesInternal(conn, schema, null)
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String, tableNames: Collection<String>): List<TableStat> =
+        listTablesInternal(conn, schema, tableNames)
+
+    private fun listTablesInternal(conn: Connection, schema: String, tableNames: Collection<String>?): List<TableStat> {
         // 总大小 = 表段 + 该表全部索引段;存储信息取表空间,注释取 ALL_TAB_COMMENTS
         // 段视图降级链与 sumSizeBySchema 一致(探测结果按账号缓存),最后一环为不统计大小
         val chain = segmentViewChain(oracleMajor(conn))
@@ -286,12 +326,12 @@ class OracleDialect : AbstractDialect() {
         val fromTop = views === chain
         for (view in views) {
             if (view == null) {
-                val result = queryTables(conn, schema, listTablesSql(null))
+                val result = queryTables(conn, schema, listTablesSql(null, tableNames), tableNames)
                 recordSegView(conn, fromTop, null)
                 return result
             }
             try {
-                val result = queryTables(conn, schema, listTablesSql(view))
+                val result = queryTables(conn, schema, listTablesSql(view, tableNames), tableNames)
                 recordSegView(conn, fromTop, view)
                 return result
             } catch (e: SQLException) {
@@ -303,10 +343,12 @@ class OracleDialect : AbstractDialect() {
     }
 
     @Throws(SQLException::class)
-    private fun queryTables(conn: Connection, schema: String, sql: String): List<TableStat> {
+    private fun queryTables(conn: Connection, schema: String, sql: String,
+                            tableNames: Collection<String>?): List<TableStat> {
         val tables = ArrayList<TableStat>()
         conn.prepareStatement(sql).use { ps ->
             ps.setString(1, schema)
+            bindNames(ps, 2, tableNames)
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     val rows = rs.getLong(2)

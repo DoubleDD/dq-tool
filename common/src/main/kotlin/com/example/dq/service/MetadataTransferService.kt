@@ -18,6 +18,7 @@ import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.ManualCollectRepository
 import com.example.dq.repository.MetaSyncRepository
+import com.example.dq.repository.MetaWriteQueue
 import com.example.dq.repository.ObjectCatalogRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.TableDocRepository
@@ -69,6 +70,8 @@ class MetadataTransferService(
     private val manualCollectRepo: ManualCollectRepository,
     private val tableRelationRepo: TableRelationRepository,
     private val objectCatalogRepo: ObjectCatalogRepository,
+    /** 结构缓存整粒度替换与扫描/浏览共用同一元数据写队列,避免导入与扫描并发写 H2 */
+    private val writeQueue: MetaWriteQueue = MetaWriteQueue(),
 ) {
 
     private val objectMapper = jacksonObjectMapper()
@@ -325,24 +328,26 @@ class MetadataTransferService(
                 log.warn("结构缓存表 {} 跳过 {}/{} 行(缺必填列,首行缺: {})",
                     table, data.size - insertable.size, data.size, missingCols(data.first { missingCols(it).isNotEmpty() }))
             }
-            jdbc.tx { conn ->
-                conn.prepareStatement("DELETE FROM $table WHERE datasource_id=?").use { ps ->
-                    ps.setLong(1, dsId)
-                    ps.executeUpdate()
-                }
-                if (insertable.isEmpty()) return@tx
-                val sql = "INSERT INTO $table(${cols.joinToString(",") { it.name }}) " +
-                        "VALUES (${cols.joinToString(",") { "?" }})"
-                conn.prepareStatement(sql).use { ps ->
-                    for (row in insertable) {
-                        var idx = 1
-                        for (col in cols) {
-                            val v = if (col.name == "datasource_id") dsId else coerce(row[col.name], col.sqlType)
-                            if (v == null) ps.setObject(idx++, null) else ps.setObject(idx++, v)
-                        }
-                        ps.addBatch()
+            writeQueue.submit {
+                jdbc.tx { conn ->
+                    conn.prepareStatement("DELETE FROM $table WHERE datasource_id=?").use { ps ->
+                        ps.setLong(1, dsId)
+                        ps.executeUpdate()
                     }
-                    ps.executeBatch()
+                    if (insertable.isEmpty()) return@tx
+                    val sql = "INSERT INTO $table(${cols.joinToString(",") { it.name }}) " +
+                            "VALUES (${cols.joinToString(",") { "?" }})"
+                    conn.prepareStatement(sql).use { ps ->
+                        for (row in insertable) {
+                            var idx = 1
+                            for (col in cols) {
+                                val v = if (col.name == "datasource_id") dsId else coerce(row[col.name], col.sqlType)
+                                if (v == null) ps.setObject(idx++, null) else ps.setObject(idx++, v)
+                            }
+                            ps.addBatch()
+                        }
+                        ps.executeBatch()
+                    }
                 }
             }
         } catch (e: Exception) {

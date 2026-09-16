@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.file.Path
 
-/** 更新日志解析:多版本段落、无日期标题、空内容/资源缺失兜底 */
+/** 更新日志解析:多版本段落、无日期标题、空内容/资源缺失兜底、Markdown 正文原样保留 */
 class ChangelogServiceTest {
 
     @Test
@@ -28,10 +28,10 @@ class ChangelogServiceTest {
         assertEquals(2, entries.size)
         assertEquals("1.9.8", entries[0].version)
         assertEquals("2026-09-06", entries[0].date)
-        assertEquals(listOf("- 新增更新日志功能", "- 点击页脚版本号查看历史记录"), entries[0].lines)
+        assertEquals("- 新增更新日志功能\n- 点击页脚版本号查看历史记录", entries[0].markdown)
         assertEquals("1.9.7", entries[1].version)
         assertEquals("2026-08-20", entries[1].date)
-        assertEquals(listOf("- 修复扫描中断恢复问题"), entries[1].lines)
+        assertEquals("- 修复扫描中断恢复问题", entries[1].markdown)
     }
 
     @Test
@@ -50,7 +50,27 @@ class ChangelogServiceTest {
         assertEquals(1, entries.size)
         assertEquals("1.9.8", entries[0].version)
         assertNull(entries[0].date)
-        assertEquals(listOf("### 新增", "- 条目一", "普通说明行"), entries[0].lines)
+        assertEquals("### 新增\n\n- 条目一\n普通说明行", entries[0].markdown)
+    }
+
+    @Test
+    fun `parse 保留段内 markdown 标记 空行与缩进`() {
+        val text = """
+            ## 1.9.8 (2026-09-06)
+
+            ### 新增
+
+            - **加粗标题**:含 `行内代码`
+                - 嵌套子项
+            - 第二项
+        """.trimIndent()
+        val entries = ChangelogService.parse(text)
+        assertEquals(1, entries.size)
+        // 加粗/行内代码标记、段内空行与行首缩进都必须原样交给前端 Markdown 渲染器
+        assertEquals(
+            "### 新增\n\n- **加粗标题**:含 `行内代码`\n    - 嵌套子项\n- 第二项",
+            entries[0].markdown
+        )
     }
 
     @Test
@@ -60,6 +80,14 @@ class ChangelogServiceTest {
         assertTrue(ChangelogService.parse("   \n  ").isEmpty())
         // 只有一级标题、没有任何版本段落
         assertTrue(ChangelogService.parse("# 更新日志\n\n一些说明").isEmpty())
+    }
+
+    @Test
+    fun `parse 版本段落无正文时正文为空串`() {
+        val entries = ChangelogService.parse("## 1.9.8 (2026-09-06)\n\n## 1.9.7\n\n- 旧条目")
+        assertEquals(2, entries.size)
+        assertEquals("", entries[0].markdown)
+        assertEquals("- 旧条目", entries[1].markdown)
     }
 
     @Test

@@ -228,7 +228,7 @@ class DataSourceService(
         for (candidate in dialect.connectionUrlCandidates(url)) {
             try {
                 val start = System.nanoTime()
-                SqlLogConnection.wrap(DriverManager.getConnection(candidate, username, password)).use { conn ->
+                SqlLogConnection.wrap(DriverManager.getConnection(candidate, connectionProps(dialect, username, password))).use { conn ->
                     onConnectMs((System.nanoTime() - start) / 1_000_000)
                     return block(conn)
                 }
@@ -293,6 +293,11 @@ class DataSourceService(
         hc.username = c.username
         hc.password = c.password
         hc.driverClassName = dialect.driverClassName()
+        // 连接级超时:慢库/半死库在建连或挂死查询上快速失败,不再由驱动默认值拖到分钟级(方言给出驱动属性名)
+        val connectTimeoutMs = config.scan.dbConnectTimeoutSeconds * 1000
+        val readTimeoutMs = config.scan.dbReadTimeoutSeconds * 1000
+        dialect.connectionTimeoutProperties(connectTimeoutMs, readTimeoutMs)
+            .forEach { (k, v) -> hc.addDataSourceProperty(k, v) }
         // 方言级连接初始化(如 Oracle 关闭会话游标缓存防 ORA-01000);初始化 SQL 失败会中止连接创建
         dialect.connectionInitSql()?.let { hc.connectionInitSql = it }
         hc.maximumPoolSize = config.scan.workers + 2 // worker 占满时给元数据查询留余量
@@ -328,16 +333,32 @@ class DataSourceService(
             return candidates[0]
         }
         Class.forName(dialect.driverClassName())
+        // 试连同样受连接超时约束(DriverManager 的 loginTimeout 是进程级上限;再次调用覆盖即可)
+        val props = connectionProps(dialect, c.username, c.password)
         var lastError: SQLException? = null
         for (candidate in candidates) {
             try {
-                DriverManager.getConnection(candidate, c.username, c.password).use { return candidate }
+                DriverManager.getConnection(candidate, props).use { return candidate }
             } catch (e: SQLException) {
                 lastError = e
             }
         }
         throw lastError ?: SQLException("无法连接: $url")
     }
+
+    /**
+     * 业务库连接的驱动属性:账号口令 + 方言连接级超时(建连/读取)。
+     * 统一入口,保证连接池与一次性试连(连接测试/维护库探测)都受同一套超时约束。
+     */
+    private fun connectionProps(dialect: DbDialect, username: String?, password: String?): java.util.Properties =
+        java.util.Properties().apply {
+            if (username != null) setProperty("user", username)
+            if (password != null) setProperty("password", password)
+            dialect.connectionTimeoutProperties(
+                config.scan.dbConnectTimeoutSeconds * 1000,
+                config.scan.dbReadTimeoutSeconds * 1000
+            ).forEach { (k, v) -> setProperty(k, v) }
+        }
 
     /** 解析目标库:显式指定优先,否则回落到数据源默认库 */
     fun resolveDatabase(datasourceId: Long, database: String?): String? =

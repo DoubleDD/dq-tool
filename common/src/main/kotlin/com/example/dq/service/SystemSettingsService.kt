@@ -27,6 +27,9 @@ class SystemSettingsService(
             sizeThresholdBytes = row?.sizeThresholdBytes ?: d.sizeThresholdBytes,
             sampleRows = row?.sampleRows ?: d.sampleRows,
             statementTimeoutSeconds = row?.statementTimeoutSeconds ?: d.statementTimeoutSeconds,
+            // 连接/读取超时只走配置文件(页面系统设置不暴露),直接沿用 AppConfig 默认值
+            dbConnectTimeoutSeconds = d.dbConnectTimeoutSeconds,
+            dbReadTimeoutSeconds = d.dbReadTimeoutSeconds,
         )
     }
 

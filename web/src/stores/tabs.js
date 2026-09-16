@@ -92,6 +92,7 @@ const PAGE_TABS = {
   '/settings': '系统设置',
   '/logs': '运行日志',
   '/diagnostics': '系统诊断',
+  '/errors': '错误中心',
   '/whats-new': '本次更新',
   '/changelog': '更新记录',
   '/license-admin': '授权管理'

@@ -7,7 +7,6 @@
           <el-button v-if="job.status === 'RUNNING'" type="danger" :loading="acting" @click="onCancel">取消</el-button>
           <el-button v-if="job.status === 'RUNNING'" type="warning" :loading="acting" @click="onFinish">结束任务</el-button>
           <el-button v-if="['CANCELED', 'INTERRUPTED', 'FAILED'].includes(job.status)" type="primary" :loading="acting" @click="onResume">继续扫描</el-button>
-          <el-button @click="scanDialogVisible = true">单表扫描</el-button>
           <ExportButton :job-id="jobId" />
         </div>
       </div>
@@ -98,6 +97,12 @@
             <span v-else>-</span>
           </template>
         </el-table-column>
+        <el-table-column label="操作" width="90" fixed="right">
+          <template #default="{ row }">
+            <!-- 行内「扫描」:只扫这一张表(共享 ScanDialog 的单表定死模式) -->
+            <el-button link type="primary" @click="scanSingle(row)">扫描</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </template>
 
@@ -106,13 +111,14 @@
       <pre class="detail-content">{{ detail.content }}</pre>
     </el-dialog>
 
-    <!-- 单表扫描:从当前任务表清单中选一张重新扫描(共享 ScanDialog,默认强制全量开、大小上限留空) -->
+    <!-- 行内「扫描」弹窗:范围定死为该行表,复用共享 ScanDialog(默认强制全量开、大小上限留空,大表精确扫描语义) -->
     <ScanDialog
+      v-if="job"
       v-model="scanDialogVisible"
       :datasource-id="job?.datasourceId"
       :schema="job?.schemaName"
       :database="job?.dbName || ''"
-      :selectable-tables="jobTableNames"
+      :fixed-table="scanTable"
     />
   </div>
 </template>
@@ -137,10 +143,15 @@ const jobId = route.params.jobId
 const job = ref(null)
 const loading = ref(false)
 const acting = ref(false)
-// 「单表扫描」对话框:从当前任务表清单中选一张重新扫描
+// 行内「扫描」按钮带出的单表目标(为空时对话框不会被打开)
 const scanDialogVisible = ref(false)
-// 当前任务表名清单,供 ScanDialog 的单表下拉选择
-const jobTableNames = computed(() => (job.value?.tables || []).map((t) => t.tableName))
+const scanTable = ref('')
+
+/** 行内「扫描」:只扫这一张表,打开共享扫描对话框(范围项显示「仅扫描表:xxx」) */
+function scanSingle(row) {
+  scanTable.value = row.tableName
+  scanDialogVisible.value = true
+}
 
 /** 失败原因详情弹窗状态 */
 const detail = ref({ visible: false, title: '', content: '' })

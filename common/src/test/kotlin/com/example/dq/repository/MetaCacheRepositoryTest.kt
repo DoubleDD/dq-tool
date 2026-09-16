@@ -3,6 +3,7 @@ package com.example.dq.repository
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -282,6 +283,32 @@ class MetaCacheRepositoryTest {
         assertFalse(repo.isSchemaListReady(1, "db1"))
         assertEquals(0, repo.listNames(1, "").size)
         assertEquals(0, repo.listNames(1, "db1").size)
+    }
+
+    // ---------- 表清单整粒度覆盖:清理已删表的子级缓存 ----------
+
+    @Test
+    fun `表清单覆盖 清理已删表的字段索引字段清单与DDL`() {
+        repo.replaceTables(1, "", "db1", listOf(table("t1"), table("t2")))
+        repo.replaceColumns(1, "", "db1", "t1", listOf(col("id", 0)))
+        repo.replaceColumns(1, "", "db1", "t2", listOf(col("id", 0)))
+        repo.replaceIndexes(1, "", "db1", "t2", listOf(MetaCacheRepository.CachedIndex("uk", true, 0, "id")))
+        repo.replaceSchemaColumns(1, "", "db1", listOf(scol("t1", "id", 0), scol("t2", "id", 0)))
+        repo.replaceDdl(1, "", "db1", "t2", "create table t2(id bigint)")
+
+        // 源库删掉 t2 后整粒度覆盖表清单:t2 的字段/索引/字段清单/DDL/就绪标记一并清掉
+        repo.replaceTables(1, "", "db1", listOf(table("t1")))
+
+        assertFalse(repo.isColumnCacheReady(1, "", "db1", "t2"))
+        assertFalse(repo.isIndexCacheReady(1, "", "db1", "t2"))
+        assertEquals(0, repo.listColumns(1, "", "db1", "t2").size)
+        assertEquals(0, repo.listIndexes(1, "", "db1", "t2").size)
+        assertEquals(0, repo.listSchemaColumns(1, "", "db1").count { it.tableName == "t2" })
+        assertNull(repo.getDdl(1, "", "db1", "t2"))
+        // schema 级标记与存续表的子级缓存不受影响
+        assertTrue(repo.isTableCacheReady(1, "", "db1"))
+        assertTrue(repo.isSchemaColumnsReady(1, "", "db1"))
+        assertTrue(repo.isColumnCacheReady(1, "", "db1", "t1"))
     }
 
     // ---------- 级联清理 ----------

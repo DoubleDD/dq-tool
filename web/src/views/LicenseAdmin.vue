@@ -141,11 +141,16 @@ const MENUS = [
   { key: 'ai-usage', label: '模型用量统计' },
   { key: 'settings', label: '系统设置' },
   { key: 'diagnostics', label: '系统诊断' },
+  { key: 'error-center', label: '错误中心' },
   { key: 'logs', label: '运行日志' },
   { key: 'license-admin', label: '授权管理' }
 ]
 const menuLabel = (key) => MENUS.find((m) => m.key === key)?.label || key
 const menuKeys = (row) => (row.menus || '').split(',').filter(Boolean)
+
+// 默认不勾选的菜单:数据比对/系统诊断/错误中心/授权管理属受控与排错向功能,默认关闭避免误下发(仍可手动勾选)
+const DEFAULT_UNCHECKED_MENUS = ['compare', 'diagnostics', 'error-center', 'license-admin']
+const defaultMenus = () => MENUS.map((m) => m.key).filter((k) => !DEFAULT_UNCHECKED_MENUS.includes(k))
 
 // 全选:全部勾选为真、部分勾选为半选态
 const allMenusChecked = computed(() => form.value.menus.length === MENUS.length)
@@ -154,7 +159,7 @@ function toggleAllMenus(checked) {
   form.value.menus = checked ? MENUS.map((m) => m.key) : []
 }
 
-const form = ref({ customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', remark: '', menus: MENUS.map((m) => m.key), bypassAuth: false })
+const form = ref({ customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', remark: '', menus: defaultMenus(), bypassAuth: false })
 
 const canGenerate = computed(() =>
   form.value.customer.trim() && (form.value.permanent || form.value.expiresDate))
@@ -171,8 +176,8 @@ async function load() {
 }
 
 function openGenerate() {
-  // 默认全勾(客户实例菜单全开放),按需取消勾选;免鉴权默认关,仅演示场景开启
-  form.value = { customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', remark: '', menus: MENUS.map((m) => m.key), bypassAuth: false }
+  // 默认勾选除数据比对/系统诊断/错误中心/授权管理外的全部菜单(客户实例菜单基本全开放),按需调整;免鉴权默认关,仅演示场景开启
+  form.value = { customer: '', permanent: false, expiresDate: '', serverUrl: '', username: '', remark: '', menus: defaultMenus(), bypassAuth: false }
   generateVisible.value = true
 }
 

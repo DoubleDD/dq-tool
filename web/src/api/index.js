@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { ElMessage } from '../utils/notify'
+import { reportApiError } from '../utils/errorCapture'
 import { apiBase, authHeaders } from './base'
 
 const request = axios.create({
@@ -38,6 +39,8 @@ request.interceptors.response.use(
     if (!error.config?._silent) {
       ElMessage.error(message || error.message || '请求失败')
     }
+    // 前端错误中心:接口 4xx/5xx 与网络错误统一上报(401/503 为状态类响应,内部已排除)
+    reportApiError(error, url, (error.config?.method || 'GET').toUpperCase(), message)
     return Promise.reject(error)
   }
 )

@@ -60,14 +60,31 @@ open class MySqlDialect : AbstractDialect() {
     }
 
     @Throws(SQLException::class)
-    override fun listTables(conn: Connection, schema: String): List<TableStat> {
+    override fun connectionTimeoutProperties(connectTimeoutMs: Int, readTimeoutMs: Int): Map<String, String> =
+        buildMap {
+            if (connectTimeoutMs > 0) put("connectTimeout", connectTimeoutMs.toString())
+            if (readTimeoutMs > 0) put("socketTimeout", readTimeoutMs.toString())
+        }
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String): List<TableStat> =
+        queryTables(conn, schema, null)
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String, tableNames: Collection<String>): List<TableStat> =
+        queryTables(conn, schema, tableNames)
+
+    private fun queryTables(conn: Connection, schema: String, tableNames: Collection<String>?): List<TableStat> {
         val tables = ArrayList<TableStat>()
-        conn.prepareStatement(
-                "SELECT TABLE_NAME, TABLE_ROWS, COALESCE(DATA_LENGTH,0) + COALESCE(INDEX_LENGTH,0), " +
-                        "COALESCE(TABLE_COMMENT,''), COALESCE(ENGINE,'') " +
-                        "FROM information_schema.TABLES " +
-                        "WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME").use { ps ->
+        val sql = "SELECT TABLE_NAME, TABLE_ROWS, COALESCE(DATA_LENGTH,0) + COALESCE(INDEX_LENGTH,0), " +
+                "COALESCE(TABLE_COMMENT,''), COALESCE(ENGINE,'') " +
+                "FROM information_schema.TABLES " +
+                "WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'" +
+                tableNameInClause("TABLE_NAME", tableNames) +
+                " ORDER BY TABLE_NAME"
+        conn.prepareStatement(sql).use { ps ->
             ps.setString(1, schema)
+            bindNames(ps, 2, tableNames)
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     tables.add(TableStat(rs.getString(1), rs.getLong(2), rs.getLong(3),

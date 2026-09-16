@@ -13,11 +13,15 @@ import './style.css'
 import App from './App.vue'
 import router from './router'
 import { initApiBase, apiUrl, authHeaders } from './api/base'
+import { installErrorCapture } from './utils/errorCapture'
 
 const app = createApp(App)
 app.use(router)
 // v-loading 指令:按需模式下不再由全量注册提供,手动挂载(样式已在上方引入)
 app.directive('loading', ElLoading.directive)
+// 全局错误采集:JS 运行时错误/未捕获 Promise/Vue 组件错误/console.error/接口错误 → 后端「错误中心」
+// (必须在 mount 前安装,否则挂载初期的错误收不到)
+installErrorCapture(app, router)
 
 /**
  * 等待后端就绪再挂载应用:后端启动时先绑定端口提供静态页面(首页/外壳秒出,见 index.html 占位),

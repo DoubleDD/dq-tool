@@ -95,11 +95,15 @@
                 <template v-if="selectedTable.remark"> · {{ selectedTable.remark }}</template>
                 · {{ (selectedTable.relations || []).length }} 张关系表
               </span>
+              <span class="om-pane-spacer" />
               <el-button size="small" :icon="Rank" @click="openMoveTable(selectedTable)">移动</el-button>
+              <el-button size="small" :icon="Rank" :disabled="!relSelection.length" @click="openBatchMoveRels">移动关系表</el-button>
               <el-button size="small" :icon="Plus" @click="openRelDialog(selectedTable)">添加关系表</el-button>
               <el-button size="small" type="danger" plain :icon="Delete" @click="unmount(selectedTable)">取消挂载</el-button>
             </div>
-            <el-table :data="selectedTable.relations || []" border row-key="id" class="om-table">
+            <el-table :data="selectedTable.relations || []" border row-key="id" class="om-table" @selection-change="onRelSelectionChange">
+              <!-- 勾选后走「移动关系表」批量变更所属挂载表 -->
+              <el-table-column type="selection" width="40" />
               <el-table-column label="关系表" min-width="190" show-overflow-tooltip>
                 <template #default="{ row: rel }">
                   <!-- 拖动把手:拖到左侧树中的挂载表节点上即移动 -->
@@ -146,9 +150,13 @@
                       placeholder="按表名/注释/备注过滤(含关系表)"
                       style="width: 240px"
                     />
+                    <span class="om-pane-spacer" />
+                    <el-button size="small" :icon="Rank" :disabled="!dirTableSelection.length" @click="openBatchMoveTables">设置目录</el-button>
                     <el-button size="small" type="primary" :icon="Plus" @click="mountVisible = true">挂载表</el-button>
                   </div>
-                  <el-table :data="filteredDirTables" border row-key="id" class="om-table">
+                  <el-table :data="filteredDirTables" border row-key="id" class="om-table" @selection-change="onDirTableSelectionChange">
+                    <!-- 勾选后走「设置目录」批量移动(变更所属目录) -->
+                    <el-table-column type="selection" width="40" />
                     <!-- 行内展开:该挂载表的关系表子表 -->
                     <el-table-column type="expand">
                       <template #default="{ row }">
@@ -696,8 +704,38 @@ async function onTreeRelDrop(e, data) {
 
 // ---------- 移动对话框(目录/挂载表/关系表统一的「变更所属」按钮入口) ----------
 const moveVisible = ref(false)
-// { mode: 'dir'|'table'|'rel', currentId, currentName, relId(rel 模式专用,要移动的关系记录 id) }
+// { mode: 'dir'|'table'|'rel', currentId, currentName, relId(rel 单条模式专用,要移动的关系记录 id),
+//   tableId(table 单条模式专用), batchIds(批量模式:要移动的挂载表/关系记录 id 数组) }
 const moveCtx = ref(null)
+
+// ---------- 批量移动:列表页签勾选的挂载表 / 表详情面板勾选的关系表 ----------
+// 数据变化(重拉整树/切目录)后 el-table 自动清空勾选,无需手动 reset
+const dirTableSelection = ref([])
+const relSelection = ref([])
+
+function onDirTableSelectionChange(rows) {
+  dirTableSelection.value = rows
+}
+
+function onRelSelectionChange(rows) {
+  relSelection.value = rows
+}
+
+/** 批量设置目录:勾选的挂载表都在当前目录下,禁选目标即当前目录 */
+function openBatchMoveTables() {
+  const rows = dirTableSelection.value
+  if (!rows.length) return
+  moveCtx.value = { mode: 'table', batchIds: rows.map((r) => r.id), currentId: selectedDirId.value, currentName: `已选 ${rows.length} 张挂载表` }
+  moveVisible.value = true
+}
+
+/** 批量移动关系表:勾选的关系表都属于当前挂载表,禁选目标即当前挂载表 */
+function openBatchMoveRels() {
+  const rows = relSelection.value
+  if (!rows.length) return
+  moveCtx.value = { mode: 'rel', batchIds: rows.map((r) => r.id), currentId: selectedTableId.value, currentName: `已选 ${rows.length} 张关系表` }
+  moveVisible.value = true
+}
 
 function openMoveDir(dir) {
   moveCtx.value = { mode: 'dir', currentId: dir.id, currentName: dir.name }
@@ -721,7 +759,16 @@ async function onMoveConfirm(target) {
   moveVisible.value = false
   if (!ctx) return
   try {
-    if (ctx.mode === 'dir') {
+    // 批量模式:逐条调移动接口(后端仅单条),全部 settle 后汇总成功/失败数
+    if (ctx.batchIds?.length) {
+      const moveOne = ctx.mode === 'table' ? (id) => moveObjectTable(id, target) : (id) => moveObjectRelation(id, target)
+      const results = await Promise.allSettled(ctx.batchIds.map(moveOne))
+      const ok = results.filter((r) => r.status === 'fulfilled').length
+      const fail = results.length - ok
+      const noun = ctx.mode === 'table' ? '挂载表' : '关系表'
+      // 失败明细已由 request 层逐条提示,这里只汇总
+      ElMessage[fail ? 'warning' : 'success'](`已移动 ${ok} 张${noun}${fail ? `,${fail} 张失败` : ''}`)
+    } else if (ctx.mode === 'dir') {
       await moveObjectDir(ctx.currentId, target || 0)
       ElMessage.success('已移动目录')
     } else if (ctx.mode === 'table') {
@@ -996,9 +1043,12 @@ html.dark .om-tree-resizer.resizing::after {
   white-space: nowrap;
 }
 .om-pane-sub {
-  flex: 1;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+/* 头部右推占位:搜索框等靠左,操作按钮靠右 */
+.om-pane-spacer {
+  flex: 1;
 }
 .om-table {
   flex: 1;

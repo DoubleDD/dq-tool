@@ -8,7 +8,9 @@ import com.example.dq.model.ScanJobEvent
 import com.example.dq.model.ScanJobExport
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.ScanTableView
+import com.example.dq.model.TableStat
 import java.sql.ResultSet
+import java.sql.Statement
 import java.time.LocalDateTime
 
 class ScanRepository(private val jdbc: Jdbc) {
@@ -178,6 +180,17 @@ class ScanRepository(private val jdbc: Jdbc) {
     fun markJobRunning(jobId: Long) {
         jdbc.update("UPDATE scan_job SET status='RUNNING', started_at=CURRENT_TIMESTAMP, finished_at=NULL, error=NULL WHERE id=?", jobId)
         insertJobEvent(jobId, ScanStatus.RUNNING)
+    }
+
+    /** 表清单拉回后回填任务表数(异步建任务:建行时还不知道表数,先落 0) */
+    fun updateJobTotalTables(jobId: Long, totalTables: Int) {
+        jdbc.update("UPDATE scan_job SET total_tables=? WHERE id=?", totalTables, jobId)
+    }
+
+    /** 回填目标数据库版本号(建连后才知道;取不到不写,保持 NULL) */
+    fun updateJobDbVersion(jobId: Long, dbVersion: String?) {
+        if (dbVersion.isNullOrBlank()) return
+        jdbc.update("UPDATE scan_job SET db_version=? WHERE id=?", dbVersion, jobId)
     }
 
     /** 续扫进入后遇连接级失败时把任务状态还原为进入前状态(断网不算任务失败,恢复网络后可再续扫;不写事件) */
@@ -399,6 +412,36 @@ class ScanRepository(private val jdbc: Jdbc) {
             "INSERT INTO scan_table(job_id, table_name, status, est_rows, size_bytes, comment, storage_info) " +
                     "VALUES (?,?,'PENDING',?,?,?,?)",
             jobId, tableName, estRows, sizeBytes, comment, storageInfo)
+
+    /**
+     * 批量插入任务表清单(单事务 + 批次),返回 scan_table id(与入参同序)。
+     * 宽表库(上千张表)逐表一次 [Jdbc.insert] 会变成上千次独立连接/事务,这里压成一次往返。
+     * 入参表的 name 必须非空(调用方已过滤)。
+     */
+    fun insertScanTables(jobId: Long, tables: List<TableStat>): List<Long> {
+        if (tables.isEmpty()) return emptyList()
+        return jdbc.tx { conn ->
+            conn.prepareStatement(
+                "INSERT INTO scan_table(job_id, table_name, status, est_rows, size_bytes, comment, storage_info) " +
+                        "VALUES (?,?,'PENDING',?,?,?,?)",
+                Statement.RETURN_GENERATED_KEYS
+            ).use { ps ->
+                for (t in tables) {
+                    ps.setLong(1, jobId)
+                    ps.setString(2, t.name)
+                    ps.setObject(3, t.estRows)
+                    ps.setObject(4, t.sizeBytes)
+                    ps.setString(5, t.comment)
+                    ps.setString(6, t.storageInfo)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+                val ids = ArrayList<Long>(tables.size)
+                ps.generatedKeys.use { rs -> while (rs.next()) ids.add(rs.getLong(1)) }
+                ids
+            }
+        }
+    }
 
     fun findScanTable(scanTableId: Long): ScanTableView? =
         jdbc.queryOne("SELECT * FROM scan_table WHERE id=?", scanTableId, mapper = tableMapper)

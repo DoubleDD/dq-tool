@@ -23,6 +23,8 @@ const routes = [
   { path: '/settings', component: () => import('../views/Settings.vue') },
   { path: '/logs', component: () => import('../views/Logs.vue') },
   { path: '/diagnostics', component: () => import('../views/Diagnostics.vue') },
+  // 错误中心:统一错误收集(前端 JS/接口 + 后端异常/数据库/任务/启动),与系统诊断同授权口径
+  { path: '/errors', component: () => import('../views/Errors.vue') },
   // 更新日志:两路由共用组件,props.mode 区分(latest=本次更新,仅当前版本 / all=更新记录,全部历史版本)
   { path: '/whats-new', component: () => import('../views/Changelog.vue'), props: { mode: 'latest' } },
   { path: '/changelog', component: () => import('../views/Changelog.vue'), props: { mode: 'all' } },
@@ -91,6 +93,7 @@ const MENU_ITEMS = [
   { menu: 'ai-usage', path: '/ai-usage' },
   { menu: 'settings', path: '/settings' },
   { menu: 'diagnostics', path: '/diagnostics' },
+  { menu: 'error-center', path: '/errors' },
   { menu: 'logs', path: '/logs' },
   { menu: 'license-admin', path: '/license-admin' }
 ]

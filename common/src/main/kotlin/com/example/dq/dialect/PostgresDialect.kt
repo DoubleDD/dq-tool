@@ -53,19 +53,37 @@ open class PostgresDialect : AbstractDialect() {
         executeCommand(conn, "SET search_path TO " + quote(schema))
     }
 
+    /** PG 系(含金仓/瀚高):connectTimeout/socketTimeout 均以秒为单位 */
     @Throws(SQLException::class)
-    override fun listTables(conn: Connection, schema: String): List<TableStat> {
+    override fun connectionTimeoutProperties(connectTimeoutMs: Int, readTimeoutMs: Int): Map<String, String> =
+        buildMap {
+            if (connectTimeoutMs > 0) put("connectTimeout", ((connectTimeoutMs + 999) / 1000).toString())
+            if (readTimeoutMs > 0) put("socketTimeout", ((readTimeoutMs + 999) / 1000).toString())
+        }
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String): List<TableStat> =
+        queryTables(conn, schema, null)
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String, tableNames: Collection<String>): List<TableStat> =
+        queryTables(conn, schema, tableNames)
+
+    private fun queryTables(conn: Connection, schema: String, tableNames: Collection<String>?): List<TableStat> {
         val tables = ArrayList<TableStat>()
         // 注释取 pg_class 的描述,存储信息取表空间(默认表空间显示为空)
-        conn.prepareStatement(
-                "SELECT c.relname, s.n_live_tup, pg_total_relation_size(c.oid), " +
-                        "COALESCE(obj_description(c.oid, 'pg_class'), ''), COALESCE(ts.spcname, '') " +
-                        "FROM pg_class c " +
-                        "JOIN pg_namespace n ON n.oid = c.relnamespace " +
-                        "LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid " +
-                        "LEFT JOIN pg_tablespace ts ON ts.oid = c.reltablespace " +
-                        "WHERE n.nspname = ? AND c.relkind = 'r' ORDER BY c.relname").use { ps ->
+        val sql = "SELECT c.relname, s.n_live_tup, pg_total_relation_size(c.oid), " +
+                "COALESCE(obj_description(c.oid, 'pg_class'), ''), COALESCE(ts.spcname, '') " +
+                "FROM pg_class c " +
+                "JOIN pg_namespace n ON n.oid = c.relnamespace " +
+                "LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid " +
+                "LEFT JOIN pg_tablespace ts ON ts.oid = c.reltablespace " +
+                "WHERE n.nspname = ? AND c.relkind = 'r'" +
+                tableNameInClause("c.relname", tableNames) +
+                " ORDER BY c.relname"
+        conn.prepareStatement(sql).use { ps ->
             ps.setString(1, schema)
+            bindNames(ps, 2, tableNames)
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     val rows = rs.getLong(2)

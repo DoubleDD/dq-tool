@@ -1,7 +1,7 @@
 <template>
   <!-- 图谱画布(G6 圆形节点星型图):通用画布底座 BaseGraphCanvas 承载交互(滚轮平移/Ctrl+滚轮与触摸板捏合缩放/
        Alt+滚轮水平平移/双击坐标反查补发)、顶部工具栏(默认工具:重绘/1:1/适应画布 + toolbar 插槽业务工具[标记/颜色筛选],
-       右侧缩放控制条[−/+、比例输入、全屏])、右下角鸟瞰图、视口定位(内容居中+100%)与首帧隐藏;
+       右端 toolbar-right 插槽[调用方按需]+缩放控制条[−/+、比例输入、全屏])、右下角鸟瞰图、视口定位(内容居中+100%)与首帧隐藏;
        本组件只负责星型图专属部分:静态坐标、圆形节点样式(颜色/光晕/选中态)、边样式。
        容器需显式高度(由父级布局保证) -->
   <BaseGraphCanvas ref="baseRef" :data="graphData" :options="graphOptions" fit="center" :default-zoom="1"
@@ -11,6 +11,10 @@
     <!-- 业务工具透传:标记/颜色筛选等由调用方按需给 -->
     <template #toolbar>
       <slot name="toolbar" />
+    </template>
+    <!-- 右端业务工具透传(调用方未给则不向底座声明,避免空占位) -->
+    <template v-if="$slots['toolbar-right']" #toolbar-right>
+      <slot name="toolbar-right" />
     </template>
   </BaseGraphCanvas>
 </template>

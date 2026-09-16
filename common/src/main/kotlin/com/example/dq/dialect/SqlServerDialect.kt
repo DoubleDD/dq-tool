@@ -161,7 +161,22 @@ class SqlServerDialect : AbstractDialect() {
     }
 
     @Throws(SQLException::class)
-    override fun listTables(conn: Connection, schema: String): List<TableStat> {
+    override fun connectionTimeoutProperties(connectTimeoutMs: Int, readTimeoutMs: Int): Map<String, String> =
+        buildMap {
+            // mssql-jdbc:loginTimeout 单位秒、socketTimeout 单位毫秒
+            if (connectTimeoutMs > 0) put("loginTimeout", ((connectTimeoutMs + 999) / 1000).toString())
+            if (readTimeoutMs > 0) put("socketTimeout", readTimeoutMs.toString())
+        }
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String): List<TableStat> =
+        queryTables(conn, schema, null)
+
+    @Throws(SQLException::class)
+    override fun listTables(conn: Connection, schema: String, tableNames: Collection<String>): List<TableStat> =
+        queryTables(conn, schema, tableNames)
+
+    private fun queryTables(conn: Connection, schema: String, tableNames: Collection<String>?): List<TableStat> {
         val tables = ArrayList<TableStat>()
         // 行数/体积走目录视图 sys.partitions + sys.allocation_units,原因同 sumSizeBySchema
         val sql = "SELECT t.name, " +
@@ -173,9 +188,10 @@ class SqlServerDialect : AbstractDialect() {
                 "CAST((SELECT ep.value FROM sys.extended_properties ep " +
                 "  WHERE ep.major_id = t.object_id AND ep.minor_id = 0 AND ep.name = 'MS_Description') AS NVARCHAR(4000)) " +
                 "FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id " +
-                "WHERE s.name = ? ORDER BY t.name"
+                "WHERE s.name = ?" + tableNameInClause("t.name", tableNames) + " ORDER BY t.name"
         conn.prepareStatement(sql).use { ps ->
             ps.setString(1, schema)
+            bindNames(ps, 2, tableNames)
             ps.executeQuery().use { rs ->
                 while (rs.next()) {
                     val rows = rs.getLong(2)

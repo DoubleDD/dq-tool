@@ -22,6 +22,18 @@ interface DbDialect {
     /** 新建物理连接的初始化 SQL(Hikari connectionInitSql);默认无 */
     fun connectionInitSql(): String? = null
 
+    /**
+     * 连接级超时属性(JDBC 驱动属性名 → 值),由 DataSourceService 透传给驱动:
+     * 慢库/半死库在建连或挂死查询上不再无限等待(实测无超时时 Oracle 建连可卡 80s+)。
+     * 键名各驱动不同(MySQL connectTimeout/socketTimeout、PG connectTimeout/socketTimeout、
+     * SQL Server loginTimeout/socketTimeout、Oracle oracle.net.CONNECT_TIMEOUT/oracle.jdbc.ReadTimeout),
+     * 因此按方言收敛;默认空表示不干预(驱动默认值)。
+     *
+     * @param connectTimeoutMs 建连超时(毫秒);<=0 表示不限制
+     * @param readTimeoutMs 单次网络读取/查询超时(毫秒);<=0 表示不限制
+     */
+    fun connectionTimeoutProperties(connectTimeoutMs: Int, readTimeoutMs: Int): Map<String, String> = emptyMap()
+
     /** 异常是否为「会话打开游标超限」(ORA-01000 类);默认 false,仅有此概念的方言覆盖 */
     fun isOpenCursorsExceeded(e: Throwable): Boolean = false
 
@@ -100,6 +112,16 @@ interface DbDialect {
     /** 表列表:表名 + 估算行数 + 数据索引总字节 */
     @Throws(SQLException::class)
     fun listTables(conn: Connection, schema: String): List<TableStat>
+
+    /**
+     * 表列表(仅指定表名):语义同上,但只回这些表。
+     * 默认实现回落到全量再内存过滤;各方言应覆盖为带 `IN (...)` 的字典查询,
+     * 避免「只扫一张表却把整库表清单拉一遍」——Oracle/DM 的表清单 SQL 带逐表体积子查询,整库拉取代价很高。
+     * 表名按库中原样大小写匹配(Oracle/DM 为大写),调用方直接用 [listTables] 返回的 name 即可。
+     */
+    @Throws(SQLException::class)
+    fun listTables(conn: Connection, schema: String, tableNames: Collection<String>): List<TableStat> =
+        listTables(conn, schema).filter { it.name != null && it.name in tableNames }
 
     /** 指定库/schema 下所有基表的字段总数;用于表列表页汇总展示 */
     @Throws(SQLException::class)

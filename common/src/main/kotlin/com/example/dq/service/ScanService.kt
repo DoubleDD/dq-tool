@@ -1,7 +1,9 @@
 package com.example.dq.service
 
+import com.example.dq.dialect.DbDialect
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.AutoTagMode
+import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.NullRule
 import com.example.dq.model.Range
@@ -23,8 +25,17 @@ import com.example.dq.util.ConnectionFailureClassifier
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.slf4j.LoggerFactory
+import java.sql.Connection
 
-/** 扫描任务生命周期:创建/规划/进度/取消/断点续扫 */
+/**
+ * 扫描任务生命周期:创建/规划/进度/取消/断点续扫。
+ *
+ * 结构元数据口径(与浏览/导出等非扫描功能相反):**扫描只从原始库读、只往本地 H2 缓存写**。
+ * 规划表时用业务库字典拿到最新表/字段/索引,再整粒度覆盖本地结构缓存(每次扫描都覆盖,
+ * 包括「表无字段/已删除」这类结果),绝不从 H2 读结构——缓存可能陈旧,而扫描结果必须反映原始库真实状态。
+ * 所有元数据缓存写入经 [com.example.dq.repository.MetaWriteQueue] 全局单线程串行,
+ * 扫描 worker 并发再高也只有一个 H2 写者,不会并发写元数据表。
+ */
 class ScanService(
     private val repo: ScanRepository,
     private val dsRepo: DataSourceRepository,
@@ -42,50 +53,18 @@ class ScanService(
 
     private val objectMapper = jacksonObjectMapper()
 
-    /** 发起扫描,立即返回 jobId */
+    /**
+     * 发起扫描:只做本地校验与落任务行,立即返回 jobId。
+     *
+     * 表清单拉取(必连业务库)、结构缓存同步与 scan_table 落库全部交给后台 [bootstrapJob]:
+     * 这几步是 createScan 里唯一的重活(远程/大 schema 的字典查询、半死库的建连),之前跑在请求线程上,
+     * 会让 POST /scans 卡住几十秒甚至分钟级。任务先以 PENDING、total_tables=0 落库,前端照常轮询详情页即可。
+     */
     fun createScan(req: ScanRequest): Long {
         val datasourceId = requireNotNull(req.datasourceId) { "数据源 id 不能为空" }
         val schema = requireNotNull(req.schema) { "schema 不能为空" }
-        val ds = dataSourceService.get(datasourceId)
-        val dialect = dialectFactory.get(ds.dbType!!)
-
-        var all: List<TableStat> = emptyList()
-        var dbVersion: String? = null
-        dataSourceService.getConnection(datasourceId, req.database).use { conn ->
-            all = dialect.listTables(conn, schema)
-            // 顺带快照目标数据库版本号(扫描记录详情页「数据库类型」旁展示);取不到不影响扫描
-            try {
-                dbVersion = conn.metaData.databaseProductVersion?.takeIf { it.isNotBlank() }
-            } catch (ignored: Exception) {
-            }
-        }
-        // 顺带刷新库列表缓存:all 是该 schema 的全量表清单,聚合计数与体积即可,零额外查询
-        schemaStatRepo.upsert(
-            datasourceId, req.database,
-            SchemaStatRepository.CachedStat(schema, all.size, sumSize(all))
-        )
-        // 同步刷新表级结构缓存:all 是该 schema 最新全量表清单,覆盖本地(表清单/注释/估算行数/体积)
-        metaCacheRepo.replaceTables(datasourceId, normalizeDb(req.database), schema,
-            all.map { MetaCacheRepository.CachedTable(it.name ?: "", it.comment, it.storageInfo, it.estRows, it.sizeBytes) })
-        var targets = all
-        if (!req.tables.isNullOrEmpty()) {
-            val wanted = req.tables.toSet()
-            targets = all.filter { it.name != null && it.name in wanted }
-            if (targets.isEmpty()) {
-                throw IllegalArgumentException("选中的表在库中不存在")
-            }
-        }
-        // 表大小上限:超过上限的表直接不纳入任务;大小未知的表(null)不参与过滤
-        val maxTableSizeBytes = req.maxTableSizeBytes
-        if (maxTableSizeBytes != null) {
-            targets = targets.filter { t -> t.sizeBytes == null || t.sizeBytes <= maxTableSizeBytes }
-            if (targets.isEmpty()) {
-                throw IllegalArgumentException("没有不超过大小上限的表可扫描")
-            }
-        }
-        if (targets.isEmpty()) {
-            throw IllegalArgumentException("该库下没有表")
-        }
+        // 本地 H2 读取,仅确认数据源存在(真正的建连放后台,慢库不再阻塞请求)
+        dataSourceService.get(datasourceId)
 
         val rulesJson = objectMapper.writeValueAsString(req.nullRules ?: emptyList<NullRule>())
         // 并发 worker 数:null 表示用全局设置(页面「系统设置」可改,兜底配置文件默认);校验合法范围(1~128)。
@@ -96,20 +75,81 @@ class ScanService(
         val sampleRows = req.sampleRows?.coerceAtLeast(1)
         // AI 打标对已有标记表的处理模式:非法值按 SKIP(老行为)
         val autoTagMode = AutoTagMode.parse(req.autoTagMode)
-        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, targets.size,
-            req.autoTag, workers, req.genDoc ?: true, dbVersion, sampleRows, autoTagMode)
-        val scanTableIds = ArrayList<Long>()
-        for (t in targets) {
-            scanTableIds.add(
-                repo.insertScanTable(
-                    jobId, t.name!!, t.estRows, t.sizeBytes,
-                    t.comment, t.storageInfo
-                )
-            )
-        }
-        repo.markJobRunning(jobId)
-        scanTableIds.forEach { id -> executor.submit { planTable(id) } }
+        // 表清单未知:先落 total_tables=0,后台拉回后回填;db_version 同理
+        val jobId = repo.insertJob(datasourceId, req.database, schema, req.forceFull, rulesJson, 0,
+            req.autoTag, workers, req.genDoc ?: true, null, sampleRows, autoTagMode)
+        executor.submit { bootstrapJob(jobId, req) }
         return jobId
+    }
+
+    /**
+     * 任务引导(后台线程):拉表清单 → 同步结构缓存 → 落 scan_table → 转 RUNNING 并提交表规划。
+     * 原来同步实现里这些校验错误直接抛给 HTTP;异步后统一落任务 error(状态 FAILED),由详情页「错误信息」展示。
+     */
+    internal fun bootstrapJob(jobId: Long, req: ScanRequest) {
+        val job = repo.findJob(jobId) ?: return
+        // 已被取消/结束的任务不再引导
+        if (job.status != ScanStatus.PENDING) return
+        try {
+            val datasourceId = job.datasourceId
+            val dialect = dialectFactory.get(dataSourceService.get(datasourceId).dbType!!)
+            // 只选了少量表时按表名过滤字典查询:Oracle/DM 的表清单 SQL 带逐表体积子查询,整库拉取代价很高
+            val explicit = req.tables?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct()
+            val filtered = !explicit.isNullOrEmpty() && explicit.size <= MAX_FILTERED_TABLES
+            var all: List<TableStat>
+            var dbVersion: String? = null
+            dataSourceService.getConnection(datasourceId, job.dbName).use { conn ->
+                all = if (filtered) dialect.listTables(conn, job.schemaName, explicit!!)
+                else dialect.listTables(conn, job.schemaName)
+                // 顺带快照目标数据库版本号(扫描记录详情页「数据库类型」旁展示);取不到不影响扫描
+                try {
+                    dbVersion = conn.metaData.databaseProductVersion?.takeIf { it.isNotBlank() }
+                } catch (ignored: Exception) {
+                    // 降级:部分驱动/受限账号读不到版本号,仅详情页少一列展示,不影响扫描
+                    log.debug("读取数据库版本号失败(不影响扫描): {}", ignored.message)
+                }
+            }
+            val cached = all.map {
+                MetaCacheRepository.CachedTable(it.name ?: "", it.comment, it.storageInfo, it.estRows, it.sizeBytes)
+            }
+            if (filtered) {
+                // 过滤清单不是全量:只按表合并缓存,避免把本地表清单冲成部分清单
+                metaCacheRepo.mergeTables(datasourceId, normalizeDb(job.dbName), job.schemaName, cached)
+            } else {
+                // 全量清单:顺带刷新库列表缓存与表级结构缓存(聚合计数与体积即可,零额外查询)
+                schemaStatRepo.upsert(datasourceId, job.dbName,
+                    SchemaStatRepository.CachedStat(job.schemaName, all.size, sumSize(all)))
+                metaCacheRepo.replaceTables(datasourceId, normalizeDb(job.dbName), job.schemaName, cached)
+            }
+            var targets = all
+            if (!explicit.isNullOrEmpty()) {
+                val wanted = explicit.toSet()
+                targets = all.filter { it.name != null && it.name in wanted }
+                if (targets.isEmpty()) {
+                    throw IllegalArgumentException("选中的表在库中不存在")
+                }
+            }
+            // 表大小上限:超过上限的表直接不纳入任务;大小未知的表(null)不参与过滤
+            val maxTableSizeBytes = req.maxTableSizeBytes
+            if (maxTableSizeBytes != null) {
+                targets = targets.filter { t -> t.sizeBytes == null || t.sizeBytes <= maxTableSizeBytes }
+                if (targets.isEmpty()) {
+                    throw IllegalArgumentException("没有不超过大小上限的表可扫描")
+                }
+            }
+            if (targets.isEmpty()) {
+                throw IllegalArgumentException("该库下没有表")
+            }
+
+            repo.updateJobTotalTables(jobId, targets.size)
+            repo.updateJobDbVersion(jobId, dbVersion)
+            val scanTableIds = repo.insertScanTables(jobId, targets)
+            repo.markJobRunning(jobId)
+            scanTableIds.forEach { id -> executor.submit { planTable(id) } }
+        } catch (e: Exception) {
+            log.warn("扫描任务引导失败 jobId={}: {}", jobId, e.message)
+            repo.finishJob(jobId, ScanStatus.FAILED, e.message ?: e.javaClass.simpleName)
+        }
     }
 
     /** 表级规划:取字段、选分段键、判定采样、计算分段、入队 */
@@ -126,31 +166,14 @@ class ScanService(
             val tableName = table.tableName!!
             var ranges: List<Range> = emptyList()
             dataSourceService.getConnection(job.datasourceId, job.dbName).use { conn ->
+                // 结构真源永远是原始库:扫描只从业务库字典读,绝不读本地 H2 缓存
                 val cols = dialect.listColumns(conn, job.schemaName, tableName)
+                // 拿到最新字段后整粒度覆盖本地缓存(空字段表也覆盖为「空 + 就绪」,不留旧结构)
+                overwriteStructureCache(job, conn, dialect, tableName, cols)
                 if (cols.isEmpty()) {
-                    // 空表/无字段表不算失败:打上无字段标记(强制刷新表结构时随缓存覆盖自动还原),按结果全 0 置 DONE 跳过
-                    try {
-                        metaCacheRepo.setNoColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName, true)
-                    } catch (e: Exception) {
-                        log.debug("扫描时写无字段标记失败(不影响扫描): {}", e.message)
-                    }
+                    // 空表/无字段表不算失败:已打无字段标记,按结果全 0 置 DONE 跳过
                     chunkRunner.completeEmptyTable(scanTableId)
                     return
-                }
-                // 同步刷新字段/索引结构缓存(扫描已拿到最新结构;失败不影响扫描)
-                try {
-                    metaCacheRepo.replaceColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName,
-                        cols.mapIndexed { i, c -> MetaCacheRepository.CachedColumn(
-                            i, c.name, c.typeName, c.displayType, c.jdbcType, c.nullable,
-                            c.defaultValue, c.comment, c.primaryKey, c.pkSeq, c.uniqueIndexFirst) })
-                    // 表有字段:清除可能残留的无字段标记(表被重建等场景)
-                    metaCacheRepo.setNoColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName, false)
-                    val idx = dialect.listIndexes(conn, job.schemaName, tableName)
-                    metaCacheRepo.replaceIndexes(job.datasourceId, normalizeDb(job.dbName), job.schemaName, tableName,
-                        idx.flatMap { ix -> ix.columns.mapIndexed { i, col ->
-                            MetaCacheRepository.CachedIndex(ix.name, ix.unique, i, col) } })
-                } catch (e: Exception) {
-                    log.debug("扫描时同步结构缓存失败(不影响扫描): {}", e.message)
                 }
                 val chunkKey = dialect.pickChunkKey(cols)
                 val sampled = !job.forceFull && overThreshold(ds, table)
@@ -178,6 +201,38 @@ class ScanService(
         } catch (e: Exception) {
             log.warn("表规划失败 scanTableId={}: {}", scanTableId, e.message)
             chunkRunner.failTable(scanTableId, "规划失败: " + e.message)
+        }
+    }
+
+    /**
+     * 扫描结构缓存覆盖(只写不读):把刚从原始库读到的字段/索引按最新结果整粒度覆盖进本地 H2。
+     *
+     * 扫描是结构真源,[cols] 为空(表不存在/无字段)时同样覆盖——字段清空、索引清空、无字段标记置真,
+     * 避免源库删列删表后本地仍残留旧结构。写失败只记日志,不影响扫描本身;
+     * 所有写操作经 [MetaCacheRepository] → [com.example.dq.repository.MetaWriteQueue] 串行落库。
+     */
+    private fun overwriteStructureCache(
+        job: ScanRepository.JobRow,
+        conn: Connection,
+        dialect: DbDialect,
+        tableName: String,
+        cols: List<ColumnMeta>,
+    ) {
+        val db = normalizeDb(job.dbName)
+        try {
+            metaCacheRepo.replaceColumns(job.datasourceId, db, job.schemaName, tableName,
+                cols.mapIndexed { i, c -> MetaCacheRepository.CachedColumn(
+                    i, c.name, c.typeName, c.displayType, c.jdbcType, c.nullable,
+                    c.defaultValue, c.comment, c.primaryKey, c.pkSeq, c.uniqueIndexFirst) })
+            // 表有字段则清残留标记;空字段表标记置真(表不存在/无字段,扫描按空表跳过)
+            metaCacheRepo.setNoColumns(job.datasourceId, db, job.schemaName, tableName, cols.isEmpty())
+            // 空字段表不查索引(IOT 溢出段等查也无意义),直接清空
+            val indexes = if (cols.isEmpty()) emptyList() else dialect.listIndexes(conn, job.schemaName, tableName)
+            metaCacheRepo.replaceIndexes(job.datasourceId, db, job.schemaName, tableName,
+                indexes.flatMap { ix -> ix.columns.mapIndexed { i, col ->
+                    MetaCacheRepository.CachedIndex(ix.name, ix.unique, i, col) } })
+        } catch (e: Exception) {
+            log.debug("扫描时同步结构缓存失败(不影响扫描): {}", e.message)
         }
     }
 
@@ -252,6 +307,8 @@ class ScanService(
             try {
                 rules = objectMapper.readValue(j.nullRulesJson, object : TypeReference<List<NullRule>>() {})
             } catch (ignored: Exception) {
+                // 落库的空值规则解析失败(老版本格式/数据损坏):任务详情按无规则展示,留痕便于排查
+                log.warn("任务 {} 的 null_rules 解析失败,按无规则展示: {}", j.id, ignored.message)
             }
         }
         val dbType = dsRepo.findById(j.datasourceId)?.dbType
@@ -369,10 +426,16 @@ class ScanService(
         val ds = dataSourceService.get(job.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
 
+        // 建任务是异步的:引导阶段就失败(如选中的表不存在)的任务没有 scan_table 行,续扫只会空转收尾
+        val tables = repo.listScanTables(jobId)
+        if (tables.isEmpty()) {
+            throw IllegalStateException("任务没有可续扫的表(建任务时未拉回表清单),请重新发起扫描")
+        }
+
         // 续扫时恢复任务创建时设定的并发数(老任务无记录则用全局设置默认)
         executor.resize(job.workers ?: systemSettings.scanSettings().workers)
         repo.markJobRunning(jobId)
-        for (t in repo.listScanTables(jobId)) {
+        for (t in tables) {
             if (t.status == ScanStatus.DONE) {
                 // DONE 表不重跑统计,但补齐 AI 后续:中断/取消会丢队列中的 AI 任务;
                 // 已打标/已有描述/开关关闭/已熔断的表由服务内部幂等跳过(不计数)
@@ -385,6 +448,8 @@ class ScanService(
             try {
                 dataSourceService.getConnection(job.datasourceId, job.dbName).use { conn ->
                     val cols = dialect.listColumns(conn, job.schemaName, t.tableName!!)
+                    // 续扫也是扫描:结构只从原始库读,拿到最新结果后同样整粒度覆盖本地缓存
+                    overwriteStructureCache(job, conn, dialect, t.tableName!!, cols)
                     if (cols.isEmpty()) {
                         noColumns = true
                         return@use
@@ -410,11 +475,7 @@ class ScanService(
                 throw IllegalStateException("续扫校验失败: " + e.message, e)
             }
             if (noColumns) {
-                try {
-                    metaCacheRepo.setNoColumns(job.datasourceId, normalizeDb(job.dbName), job.schemaName, t.tableName!!, true)
-                } catch (e: Exception) {
-                    log.debug("续扫时写无字段标记失败(不影响续扫): {}", e.message)
-                }
+                // 无字段标记已由 overwriteStructureCache 写入,这里只按空表跳过
                 chunkRunner.completeEmptyTable(t.id)
                 continue
             }
@@ -452,5 +513,11 @@ class ScanService(
 
     private companion object {
         val log = LoggerFactory.getLogger(ScanService::class.java)
+
+        /**
+         * 「按表名过滤字典查询」的表数上限:超过则退回整库拉取后内存过滤。
+         * Oracle 的 IN 列表元素上限是 1000(ORA-01795),留出余量按 500 计。
+         */
+        const val MAX_FILTERED_TABLES = 500
     }
 }

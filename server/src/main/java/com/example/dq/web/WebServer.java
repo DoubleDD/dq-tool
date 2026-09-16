@@ -26,6 +26,7 @@ import com.example.dq.controller.RelationController;
 import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.SampleExportController;
 import com.example.dq.controller.SqlConsoleController;
+import com.example.dq.controller.ErrorCenterController;
 import com.example.dq.controller.LogController;
 import com.example.dq.controller.ManualCollectController;
 import com.example.dq.controller.ObjectCatalogController;
@@ -57,10 +58,7 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.jar.JarEntry;
@@ -74,7 +72,7 @@ import java.util.stream.Stream;
  * 与改造前 GlobalExceptionHandler 一致)、静态资源与 SPA 回退(替代 SpaWebConfig)、
  * 就绪闸门与 /api/health 就绪探针(共享内核未就绪前业务接口统一 503,前端轮询到 200 再加载数据)。
  * Javalin 7 的路由只能在 Javalin.create 的配置回调里注册(cfg.routes),创建后不可追加。
- *
+ * <p>
  * 启动时序(启动优化:先开窗、后建内核):
  * 构造(路由引用骨架 + 静态资源 + 探针,毫秒级,不建 ServiceEnv)→ start 绑定 → openBrowser 开窗
  * (页面外壳秒出,前端轮询 /api/health 看到实时启动阶段)→ finishInit 构建共享内核
@@ -86,7 +84,9 @@ public class WebServer {
 
     private static final Logger log = LoggerFactory.getLogger(WebServer.class);
 
-    /** 访问管控未命中时的页面提示(纯 API 形态下浏览器直接打开页面路由的场景) */
+    /**
+     * 访问管控未命中时的页面提示(纯 API 形态下浏览器直接打开页面路由的场景)
+     */
     private static final String BLOCKED_PAGE = """
             <!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
             <title>访问被拒绝</title></head>
@@ -97,17 +97,25 @@ public class WebServer {
             </body></html>""";
 
     private final Javalin app;
-    /** 共享内核(H2 池 + 服务对象图),openBrowser 开窗后才构建(启动优化) */
+    /**
+     * 共享内核(H2 池 + 服务对象图),openBrowser 开窗后才构建(启动优化)
+     */
     private volatile ServiceEnv env;
     private final ConfigLoader.AppConfig config;
     private final DesktopSession session;
     private final BrowserOpener browserOpener;
     private final TrayManager trayManager;
-    /** 共享内核就绪标志:finishInit 完成建表/迁移/恢复后置 true,之前业务接口被闸门拦成 503 */
+    /**
+     * 共享内核就绪标志:finishInit 完成建表/迁移/恢复后置 true,之前业务接口被闸门拦成 503
+     */
     private final AtomicBoolean ready = new AtomicBoolean(false);
-    /** 静态资源(请求路径 → 内容):构造时一次性预读进内存,请求期零 I/O(来源见 preloadStatic) */
+    /**
+     * 静态资源(请求路径 → 内容):构造时一次性预读进内存,请求期零 I/O(来源见 preloadStatic)
+     */
     private final Map<String, byte[]> staticCache;
-    /** 静态资源清单(/api/assets-manifest 出口),启动诊断复核失败资源时比对用 */
+    /**
+     * 静态资源清单(/api/assets-manifest 出口),启动诊断复核失败资源时比对用
+     */
     private final List<String> staticManifest;
 
     // 控制器/服务引用:路由在 create 回调里注册,内核(finishInit)构建完成后注入。
@@ -136,8 +144,15 @@ public class WebServer {
     private final AtomicReference<ChangelogController> changelogCtrl = new AtomicReference<>();
     private final AtomicReference<LanController> lanCtrl = new AtomicReference<>();
     private final AtomicReference<RelationController> relationCtrl = new AtomicReference<>();
-    /** 实时日志 Appender 引用:LogController(SSE)与 DiagnosticsController(错误日志摘录)共用同一实例 */
+    private final AtomicReference<ErrorCenterController> errorCtrl = new AtomicReference<>();
+    /**
+     * 实时日志 Appender 引用:LogController(SSE)与 DiagnosticsController(错误日志摘录)共用同一实例
+     */
     private LogStreamAppender logStreamAppender;
+    /**
+     * 错误采集 Appender:把 ERROR / 带异常的 WARN 日志事件汇入错误中心(内核就绪后经 setSink 注入出口)
+     */
+    private final ErrorCaptureAppender errorCaptureAppender = new ErrorCaptureAppender();
 
     public WebServer(ConfigLoader.AppConfig config) throws Exception {
         this.config = config;
@@ -167,8 +182,14 @@ public class WebServer {
         LoggerContext loggerContext = (LoggerContext) LoggerFactory.getILoggerFactory();
         logStreamAppender.setContext(loggerContext);
         logStreamAppender.start();
-        ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME))
-                .addAppender(logStreamAppender);
+        // 错误采集 Appender:与实时日志流并列挂在 root,ERROR / 带异常的 WARN 汇入错误中心。
+        // 内核未就绪前事件进自身有界缓冲,finishInit 注入 sink 后回灌(启动期异常不丢)
+        errorCaptureAppender.setContext(loggerContext);
+        errorCaptureAppender.start();
+        ch.qos.logback.classic.Logger rootLogger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(org.slf4j.Logger.ROOT_LOGGER_NAME);
+        rootLogger.addAppender(logStreamAppender);
+        rootLogger.addAppender(errorCaptureAppender);
 
         // 心跳路由要在 create 回调里注册,而 DesktopSession 依赖 AppShutdown(需要 Javalin 实例),
         // 用引用后填打破循环(服务 start 之前回调不可能触发,不会读到 null)
@@ -197,7 +218,7 @@ public class WebServer {
                     manualCollectCtrl, objectCatalogCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     changelogCtrl, lanCtrl, relationCtrl,
-                    new LogController(logStreamAppender), sessionRef);
+                    new LogController(logStreamAppender), errorCtrl, sessionRef);
         });
 
         // ---- 桌面生命周期(原 Spring 事件/调度挂载点,改显式装配;退出动作统一走 AppShutdown) ----
@@ -235,7 +256,8 @@ public class WebServer {
                                 AtomicReference<ChangelogController> changelogCtrl,
                                 AtomicReference<LanController> lanCtrl,
                                 AtomicReference<RelationController> relationCtrl,
-                                LogController logCtrl, AtomicReference<DesktopSession> sessionRef) {
+                                LogController logCtrl, AtomicReference<ErrorCenterController> errorCtrl,
+                                AtomicReference<DesktopSession> sessionRef) {
         // 浏览器访问管控(默认关闭):配置了 dq.access-token 才生效,未配置时行为与改动前完全一致。
         // 用全局 before 而非 beforeMatched:既拦 /api/**(含未匹配路由),也拦 jpackage/static-dir 形态下的页面路由;
         // 位于最前,早于就绪闸门与授权闸门。OPTIONS 预检、固定豁免清单、带扩展名的静态资源在 AccessGuard 内放行。
@@ -289,6 +311,16 @@ public class WebServer {
             // 数据比对(compare 菜单):需已激活且授权码开放 compare 菜单,未授权 403
             if (path.startsWith("/api/compare-jobs")) {
                 licenseService.checkMenu(LicenseMenu.COMPARE);
+                return;
+            }
+            // 前端错误上报:纯采集入口,与授权无关必须永远放行 —— 否则未开放「错误中心」菜单的实例
+            // 前端错误会 403 而静默丢失,采集能力不能受菜单可见性影响
+            if (path.startsWith("/api/errors/report")) {
+                return;
+            }
+            // 错误中心(error-center 菜单):查看/筛选/导出需已激活且授权码开放该菜单,未授权 403
+            if (path.startsWith("/api/errors")) {
+                licenseService.checkMenu(LicenseMenu.ERROR_CENTER);
                 return;
             }
             // 局域网共享出口(/api/lan/share/*)放行激活检查:供同网段其他实例 HTTP 拉取数据,peer 侧无本机授权上下文
@@ -564,6 +596,19 @@ public class WebServer {
         routes.get("/api/diagnostics", ctx -> diagnosticsCtrl.get().overview(ctx));
         routes.post("/api/diagnostics/check-datasources", ctx -> diagnosticsCtrl.get().checkDatasources(ctx));
 
+        // ---- 错误中心:前端上报 + 统一查询/标记/清理/导出;放行激活检查(与 /api/diagnostics 同待遇) ----
+        // 静态段(stats/export/clear/purge/batch-status/report)必须先注册,避免被 /{id} 路径参数截获
+        routes.post("/api/errors/report", ctx -> errorCtrl.get().report(ctx));
+        routes.get("/api/errors/stats", ctx -> errorCtrl.get().stats(ctx));
+        routes.get("/api/errors/export", ctx -> errorCtrl.get().export(ctx));
+        routes.post("/api/errors/clear", ctx -> errorCtrl.get().clear(ctx));
+        routes.post("/api/errors/purge", ctx -> errorCtrl.get().purge(ctx));
+        routes.post("/api/errors/batch-status", ctx -> errorCtrl.get().batchStatus(ctx));
+        routes.get("/api/errors", ctx -> errorCtrl.get().list(ctx));
+        routes.get("/api/errors/{id}", ctx -> errorCtrl.get().detail(ctx));
+        routes.put("/api/errors/{id}/status", ctx -> errorCtrl.get().updateStatus(ctx));
+        routes.delete("/api/errors/{id}", ctx -> errorCtrl.get().delete(ctx));
+
         // ---- 更新日志:CHANGELOG.md 解析结果;放行激活检查(未激活也能看版本更新说明) ----
         routes.get("/api/changelog", ctx -> changelogCtrl.get().overview(ctx));
 
@@ -666,7 +711,9 @@ public class WebServer {
         return cache;
     }
 
-    /** 枚举磁盘静态目录下的资源路径(与 classpath 分支同口径:/index.html、/assets/xxx.js),供预读与清单出口共用 */
+    /**
+     * 枚举磁盘静态目录下的资源路径(与 classpath 分支同口径:/index.html、/assets/xxx.js),供预读与清单出口共用
+     */
     private static List<String> enumerateStaticDirPaths(Path root) {
         try (Stream<Path> walk = Files.walk(root)) {
             return walk.filter(Files::isRegularFile)
@@ -679,7 +726,9 @@ public class WebServer {
         }
     }
 
-    /** 枚举本构建内嵌静态资源路径(返回 /index.html、/assets/xxx.js 等),供预读与清单出口共用 */
+    /**
+     * 枚举本构建内嵌静态资源路径(返回 /index.html、/assets/xxx.js 等),供预读与清单出口共用
+     */
     private static List<String> enumerateStaticPaths() {
         try {
             URL location = WebServer.class.getProtectionDomain().getCodeSource().getLocation();
@@ -715,7 +764,9 @@ public class WebServer {
         return List.of();
     }
 
-    /** 从内存缓存服务静态资源:指纹资源长缓存 immutable,入口等其余 no-store */
+    /**
+     * 从内存缓存服务静态资源:指纹资源长缓存 immutable,入口等其余 no-store
+     */
     private void serveStatic(io.javalin.http.Context ctx, String path) {
         byte[] content = staticCache.get(path);
         if (content == null) {
@@ -732,16 +783,75 @@ public class WebServer {
     }
 
     private static String staticContentType(String path) {
-        String ext = path.substring(path.lastIndexOf('.') + 1);
+        int dot = path.lastIndexOf('.');
+        if (dot < 0) return "application/octet-stream";
+        String ext = path.substring(dot + 1).toLowerCase(Locale.ROOT);
         return switch (ext) {
-            case "html" -> "text/html;charset=utf-8";
-            case "js" -> "text/javascript";
-            case "css" -> "text/css";
-            case "svg" -> "image/svg+xml";
+            // ---------- 文本 ----------
+            case "html", "htm" -> "text/html;charset=utf-8";
+            case "css" -> "text/css;charset=utf-8";
+            case "js", "mjs" -> "text/javascript;charset=utf-8";
+            case "cjs" -> "application/node";
+            case "txt", "text", "log" -> "text/plain;charset=utf-8";
+            case "csv" -> "text/csv;charset=utf-8";
+            case "xml" -> "text/xml;charset=utf-8";
+            case "md", "markdown" -> "text/markdown;charset=utf-8";
+            case "vtt" -> "text/vtt;charset=utf-8";
+
+            // ---------- 数据 / 配置 ----------
+            case "json" -> "application/json;charset=utf-8";
+            case "map" -> "application/json;charset=utf-8";
+            case "jsonld" -> "application/ld+json;charset=utf-8";
+            case "webmanifest" -> "application/manifest+json;charset=utf-8";
+            case "yaml", "yml" -> "application/yaml;charset=utf-8";
+            case "pdf" -> "application/pdf";
+            case "wasm" -> "application/wasm";
+            case "rtf" -> "application/rtf";
+            case "zip" -> "application/zip";
+            case "gz" -> "application/gzip";
+            case "tar" -> "application/x-tar";
+            case "7z" -> "application/x-7z-compressed";
+            case "rar" -> "application/vnd.rar";
+            case "bin", "exe", "dll" -> "application/octet-stream";
+
+            // ---------- 图片 ----------
             case "png" -> "image/png";
+            case "jpg", "jpeg", "jpe" -> "image/jpeg";
+            case "gif" -> "image/gif";
+            case "webp" -> "image/webp";
+            case "avif" -> "image/avif";
+            case "svg" -> "image/svg+xml";
             case "ico" -> "image/x-icon";
-            case "json", "map" -> "application/json";
+            case "bmp" -> "image/bmp";
+            case "tif", "tiff" -> "image/tiff";
+            case "apng" -> "image/apng";
+
+            // ---------- 音视频 ----------
+            case "mp3" -> "audio/mpeg";
+            case "wav" -> "audio/wav";
+            case "ogg", "oga" -> "audio/ogg";
+            case "opus" -> "audio/opus";
+            case "aac" -> "audio/aac";
+            case "flac" -> "audio/flac";
+            case "m4a" -> "audio/mp4";
+            case "weba" -> "audio/webm";
+            case "mp4", "m4v" -> "video/mp4";
+            case "webm" -> "video/webm";
+            case "ogv" -> "video/ogg";
+            case "mov" -> "video/quicktime";
+            case "avi" -> "video/x-msvideo";
+            case "mkv" -> "video/x-matroska";
+            case "m3u8" -> "application/vnd.apple.mpegurl";
+            case "ts" -> "video/mp2t";
+
+            // ---------- 字体 ----------
             case "woff2" -> "font/woff2";
+            case "woff" -> "font/woff";
+            case "ttf" -> "font/ttf";
+            case "otf" -> "font/otf";
+            case "eot" -> "application/vnd.ms-fontobject";
+            case "sfnt" -> "font/sfnt";
+
             default -> "application/octet-stream";
         };
     }
@@ -750,7 +860,9 @@ public class WebServer {
         app.start(port);
     }
 
-    /** 停止 Web 服务并关闭内核连接池(不走 System.exit,与 AppShutdown 的进程退出路径区分;测试与嵌入式使用) */
+    /**
+     * 停止 Web 服务并关闭内核连接池(不走 System.exit,与 AppShutdown 的进程退出路径区分;测试与嵌入式使用)
+     */
     public void stop() {
         app.stop();
         if (env != null) {
@@ -758,7 +870,9 @@ public class WebServer {
         }
     }
 
-    /** 实际监听端口(server.port=0 时为容器随机分配的结果) */
+    /**
+     * 实际监听端口(server.port=0 时为容器随机分配的结果)
+     */
     public int port() {
         return app.port();
     }
@@ -849,7 +963,9 @@ public class WebServer {
         }
     }
 
-    /** 注入内核服务对象图到路由引用骨架,并把内核挂到本实例(stop/AppShutdown 用) */
+    /**
+     * 注入内核服务对象图到路由引用骨架,并把内核挂到本实例(stop/AppShutdown 用)
+     */
     private void injectKernel(ServiceEnv env) {
         this.env = env;
         licenseServiceRef.set(env.getLicenseService());
@@ -878,14 +994,22 @@ public class WebServer {
         changelogCtrl.set(new ChangelogController(env.getChangelogService()));
         lanCtrl.set(new LanController(env.getLanShareService()));
         relationCtrl.set(new RelationController(env.getRelationInferService(), env.getTableRelationService()));
+        errorCtrl.set(new ErrorCenterController(env.getErrorCenterService()));
+        // 错误中心出口注入:采集 Appender 回灌启动期缓冲,静态出口供未捕获异常处理器等使用
+        errorCaptureAppender.setSink(env.getErrorCenterService()::record);
+        ErrorCenterHolder.bind(env.getErrorCenterService());
     }
 
-    /** 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用 */
+    /**
+     * 服务就绪后回填托盘菜单引用(原 onReady 的托盘部分),桌面安装版由 main 在 finishInit 后调用
+     */
     public void markTrayReady() {
         trayManager.onReady(app.port());
     }
 
-    /** 启动失败时关闭本进程拉起的 --app 窗口,避免残留孤儿浏览器窗口 */
+    /**
+     * 启动失败时关闭本进程拉起的 --app 窗口,避免残留孤儿浏览器窗口
+     */
     public void closeBrowserWindow() {
         browserOpener.closeWindow();
     }

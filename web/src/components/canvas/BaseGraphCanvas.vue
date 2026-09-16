@@ -61,6 +61,11 @@
         <!-- 业务工具:调用方按需追加(字段数/筛选/导出等) -->
         <slot name="toolbar" />
       </div>
+      <!-- 右侧业务工具(toolbar-right 插槽,可选):需要把开关/操作放到工具栏最右端时用,
+           独立毛玻璃卡片贴缩放控制条左侧,不占左侧控件区宽度 -->
+      <div v-if="$slots['toolbar-right']" class="bgc-toolbar-right">
+        <slot name="toolbar-right" />
+      </div>
       <!-- 缩放控制条:固定在工具栏右侧(−/+ 步进、比例输入、全屏) -->
       <div v-if="zoomBar" class="bgc-zoombar">
         <button class="bgc-zb-btn" title="缩小" @click="zoomBy(-1)">−</button>
@@ -1002,6 +1007,7 @@ defineExpose({
   position: relative;
   width: 100%;
   height: 100%;
+  border: 1px solid var(--el-border-color-lighter);
 }
 .bgc-canvas {
   width: 100%;
@@ -1023,7 +1029,7 @@ defineExpose({
 .bgc-wrap:fullscreen {
   background: var(--el-bg-color);
 }
-/* 顶部工具栏:左 = 内置默认工具 + toolbar 插槽业务工具,右 = 缩放控制条(margin-left:auto 推到最右);
+/* 顶部工具栏:左 = 内置默认工具 + toolbar 插槽业务工具,右 = toolbar-right 插槽(可选)+ 缩放控制条(margin-left:auto 推到最右);
    整条 bar 不接收指针事件(空隙处可拖画布),子控件各自恢复 */
 .bgc-toolbar {
   position: absolute;
@@ -1100,6 +1106,26 @@ defineExpose({
   align-items: center;
   justify-content: center;
   padding: 0 8px;
+}
+/* 右侧业务工具区(toolbar-right 插槽):贴缩放控制条左侧,毛玻璃底/高度与左侧控件区同口径;
+   由它吃掉 margin-left:auto 的剩余间距(缩放条相邻时取消自身 auto,跟随贴右) */
+.bgc-toolbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: calc(var(--bgc-ctl-h) + 8px);
+  padding: 4px 8px;
+  background: color-mix(in srgb, var(--el-bg-color) 55%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  box-shadow: var(--el-box-shadow-lighter);
+}
+.bgc-toolbar-right + .bgc-zoombar {
+  margin-left: 0;
 }
 /* 缩放控制条:固定在工具栏右侧,毛玻璃底同左侧控件区;
    高度与左侧控件区外壳一致(24px 小组件 + 上下各 4px 内边距 = 32px) */

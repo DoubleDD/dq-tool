@@ -6,11 +6,11 @@
         <el-button @click="router.push('/compare')">返回列表</el-button>
       </div>
     </div>
-    <el-alert type="info" :closable="false" style="margin-bottom: 16px">
+    <!-- <el-alert type="info" :closable="false" style="margin-bottom: 16px">
       <template #title>
-        选定基准表与关注字段,再指定对比表并连线字段映射;任务将按比对主键逐字段对齐比对
+        选定基准表并确定对比模式、匹配逻辑、对象编码与对象名称,再指定对比表并连线字段映射;有连线的基准字段即比对字段,任务按比对主键逐字段对齐比对
       </template>
-    </el-alert>
+    </el-alert> -->
     <!-- 步骤条:已激活(≤maxStep)的步骤可点击回看,纯切换视图、不改任何数据;未激活的步骤灰显禁止点击 -->
     <el-steps :active="maxStep" align-center style="margin-bottom: 24px">
       <el-step
@@ -22,49 +22,45 @@
       />
     </el-steps>
 
-    <!-- 步骤 1:选择基准表(四栏级联:数据源 → 数据库 → 模式 → 表,模式栏按数据库类型动态显示) -->
+    <!-- 步骤 1:选择基准表(四栏级联:数据源 → 数据库 → 模式 → 表,模式栏按数据库类型动态显示),
+         并在本步一次定齐 对比模式/匹配逻辑/对象编码/对象名称 -->
     <div v-show="step === 0" class="step-body step-fill">
-      <el-form label-width="90px" style="max-width: 640px">
-        <el-form-item label="任务名称">
-          <el-input v-model="form.name" placeholder="如:客户主数据三系统比对" maxlength="100" />
-        </el-form-item>
-      </el-form>
-      <TableCascadePicker
-        v-model:datasource-id="form.datasourceId"
-        v-model:db="form.db"
-        v-model:schema="form.schema"
-        v-model:table="form.table"
-        :datasources="datasources"
-        @table-change="onBaseTableChange"
-      />
-      <div class="step-tip">基准表为权威数据,其他系统的数据将按比对主键逐字段对齐到该表</div>
-    </div>
-
-    <!-- 步骤 2:选择比对字段(字段表撑满剩余高度,表头固定、表体内部滚动) -->
-    <div v-show="step === 1" class="step-body step-fill">
-      <!-- 匹配逻辑:决定「两条数据算不算同一个对象」。对比表的编码/名称常与基准表对不上,
-           默认「编码+名称」最严格;选「先编码后名称+大模型归一化」时「对象名称」列为必选(要先知道拿哪个字段配名称) -->
-      <el-form label-width="90px" class="match-mode-form">
-        <!-- 对比模式:复选框「列对比」——勾选 = 行级+列级(身份对齐后逐字段比对全部信息字段 + 大模型预生成映射);
-             不勾选 = 仅行级(仅身份字段、映射人工连线)。模式是第 2 步数据:一切换字段表即按新模式重给默认,
-             第 3、4 步走数据链清空重走 -->
-        <el-form-item label="对比模式">
-          <el-checkbox v-model="columnCompare">列对比</el-checkbox>
-          <div class="step-tip">{{ modeTip }}</div>
-        </el-form-item>
-        <el-form-item label="匹配逻辑">
-          <el-radio-group v-model="matchMode">
-            <el-radio v-for="m in MATCH_MODES" :key="m.value" :value="m.value">{{ m.label }}</el-radio>
-          </el-radio-group>
-          <div class="step-tip">{{ matchModeTip }}</div>
-        </el-form-item>
-      </el-form>
-      <div class="field-table-wrap">
-        <el-table ref="fieldTableRef" :data="columns" v-loading="columnsLoading" border row-key="name"
-                  height="100%" @selection-change="onFieldSelectionChange">
-          <!-- 第 1 列勾选=参与比对;第 2/3 列单选=对象编码(对齐主键)/对象名称(显示名),
-               两组单选与勾选态互相独立(选单选不会自动勾选/取消勾选) -->
-          <el-table-column type="selection" width="45" />
+      <!-- 元信息同一行:任务名称 + 对比模式 + 匹配逻辑(说明文案收进问号悬浮提示,省两行纵向空间)。
+           对比模式:勾选「列对比」= 行级+列级(身份对齐后逐字段比对全部连线字段 + 大模型预生成映射);
+           不勾选 = 仅行级(通常只连身份字段、映射人工连线)。匹配逻辑:决定「两条数据算不算同一个对象」,
+           默认「编码+名称」最严格;选「先编码后名称+大模型归一化」时「对象名称」列为必选 -->
+      <div class="base-meta-row">
+        <span class="meta-label">任务名称</span>
+        <el-input v-model="form.name" placeholder="如:客户主数据三系统比对" maxlength="100" class="meta-name" />
+        <el-divider direction="vertical" />
+        <!-- <span class="meta-label">对比模式</span> -->
+        <el-checkbox v-model="columnCompare">列对比</el-checkbox>
+        <el-tooltip placement="top" :content="modeTip" :show-after="200">
+          <el-icon class="meta-help"><QuestionFilled /></el-icon>
+        </el-tooltip>
+        <el-divider direction="vertical" />
+        <span class="meta-label">匹配方式</span>
+        <el-radio-group v-model="matchMode">
+          <el-radio v-for="m in MATCH_MODES" :key="m.value" :value="m.value">{{ m.label }}</el-radio>
+        </el-radio-group>
+        <el-tooltip placement="top" :content="matchModeTip" :show-after="200">
+          <el-icon class="meta-help"><QuestionFilled /></el-icon>
+        </el-tooltip>
+      </div>
+      <div class="base-cascade-wrap" :class="{ compact: form.table }">
+        <TableCascadePicker
+          v-model:datasource-id="form.datasourceId"
+          v-model:db="form.db"
+          v-model:schema="form.schema"
+          v-model:table="form.table"
+          :datasources="datasources"
+          @table-change="onBaseTableChange"
+        />
+      </div>
+      <!-- 字段表:选定基准表即加载。没有勾选列——哪些字段参与比对由第 3 步连线决定(有连线的基准字段即比对字段);
+           这里只选两个身份字段:对象编码(对齐主键,恒参与比对)/对象名称(差异明细「对象」列显示名) -->
+      <div v-if="form.table" class="field-table-wrap">
+        <el-table :data="columns" v-loading="columnsLoading" border row-key="name" height="100%">
           <el-table-column label="对象编码" width="90" align="center">
             <template #default="{ row }">
               <el-radio v-model="keyField" :value="row.name">{{ '' }}</el-radio>
@@ -72,28 +68,34 @@
           </el-table-column>
           <el-table-column label="对象名称" width="90" align="center">
             <template #default="{ row }">
-              <!-- 未勾选的字段也能当对象名称:选中即自动勾选该字段(后端要求 displayField 属于比对字段) -->
-              <el-radio v-model="displayField" :value="row.name" @change="onDisplayFieldPick(row)">{{ '' }}</el-radio>
+              <el-radio v-model="displayField" :value="row.name">{{ '' }}</el-radio>
             </template>
           </el-table-column>
-          <el-table-column prop="name" label="字段名" min-width="170" show-overflow-tooltip />
+          <el-table-column label="字段名" min-width="240" show-overflow-tooltip>
+            <!-- 字段说明跟在字段名后面(弱化灰色),不再单独占列 -->
+            <template #default="{ row }">
+              <span>{{ row.name }}</span>
+              <span v-if="row.comment" class="field-comment">{{ row.comment }}</span>
+            </template>
+          </el-table-column>
           <el-table-column label="类型" width="150">
             <template #default="{ row }">
               <el-tag size="small" type="info" plain>{{ row.displayType || row.typeName || '-' }}</el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="comment" label="说明" min-width="160" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.comment || '—' }}</template>
-          </el-table-column>
         </el-table>
       </div>
-      <div class="step-tip">{{ fieldSelectTip }}</div>
+      <div class="step-tip">
+        基准表为权威数据,其他系统的数据将按比对主键逐字段对齐到该表;对象编码用于逐行对齐、恒参与比对,
+        对象名称决定差异明细「对象」列的名称(默认第一个文本型非主键字段);
+        其余字段是否参与比对由第 3 步连线决定——有连线的基准字段即比对字段
+      </div>
     </div>
 
-    <!-- 步骤 3:选择比对系统并确认(与第一步同款四栏级联,选完点「添加为比对系统」入列) -->
-    <div v-show="step === 2" class="step-body step-fill">
-      <div class="step3-layout">
-        <div class="step3-targets">
+    <!-- 步骤 2:选择比对系统并确认(与第一步同款四栏级联,选完点「添加为比对系统」入列) -->
+    <div v-show="step === 1" class="step-body step-fill">
+      <div class="step2-layout">
+        <div class="step2-targets">
           <TableCascadePicker
             v-model:datasource-id="pick.datasourceId"
             v-model:db="pick.db"
@@ -108,7 +110,7 @@
           />
         </div>
         <!-- 右列:已添加比对系统清单 -->
-        <div class="step3-side">
+        <div class="step2-side">
           <div class="target-panel">
             <div class="target-panel-head">
               <span>已添加比对系统</span>
@@ -130,23 +132,23 @@
       </div>
     </div>
 
-    <!-- 步骤 4:字段映射(左侧基准表固定、右侧各对比表纵向排开单独滚动,人工连线) -->
-    <div v-show="step === 3" class="step-body step-fill">
+    <!-- 步骤 3:字段映射(左侧基准表固定、右侧各对比表纵向排开单独滚动,人工连线;
+         有连线的基准字段即比对字段,提交时按连线并集 + 身份两字段汇总比对字段) -->
+    <div v-show="step === 2" class="step-body step-fill">
       <CompareFieldMapping
         :base="{ datasourceId: form.datasourceId, db: form.db, schema: form.schema, table: form.table }"
         :base-label="baseTableLabel"
         :targets="mappingTargets"
         :key-field="keyField"
-        :base-columns="selectedNames"
         v-model="mappings"
       >
-        <!-- 列级对比:大模型预生成字段映射,放工具条最左(按名称自动匹配左侧);人工在画布审核后可再手动增删 -->
+        <!-- 列级对比:大模型预生成字段映射,放工具条最左(基准表全字段产出建议);人工在画布审核后可再手动增删 -->
         <template #toolbar-prepend>
           <template v-if="compareMode === 'COLUMN'">
             <el-button type="primary" plain :loading="aiSuggesting" :disabled="!targets.length" @click="aiSuggestMapping">
               AI 预生成字段映射
             </el-button>
-            <span class="ai-suggest-tip">{{ aiSuggestNote || '大模型按字段名/注释逐目标产出映射建议,请在画布核对连线后再提交' }}</span>
+            <!-- <span class="ai-suggest-tip">{{ aiSuggestNote || '大模型按字段名/注释逐目标产出映射建议,请在画布核对连线后再提交' }}</span> -->
           </template>
         </template>
       </CompareFieldMapping>
@@ -155,15 +157,16 @@
     <!-- 向导操作按钮 -->
     <div class="wizard-actions">
       <el-button :disabled="step === 0" @click="step--">上一步</el-button>
-      <el-button v-if="step < 3" type="primary" @click="next">下一步</el-button>
+      <el-button v-if="step < 2" type="primary" @click="next">下一步</el-button>
       <el-button v-else type="primary" :loading="submitting" @click="submit">开始比对</el-button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessage } from '../utils/notify'
 import request, { createCompareJob, suggestCompareMapping } from '../api'
 import { watchTask } from '../stores/backgroundTasks'
@@ -175,20 +178,20 @@ const router = useRouter()
 const step = ref(0)
 // 已激活的最远步骤(0 起,经「下一步」校验通过才推进):决定步骤条高亮位置与哪些步骤可点击回看
 const maxStep = ref(0)
-// 四个步骤标题,步骤条 v-for 用
-const STEP_TITLES = ['选择基准表', '选择基准字段', '选择对比表', '字段映射']
-// 对比模式复选框「列对比」(提交值落 compare_mode):勾选 = COLUMN 行级+列级,身份对齐后逐字段比对全部
-// 信息字段、进入第 2 步默认全选,映射由大模型预生成、人工审核;不勾选 = ROW 仅行级,只比对身份字段、映射人工连线
+// 三个步骤标题,步骤条 v-for 用
+const STEP_TITLES = ['选择基准表', '选择对比表', '字段映射']
+// 对比模式复选框「列对比」(提交值落 compare_mode):勾选 = COLUMN 行级+列级,第 3 步出现「AI 预生成字段映射」;
+// 不勾选 = ROW 仅行级,映射人工连线。模式只影响提交元数据与映射来源,比对字段一律由第 3 步连线决定
 const columnCompare = ref(false)
 const compareMode = computed(() => (columnCompare.value ? 'COLUMN' : 'ROW'))
 const MODE_TIPS = {
-  ROW: '仅行级对比:只比对对象编码、对象名称等身份字段,字段少、分钟级;字段映射由人工连线完成',
-  COLUMN: '行级+列级对比:身份对齐后逐字段比对全部信息字段,全量扫描、小时级;字段映射由大模型预生成、人工审核'
+  ROW: '仅行级对比:一般只连对象编码、对象名称等身份字段,字段少、分钟级;字段映射由人工连线完成',
+  COLUMN: '行级+列级对比:身份对齐后逐字段比对连线的信息字段,全量扫描、小时级;字段映射由大模型预生成、人工审核'
 }
 const modeTip = computed(() => MODE_TIPS[compareMode.value])
 const datasources = ref([])
 
-// ---------- 步骤 1:基准表 ----------
+// ---------- 步骤 1:基准表与身份字段 ----------
 
 const form = reactive({ name: '', datasourceId: '', db: '', schema: '', table: '' })
 
@@ -202,19 +205,12 @@ const baseTableLabel = computed(() => {
   return schemaPart ? `${schemaPart}.${form.table}` : form.table
 })
 
-/** 选定基准表后:名称为空时给个默认名,减少手工输入 */
-function onBaseTableChange(t) {
-  if (!form.name && t?.name) form.name = `${t.name} 数据比对`
-}
-
-// ---------- 步骤 2:比对字段 ----------
-
+// 基准表字段清单(选定表即加载):本步用来选对象编码/对象名称两个身份字段,提交时也是比对字段排序的依据
 const columns = ref([])
 const columnsLoading = ref(false)
+// 对象编码(比对主键):默认 pkSeq 最小的主键列,无主键取第一列;恒参与比对
 const keyField = ref('')
-const selectedNames = ref([])
-const fieldTableRef = ref()
-// 对象名称(显示名)字段:与「对象编码」并列的单选列,默认预选「自动」候选
+// 对象名称(显示名)字段:差异明细「对象」列的名称来源,默认第一个文本型非主键字段
 const displayField = ref('')
 
 // 文本型 jdbcType(与后端 CompareService.isTextType 同一口径:字符型 + CLOB/NCLOB)
@@ -231,37 +227,18 @@ const matchModeLabel = computed(() => MATCH_MODES.find((m) => m.value === matchM
 // 「先编码后名称+大模型归一化」必须给出对象名称字段(否则无法按名称配对,后端提交时会 400)
 const matchModeRequiresName = computed(() => matchMode.value !== 'EXACT')
 
-// 第 2 步底部提示:是否勾选列对比口径略有不同(勾选默认全选)
-const fieldSelectTip = computed(() => {
-  const head = compareMode.value === 'COLUMN'
-    ? `已选 ${selectedNames.value.length} 个字段(共 ${columns.value.length} 个),勾选列对比默认全选、可按需精简`
-    : `已选 ${selectedNames.value.length} 个字段(共 ${columns.value.length} 个),未勾选的字段不参与比对`
-  return `${head};对象编码用于逐行对齐、恒参与比对,对象名称决定差异明细「对象」列的名称` +
-    `(默认第一个文本型非主键字段,把未勾选的字段选为对象名称时会自动把它勾上)`
-})
-
-/** 「自动」候选 = 已勾选字段里第一个文本型非主键字段(按基准表字段顺序);无则空串(提交 null,object_name 落空串) */
+/** 「自动」候选 = 第一个文本型非主键字段(按基准表字段顺序);无则空串(提交 null,object_name 落空串) */
 function autoDisplayField() {
-  const hit = columns.value.find((c) =>
-    c.name !== keyField.value && selectedNames.value.includes(c.name) && TEXT_JDBC_TYPES.has(c.jdbcType))
+  const hit = columns.value.find((c) => c.name !== keyField.value && TEXT_JDBC_TYPES.has(c.jdbcType))
   return hit?.name || ''
-}
-
-/** 默认比对字段:行级 = 对象编码(比对主键)+ 对象名称候选(第一个文本型非主键字段);列级 = 全部字段(可精简) */
-function defaultComparedFields() {
-  if (compareMode.value === 'COLUMN') return columns.value.map((c) => c.name)
-  const key = keyField.value
-  const nameCol = columns.value.find((c) => c.name !== key && TEXT_JDBC_TYPES.has(c.jdbcType))
-  return [key, nameCol?.name].filter(Boolean)
 }
 
 async function loadColumns() {
   columnsLoading.value = true
-  // 初始化本步数据期间抑制数据链监听,避免被误判成「用户修改第 2 步数据」而清空后续步骤
+  // 初始化本步数据期间抑制数据链监听,避免被误判成「用户修改第 1 步数据」而清空后续步骤
   suppressInvalidate = true
   columns.value = []
   keyField.value = ''
-  selectedNames.value = []
   displayField.value = ''
   try {
     const q = form.db ? `?db=${encodeURIComponent(form.db)}` : ''
@@ -272,16 +249,11 @@ async function loadColumns() {
     // 默认比对主键:主键列中 pkSeq 最小的;无主键则取第一列
     const pk = [...columns.value].filter((c) => c.primaryKey).sort((a, b) => (a.pkSeq || 0) - (b.pkSeq || 0))
     keyField.value = (pk[0] || columns.value[0])?.name || ''
-    // 默认只勾「对象编码(比对主键)+ 对象名称(第一个文本型非主键字段)」两个字段:
-    // 其余字段按需勾选,避免默认全量比对拖慢任务;与后端 displayField/object_name 的自动口径一致
-    selectedNames.value = defaultComparedFields()
     displayField.value = autoDisplayField()
-    // 记录字段已按当前基准表加载:回看第 1 步未换表时,下一步不再重复加载,保住第 2 步已选字段
+    // 记录字段已按当前基准表加载:重选同一张表(回看场景)时不再清空重载,保住后两步已填数据
     loadedTableKey.value = baseTableKey()
-    await nextTick()
-    syncFieldSelection()
   } catch {
-    ElMessage.error('字段列表加载失败,请返回上一步重试')
+    ElMessage.error('字段列表加载失败,请重新选择基准表')
   } finally {
     suppressInvalidate = false
     columnsLoading.value = false
@@ -289,53 +261,34 @@ async function loadColumns() {
 }
 
 /**
- * 对象名称列只接受「仍处于勾选态」的字段:所选字段被取消勾选后回退到「自动」候选,
- * 避免提交时被后端判「对象名称字段必须在比对字段内」。勾选态本身不受单选列影响。
+ * 选定基准表后:名称为空时给个默认名,并随即加载字段清单(对象编码/名称在本步选择,字段表要即刻可用)。
+ * 换表 = 第 1 步数据变更:本步字段数据与后两步(对比表清单、映射连线)全部作废;
+ * 级联清空(t=null)交给 baseTableKey 监听统一走数据链,这里不重复处理
  */
-function refreshDisplayField() {
-  if (displayField.value && selectedNames.value.includes(displayField.value)) return
-  displayField.value = autoDisplayField()
+function onBaseTableChange(t) {
+  if (!form.name && t?.name) form.name = `${t.name} 数据比对`
+  if (!t?.name) return
+  if (loadedTableKey.value === baseTableKey()) return
+  invalidateFrom(0)
+  loadColumns()
 }
 
-/** 把未勾选字段选为对象名称时自动勾上它,保住「displayField 属于比对字段」的后端约束 */
-function onDisplayFieldPick(row) {
-  if (selectedNames.value.includes(row.name)) return
-  selectedNames.value = [...selectedNames.value, row.name]
-  fieldTableRef.value?.toggleRowSelection(row, true)
-}
-
-/** 把 selectedNames 同步到表格勾选态 */
-function syncFieldSelection() {
-  const table = fieldTableRef.value
-  if (!table) return
-  table.clearSelection()
-  const want = new Set(selectedNames.value)
-  for (const c of columns.value) {
-    if (want.has(c.name)) table.toggleRowSelection(c, true)
-  }
-}
-
-function onFieldSelectionChange(rows) {
-  selectedNames.value = rows.map((r) => r.name)
-  refreshDisplayField()
-}
-
-// ---------- 步骤 3:比对系统 ----------
+// ---------- 步骤 2:比对系统 ----------
 
 // 已入列的比对系统:{ datasourceId, db, schema, table }
 const targets = ref([])
-// 级联面板当前所在的 数据源/库/模式(第三步只选到库/模式,具体表在表行上用 +/− 逐张切换)
+// 级联面板当前所在的 数据源/库/模式(第 2 步只选到库/模式,具体表在表行上用 +/− 逐张切换)
 const pick = reactive({ datasourceId: '', db: '', schema: '' })
-// 第四步字段映射:数组与 targets 同序,元素为 { 基准字段名: 目标列名 }
+// 第 3 步字段映射:数组与 targets 同序,元素为 { 基准字段名: 目标列名 }
 const mappings = ref([])
 const submitting = ref(false)
 // 列级对比:AI 预生成字段映射的状态与逐目标结果提示(提示随对比表清单变化失效)
 const aiSuggesting = ref(false)
 const aiSuggestNote = ref('')
 
-// 第 3 步数据链:已添加清单一变,第 4 步映射作废重连,激活进度收回第 3 步(数据链细节见下方监听区)
+// 第 2 步数据链:已添加清单一变,第 3 步映射作废重连,激活进度收回第 2 步(数据链细节见下方监听区)
 watch(() => targets.value.map((t) => `${t.datasourceId}|${t.db}|${t.schema}|${t.table}`).join(','),
-  (nv, ov) => { if (suppressInvalidate || nv === ov) return; aiSuggestNote.value = ''; invalidateFrom(2) })
+  (nv, ov) => { if (suppressInvalidate || nv === ov) return; aiSuggestNote.value = ''; invalidateFrom(1) })
 
 /** 交给映射画布的对比表清单(带展示名) */
 const mappingTargets = computed(() => targets.value.map((t) => ({
@@ -353,10 +306,6 @@ function isKeyMapped(map) {
 // 目标数据源不再排除基准数据源:同一数据库下不同表互比是常见场景,改为禁用「基准表本身」这一组合
 function targetDs(t) {
   return datasources.value.find((d) => String(d.id) === String(t.datasourceId))
-}
-
-function targetMultiDb(t) {
-  return ['SQLSERVER', 'KINGBASE'].includes(targetDs(t)?.dbType)
 }
 
 /** 目标定位串:库/模式.表(多库方言带 db 前缀)。右列清单里与数据源名分两行展示,避免单行截断 */
@@ -414,12 +363,12 @@ async function aiSuggestMapping() {
   aiSuggesting.value = true
   aiSuggestNote.value = ''
   try {
+    // 不再预圈比对字段:fields 留空 = 基准表全部字段交给大模型建议,连线结果即比对字段
     const res = await suggestCompareMapping({
       baseDatasourceId: Number(form.datasourceId),
       baseDb: form.db || null,
       baseSchema: form.schema,
       baseTable: form.table,
-      fields: selectedNames.value,
       keyField: keyField.value,
       targets: targets.value.map((t) => ({
         datasourceId: Number(t.datasourceId), db: t.db || null, schema: t.schema, table: t.table
@@ -445,7 +394,7 @@ async function aiSuggestMapping() {
  */
 let suppressInvalidate = false
 
-// 字段列表已按哪张基准表加载过(四元组键):回看第 1 步未换表时,下一步不再重复加载,保住已选字段
+// 字段清单已按哪张基准表加载过(四元组键):重选同一张表时不清空重载,保住后两步已填数据
 const loadedTableKey = ref('')
 
 function baseTableKey() {
@@ -460,20 +409,16 @@ function invalidateFrom(n) {
   suppressInvalidate = true
   try {
     if (n < 1) {
-      // 第 2 步(选择基准字段)的数据:字段清单/主键/勾选/对象名称/匹配逻辑,以及字段加载缓存键
+      // 基准表变了:本步随表加载的字段数据与身份字段选择一并失效,第 2 步(选择对比表)清单也作废
       columns.value = []
       keyField.value = ''
-      selectedNames.value = []
       displayField.value = ''
       matchMode.value = 'EXACT'
       loadedTableKey.value = ''
-    }
-    if (n < 2) {
-      // 第 3 步(选择对比表)的数据:已添加的比对系统清单
       targets.value = []
     }
-    if (n < 3) {
-      // 第 4 步(字段映射)的数据
+    if (n < 2) {
+      // 第 3 步(字段映射)的数据
       mappings.value = []
     }
     maxStep.value = Math.min(maxStep.value, n)
@@ -482,27 +427,13 @@ function invalidateFrom(n) {
   }
 }
 
-// 数据链监听:任务名只是展示元数据、不参与依赖链,改动不清空后续步骤
+// 数据链监听:级联清空/换库换模式导致基准表四元组变化时,清空全部后续数据(换表走 onBaseTableChange,
+// 那里先 invalidateFrom(0) 再 loadColumns,本监听被 suppressInvalidate 跳过,不会重复清空);
+// 任务名只是展示元数据、不参与依赖链,改动不清空后续步骤
 watch(baseTableKey, (nv, ov) => {
   if (suppressInvalidate || nv === ov) return
   invalidateFrom(0)
 })
-// 第 2 步数据链:对比模式一切换(本质是「比多少字段」的区别),本步字段按新模式重给默认
-// (列级=全选,行级=身份字段;字段重算会再走一次本链,watcher 幂等),第 3、4 步清空重走
-watch(compareMode, (nv, ov) => {
-  if (suppressInvalidate || nv === ov) return
-  invalidateFrom(1)
-  if (columns.value.length) {
-    selectedNames.value = defaultComparedFields()
-    displayField.value = autoDisplayField()
-    nextTick(syncFieldSelection)
-  }
-})
-// 第 2 步数据链:匹配逻辑/比对主键/对象名称/勾选字段任一变,第 3、4 步作废(AI 预生成结果提示一并失效)
-watch(
-  () => [matchMode.value, keyField.value, displayField.value, selectedNames.value.join(',')].join('|'),
-  (nv, ov) => { if (suppressInvalidate || nv === ov) return; aiSuggestNote.value = ''; invalidateFrom(1) }
-)
 
 // ---------- 向导流转与提交 ----------
 
@@ -519,46 +450,45 @@ function next() {
     if (baseMultiDb.value && !form.db) return ElMessage.warning('请选择数据库')
     if (!form.schema) return ElMessage.warning('请选择库/schema')
     if (!form.table) return ElMessage.warning('请选择基准表')
-    step.value = 1
-    maxStep.value = Math.max(maxStep.value, 1)
-    // 基准表没变(回看场景)时保留第 2 步已选字段;换表/首次进入才重新加载字段
-    if (loadedTableKey.value !== baseTableKey()) loadColumns()
-    return
-  }
-  if (step.value === 1) {
     if (!columns.value.length) return ElMessage.warning('基准表字段未加载,无法继续')
-    if (!keyField.value) return ElMessage.warning('请选择比对主键')
-    if (!selectedNames.value.length) return ElMessage.warning('请至少勾选 1 个比对字段')
+    if (!keyField.value) return ElMessage.warning('请选择比对主键(对象编码)')
     // 「先编码后名称+大模型归一化」靠对象名称配对,没有名称字段就无法执行
     if (matchModeRequiresName.value && !displayField.value) {
       return ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请在「对象名称」列选择`)
     }
-    step.value = 2
-    maxStep.value = Math.max(maxStep.value, 2)
+    step.value = 1
+    maxStep.value = Math.max(maxStep.value, 1)
     return
   }
-  if (step.value === 2) {
+  if (step.value === 1) {
     if (!targets.value.length) return ElMessage.warning('请至少添加 1 个对比表(数据源 + 库/模式 + 表)')
-    step.value = 3
-    maxStep.value = Math.max(maxStep.value, 3)
+    step.value = 2
+    maxStep.value = Math.max(maxStep.value, 2)
   }
 }
 
 async function submit() {
   if (!targets.value.length) return ElMessage.warning('请至少添加 1 个对比表(数据源 + 库/模式 + 表)')
   if (matchModeRequiresName.value && !displayField.value) {
-    return ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请回到第 2 步选择`)
+    return ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请回到第 1 步选择`)
   }
   const unmapped = targets.value.filter((t, i) => !isKeyMapped(mappings.value[i]))
   if (unmapped.length) {
-    return ElMessage.warning(`有 ${unmapped.length} 个对比表还没连上比对主键「${keyField.value}」,请回到第 4 步连线`)
+    // 点名是哪几个对比表没连主键(数据源 · 库.模式.表),别让用户在多目标里自己猜
+    const names = unmapped.map((t) => targetLabel(t) || t.table).join('、')
+    return ElMessage.warning(`有 ${unmapped.length} 个对比表还没连上比对主键「${keyField.value}」:${names}。请回到第 3 步连线`)
   }
   submitting.value = true
   try {
-    // 比对字段保持基准表字段顺序,主键兜底包含
-    const fields = columns.value.map((c) => c.name).filter((n) => selectedNames.value.includes(n) || n === keyField.value)
-    // 对象名称字段必须落在本次提交的 fields 内(两列独立,这里兜底,不让后端 400)
-    const displayFieldName = fields.includes(displayField.value) ? displayField.value : null
+    // 比对字段 = 第 3 步连线的基准字段并集(有连线即参与比对)+ 身份两字段(对象编码/对象名称恒参与),
+    // 保持基准表字段顺序;后端两条约束「映射的基准字段必须在比对字段内」「对象名称字段必须在比对字段内」由此一并满足
+    const picked = new Set([keyField.value])
+    if (displayField.value) picked.add(displayField.value)
+    for (const m of mappings.value) {
+      for (const bf of Object.keys(m || {})) picked.add(bf)
+    }
+    const pickedLower = new Set([...picked].map((n) => n.toLowerCase()))
+    const fields = columns.value.map((c) => c.name).filter((n) => pickedLower.has(n.toLowerCase()))
     const res = await createCompareJob({
       name: form.name.trim(),
       baseDatasourceId: Number(form.datasourceId),
@@ -567,17 +497,17 @@ async function submit() {
       baseTable: form.table,
       keyField: keyField.value,
       fields,
-      displayField: displayFieldName,
-      // 对象对齐匹配逻辑(第 2 步选择):EXACT / CODE_NAME_LLM
+      displayField: displayField.value || null,
+      // 对象对齐匹配逻辑(第 1 步选择):EXACT / CODE_NAME_LLM
       matchMode: matchMode.value,
-      // 对比模式(第 2 步复选框):ROW 仅行级 / COLUMN 行级+列级
+      // 对比模式(第 1 步复选框):ROW 仅行级 / COLUMN 行级+列级
       compareMode: compareMode.value,
       targets: targets.value.map((t, i) => ({
         datasourceId: Number(t.datasourceId),
         db: t.db || null,
         schema: t.schema,
         table: t.table,
-        // 第四步人工连线的字段映射;空对象 = 不指定,后端按字段名自动匹配
+        // 第 3 步人工连线的字段映射;空对象 = 不指定,后端按字段名自动匹配
         mapping: Object.keys(mappings.value[i] || {}).length ? mappings.value[i] : null
       }))
     })
@@ -642,7 +572,7 @@ onMounted(async () => {
   min-height: 480px;
 }
 
-/* 第一步/第二步/第三步:纵向撑满卡片剩余高度,内容区拉满、底部按钮始终贴底 */
+/* 各步:纵向撑满卡片剩余高度,内容区拉满、底部按钮始终贴底 */
 .step-fill {
   display: flex;
   flex-direction: column;
@@ -650,22 +580,63 @@ onMounted(async () => {
   min-height: 0;
 }
 
-/* 第二步匹配逻辑表单:卡片高度被字段表吃掉剩余空间,这里只需紧凑排版 */
-.match-mode-form {
+/* 第 1 步级联面板:未选表时铺满剩余高度(与旧版一致);选定表后压缩成固定高度,把剩余空间让给字段表 */
+.base-cascade-wrap {
+  flex: 1 1 auto;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
+}
+.base-cascade-wrap.compact {
   flex: none;
-  margin-bottom: 8px;
-}
-.match-mode-form :deep(.el-form-item) {
-  margin-bottom: 0;
-}
-.match-mode-form :deep(.el-form-item__content) {
-  display: block;
+  height: 240px;
 }
 
-/* 第二步字段表容器:吃掉 step-fill 的剩余高度,el-table 用 height=100% 内部滚动 */
+/* 第 1 步元信息行:任务名称 + 对比模式 + 匹配逻辑同一行,名称输入框吃剩余宽度,说明收进问号悬浮提示 */
+.base-meta-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.meta-label {
+  flex: none;
+  font-size: 14px;
+  color: var(--el-text-color-regular);
+}
+/* 三组设置之间的竖分隔符:拉高一点、两侧留白与行内间距拉开层次 */
+.base-meta-row :deep(.el-divider--vertical) {
+  height: 1.2em;
+  margin: 0 10px;
+}
+.meta-name {
+  flex: 1 1 auto;
+  max-width: 420px;
+}
+.meta-help {
+  color: var(--el-text-color-secondary);
+  cursor: help;
+}
+/* 与输入框/单选组同排时去掉单选组默认右侧间距差异,视觉对齐 */
+.base-meta-row :deep(.el-radio-group) {
+  flex: none;
+}
+
+/* 第 1 步字段表容器:吃掉 step-fill 的剩余高度,el-table 用 height=100% 内部滚动 */
 .field-table-wrap {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 180px;
+}
+/* 字段表行高压窄(默认 12px 上下内边距偏大,纯展示列表 6px 更紧凑) */
+.field-table-wrap :deep(.el-table__cell) {
+  padding: 6px 0;
+}
+/* 字段说明跟在字段名后面:弱化灰色、与字段名拉开一点距离 */
+.field-comment {
+  margin-left: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 
 .step-tip {
@@ -674,15 +645,15 @@ onMounted(async () => {
   color: var(--el-text-color-secondary);
 }
 
-/* 步骤 3:左侧级联面板 + 添加按钮,右侧「已添加比对系统」卡 */
-.step3-layout {
+/* 步骤 2:左侧级联面板 + 添加按钮,右侧「已添加比对系统」卡 */
+.step2-layout {
   display: flex;
   gap: 24px;
   align-items: stretch;
   flex: 1 1 auto;
   min-height: 0;
 }
-.step3-targets {
+.step2-targets {
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -690,7 +661,7 @@ onMounted(async () => {
   flex-direction: column;
   gap: 10px;
 }
-.step3-side {
+.step2-side {
   flex: none;
   width: 420px;
   min-height: 0;
