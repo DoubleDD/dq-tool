@@ -272,20 +272,30 @@ class CompareExportTest {
                 "业务表字段名", "业务表中文", "业务表值", "差异原因"),
                 (0..12).map { detail.getRow(0).getCell(it).stringCellValue })
 
-            // 该系统的全部差异都在同一张 sheet 内,一行一个「对象 × 不一致字段」:
+            // 该系统的全部差异都在同一张 sheet 内,一行一个「对象 × 字段」:
             // R001 有两个不一致字段(name/capacity)→ 展开成两行字段级明细
             assertEquals(prefix + listOf("R001", "甲水库", "name", "", "甲水库", "name", "", "甲水库(改)", "文本不一致"),
                 (0..12).map { detail.getRow(1).getCell(it).stringCellValue })
             assertEquals(prefix + listOf("R001", "甲水库", "capacity", "", "100", "capacity", "", "200", "文本不一致"),
                 (0..12).map { detail.getRow(2).getCell(it).stringCellValue })
-            // R002 缺失 / R900 多余:一对象一行,字段六列留空,差异原因说明方向
-            assertEquals(prefix + listOf("R002", "乙水库", "", "", "", "", "", "", "基准有目标无"),
+            // R002 缺失 / R900 多余:整行缺失/多余按整行快照逐比对字段展开——
+            // 缺失对象基准块照常填、业务表值留空;多余对象反之,差异原因说明方向
+            assertEquals(prefix + listOf("R002", "乙水库", "id", "", "R002", "id", "", "", "基准有目标无"),
                 (0..12).map { detail.getRow(3).getCell(it).stringCellValue })
-            assertEquals(prefix + listOf("R900", "厂区水库", "", "", "", "", "", "", "目标有基准无"),
+            assertEquals(prefix + listOf("R002", "乙水库", "name", "", "乙水库", "name", "", "", "基准有目标无"),
                 (0..12).map { detail.getRow(4).getCell(it).stringCellValue })
-            assertEquals(4, detail.lastRowNum)
+            assertEquals(prefix + listOf("R002", "乙水库", "capacity", "", "150", "capacity", "", "", "基准有目标无"),
+                (0..12).map { detail.getRow(5).getCell(it).stringCellValue })
+            assertEquals(prefix + listOf("R900", "厂区水库", "id", "", "", "id", "", "R900", "目标有基准无"),
+                (0..12).map { detail.getRow(6).getCell(it).stringCellValue })
+            assertEquals(prefix + listOf("R900", "厂区水库", "name", "", "", "name", "", "厂区水库", "目标有基准无"),
+                (0..12).map { detail.getRow(7).getCell(it).stringCellValue })
+            assertEquals(prefix + listOf("R900", "厂区水库", "capacity", "", "", "capacity", "", "80", "目标有基准无"),
+                (0..12).map { detail.getRow(8).getCell(it).stringCellValue })
+            assertEquals(8, detail.lastRowNum)
 
-            // 差异格红底:DIFF 行标基准/业务两个取值格(其余格不标),缺失/多余整行标红
+            // 差异格红底:DIFF 行标基准/业务两个取值格(其余格不标);
+            // 缺失/多余字段级行只标缺失侧取值格与差异原因(缺失=业务表值,多余=基准表值)
             fun fillOf(row: Int, col: Int) = detail.getRow(row).getCell(col).cellStyle.fillPattern
             assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(1, 8))   // R001 name 基准值
             assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(1, 11))  // R001 name 业务值
@@ -293,9 +303,15 @@ class CompareExportTest {
             assertEquals(FillPatternType.NO_FILL, fillOf(1, 12))           // 差异原因不标
             assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(2, 8))   // R001 capacity 基准值
             assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(2, 11))  // R001 capacity 业务值
-            for (c in 0..12) {                                             // R002 缺失 / R900 多余整行标红
-                assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(3, c), "R002 col $c")
-                assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(4, c), "R900 col $c")
+            for (row in 3..5) {                                            // R002 缺失:业务表值 + 差异原因标红
+                assertEquals(FillPatternType.NO_FILL, fillOf(row, 8), "R002 row $row 基准值不标")
+                assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(row, 11), "R002 row $row 业务值")
+                assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(row, 12), "R002 row $row 差异原因")
+            }
+            for (row in 6..8) {                                            // R900 多余:基准表值 + 差异原因标红
+                assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(row, 8), "R900 row $row 基准值")
+                assertEquals(FillPatternType.NO_FILL, fillOf(row, 11), "R900 row $row 业务值不标")
+                assertEquals(FillPatternType.SOLID_FOREGROUND, fillOf(row, 12), "R900 row $row 差异原因")
             }
         } finally {
             wb.close()
@@ -542,31 +558,36 @@ class CompareExportTest {
         try {
             assertEquals("列级对比明细", wb.getSheetName(4))
             val sheet = wb.getSheetAt(4)
-            // 左侧 5 列冻结(横向滚动时身份与基准列不跟随)
+            // 左侧 5 列 + 两行表头冻结(滚动比对时不丢身份、基准上下文与表头)
             assertTrue(sheet.paneInformation.isFreezePane)
             assertEquals(5, sheet.paneInformation.verticalSplitLeftColumn.toInt())
+            assertEquals(2, sheet.paneInformation.horizontalSplitTopRow.toInt())
             assertEquals(listOf("id", "name", "基准字段名", "基准字段中文", "基准表值",
                 "厂商系统A业务表字段名", "厂商系统A业务表中文", "厂商系统A业务表值", "差异原因",
                 "厂商库业务表字段名", "厂商库业务表中文", "厂商库业务表值", "差异原因"),
                 (0..12).map { sheet.getRow(0).getCell(it).stringCellValue })
+            // 第二行表头:各侧表定位 [库名][schema][表名](schema 为空省略该段)
+            assertEquals("[reservoir_base][reservoir_base_info]", sheet.getRow(1).getCell(0).stringCellValue)
+            assertEquals("[db_a][t_a]", sheet.getRow(1).getCell(5).stringCellValue)
+            assertEquals("[db_b][t_b]", sheet.getRow(1).getCell(9).stringCellValue)
 
             fun row(r: Int) = (0..12).map { sheet.getRow(r).getCell(it)?.stringCellValue ?: "" }
             // R001:id 两侧一致(差异原因留空);name A 不一致、B 一致;
             // capacity A 未连线 → 「无此字段/未比对(无此字段)」,B 不一致
             assertEquals(listOf("R001", "甲水库", "id", "", "R001",
-                "aid", "", "R001", "", "id", "", "R001", ""), row(1))
+                "aid", "", "R001", "", "id", "", "R001", ""), row(2))
             assertEquals(listOf("R001", "甲水库", "name", "", "甲水库",
-                "aname", "", "甲水库A", "文本不一致", "name", "", "甲水库", ""), row(2))
+                "aname", "", "甲水库A", "文本不一致", "name", "", "甲水库", ""), row(3))
             assertEquals(listOf("R001", "甲水库", "capacity", "", "100",
-                "无此字段", "", "", "未比对(无此字段)", "capacity", "", "999", "文本不一致"), row(3))
+                "无此字段", "", "", "未比对(无此字段)", "capacity", "", "999", "文本不一致"), row(4))
             // R002:A 整行缺失(已连字段写「基准有目标无」,capacity 未连线仍「无此字段」);B 无差异行视同一致(取值 = 基准值)
             assertEquals(listOf("R002", "乙水库", "id", "", "R002",
-                "aid", "", "", "基准有目标无", "id", "", "R002", ""), row(4))
+                "aid", "", "", "基准有目标无", "id", "", "R002", ""), row(5))
             assertEquals(listOf("R002", "乙水库", "name", "", "乙水库",
-                "aname", "", "", "基准有目标无", "name", "", "乙水库", ""), row(5))
+                "aname", "", "", "基准有目标无", "name", "", "乙水库", ""), row(6))
             assertEquals(listOf("R002", "乙水库", "capacity", "", "150",
-                "无此字段", "", "", "未比对(无此字段)", "capacity", "", "150", ""), row(6))
-            assertEquals(6, sheet.lastRowNum)
+                "无此字段", "", "", "未比对(无此字段)", "capacity", "", "150", ""), row(7))
+            assertEquals(7, sheet.lastRowNum)
         } finally {
             wb.close()
         }

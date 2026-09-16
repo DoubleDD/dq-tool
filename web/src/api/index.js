@@ -8,6 +8,11 @@ const request = axios.create({
   timeout: 30000
 })
 
+/** 当前是否已在激活页(同源 / jpackage 与 Tauri 本地来源下,激活页 pathname 均为 /activate) */
+function isOnActivatePage() {
+  return /\/activate\/?$/.test(window.location.pathname)
+}
+
 // 所有请求统一追加时间戳参数,避免浏览器缓存 GET 响应
 request.interceptors.request.use((config) => {
   // 基址每次请求读取:端口避让后 initApiBase 会更新 apiBase,不能缓存首次端口
@@ -23,8 +28,10 @@ request.interceptors.response.use(
   async (error) => {
     const status = error.response?.status
     const url = error.config?.url || ''
-    // 授权失效(如到期):整页跳激活页,同时清掉 keep-alive 缓存的页面状态
-    if (status === 401 && !url.startsWith('/license/')) {
+    // 授权失效(如到期):整页跳激活页,同时清掉 keep-alive 缓存的页面状态。
+    // 已在激活页时绝不再跳:激活页上被 401 拦下的请求(后台任务轮询等)会把「跳到同一地址」
+    // 变成整页重载,页面反复消失又出现,用户连授权码都输不进去(2026-09 首装未激活实例实测)
+    if (status === 401 && !url.startsWith('/license/') && !isOnActivatePage()) {
       window.location.href = '/activate'
       return Promise.reject(error)
     }
@@ -191,9 +198,10 @@ export function moveObjectRelation(id, objectTableId) {
 // 任务结构:{ id, status(PENDING/RUNNING/DONE/FAILED/CANCELED), totalDs, doneDs, failedDs, error,
 //   items: [{ datasourceId, datasourceName, status, dbCount, schemaCount, tableCount, progress, error }] }
 
-/** 启动元数据批量同步;datasourceIds 为数据源 id 数组,返回 { jobId };已有运行中任务时 409(静默,由调用方接管提示) */
-export function startMetadataSync(datasourceIds) {
-  return request.post('/metadata-sync', { datasourceIds }, { _silent: true })
+/** 启动元数据批量同步;datasourceIds 为整数据源同步 id 数组,tables 为表级同步清单
+ *  [{datasourceId, db, schema, table}](可只传其一),返回 { jobId };已有运行中任务时 409(静默,由调用方接管提示) */
+export function startMetadataSync(datasourceIds, tables) {
+  return request.post('/metadata-sync', { datasourceIds, tables }, { _silent: true })
 }
 
 /** 最近一次同步任务;无任务返回 null(204/空响应体归一为 null),静默不弹全局错误 */

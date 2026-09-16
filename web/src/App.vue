@@ -475,6 +475,9 @@ onUnmounted(() => window.removeEventListener('dq-license-changed', onLicenseChan
 async function onLicenseChanged() {
   await refreshLicenseMenus()
   loadDatasources()
+  // 补一次后台任务跟踪初始化:未激活期间 initBackgroundTasks 会跳过拉取(避免 401 把激活页打成重载循环),
+  // 本会话内激活成功后需要重新起步,否则要等下次整页刷新(重复调用安全:有任务才开轮询)
+  initBackgroundTasks()
   // 当前页可能因新授权失去菜单权限(如正在授权管理页而新码未开放 license-admin),
   // 主动跳回首个开放菜单页,不等下次路由守卫拦截(留着一个永远 403/被守卫拦的界面没有意义)
   const menus = licenseMenus.value

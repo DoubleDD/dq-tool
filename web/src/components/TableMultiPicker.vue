@@ -1,0 +1,219 @@
+<script setup>
+/**
+ * 多表选择器:左侧级联挑表(复用 TableCascadePicker 的 toggleable 模式,表行 +/− 逐张加入/移出),
+ * 右侧「已选清单」面板逐条可删。比对任务「选择比对系统」与元数据同步表级选择共用。
+ *
+ * - v-model:已选表清单 `[{ datasourceId, db, schema, table }]`,可跨数据源/库/schema 累积;
+ * - 表行点 + 时先过 `validateAdd`(返回字符串即当警告文案拦截,如比对任务拦「基准表本身」),放行即入列;
+ * - 移出(表行 − 或清单「删除」)组件内直接完成,父级经 v-model 感知;
+ * - `lane-change` 回抛级联当前所在 数据源/库/schema,父级据此算 `disabledTables` 等联动数据。
+ */
+import { computed, reactive, watch } from 'vue'
+import { ElMessage } from '../utils/notify'
+import TableCascadePicker from './TableCascadePicker.vue'
+
+const props = defineProps({
+  // 已选表清单:[{ datasourceId, db, schema, table }]
+  modelValue: { type: Array, default: () => [] },
+  // 可选数据源清单(由父级拉取,口径与页面工具栏一致)
+  datasources: { type: Array, default: () => [] },
+  // 当前级联所在 数据源+库/schema 下禁止选择的表名(比对任务:基准表本身),命中项在级联里置灰
+  disabledTables: { type: Array, default: () => [] },
+  // 加入前的校验钩子:返回 true/undefined 放行;返回字符串则当作警告文案弹出并拦截
+  validateAdd: { type: Function, default: null },
+  // 表行 +/− 悬浮提示里的对象名(「加入比对系统」/「移出比对系统」)
+  label: { type: String, default: '表' },
+  // 右侧清单面板标题与空态文案
+  panelTitle: { type: String, default: '已选表' },
+  emptyText: { type: String, default: '还没有已选表,请在左侧选好库/schema 后,点表名右侧的 + 加入' },
+  // 右侧面板宽度与清单最大高度(数字按 px 处理,字符串原样使用)
+  panelWidth: { type: [Number, String], default: 420 },
+  panelMaxHeight: { type: [Number, String], default: 168 }
+})
+const emit = defineEmits(['update:modelValue', 'lane-change'])
+
+// 级联面板当前所在的 数据源/库/schema(具体表在表行上用 +/− 逐张切换,不走 v-model:table)
+const pick = reactive({ datasourceId: '', db: '', schema: '' })
+watch(pick, (v) => emit('lane-change', { ...v }))
+
+/** 与当前级联所在 数据源+库/schema 同栏 */
+function sameLane(t) {
+  return String(t.datasourceId) === String(pick.datasourceId) &&
+    (t.db || '') === (pick.db || '') && t.schema === pick.schema
+}
+
+// 当前库/schema 下已入列的表名:交给级联组件渲染成绿色「−」态
+const addedTables = computed(() => props.modelValue.filter(sameLane).map((t) => t.table))
+
+function dsOf(t) {
+  return props.datasources.find((d) => String(d.id) === String(t.datasourceId))
+}
+
+/** 定位串:库/schema.表(多库方言带库名前缀)。清单里与数据源名分两行展示,避免单行截断 */
+function locOf(t) {
+  const schemaPart = t.db ? `${t.db}.${t.schema}` : t.schema
+  return `${schemaPart ? schemaPart + '.' : ''}${t.table}`
+}
+
+/** 表行「+/−」:已加过就移出;没加过先过 validateAdd,放行即入列 */
+function onToggle(t) {
+  const idx = props.modelValue.findIndex((x) => sameLane(x) && x.table === t.name)
+  if (idx >= 0) {
+    const next = [...props.modelValue]
+    next.splice(idx, 1)
+    emit('update:modelValue', next)
+    return
+  }
+  const target = { datasourceId: pick.datasourceId, db: pick.db, schema: pick.schema, table: t.name }
+  const verdict = props.validateAdd?.(target)
+  if (typeof verdict === 'string' && verdict) return ElMessage.warning(verdict)
+  emit('update:modelValue', [...props.modelValue, target])
+}
+
+function removeAt(i) {
+  const next = [...props.modelValue]
+  next.splice(i, 1)
+  emit('update:modelValue', next)
+}
+
+const px = (v) => (typeof v === 'number' ? `${v}px` : v)
+const sideStyle = computed(() => ({ width: px(props.panelWidth) }))
+const listStyle = computed(() => ({ maxHeight: px(props.panelMaxHeight) }))
+</script>
+
+<template>
+  <div class="multi-picker">
+    <!-- 左侧:级联挑表(toggleable,表行 +/− 逐张加入/移出) -->
+    <div class="multi-picker-main">
+      <TableCascadePicker
+        v-model:datasource-id="pick.datasourceId"
+        v-model:db="pick.db"
+        v-model:schema="pick.schema"
+        :datasources="datasources"
+        :disabled-tables="disabledTables"
+        :added-tables="addedTables"
+        :label="label"
+        :show-selected="false"
+        toggleable
+        @toggle="onToggle"
+      />
+    </div>
+    <!-- 右侧:已选清单 -->
+    <div class="multi-picker-side" :style="sideStyle">
+      <div class="picked-panel">
+        <div class="picked-panel-head">
+          <span>{{ panelTitle }}</span>
+          <span class="picked-panel-count">{{ modelValue.length }}</span>
+        </div>
+        <div class="picked-list" :style="listStyle">
+          <div v-for="(t, i) in modelValue" :key="i" class="picked-item">
+            <span class="picked-index">{{ i + 1 }}</span>
+            <span class="picked-label" :title="`${dsOf(t)?.name || ''} · ${locOf(t)}`">
+              <span class="picked-ds">{{ dsOf(t)?.name || '' }}</span>
+              <span class="picked-loc">{{ locOf(t) }}</span>
+            </span>
+            <el-button link type="danger" @click="removeAt(i)">删除</el-button>
+          </div>
+          <div v-if="!modelValue.length" class="picked-empty">{{ emptyText }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+/* 左级联 + 右清单:横向撑满父级(高度由父级 flex 布局给定) */
+.multi-picker {
+  display: flex;
+  gap: 24px;
+  align-items: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.multi-picker-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.multi-picker-side {
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* 已选清单卡:高度贴合内容,条数多时列表内部滚动(最大高度由 panelMaxHeight 控制) */
+.picked-panel {
+  flex: none;
+  border: 1px solid var(--el-border-color);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--el-fill-color-blank);
+}
+.picked-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+  background: var(--el-fill-color-light);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+.picked-panel-count {
+  font-weight: 400;
+  color: var(--el-text-color-secondary);
+}
+.picked-list {
+  flex: none;
+  overflow: auto;
+  padding: 4px;
+}
+.picked-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+.picked-item:hover {
+  background: var(--el-fill-color-light);
+}
+.picked-item .picked-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.4;
+}
+/* 两行各自单行省略(整卡 title 有完整串),第二行库.表弱化显示 */
+.picked-item .picked-label > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.picked-item .picked-loc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.picked-empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.picked-index {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  line-height: 22px;
+  text-align: center;
+  border-radius: 50%;
+  background: var(--el-color-primary-light-8);
+  color: var(--el-color-primary);
+  font-size: 12px;
+}
+</style>

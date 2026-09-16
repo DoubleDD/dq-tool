@@ -1,33 +1,55 @@
 <template>
-  <!-- 元数据批量同步对话框:选择视图(勾选数据源,默认全选)→ 进度视图(1s 轮询任务进度) -->
+  <!-- 元数据批量同步对话框:选择视图(整个数据源勾选 / 指定表多表选择器)→ 进度视图(1s 轮询任务进度) -->
   <el-dialog
     :model-value="modelValue"
     :title="phase === 'select' ? '刷新元数据' : '元数据同步进度'"
-    width="620px"
+    :width="phase === 'select' && syncMode === 'table' ? '1080px' : '620px'"
     destroy-on-close
     :close-on-press-escape="false"
     @update:model-value="onVisibleUpdate"
   >
-    <!-- 选择视图:与导出数据源弹窗同款 全选/半选 + 勾选列表 -->
+    <!-- 选择视图:同步范围二选一——整个数据源(与导出数据源弹窗同款 全选/半选 + 勾选列表)/ 指定表(多表选择器) -->
     <template v-if="phase === 'select'">
       <div v-loading="loadingList">
         <template v-if="dsList.length">
-          <div class="sync-head">
-            <el-checkbox :model-value="checkAll" :indeterminate="indeterminate" @change="onCheckAll">全选</el-checkbox>
-            <span class="sync-count">已选 {{ checked.length }} / {{ dsList.length }}</span>
+          <div class="sync-mode">
+            <span class="sync-mode-label">同步范围</span>
+            <el-radio-group v-model="syncMode">
+              <el-radio value="ds">整个数据源</el-radio>
+              <el-radio value="table">指定表</el-radio>
+            </el-radio-group>
           </div>
-          <el-checkbox-group v-model="checked" class="sync-list">
-            <el-checkbox v-for="row in dsList" :key="row.id" :value="row.id" class="sync-item">
-              <span class="sync-item-main">
-                <DbTypeIcon :type="row.dbType" />
-                <span class="sync-item-name">{{ row.name }}</span>
-                <span class="sync-item-host" :title="row.jdbcUrl">{{ dbHost(row.jdbcUrl) }}</span>
-                <!-- 连接异常的数据源不禁止勾选,行内红字提示,同步时会标记失败 -->
-                <span v-if="row.connStatus === 'ERROR'" class="sync-item-err">{{ connKindLabel(row) }}</span>
-              </span>
-            </el-checkbox>
-          </el-checkbox-group>
-          <div class="sync-tip">将重新拉取所选数据源的库/表/字段元数据;连接异常的数据源可照常勾选,同步时会单独标记失败。</div>
+          <template v-if="syncMode === 'ds'">
+            <div class="sync-head">
+              <el-checkbox :model-value="checkAll" :indeterminate="indeterminate" @change="onCheckAll">全选</el-checkbox>
+              <span class="sync-count">已选 {{ checked.length }} / {{ dsList.length }}</span>
+            </div>
+            <el-checkbox-group v-model="checked" class="sync-list">
+              <el-checkbox v-for="row in dsList" :key="row.id" :value="row.id" class="sync-item">
+                <span class="sync-item-main">
+                  <DbTypeIcon :type="row.dbType" />
+                  <span class="sync-item-name">{{ row.name }}</span>
+                  <span class="sync-item-host" :title="row.jdbcUrl">{{ dbHost(row.jdbcUrl) }}</span>
+                  <!-- 连接异常的数据源不禁止勾选,行内红字提示,同步时会标记失败 -->
+                  <span v-if="row.connStatus === 'ERROR'" class="sync-item-err">{{ connKindLabel(row) }}</span>
+                </span>
+              </el-checkbox>
+            </el-checkbox-group>
+            <div class="sync-tip">将重新拉取所选数据源的库/表/字段元数据;连接异常的数据源可照常勾选,同步时会单独标记失败。</div>
+          </template>
+          <template v-else>
+            <div class="sync-table-pick">
+              <TableMultiPicker
+                v-model="pickedTables"
+                :datasources="dsList"
+                label="同步清单"
+                panel-title="已选同步表"
+                empty-text="还没有已选表,请在左侧选好库/schema 后,点表名右侧的 + 加入"
+                :panel-max-height="360"
+              />
+            </div>
+            <div class="sync-tip">只重新拉取所选表的字段/索引元数据(所在库/schema 的表清单一并刷新);同步中途断连会单独标记失败。</div>
+          </template>
         </template>
         <el-empty v-else-if="!loadingList" description="暂无数据源" :image-size="80" />
       </div>
@@ -67,7 +89,8 @@
     <template #footer>
       <template v-if="phase === 'select'">
         <el-button @click="onVisibleUpdate(false)">取消</el-button>
-        <el-button type="primary" :disabled="!checked.length" :loading="starting" @click="start">开始同步</el-button>
+        <el-button type="primary" :disabled="syncMode === 'ds' ? !checked.length : !pickedTables.length"
+                   :loading="starting" @click="start">开始同步</el-button>
       </template>
       <template v-else>
         <el-button v-if="isRunning" type="danger" plain :loading="cancelling" @click="cancel">取消任务</el-button>
@@ -83,6 +106,7 @@ import { CircleCheck, CircleClose, Clock, Loading } from '@element-plus/icons-vu
 import { ElMessage } from '../utils/notify'
 import request, { startMetadataSync, getLatestMetadataSync, getMetadataSyncJob, cancelMetadataSync } from '../api'
 import DbTypeIcon from './DbTypeIcon.vue'
+import TableMultiPicker from './TableMultiPicker.vue'
 
 // 元数据批量同步对话框:done 在任务到达终态时触发一次,父级可借此刷新数据源列表(连接状态可能变化)
 const props = defineProps({
@@ -90,10 +114,14 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:modelValue', 'done'])
 
-// phase: select=勾选数据源;progress=任务进度
+// phase: select=选择同步范围;progress=任务进度
 const phase = ref('select')
+// 同步范围:ds=整个数据源(勾选列表);table=指定表(多表选择器)
+const syncMode = ref('ds')
 const dsList = ref([])
 const checked = ref([])
+// 指定表模式:已选同步表 [{datasourceId, db, schema, table}]
+const pickedTables = ref([])
 const loadingList = ref(false)
 const starting = ref(false)
 const cancelling = ref(false)
@@ -230,10 +258,18 @@ async function poll() {
 
 // ---------- 动作 ----------
 async function start() {
-  if (!checked.value.length || starting.value) return
+  if (starting.value) return
+  // 两种同步范围:整个数据源(勾选 id)/ 指定表(四元组清单,db 空串归一为 null)
+  const tables = syncMode.value === 'table'
+    ? pickedTables.value.map((t) => ({
+        datasourceId: Number(t.datasourceId), db: t.db || null, schema: t.schema, table: t.table }))
+    : null
+  const datasourceIds = syncMode.value === 'ds' ? checked.value : null
+  if (syncMode.value === 'ds' && !checked.value.length) return
+  if (syncMode.value === 'table' && !pickedTables.value.length) return
   starting.value = true
   try {
-    const resp = await startMetadataSync(checked.value)
+    const resp = await startMetadataSync(datasourceIds, tables)
     // 返回 { jobId },兼容直接返回任务 id 或 { id }
     const id = typeof resp === 'number' ? resp : (resp?.jobId ?? resp?.id)
     jobId.value = id
@@ -288,6 +324,8 @@ watch(() => props.modelValue, async (v) => {
     return
   }
   phase.value = 'select'
+  syncMode.value = 'ds'
+  pickedTables.value = []
   job.value = null
   jobId.value = null
   doneEmitted = false
@@ -303,6 +341,23 @@ watch(() => props.modelValue, async (v) => {
 </script>
 
 <style scoped>
+/* 选择视图:同步范围切换行 */
+.sync-mode {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+}
+.sync-mode-label {
+  font-size: 13px;
+  color: var(--el-text-color-regular);
+}
+/* 指定表模式:多表选择器固定高度,内部级联/清单各自滚动 */
+.sync-table-pick {
+  height: 440px;
+  display: flex;
+  flex-direction: column;
+}
 /* 选择视图:与导出数据源弹窗同款 全选行 + 勾选项列表 */
 .sync-head {
   display: flex;

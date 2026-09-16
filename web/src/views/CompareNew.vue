@@ -92,44 +92,18 @@
       </div>
     </div>
 
-    <!-- 步骤 2:选择比对系统并确认(与第一步同款四栏级联,选完点「添加为比对系统」入列) -->
+    <!-- 步骤 2:选择比对系统并确认(多表选择器:左侧级联逐表 +/−,右侧已添加清单) -->
     <div v-show="step === 1" class="step-body step-fill">
-      <div class="step2-layout">
-        <div class="step2-targets">
-          <TableCascadePicker
-            v-model:datasource-id="pick.datasourceId"
-            v-model:db="pick.db"
-            v-model:schema="pick.schema"
-            :datasources="datasources"
-            :disabled-tables="disabledTargetTables"
-            :added-tables="addedTargetTables"
-            label="比对系统"
-            :show-selected="false"
-            toggleable
-            @toggle="toggleTarget"
-          />
-        </div>
-        <!-- 右列:已添加比对系统清单 -->
-        <div class="step2-side">
-          <div class="target-panel">
-            <div class="target-panel-head">
-              <span>已添加比对系统</span>
-              <span class="target-panel-count">{{ targets.length }}</span>
-            </div>
-            <div class="target-list">
-              <div v-for="(t, i) in targets" :key="i" class="target-item">
-                <span class="target-index">{{ i + 1 }}</span>
-                <span class="target-label" :title="targetLabel(t)">
-                  <span class="target-ds">{{ targetDs(t)?.name || '' }}</span>
-                  <span class="target-loc">{{ targetLoc(t) }}</span>
-                </span>
-                <el-button link type="danger" @click="targets.splice(i, 1)">删除</el-button>
-              </div>
-              <div v-if="!targets.length" class="target-empty">还没有比对系统,请在左侧选好库/模式后,点表名右侧的 + 加入(至少 1 个)</div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <TableMultiPicker
+        v-model="targets"
+        :datasources="datasources"
+        :disabled-tables="disabledTargetTables"
+        :validate-add="validateTarget"
+        label="比对系统"
+        panel-title="已添加比对系统"
+        empty-text="还没有比对系统,请在左侧选好库/模式后,点表名右侧的 + 加入(至少 1 个)"
+        @lane-change="onLaneChange"
+      />
     </div>
 
     <!-- 步骤 3:字段映射(左侧基准表固定、右侧各对比表纵向排开单独滚动,人工连线;
@@ -171,6 +145,7 @@ import { ElMessage } from '../utils/notify'
 import request, { createCompareJob, suggestCompareMapping } from '../api'
 import { watchTask } from '../stores/backgroundTasks'
 import TableCascadePicker from '../components/TableCascadePicker.vue'
+import TableMultiPicker from '../components/TableMultiPicker.vue'
 import CompareFieldMapping from '../components/CompareFieldMapping.vue'
 
 const router = useRouter()
@@ -277,8 +252,13 @@ function onBaseTableChange(t) {
 
 // 已入列的比对系统:{ datasourceId, db, schema, table }
 const targets = ref([])
-// 级联面板当前所在的 数据源/库/模式(第 2 步只选到库/模式,具体表在表行上用 +/− 逐张切换)
+// 级联面板当前所在的 数据源/库/模式(由多表选择器 lane-change 同步,用来算「基准表本身」置灰)
 const pick = reactive({ datasourceId: '', db: '', schema: '' })
+
+/** 多表选择器级联所在栏变化时同步过来 */
+function onLaneChange(ctx) {
+  Object.assign(pick, ctx)
+}
 // 第 3 步字段映射:数组与 targets 同序,元素为 { 基准字段名: 目标列名 }
 const mappings = ref([])
 const submitting = ref(false)
@@ -333,23 +313,9 @@ const disabledTargetTables = computed(() => {
   return sameDs && sameDb && pick.schema === form.schema && form.table ? [form.table] : []
 })
 
-// 当前库/模式下已加入目标的表名:交给组件渲染成绿色「−」态
-const addedTargetTables = computed(() => targets.value
-  .filter((t) => String(t.datasourceId) === String(pick.datasourceId) && (t.db || '') === (pick.db || '') && t.schema === pick.schema)
-  .map((t) => t.table))
-
-/** 表行「+/−」:没加过就加入,加过就移出(移出后可再次加入);基准表本身由组件置灰,这里兜底拦截 */
-function toggleTarget(t) {
-  const idx = targets.value.findIndex((x) =>
-    String(x.datasourceId) === String(pick.datasourceId) && (x.db || '') === (pick.db || '') &&
-    x.schema === pick.schema && x.table === t.name)
-  if (idx >= 0) {
-    targets.value.splice(idx, 1)
-    return
-  }
-  const next = { datasourceId: pick.datasourceId, db: pick.db, schema: pick.schema, table: t.name }
-  if (isSameAsBase(next)) return ElMessage.warning('基准表本身不能作为比对系统')
-  targets.value.push(next)
+/** 加入比对系统前校验:基准表本身不可作为目标(组件里已置灰,这里兜底拦快捷键路径) */
+function validateTarget(t) {
+  return isSameAsBase(t) ? '基准表本身不能作为比对系统' : true
 }
 
 /** 列级对比:大模型逐目标预生成字段映射并整体回填,人工在画布审核后可再手动增删 */
@@ -643,105 +609,6 @@ onMounted(async () => {
   margin-top: 12px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
-}
-
-/* 步骤 2:左侧级联面板 + 添加按钮,右侧「已添加比对系统」卡 */
-.step2-layout {
-  display: flex;
-  gap: 24px;
-  align-items: stretch;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.step2-targets {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.step2-side {
-  flex: none;
-  width: 420px;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-/* 已添加比对系统卡:高度贴合内容,条数多时列表内部滚动 */
-.target-panel {
-  flex: none;
-  border: 1px solid var(--el-border-color);
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--el-fill-color-blank);
-}
-.target-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--el-text-color-regular);
-  background: var(--el-fill-color-light);
-  border-bottom: 1px solid var(--el-border-color-lighter);
-}
-.target-panel-count {
-  font-weight: 400;
-  color: var(--el-text-color-secondary);
-}
-.target-list {
-  flex: none;
-  max-height: 168px;
-  overflow: auto;
-  padding: 4px;
-}
-.target-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 13px;
-}
-.target-item:hover {
-  background: var(--el-fill-color-light);
-}
-.target-item .target-label {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  line-height: 1.4;
-}
-/* 两行各自单行省略(整卡 title 有完整串),第二行库.表弱化显示 */
-.target-item .target-label > span {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.target-item .target-loc {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-.target-empty {
-  padding: 8px;
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-}
-.target-index {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  line-height: 22px;
-  text-align: center;
-  border-radius: 50%;
-  background: var(--el-color-primary-light-8);
-  color: var(--el-color-primary);
-  font-size: 12px;
 }
 
 .wizard-actions {

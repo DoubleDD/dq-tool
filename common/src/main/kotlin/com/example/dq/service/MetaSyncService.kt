@@ -3,6 +3,8 @@ package com.example.dq.service
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.MetaSyncDetail
 import com.example.dq.model.MetaSyncItem
+import com.example.dq.model.MetaSyncTableRef
+import com.example.dq.model.MetaSyncTableSelector
 import com.example.dq.repository.MetaSyncRepository
 import com.example.dq.util.ConnectionFailureClassifier
 import org.slf4j.LoggerFactory
@@ -10,9 +12,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * 元数据批量同步(数据源页「刷新」):对选中的数据源把 库清单 → schema 清单 → 表清单/字段总数/
+ * 元数据批量同步(数据源页「刷新」):整数据源模式把 库清单 → schema 清单 → 表清单/字段总数/
  * 整库 lite 字段 → 逐表详细字段+索引 全部回源并覆盖本地 H2 缓存(复用 MetadataService 公共 refresh
  * 路径,缓存存全量不按白名单裁剪,与懒加载口径一致);每库结束刷库概览(schema_stat)。
+ * 表级模式(V57,明细带 tables_json)只回源指定表:所在 schema 表清单整粒度覆盖 + 指定表逐张
+ * 刷字段/索引/lite 字段 + 重算 schema 字段总数,库清单与库概览不动。
  * DDL 不同步(Oracle/达梦逐表取 DDL 太慢,保留按需浏览+缓存降级现状)。
  *
  * 任务范式同 SampleExportService:任务落 H2(meta_sync_job/meta_sync_item)+ 4 线程守护池 +
@@ -37,19 +41,29 @@ class MetaSyncService(
     private class SyncCanceledException : RuntimeException()
 
     /**
-     * 提交同步任务:空列表抛 IllegalArgumentException(400);已有未结束任务抛 IllegalStateException(409);
-     * 落 job+items 后异步执行,立即返回 jobId
+     * 提交同步任务:datasourceIds 与 tables 全空抛 IllegalArgumentException(400);
+     * 已有未结束任务抛 IllegalStateException(409);落 job+items 后异步执行,立即返回 jobId。
+     * tables 非空时按数据源分组成表级明细(该数据源只同步指定表),与整数据源明细可同批混合
      */
-    fun submit(datasourceIds: List<Long>): Long {
+    fun submit(datasourceIds: List<Long>, tables: List<MetaSyncTableSelector> = emptyList()): Long {
         val ids = datasourceIds.distinct()
-        if (ids.isEmpty()) {
-            throw IllegalArgumentException("请选择要同步的数据源")
+        // 表级明细按数据源分组去重(同一张表重复提交只同步一次)
+        val tablesByDs = tables.groupBy { it.datasourceId }
+            .mapValues { (_, refs) ->
+                refs.map { MetaSyncTableRef(it.db?.ifBlank { null }, it.schema, it.table) }.distinct()
+            }
+        if (ids.isEmpty() && tablesByDs.isEmpty()) {
+            throw IllegalArgumentException("请选择要同步的数据源或表")
         }
         if (repo.hasRunning()) {
             throw IllegalStateException("已有元数据同步任务正在运行,请等待其完成或先取消")
         }
-        // 校验数据源存在并快照名称(删除后明细仍可展示)
-        val items = ids.map { id ->
+        // 校验数据源存在并快照名称(删除后明细仍可展示);
+        // 同时出现在两种模式的数据源按整数据源同步(明细表有 (job_id, datasource_id) 唯一键,不能重复)
+        val tableOnlyDs = tablesByDs.keys.filter { it !in ids }
+        val tableItems = tablesByDs.filterKeys { it in tableOnlyDs }
+        val allIds = ids + tableOnlyDs
+        val items = allIds.map { id ->
             val ds = try {
                 dataSourceService.get(id)
             } catch (e: IllegalArgumentException) {
@@ -57,10 +71,10 @@ class MetaSyncService(
             }
             id to (ds.name ?: "数据源$id")
         }
-        val jobId = repo.insertJob(ids.size)
-        repo.insertItems(jobId, items)
+        val jobId = repo.insertJob(items.size)
+        repo.insertItems(jobId, items, tableItems)
         executor.execute { run(jobId) }
-        log.info("元数据批量同步任务已提交: id={}, 数据源数={}", jobId, ids.size)
+        log.info("元数据批量同步任务已提交: id={}, 数据源数={}, 表级明细数={}", jobId, items.size, tableItems.size)
         return jobId
     }
 
@@ -104,7 +118,9 @@ class MetaSyncService(
             }
             repo.markItemRunning(item.id)
             try {
-                val (dbCount, schemaCount, tableCount) = syncDatasource(jobId, item)
+                val (dbCount, schemaCount, tableCount) =
+                    if (item.tables.isEmpty()) syncDatasource(jobId, item)
+                    else syncTables(jobId, item)
                 repo.finishItem(item.id, dbCount, schemaCount, tableCount)
                 repo.incrDone(jobId)
                 log.info("元数据同步完成: jobId={}, 数据源={}({}), schema={}, 表={}",
@@ -130,15 +146,15 @@ class MetaSyncService(
         }
     }
 
-    /** 同步单个数据源的元数据缓存,返回 (库数, schema 数, 表数) 统计 */
-    private fun syncDatasource(jobId: Long, item: MetaSyncItem): Triple<Int, Int, Int> {
-        val dsId = item.datasourceId
-        // 先实测连接判成败(关键:浏览接口有缓存时会降级返回而不抛错,不能据此判定)
+    /**
+     * 连接实测预检(两个同步路径共用):浏览接口有缓存时会降级返回而不抛错,成败判定必须先实测连接;
+     * 连接级失败借分类器写数据源连接状态标记(网络不可达/认证失败),供数据源页红标提示
+     */
+    private fun ensureConnectable(dsId: Long) {
         try {
             dataSourceService.getConnection(dsId).use { }
         } catch (e: Exception) {
             if (ConnectionFailureClassifier.isConnectionFailure(e)) {
-                // 借分类器写数据源连接状态标记(网络不可达/认证失败),供数据源页红标提示
                 runCatching {
                     dataSourceService.markConnFailure(dsId,
                         ConnectionFailureClassifier.describe(e), ConnectionFailureClassifier.classify(e))
@@ -147,6 +163,12 @@ class MetaSyncService(
             }
             throw e
         }
+    }
+
+    /** 同步单个数据源的元数据缓存,返回 (库数, schema 数, 表数) 统计 */
+    private fun syncDatasource(jobId: Long, item: MetaSyncItem): Triple<Int, Int, Int> {
+        val dsId = item.datasourceId
+        ensureConnectable(dsId)
         val ds = dataSourceService.get(dsId)
         val dialect = dialectFactory.get(ds.dbType!!)
 
@@ -188,6 +210,38 @@ class MetaSyncService(
         }
         val dbCount = if (dialect.supportsMultiDatabase()) databases.size else 0
         return Triple(dbCount, schemaCount, tableCount)
+    }
+
+    /**
+     * 表级同步:只回源明细里指定的表——所在 schema 的表清单整粒度覆盖(注释/估算行数/增删表对齐),
+     * 指定表逐张刷 详细字段+索引 并按批刷整库 lite 字段,最后重算 schema 字段总数;
+     * 库/schema 清单与库概览(schema_stat)不动(结构未变,留给整库同步/懒加载)。返回 (库数, schema 数, 表数)
+     */
+    private fun syncTables(jobId: Long, item: MetaSyncItem): Triple<Int, Int, Int> {
+        val dsId = item.datasourceId
+        ensureConnectable(dsId)
+        // 按 (库, schema) 分组;库名空串归一为 null(单库方言无库一层)
+        val groups = item.tables.groupBy { (it.db?.takeIf { d -> d.isNotBlank() }) to it.schema }
+        var tableCount = 0
+        for ((key, refs) in groups) {
+            val (db, schema) = key
+            checkCanceled(jobId)
+            synced(jobId) { metadataService.listTables(dsId, db, schema, refresh = true) }
+            val tableNames = refs.map { it.table }.distinct()
+            synced(jobId) { metadataService.listSchemaColumns(dsId, db, schema, tableNames, refresh = true) }
+            tableNames.forEachIndexed { idx, tableName ->
+                checkCanceled(jobId)
+                repo.updateItemProgress(item.id, "正在同步表 $tableName(${tableCount + idx + 1}/${item.tables.size})")
+                synced(jobId) { metadataService.listTableColumns(dsId, db, schema, tableName, refresh = true) }
+                synced(jobId) { metadataService.listTableIndexes(dsId, db, schema, tableName, refresh = true) }
+            }
+            tableCount += tableNames.size
+            // 字段总数最后重算:单表字段/分批 lite 字段的覆盖刷新都会按粒度失效该缓存
+            synced(jobId) { metadataService.countColumns(dsId, db, schema, refresh = true) }
+        }
+        // 库数统计口径同整库同步:多库方言数涉及的库,单库方言为 0
+        val dbCount = groups.keys.mapNotNull { it.first }.distinct().size
+        return Triple(dbCount, groups.size, tableCount)
     }
 
     /** 取消检查点:任务已取消则抛出,中断当前数据源的同步 */

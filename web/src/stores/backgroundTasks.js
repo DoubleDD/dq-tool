@@ -11,7 +11,7 @@
  *   跟踪器跳过已 ack 的任务不再弹通知(1s 轮询同窗内可能有漏网,属可接受 race,不追求强一致)。
  */
 import { reactive } from 'vue'
-import router from '../router'
+import router, { fetchLicenseStatus } from '../router'
 import request, { listActiveCompareJobs, listActiveInferJobs, getCompareJob } from '../api'
 import { ElMessage } from '../utils/notify'
 
@@ -149,6 +149,12 @@ function stopPolling() {
 
 /** App 挂载时调用一次:先拉一轮(兜住「提交后刷新页面」),有活动任务才开 1s 轮询 */
 export async function initBackgroundTasks() {
+  // 未激活/已过期实例:业务接口一律 401(激活页同样过不了授权前置校验),这里直接跳过首轮拉取——
+  // 否则激活页一挂载就打到 401,axios 拦截器把整页重定向到 /activate,构成「激活页反复消失又出现」
+  // 的死循环(2026-09 首装未激活实例实测),用户连授权码都输不进去。
+  // 复用路由守卫的授权状态缓存(同一次请求);后端不可达时 fetchLicenseStatus 放行,口径同守卫
+  const status = await fetchLicenseStatus()
+  if (!(status.activated && !status.expired)) return
   await tick()
   if (backgroundTasks.list.length) startPolling()
 }

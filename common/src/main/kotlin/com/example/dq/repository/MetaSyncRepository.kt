@@ -2,6 +2,9 @@ package com.example.dq.repository
 
 import com.example.dq.model.MetaSyncItem
 import com.example.dq.model.MetaSyncJob
+import com.example.dq.model.MetaSyncTableRef
+import com.fasterxml.jackson.core.type.TypeReference
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.sql.ResultSet
 import java.time.LocalDateTime
 
@@ -12,6 +15,8 @@ import java.time.LocalDateTime
  * 服务重启时残留 PENDING/RUNNING 统一置 FAILED(与 sample_export 同思路)
  */
 class MetaSyncRepository(private val jdbc: Jdbc) {
+
+    private val json = jacksonObjectMapper()
 
     private val jobMapper: (ResultSet) -> MetaSyncJob = { rs ->
         MetaSyncJob(rs.getLong("id"), rs.getString("status"),
@@ -24,7 +29,16 @@ class MetaSyncRepository(private val jdbc: Jdbc) {
             rs.getString("datasource_name"), rs.getString("status"),
             rs.getInt("db_count"), rs.getInt("schema_count"), rs.getInt("table_count"),
             rs.getString("progress"), rs.getString("error"),
-            ts(rs, "started_at"), ts(rs, "finished_at"))
+            ts(rs, "started_at"), ts(rs, "finished_at"),
+            parseTables(rs.getString("tables_json")))
+    }
+
+    /** 表级同步清单反序列化:NULL/空/解析失败一律按整数据源同步(空清单)处理 */
+    private fun parseTables(raw: String?): List<MetaSyncTableRef> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.readValue(raw, object : TypeReference<List<MetaSyncTableRef>>() {})
+        }.getOrDefault(emptyList())
     }
 
     private fun ts(rs: ResultSet, col: String): LocalDateTime? = rs.getTimestamp(col)?.toLocalDateTime()
@@ -89,16 +103,20 @@ class MetaSyncRepository(private val jdbc: Jdbc) {
 
     // ---------- 明细操作 ----------
 
-    /** 批量插入明细(datasourceId → 名称快照;单事务) */
-    fun insertItems(jobId: Long, items: List<Pair<Long, String>>) {
+    /** 批量插入明细(datasourceId → 名称快照;单事务);tablesByDatasource 非空时该明细为表级同步(V57) */
+    fun insertItems(jobId: Long, items: List<Pair<Long, String>>,
+                    tablesByDatasource: Map<Long, List<MetaSyncTableRef>> = emptyMap()) {
         jdbc.tx { conn ->
             conn.prepareStatement(
-                "INSERT INTO meta_sync_item(job_id, datasource_id, datasource_name) VALUES (?,?,?)")
+                "INSERT INTO meta_sync_item(job_id, datasource_id, datasource_name, tables_json) VALUES (?,?,?,?)")
                 .use { ps ->
                     for ((dsId, name) in items) {
                         ps.setLong(1, jobId)
                         ps.setLong(2, dsId)
                         ps.setString(3, name)
+                        val tables = tablesByDatasource[dsId]
+                        if (tables.isNullOrEmpty()) ps.setNull(4, java.sql.Types.CLOB)
+                        else ps.setString(4, json.writeValueAsString(tables))
                         ps.addBatch()
                     }
                     ps.executeBatch()

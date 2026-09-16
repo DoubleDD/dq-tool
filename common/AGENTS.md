@@ -88,6 +88,7 @@ src/main/resources/db/migration/
   V54__scan_job_auto_tag_mode.sql  scan_job.auto_tag_mode 列(AI 自动打标对已有标记表的处理模式:SKIP 跳过(默认,老行为)/APPEND 增量追加/OVERWRITE 全量覆盖仅替换 AI 旧标记;ALTER IF NOT EXISTS)
   V55__tag_backup.sql            系统「备份表」标记(kind=BACKUP,tag_type=0 系统、不作为 AI 候选;表名 _copy/_bak/_backup/_tmp + 可选序号结尾,见 BackupTableRule,扫描后由 TagService.syncBackupTag 自动打/摘);按 name 幂等合并同名存量人工标记并转系统标记
   V56__error_record.sql          错误中心:error_record(指纹唯一聚合错误,来源/级别/类型/消息/堆栈/上下文/次数/首末时间/状态/备注;前端上报、后端日志、数据库、任务与启动异常统一入口)
+  V57__meta_sync_item_tables.sql 元数据同步表级选择:meta_sync_item.tables_json 列(该明细要同步的表清单 JSON,NULL/空=整数据源同步旧行为)
 src/main/resources/db/migration-aiusage/   AI 用量独立库(dqaiusage)迁移脚本,独立 flyway_schema_history
   V1__ai_usage_log.sql      用量流水全量建表:token/费用/峰谷时段 + scan_job_id + 扫描标签快照(scan_label/scan_created_at)+ 请求/响应内容(request_content/response_content CLOB,记录截断 5 万字符,供 prompt 调优回溯)
 src/test/kotlin/           方言/分段/级联删除/标记(TagRepository/TagService)/AI prompt/授权码/Flyway 迁移单测 + Testcontainers 端到端(MySQL/PG/SQLServer;SSH 隧道 SshTunnelIntegrationTest:linuxserver/openssh-server 跳板机 + MySQL 网络别名,注意该镜像 sshd 监听 2222 且默认 AllowTcpForwarding no 需 custom-cont-init.d 打开)

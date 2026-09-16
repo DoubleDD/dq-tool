@@ -26,7 +26,7 @@ const props = defineProps({
   // 当前数据源+库/schema 下禁止选择的表名(比对任务目标侧:基准表本身不可作为目标),
   // 命中项置灰并标「基准表」,不可点选、也不会被 preferTable 自动选中
   disabledTables: { type: Array, default: () => [] },
-  // 底部摘要与空态提示里的对象名(第一步「基准表」,第三步「比对系统」)
+  // 底部摘要、空态提示与 toggleable 表行 +/− 悬浮提示里的对象名(第一步「基准表」,第三步「比对系统」)
   label: { type: String, default: '基准表' },
   // 是否展示底部「已选 xxx:...」摘要(第三步右侧已有任务摘要,重复,故关掉)
   showSelected: { type: Boolean, default: true },
@@ -383,7 +383,7 @@ function resetWidths() {
             <span class="cascade-name">{{ t.name }}</span>
             <span class="cascade-comment">{{ t.comment || '无注释' }}</span>
             <span v-if="isTableDisabled(t.name)" class="cascade-flag">基准表</span>
-            <el-tooltip v-else-if="toggleable" :content="isTableAdded(t.name) ? '移出比对系统' : '加入比对系统'" placement="left" :show-after="200">
+            <el-tooltip v-else-if="toggleable" :content="(isTableAdded(t.name) ? '移出' : '加入') + label" placement="left" :show-after="200">
               <span class="cascade-toggle" :class="{ remove: isTableAdded(t.name) }" @click.stop="emit('toggle', t)">
                 <el-icon><Minus v-if="isTableAdded(t.name)" /><Plus v-else /></el-icon>
               </span>

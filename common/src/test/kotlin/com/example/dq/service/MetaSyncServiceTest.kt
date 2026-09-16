@@ -162,7 +162,15 @@ class MetaSyncServiceTest {
 
     /** 提交并轮询到终态,返回任务详情 */
     private fun submitAndAwait(vararg dsIds: Long): com.example.dq.model.MetaSyncDetail {
-        val jobId = syncService.submit(dsIds.toList())
+        return awaitJob(syncService.submit(dsIds.toList()))
+    }
+
+    /** 表级同步提交并轮询到终态 */
+    private fun submitAndAwaitTables(vararg tables: com.example.dq.model.MetaSyncTableSelector): com.example.dq.model.MetaSyncDetail {
+        return awaitJob(syncService.submit(emptyList(), tables.toList()))
+    }
+
+    private fun awaitJob(jobId: Long): com.example.dq.model.MetaSyncDetail {
         val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
             val detail = syncService.detail(jobId)
@@ -225,6 +233,53 @@ class MetaSyncServiceTest {
             metadata.listTableColumns(DS_ID, null, SCHEMA, "T1").map { it.name })
         assertEquals(listOf("T1"), metadata.listTables(DS_ID, null, SCHEMA).map { it.name })
         assertEquals(1, detail.items.single().tableCount)
+    }
+
+    @Test
+    fun `表级同步只回源指定表 表清单随 schema 整粒度覆盖`() {
+        val detail = submitAndAwaitTables(
+            com.example.dq.model.MetaSyncTableSelector(DS_ID, null, SCHEMA, "T1"),
+            com.example.dq.model.MetaSyncTableSelector(DS_ID, null, SCHEMA, "T1")) // 重复提交去重
+        assertEquals("DONE", detail.job.status) { "任务失败: " + detail.job.error }
+        val item = detail.items.single()
+        assertEquals("DONE", item.status)
+        assertEquals(1, item.tableCount)
+        assertEquals(1, item.schemaCount)
+        assertEquals(0, item.dbCount)
+        assertEquals(1, item.tables.size) // 重复提交的 T1 已去重
+
+        // 指定表落齐:字段/索引/分批 lite 字段;未指定的 T2 不回源
+        assertTrue(metaCacheRepo.isColumnCacheReady(DS_ID, "", SCHEMA, "T1"))
+        assertTrue(metaCacheRepo.isIndexCacheReady(DS_ID, "", SCHEMA, "T1"))
+        assertTrue(!metaCacheRepo.isColumnCacheReady(DS_ID, "", SCHEMA, "T2"))
+        assertTrue(!metaCacheRepo.isSchemaColumnsReady(DS_ID, "", SCHEMA))
+        // 所在 schema 表清单整粒度覆盖(两张表都在)、字段总数重算
+        assertTrue(metaCacheRepo.isTableCacheReady(DS_ID, "", SCHEMA))
+        assertEquals(listOf("T1", "T2"), metadata.listTables(DS_ID, null, SCHEMA).map { it.name })
+        assertNotNull(metaCacheRepo.getColumnCount(DS_ID, "", SCHEMA))
+        // 库清单/库概览不动(留给整库同步)
+        assertTrue(schemaStatRepo.findAll(DS_ID, null).isEmpty())
+
+        // 改表结构再按表同步:指定表字段覆盖更新,schema 表清单同步增删
+        biz { st ->
+            st.execute("ALTER TABLE t1 ADD COLUMN c3 INT")
+            st.execute("DROP TABLE t2")
+        }
+        val detail2 = submitAndAwaitTables(com.example.dq.model.MetaSyncTableSelector(DS_ID, null, SCHEMA, "T1"))
+        assertEquals("DONE", detail2.job.status) { "任务失败: " + detail2.job.error }
+        assertEquals(listOf("ID", "NAME", "C3"),
+            metadata.listTableColumns(DS_ID, null, SCHEMA, "T1").map { it.name })
+        assertEquals(listOf("T1"), metadata.listTables(DS_ID, null, SCHEMA).map { it.name })
+    }
+
+    @Test
+    fun `表级同步参数校验 不存在的数据源拒绝`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            syncService.submit(emptyList(), listOf(com.example.dq.model.MetaSyncTableSelector(999L, null, SCHEMA, "T1")))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            syncService.submit(emptyList(), emptyList())
+        }
     }
 
     @Test

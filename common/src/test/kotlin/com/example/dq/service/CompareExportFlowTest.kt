@@ -153,18 +153,29 @@ class CompareExportFlowTest {
             assertEquals(listOf("业务系统名称", "库", "表名", "表中文名", "reservoir_code", "reservoir_name",
                 "基准表字段", "字段中文", "基准表值", "业务表字段名", "业务表中文", "业务表值", "差异原因"),
                 (0..12).map { detail.getRow(0).getCell(it).stringCellValue })
-            // 一行一个「对象 × 不一致字段」:不一致 5 字段 + 缺失 3 + 多余 4 = 12 行
-            val expected = target.missingCount!! + target.extraCount!! + target.fieldMismatchCount!!
+            // 一行一个「对象 × 字段」:不一致 5 字段 + 缺失 3 对象×2 比对字段 + 多余 4 对象×2 比对字段 = 19 行
+            // (缺失/多余按整行快照逐比对字段展开,比对字段为 reservoir_code/reservoir_name 两个)
+            val expected = target.fieldMismatchCount!! +
+                (target.missingCount!! + target.extraCount!!) * 2
             assertEquals(expected, lastDataRow(detail))
             // 明细按 不一致 → 缺失 → 多余 排列:首行是 R001 的 reservoir_name 字段级不一致
             assertEquals(detailPrefix + listOf("R001", "水库1", "reservoir_name", "", "水库1",
                 "reservoir_name", "", "改名水库1", "文本不一致"),
                 (0..12).map { detail.getRow(1).getCell(it).stringCellValue })
-            // 缺失对象一对象一行,字段六列留空,差异原因写「基准有目标无」
+            // 缺失对象逐比对字段展开:基准块照常填、业务表值留空,差异原因写「基准有目标无」
             val missingRow = (1..1 + expected).first { detail.getRow(it).getCell(4).stringCellValue == "R091" }
-            assertEquals("基准有目标无", detail.getRow(missingRow).getCell(12).stringCellValue)
-            // 多余对象差异原因写「目标有基准无」
-            assertEquals("目标有基准无", detail.getRow(missingRow + 5).getCell(12).stringCellValue)
+            assertEquals(detailPrefix + listOf("R091", "水库91", "reservoir_code", "", "R091",
+                "reservoir_code", "", "", "基准有目标无"),
+                (0..12).map { detail.getRow(missingRow).getCell(it).stringCellValue })
+            assertEquals(detailPrefix + listOf("R091", "水库91", "reservoir_name", "", "水库91",
+                "reservoir_name", "", "", "基准有目标无"),
+                (0..12).map { detail.getRow(missingRow + 1).getCell(it).stringCellValue })
+            // 多余对象逐比对字段展开:基准表值留空、业务块照常填,差异原因写「目标有基准无」
+            val extraRow = (missingRow..1 + expected).first {
+                detail.getRow(it).getCell(12).stringCellValue == "目标有基准无" }
+            assertEquals(detailPrefix + listOf("V001", "厂区水库1", "reservoir_code", "", "",
+                "reservoir_code", "", "V001", "目标有基准无"),
+                (0..12).map { detail.getRow(extraRow).getCell(it).stringCellValue })
         } finally {
             wb.close()
         }
