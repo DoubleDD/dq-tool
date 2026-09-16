@@ -13,8 +13,8 @@
     <div v-if="showToolbar" class="bgc-toolbar">
       <!-- 左侧控件区:毛玻璃底(图元素拖到下面不挡阅读);只包有组件的地方,中部留空可拖画布 -->
       <div class="bgc-toolbar-main">
-        <el-tooltip v-if="hasTool('refresh')" content="重绘画布(不重拉数据、不动缩放与位置;放大后字体发虚时点一下)" placement="bottom">
-          <el-button size="small" :icon="Refresh" @click="redraw" />
+        <el-tooltip v-if="hasTool('refresh')" :content="customRedraw ? customRedrawTip : '刷新'" placement="bottom">
+          <el-button size="small" :icon="Refresh" @click="onRefreshClick" />
         </el-tooltip>
         <el-tooltip v-if="hasTool('zoom100')" content="实际大小(100%)" placement="bottom">
           <el-button size="small" @click="zoomTo100">1:1</el-button>
@@ -191,6 +191,9 @@ import EdgeTypeIcon from './EdgeTypeIcon.vue'
  *  animated    重建/重绘渲染是否开动画,默认 false(关动画瞬时渲染,配合锚点补偿原地更新不飘移);
  *              活体仿真布局(d3-force 等)必须传 true——关动画路径会 layout.stop() 且不挂 onTick,
  *              仿真死后 drag-element-force 拖拽回温画面不更新;树/静态坐标布局保持默认 false 即可
+ *  customRedraw 自定义「重绘」按钮行为(可选):默认内部 redraw(按当前数据 render 重画一遍,不动缩放与位置);
+ *              需要「重排」等更强语义时由调用方接管(如字段映射画布:重绘 = 恢复自动布局),
+ *              提示文案走 customRedrawTip
  *  selectable  框选/多选开关,默认 false。开启后:Shift+拖动矩形框选节点、Shift+点击节点增减选中、
  *              点空白清空;选中集合变化发 selection-change(见 emits),鸟瞰图左侧操作提示追加 Shift 框选/多选文案。
  *              建图期配置(与 minimap/tools 同口径,运行期切换不生效);开启后业务侧勿再自配
@@ -241,7 +244,10 @@ const props = defineProps({
   animated: { type: Boolean, default: false },
   // 框选/多选开关(建图期配置):Shift+拖动框选节点、Shift+点击多选、点空白清空,
   // 选中集合变化发 selection-change;详见文件头 props 说明
-  selectable: { type: Boolean, default: false }
+  selectable: { type: Boolean, default: false },
+  // 自定义「重绘」按钮行为与提示(可选):默认内部 redraw;见文件头 props 说明
+  customRedraw: { type: Function, default: null },
+  customRedrawTip: { type: String, default: '重新排列布局' }
 })
 
 const emit = defineEmits(['ready', 'rendered', 'node-click', 'node-dblclick', 'edge-click', 'canvas-click', 'selection-change', 'update:level', 'update:edgeType', 'export-drawio'])
@@ -609,6 +615,15 @@ async function redraw() {
   await opChain
 }
 
+/** 「重绘」按钮点击入口:调用方传了 customRedraw 则接管(如字段映射的「重新排列布局」),否则走内部 redraw */
+function onRefreshClick() {
+  if (props.customRedraw) {
+    props.customRedraw()
+    return
+  }
+  redraw()
+}
+
 /** 整体重建:数据变化时调用(局部更新请经 getGraph() 自行 update+render);
  *  settle 默认取 refitOnDataChange,手动调用可显式传 false 保持视口(如收起/展开等就地重建);
  *  保持视口(settle=false)时做锚点补偿,避免树布局的隐式重新锚定把整张图挪走。
@@ -638,13 +653,15 @@ async function refresh(nextData, settle = props.refitOnDataChange) {
  *  不跑布局就不会经过 G6 树布局那层隐式重新锚定(见上方「锚点补偿」说明),连补偿都省了,是「只改渲染口径」的最优解:
  *  只影响渲染口径、不影响布局输入(节点尺寸 w/h 与节点集合)的刷新走这里(如对象图「显示类型」「优先字段英文名」);
  *  节点尺寸/结构会变的刷新必须走 refresh()(需重排;保持视口由 refresh 的锚点补偿兜底),否则不重排会重叠、新增节点落原点。
- *  安全性:setData 对 style 是浅合并(mergeElementsData),新数据不带 x/y 不会丢位置;draw 的样式求值与 render 同口径。 */
+ *  安全性:setData 对 style 是浅合并(mergeElementsData),新数据不带 x/y 不会丢位置;draw 的样式求值与 render 同口径。
+ *  关动画:渲染口径切换要的是瞬时就位(如字段映射聚焦压暗),播动画只会显得拖泥带水。
+ *  注意走元素控制器 context.element.draw 而非公开 graph.draw()——后者忽略入参、固定 animation:true(G6 v5.1) */
 async function repaint(nextData) {
   if (!graph || recreateQueued) return
   opChain = opChain.then(async () => {
     if (!graph || recreateQueued) return
     if (nextData) graph.setData(nextData)
-    await graph.draw()
+    await graph.context.element.draw({ animation: false })?.finished
     emit('rendered')
   })
   await opChain

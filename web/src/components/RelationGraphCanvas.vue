@@ -18,6 +18,8 @@
       :tools="tools"
       :level="level"
       :edge-type="edgeType"
+      :custom-redraw="mode === 'mapping' ? relayoutMapping : null"
+      custom-redraw-tip="重新排列(还原自动布局,并缩放平移以容纳全部节点)"
       image-name="ER图"
       @update:level="emit('update:level', $event)"
       @update:edge-type="emit('update:edgeType', $event)"
@@ -105,7 +107,9 @@ const props = defineProps({
   fieldNameMode: { type: String, default: 'chinese' },
   // 画布用途:relation=ER 关系图(默认,行为与改动前完全一致);
   //   mapping=数据比对「字段映射」(节点标题取 label、副标题取 comment;字段行可点连线;隐藏线型/档位/导出 drawio 与批量否决条,
-  //   「另存为图片」为底座常驻工具仍显示;图例换成操作提示)
+  //   「另存为图片」为底座常驻工具仍显示;图例换成操作提示;点对比表标题区聚焦该表 ↔ 基准表的连线(其余表与连线变暗),
+  //   Shift+点击/Shift+拖动框选可多表聚焦(聚焦集合 = 选中集合,与单点标题同一逻辑),点基准表标题/空白取消;
+  //   工具栏「重绘」经底座 customRedraw 接管为「重新排列」= 恢复自动布局,拖动/增删连线/聚焦均不重排)
   mode: { type: String, default: 'relation' },
   // mapping 模式:当前待连线的基准字段名(该行高亮,提示「点它再点对侧字段」)
   activeColumn: { type: String, default: '' },
@@ -148,21 +152,54 @@ const affectedEdges = computed(() => {
   return props.edges.filter((e) => sel.has(e.oneTable) || sel.has(e.manyTable))
 })
 
-/** 工具栏工具集:mapping 模式只留 重绘/1:1/适应画布(线型、档位、导出 drawio 都是 ER 关系图专属);
+/** 工具栏工具集:mapping 模式只留 重绘/1:1/适应画布(线型、档位、导出 drawio 都是 ER 关系图专属),
+ *  其中「重绘」经底座 customRedraw 接管为「重新排列」(恢复自动布局,见 relayoutMapping);
  *  「另存为图片」为底座常驻工具、不经 tools 裁剪,mapping 模式同样显示 */
 const tools = computed(() => props.mode === 'mapping'
   ? ['refresh', 'zoom100', 'fit']
   : ['refresh', 'zoom100', 'fit', 'edge-type', 'export-drawio', 'level'])
 
-/** 底座选中集合变化(框选/点选/清空/setSelection):全量同步给本地渲染口径 */
+/** 底座选中集合变化(框选/点选/清空/setSelection):全量同步给本地渲染口径;
+ *  内容没变不触动——空白点击会无条件上报一次,换个同内容新 Set 会引发无谓的就地重绘;
+ *  mapping 模式:聚焦集合 = 选中集合(基准表除外)——单点标题、Shift+点击、Shift+框选同一逻辑,
+ *  都是「凸显选中表 ↔ 基准表的连线,其余表与连线压暗禁用」 */
 function onSelectionChange(ids) {
-  selectedTables.value = new Set(ids || [])
+  const next = new Set(ids || [])
+  const cur = selectedTables.value
+  if (next.size === cur.size && [...next].every((t) => cur.has(t))) return
+  selectedTables.value = next
+  if (props.mode === 'mapping') {
+    focusTables.value = new Set([...next].filter((t) => t !== props.anchorTable))
+    // 连线橡皮筋进行中重绘会被跳过(createEdgePending),延一拍补刷,避免压暗态滞留不生效
+    if (createEdgePending()) setTimeout(() => repaintInPlace(), 0)
+  }
+}
+
+// ---------- mapping 模式「聚焦表」 ----------
+// 聚焦集合(可多表):点对比表标题区(不含字段行)单选聚焦,Shift+点击增减、Shift+拖动框选多选,
+// 口径与底座选中集合一致(见 onSelectionChange);点基准表标题 / 点画布空白清空。
+// 纯渲染口径:节点 HTML(renderNodeHtml)与边样式(mappingEdgeStyle)都读 focusTables,就地重绘生效,不动布局与位置
+const focusTables = ref(new Set())
+
+/** 单表聚焦(点标题):经底座选中态接入统一选中集合(selection-change 里同步聚焦集合);
+ *  基准表标题 = 清空(基准表不参与聚焦) */
+function applyFocus(table) {
+  if (!table || table === props.anchorTable) baseRef.value?.clearSelection()
+  else baseRef.value?.setSelection([table])
+}
+
+/** 聚焦压暗判定(仅 mapping):聚焦集合非空时,不在集合内、非基准的表压暗,且整体禁用交互
+ *  (节点 pointerEvents:none——字段行/标题点击、悬停、拖动全部穿透到画布,点它等于点空白取消聚焦) */
+function isDimmedTable(table) {
+  return props.mode === 'mapping' && !!focusTables.value.size && !focusTables.value.has(table) && table !== props.anchorTable
 }
 
 /** 底座 rendered(初始化/重建/重绘):重建会清掉 G6 模型里的选中态,把本地选中集回灌底座保持一致
  *  (setSelection 只在有变化时发事件:回灌那次发一次,之后状态一致不再发,不会循环) */
 function onRendered() {
   if (selectedTables.value.size) baseRef.value?.setSelection([...selectedTables.value])
+  // 重建后边元素是全新的:删除确认中的选中线样(加粗变红)按 selectedEdgeId 重上一遍
+  if (props.selectedEdgeId) applyEdgeSelected(props.selectedEdgeId)
   // mapping 模式:边不进 graphData,首次挂载/结构重建后在这里把连线就地补挂
   syncEdgesInPlace()
 }
@@ -175,13 +212,17 @@ function clearSelection() {
 
 // 选中集合变化 → 就地重绘节点 HTML 刷选中描边/底纹(不跑布局,拖动后的节点位置不丢)
 watch(selectedTables, () => repaintInPlace())
-// 图数据重建(刷新/批量否决后):选中集合裁掉已不在图里的表,操作条计数随之为准
+// 图数据重建(刷新/批量否决后):选中集合与聚焦表裁掉已不在图里的表,操作条计数随之为准
 watch(
   () => props.nodes,
   (nodes) => {
     const names = new Set((nodes || []).map((n) => n.name))
     const next = new Set([...selectedTables.value].filter((t) => names.has(t)))
     if (next.size !== selectedTables.value.size) selectedTables.value = next
+    if (focusTables.value.size) {
+      const pruned = new Set([...focusTables.value].filter((t) => names.has(t)))
+      if (pruned.size !== focusTables.value.size) focusTables.value = pruned
+    }
   }
 )
 
@@ -213,14 +254,24 @@ const NODE_W = 240
 const ORPHAN_GAP_X = 24 // 同排节点水平间距(与 dagre nodesep 一致)
 const ORPHAN_GAP_Y = 52 // 排与排之间的垂直间距
 const ORPHAN_MARGIN_Y = 40 // 无主体时孤儿网格距画布顶部留白
-// 节点几何常量(与 renderNodeHtml 的 HTML 严格一致,边端点对齐字段行依赖它):
-// 标题区=主标题行 34 + 上下 padding 6+6(有中文名时内含 14px 英文表名小字行);字段容器上 padding 4、行高 18、折叠行 16,底部留白 4
+// 节点几何常量(配合 firstRowTop 使用):标题区=主标题行 34 + 上下 padding 6+6(有中文名时内含 14px 英文表名小字行);
+// 字段容器上 padding 4、行高 18、折叠行 16,底部留白 4;根节点边框与标题下边框的 2~3px 收敛在 firstRowTop
 const TITLE_H_COMMENT = 46
 const TITLE_H_PLAIN = 32
 const FIELD_PAD_TOP = 4
 const FIELD_PAD_BOTTOM = 4
 const ROW_H = 18
 const MORE_ROW_H = 16
+
+/** 首个字段行顶部到节点顶边的距离(端点几何与 renderNodeHtml 严格对齐):
+ *  标题区(46/32) + 字段容器上 padding 4 + 两处容易被漏算的渲染细节——
+ *  根节点边框(border-box:普通表 1px、基准表/选中表 2px)把内容整体下推、
+ *  标题区在有字段行时还有 1px border-bottom;漏算会让端点相对行中线偏上 2~3px(圆点骑框后肉眼可辨);
+ *  仅在「行存在」的分支使用(标题下边框只在有字段行时渲染) */
+function firstRowTop(table, comment) {
+  const borderTop = table === props.anchorTable || selectedTables.value.has(table) ? 2 : 1
+  return borderTop + (comment ? TITLE_H_COMMENT : TITLE_H_PLAIN) + 1 + FIELD_PAD_TOP
+}
 
 /** 表的关联字段(去重,保持出现顺序):该表作为 one 侧的 one_column + 作为 many 侧的 many_column */
 function relatedColumns(table) {
@@ -277,6 +328,8 @@ function renderNodeHtml(d) {
   const mapping = props.mode === 'mapping'
   const isAnchor = table === props.anchorTable
   const isSelected = selectedTables.value.has(table)
+  // 聚焦(仅 mapping):点对比表标题后,非聚焦表(基准表除外)整体变暗并禁用交互,凸显聚焦表 ↔ 基准表的连线
+  const dimmed = isDimmedTable(table)
   const fields = nodeFields(table)
   const expanded = expandedTables.has(table)
   const rows = visibleFields(table)
@@ -331,8 +384,8 @@ function renderNodeHtml(d) {
   const ring = isSelected || (isAnchor && !mapping) ? `box-shadow:0 0 0 3px ${c.primary}33;` : ''
   // 锚点底纹(仅 ER 图):根底 = 主题色 8% 淡 tint;有字段行时标题行叠 15% 更深一档(无字段行时标题透明,直接透出根底)
   const titleBg = fields.length ? `background:${isAnchor && !mapping ? `${c.primary}26` : c.fill};` : ''
-  const titleTip = mapping ? '点击字段行连线;拖动画布可移动表' : '双击打开字段明细'
-  return `<div data-rg-node="${esc(table)}" style="width:${NODE_W}px;height:100%;box-sizing:border-box;background:${isAnchor && !mapping ? `${c.primary}14` : c.bg};border:${border};border-radius:6px;overflow:hidden;${ring}">
+  const titleTip = mapping ? '点击聚焦本表连线(再点基准表或空白取消);点字段行连线;拖动移动表' : '双击打开字段明细'
+  return `<div data-rg-node="${esc(table)}" style="width:${NODE_W}px;height:100%;box-sizing:border-box;background:${isAnchor && !mapping ? `${c.primary}14` : c.bg};border:${border};border-radius:6px;overflow:hidden;${ring}transition:opacity .15s;${dimmed ? 'opacity:0.2;' : ''}">
   <div class="rg-node-title" data-rg-table="${esc(table)}" title="${titleTip}" style="height:${subText ? 34 : 32}px;line-height:${subText ? 20 : 32}px;padding:${subText ? '6px' : '0'} 8px;font-size:13px;font-weight:600;color:${isAnchor ? c.primary : c.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;${fields.length ? `border-bottom:1px solid ${c.border};${titleBg}` : ''}">${esc(titleText)}${subHtml}</div>
   <div style="padding-top:4px">${fieldHtml}${more}</div>
 </div>`
@@ -378,7 +431,7 @@ function portOffsetY(table, comment, column, h) {
   if (column == null) return 0
   const idx = visibleFields(table).findIndex((f) => f.name === column)
   if (idx < 0) return 0
-  return -h / 2 + (comment ? TITLE_H_COMMENT : TITLE_H_PLAIN) + FIELD_PAD_TOP + idx * ROW_H + ROW_H / 2
+  return -h / 2 + firstRowTop(table, comment) + idx * ROW_H + ROW_H / 2
 }
 
 /** 字段行中心点(节点左/右缘)+ 出边侧(+1 右 / -1 左);行不可见时退化为边框交点 */
@@ -397,16 +450,16 @@ function fieldEndpoint(self, nodeEl, column, oppositeEl) {
   const opposite = oppositeEl.getCenter()
   // create-edge 橡皮筋辅助边:起点(source 端)钉死在「待连线字段行」的出边侧缘中点——
   // 兜底 borderPoint 会随鼠标位置绕节点边框滑动,视觉上起点不稳;起点出边侧按表角色固定
-  // (基准表在左恒出右边、对比表在右恒出左边)。字段行记录在 pointerdown 时写入(见 onContainerPointerdown)
+  // (基准表在左恒出右边、对比表在右恒出左边)。起点字段在 pointerdown 且橡皮筋未激活时
+  // 单独记录(pendingStartField,见 onContainerPointerdown),不受后续点击日志影响
   if (props.mode === 'mapping' && self.id === 'g6-create-edge-assist-edge-id' && nodeEl === self.sourceNode) {
-    const pending = fieldClickLog[fieldClickLog.length - 1]
-    const pIdx = pending && pending.table === table
-      ? visibleFields(table).findIndex((f) => f.name === pending.column)
+    const pIdx = pendingStartField && pendingStartField.table === table
+      ? visibleFields(table).findIndex((f) => f.name === pendingStartField.column)
       : -1
     if (pIdx >= 0) {
       const side = table === props.anchorTable ? 1 : -1
       const x = center[0] + side * (w / 2)
-      const y = center[1] - h / 2 + (comment ? TITLE_H_COMMENT : TITLE_H_PLAIN) + FIELD_PAD_TOP + pIdx * ROW_H + ROW_H / 2
+      const y = center[1] - h / 2 + firstRowTop(table, comment) + pIdx * ROW_H + ROW_H / 2
       return { point: [x, y, 0], side }
     }
   }
@@ -422,7 +475,7 @@ function fieldEndpoint(self, nodeEl, column, oppositeEl) {
   }
   const side = opposite[0] >= center[0] ? 1 : -1
   const x = center[0] + side * (w / 2)
-  const y = center[1] - h / 2 + (comment ? TITLE_H_COMMENT : TITLE_H_PLAIN) + FIELD_PAD_TOP + idx * ROW_H + ROW_H / 2
+  const y = center[1] - h / 2 + firstRowTop(table, comment) + idx * ROW_H + ROW_H / 2
   return { point: [x, y, 0], side }
 }
 
@@ -779,12 +832,40 @@ function targetEdgeColor(manyTable) {
 
 /** 映射边样式(create-edge 新建边与状态重建边共用同一套):普通实线——字段映射只表达
  *  「左边基准字段 → 右边对比字段」的指向,不带 ER 基数语义,故不要两端竖杠/鸦脚与 1:1 标签;
+ *  两端画实心小圆点(G6 内置 circle 箭头,填充色随线色)——线从其他表身上跨过还是真正连到该表,
+ *  看端点有没有圆点一眼可辨;
  *  stroke 按目标表着色(manyTable 为空时取主题色);cursor:pointer 透传到边 key 形状,悬停连线鼠标变手指;
  *  increasedLineWidthForHitTesting:1.8px 细线 hover/点击容差太小(偏离 2~3px 就拾不到),
- *  命中宽度放宽到 10px——光标与「点线删除」都好中,视觉线宽不受影响 */
+ *  命中宽度放宽到 10px——光标与「点线删除」都好中,视觉线宽不受影响;
+ *  聚焦表存在时,不属于该表的连线压暗(strokeOpacity/fillOpacity 双写——小圆点的填充透明度随线一起暗),
+ *  凸显 聚焦表 ↔ 基准表 之间的连线 */
 function mappingEdgeStyle(manyTable) {
   const c = themeColors()
-  return { stroke: manyTable ? targetEdgeColor(manyTable) : c.primary, lineWidth: 1.8, cursor: 'pointer', increasedLineWidthForHitTesting: 10 }
+  const focused = focusTables.value.has(manyTable)
+  const dimmed = !!focusTables.value.size && manyTable && !focused
+  const opacity = dimmed ? 0.15 : 1
+  return {
+    stroke: manyTable ? targetEdgeColor(manyTable) : c.primary,
+    lineWidth: 1.8,
+    strokeOpacity: opacity,
+    fillOpacity: opacity,
+    // 聚焦表的连线置顶(zIndex 2),压暗线(zIndex 1)垫在下面,交叉处不再混淆
+    zIndex: focused ? 2 : 1,
+    startArrow: true,
+    startArrowType: 'circle',
+    startArrowSize: [8, 8],
+    endArrow: true,
+    endArrowType: 'circle',
+    endArrowSize: [8, 8],
+    // 圆点锚定偏移:G6 默认 宽/2+线宽(圆心被推出卡片、与边框留缝),显式压到亚像素≈0——
+    // 圆心正好落在 fieldEndpoint 算出的字段行边框点上(圆点骑跨边框,一半在内一半在外);
+    // 不能写 0:attributes[arrowOffset] || 默认值 对 falsy 会走回默认(G6 base-edge 源码如此)
+    startArrowOffset: 0.01,
+    endArrowOffset: 0.01,
+    // 压暗线禁用交互:光标不变手指(点击/悬停响应已在 onEdgeClick/pickEdgeAt 屏蔽)
+    cursor: dimmed ? 'default' : 'pointer',
+    increasedLineWidthForHitTesting: 10
+  }
 }
 
 // hover 的字段行(mapping 模式):直接改行 DOM,绝不走 G6 重绘——整图 setData+draw 代价大,
@@ -814,13 +895,17 @@ let hoverEdgeId = ''
 let hoverEdgeRel = null
 let hoverEdgeRows = []
 
-/** 字段行出边点(model 坐标):与 fieldEndpoint 同一套几何(基准表出右边、对比表出左边),行不可见返回 null */
-function rowPortPoint(table, column) {
+/** 字段行出边点 + 出边侧(model 坐标):与 fieldEndpoint 同一套几何——出边侧按对端节点方位定
+ *  (节点可拖动,基准表也可能在右侧;写死「基准出右边、对比表出左边」会在拖动后与真实曲线错位,悬停判定全落空),
+ *  行不可见返回 null */
+function rowPortPoint(table, column, oppositeTable) {
   const g = baseRef.value?.getGraph()
   if (!g) return null
   let pos = null
+  let oppPos = null
   try {
     pos = g.getElementPosition(table)
+    oppPos = oppositeTable ? g.getElementPosition(oppositeTable) : null
   } catch {
     return null // 节点刚被移除
   }
@@ -833,26 +918,28 @@ function rowPortPoint(table, column) {
   const [w] = nodeSize(table, comment)
   const idx = visibleFields(table).findIndex((f) => f.name === column)
   if (!pos || idx < 0) return null
-  const x = pos[0] + (table === props.anchorTable ? w : 0)
-  const y = pos[1] + (comment ? TITLE_H_COMMENT : TITLE_H_PLAIN) + FIELD_PAD_TOP + idx * ROW_H + ROW_H / 2
-  return [x, y]
+  // html 节点 model 点 = DOM 左上角;对端中心在本节点中心左侧 → 出左边,与 fieldEndpoint 同口径(节点同宽 NODE_W)
+  const side = oppPos && oppPos[0] + NODE_W / 2 < pos[0] + w / 2 ? -1 : 1
+  const x = pos[0] + (side === 1 ? w : 0)
+  const y = pos[1] + firstRowTop(table, comment) + idx * ROW_H + ROW_H / 2
+  return { point: [x, y], side }
 }
 
-/** 边曲线采样点(model 坐标,与 field-cubic 同公式:两端 + 水平 stub 控制点),供悬停距离计算 */
+/** 边曲线采样点(model 坐标,与 field-cubic 同公式:两端 + 各自出边侧水平 stub 控制点),供悬停距离计算 */
 function edgeBezierSamples(oneColumn, manyTable, manyColumn, n = 24) {
-  const s = rowPortPoint(props.anchorTable, oneColumn)
-  const t = rowPortPoint(manyTable, manyColumn)
+  const s = rowPortPoint(props.anchorTable, oneColumn, manyTable)
+  const t = rowPortPoint(manyTable, manyColumn, props.anchorTable)
   if (!s || !t) return null
-  const stub = edgeStub(s, t)
-  const c0 = [s[0] + stub, s[1]]
-  const c1 = [t[0] - stub, t[1]]
+  const stub = edgeStub(s.point, t.point)
+  const c0 = [s.point[0] + s.side * stub, s.point[1]]
+  const c1 = [t.point[0] + t.side * stub, t.point[1]]
   const pts = []
   for (let i = 0; i <= n; i++) {
     const u = i / n
     const v = 1 - u
     pts.push([
-      v * v * v * s[0] + 3 * v * v * u * c0[0] + 3 * v * u * u * c1[0] + u * u * u * t[0],
-      v * v * v * s[1] + 3 * v * v * u * c0[1] + 3 * v * u * u * c1[1] + u * u * u * t[1]
+      v * v * v * s.point[0] + 3 * v * v * u * c0[0] + 3 * v * u * u * c1[0] + u * u * u * t.point[0],
+      v * v * v * s.point[1] + 3 * v * v * u * c0[1] + 3 * v * u * u * c1[1] + u * u * u * t.point[1]
     ])
   }
   return pts
@@ -912,38 +999,45 @@ function clearEdgeHover() {
 }
 
 // ---------- mapping 选中连线:点线不直接删,父级弹删除确认期间该线加粗变红(选中态) ----------
-// 记住原线宽/颜色以便取消时还原;边随 v-model 重建(删除确认后)时原样式引用自然失效,try/catch 兜底
-let selectedEdgeSaved = null
+// 走模型样式更新(updateEdgeData,style 浅合并不丢箭头配置):端点小圆点(箭头)颜色在 draw 时随线色重推导,
+// 直接改 key 形状会只染线不染点;边随 v-model 重建/聚焦重绘后样式被重置,由 onRendered 按 selectedEdgeId 重上
+let selectedEdgeIdNow = ''
 
-function applyEdgeSelected(id) {
-  clearEdgeSelected()
+/** 无动画瞬时绘制:G6 v5 公开 API graph.draw() **忽略入参**(固定 animation:true,见 runtime/graph.js),
+ *  要关动画必须走元素控制器 context.element.draw({ animation: false })——
+ *  连线增删/变色全部走这里,否则 enter/exit 各播 1s 淡入淡出(主题默认),先闪现再归位 */
+async function drawNow(g) {
+  await g.context.element.draw({ animation: false })?.finished
+}
+
+async function applyEdgeSelected(id) {
+  await clearEdgeSelected()
   const g = baseRef.value?.getGraph()
-  if (!g || !id) return
+  const rel = id ? relById.get(String(id)) : null
+  if (!g || !rel) return
+  selectedEdgeIdNow = String(id)
   try {
-    const key = g.context.element.getElement(String(id))?.getShape('key')
-    if (!key) return
-    selectedEdgeSaved = { id, lineWidth: key.style.lineWidth ?? 1.8, stroke: key.style.stroke }
-    key.style.lineWidth = 3.2
-    key.style.stroke = themeColors().danger
+    // 满浓度 + 置顶:聚焦压暗中的线被选中(删除确认)也要一眼看清;关动画瞬时到位(连线操作一律不播动画)
+    g.updateEdgeData([{ id: selectedEdgeIdNow, style: { stroke: themeColors().danger, lineWidth: 3.2, strokeOpacity: 1, fillOpacity: 1, zIndex: 3 } }])
+    await drawNow(g)
   } catch {
-    selectedEdgeSaved = null
+    selectedEdgeIdNow = '' // 边已删除/重建
   }
 }
 
-function clearEdgeSelected() {
+async function clearEdgeSelected() {
   const g = baseRef.value?.getGraph()
-  if (g && selectedEdgeSaved) {
-    try {
-      const key = g.context.element.getElement(selectedEdgeSaved.id)?.getShape('key')
-      if (key) {
-        key.style.lineWidth = selectedEdgeSaved.lineWidth
-        if (selectedEdgeSaved.stroke) key.style.stroke = selectedEdgeSaved.stroke
-      }
-    } catch {
-      // 边已删除/重建,无需还原
-    }
+  const id = selectedEdgeIdNow
+  selectedEdgeIdNow = ''
+  if (!g || !id) return
+  const rel = relById.get(id)
+  if (!rel) return
+  try {
+    g.updateEdgeData([{ id, style: mappingEdgeStyle(rel.manyTable) }])
+    await drawNow(g)
+  } catch {
+    // 边已删除/重建,无需还原
   }
-  selectedEdgeSaved = null
 }
 
 watch(() => props.selectedEdgeId, (id) => {
@@ -951,7 +1045,25 @@ watch(() => props.selectedEdgeId, (id) => {
   else clearEdgeSelected()
 })
 
-/** 指针下最近的连线(按曲线采样距离,阈值与命中宽度同量级,除以 zoom) */
+/** 点到线段距离(悬停判定用:采样点之间的弧段不能漏——长曲线 24 个采样点相邻间距可达数十 px,
+ *  只算到点的距离会在点与点之间出现判定盲区) */
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax
+  const dy = by - ay
+  const len2 = dx * dx + dy * dy
+  let t = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0
+  t = Math.max(0, Math.min(1, t))
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+}
+
+/** 聚焦压暗的连线(与聚焦集合无关)是否禁用交互:悬停浮层/加粗、点击删除确认、手指光标一律屏蔽,
+ *  直到取消聚焦(与压暗表节点 pointerEvents:none 同口径) */
+function isDimmedEdge(rel) {
+  return props.mode === 'mapping' && !!focusTables.value.size && !focusTables.value.has(rel?.manyTable)
+}
+
+/** 指针下最近的连线(按曲线采样折线的点到线段距离,阈值与命中宽度同量级,除以 zoom);
+ *  聚焦态只从聚焦表的连线里挑——压暗线禁用交互,悬停不响应 */
 function pickEdgeAt(clientX, clientY) {
   const g = baseRef.value?.getGraph()
   if (!g) return null
@@ -959,11 +1071,12 @@ function pickEdgeAt(clientX, clientY) {
   let best = null
   let bestDist = 6 / g.getZoom()
   for (const e of props.edges) {
+    if (isDimmedEdge(e)) continue
     const pts = edgeBezierSamples(e.oneColumn, e.manyTable, e.manyColumn)
     if (!pts) continue
     let d = Infinity
-    for (const p of pts) {
-      const dd = Math.hypot(p[0] - mx, p[1] - my)
+    for (let i = 1; i < pts.length; i++) {
+      const dd = distToSegment(mx, my, pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1])
       if (dd < d) d = dd
     }
     if (d < bestDist) {
@@ -1017,10 +1130,35 @@ function createEdgePending() {
   }
 }
 
-/** 原地重绘(不跑布局、不动视口):create-edge 交互进行中则跳过,避免打断连线 */
+/** mapping 模式就地重绘数据:与 buildData 同构,但剥离节点 style.x/y——
+ *  setData 对 style 浅合并,新数据不带 x/y 即保留模型当前位置,拖动后的手动位置不被自动布局坐标盖回;
+ *  自动布局坐标只在整体重建(首次挂载的 graphData / 工具栏「重新排列」relayoutMapping)时下发 */
+function buildDataKeepPositions() {
+  const d = buildData()
+  d.nodes = d.nodes.map((n) => {
+    if (!n.style) return n
+    const { x, y, ...rest } = n.style
+    return { ...n, style: rest }
+  })
+  return d
+}
+
+/** 原地重绘(不跑布局、不动视口):create-edge 交互进行中则跳过,避免打断连线;
+ *  mapping 模式走 buildDataKeepPositions——重绘只刷新渲染口径,不把拖动的节点拉回自动布局位 */
 function repaintInPlace() {
   if (createEdgePending()) return
-  baseRef.value?.repaint(buildData())
+  baseRef.value?.repaint(props.mode === 'mapping' ? buildDataKeepPositions() : buildData())
+}
+
+/** mapping 模式工具栏「重绘」接管为「重新排列」(底座 customRedraw):整体重建
+ *  (setData 带回自动布局坐标 + render),拖动后的手动位置全部还原;
+ *  视口定位走 fitView 全景而非「居中+100%」——字段全展开的卡片常比视口高,居中到 100% 只能看见
+ *  所有卡片的中段一截(顶对齐的卡片顶部全在视口外),看起来像没重排;
+ *  连线橡皮筋进行中不响应(setData 会清掉辅助元素、打断连线) */
+async function relayoutMapping() {
+  if (createEdgePending()) return
+  await baseRef.value?.refresh(buildData(), false) // 视口定位由下面的 fitView 接管,不走默认 settle
+  await baseRef.value?.fitView()
 }
 
 /**
@@ -1059,7 +1197,8 @@ async function syncEdgesInPlace() {
   if (!removeIds.length && !addList.length) return
   if (removeIds.length) g.removeEdgeData(removeIds)
   if (addList.length) g.addEdgeData(addList)
-  await g.draw()
+  // 连线增删一帧到位,不播进入/退出动画
+  await drawNow(g)
 }
 
 // mapping 模式:连线增删就地应用(整图不重建,视口/节点位置不动、不闪屏)
@@ -1068,6 +1207,10 @@ watch(() => props.edges, () => syncEdgesInPlace(), { deep: true })
 // 字段行点击日志(最近几次):create-edge 行为只给节点 id,字段名要从容器点击委托里带上来的记录取;
 // 只认「最后两次点击」,避免点到节点标题/空白后拿旧记录错连
 let fieldClickLog = []
+// 本次连线的起始字段(橡皮筋起点锚定用):pointerdown 落在字段行且橡皮筋未激活时记录——
+// 不能用「最后一次字段点击」充当:第二次点下(pointerdown)那一刻日志尾部已变成对侧表,
+// 锚点判定落空会退化成边框交点跟随鼠标滑动(起点跟着鼠标跑)
+let pendingStartField = null
 // create-edge 临时边序号:临时边 id 必须唯一——重连「已映射过的基准字段」时,同语义的正式边
 // (map:表:字段)还留在模型里,同 id 会让 G6 addEdgeData 抛 Edge already exists,create-edge 流程
 // 中断(辅助边残留、之后点击全被吞),故临时边用独立 id,正式边由父级按映射重建时落
@@ -1076,16 +1219,12 @@ function noteFieldClick(table, column) {
   fieldClickLog.push({ table, column })
   if (fieldClickLog.length > 4) fieldClickLog.shift()
 }
-function columnOfRecentClick(table) {
-  for (let i = fieldClickLog.length - 1; i >= 0; i--) {
-    if (fieldClickLog[i].table === table) return fieldClickLog[i].column
-  }
-  return ''
-}
 
 /**
  * create-edge(trigger=click)新建边回调:两端都必须是「刚点过的字段行」,且必须一侧是基准表、另一侧是对比表;
  * 返回带 oneColumn/manyColumn 的边数据(field-cubic 据此把端点对齐到字段行),不合法返回 undefined 取消创建。
+ * 两个点击方向都合法(基准→对比 / 对比→基准),返回的边必须归一化为 source=基准表、target=对比表——
+ * 否则渲染拿基准字段(oneColumn)去对比表里找行,找不到退化为边框交点,在两个节点中间画一条线
  */
 function onCreateEdge(edge) {
   const last = fieldClickLog.slice(-2)
@@ -1101,16 +1240,21 @@ function onCreateEdge(edge) {
   return {
     ...edge,
     id: `map-tmp:${manyTable}:${oneColumn}:${++tmpEdgeSeq}`,
+    // 方向归一化:one 侧恒为基准表,与正式边(map:表:字段)同口径,端点对齐字段行才找得到行
+    source: srcIsBase ? edge.source : edge.target,
+    target: srcIsBase ? edge.target : edge.source,
     data: { oneColumn, manyColumn },
     style: mappingEdgeStyle(manyTable)
   }
 }
 
-/** 新建边完成:交给调用方落状态(父级更新映射后由 watch 就地同步:正式边以 map:表:字段 落模型,临时边被收敛移除) */
+/** 新建边完成:交给调用方落状态(父级更新映射后由 watch 就地同步:正式边以 map:表:字段 落模型,临时边被收敛移除);
+ *  manyTable 必须取非基准那一侧(onCreateEdge 已把 source 归一化为基准表)——直接拿 edge.target 充当,
+ *  先点对比表时会得到基准表 id,父级查不到目标索引把这次连线静默丢弃(线没显示) */
 function onFinishEdge(edge) {
   emit('mapping-connect', {
     oneTable: edge.source,
-    manyTable: edge.target,
+    manyTable: edge.source === props.anchorTable ? edge.target : edge.source,
     oneColumn: edge.data?.oneColumn,
     manyColumn: edge.data?.manyColumn
   })
@@ -1149,7 +1293,10 @@ const graphOptions = computed(() => ({
     type: 'html',
     style: {
       size: (d) => d.style?.size || [NODE_W, 40],
-      innerHTML: (d) => renderNodeHtml(d)
+      innerHTML: (d) => renderNodeHtml(d),
+      // 聚焦压暗的表整体禁用交互(G6 html 节点级 pointerEvents,作用于节点 DOM 包装元素):
+      // 字段行/标题点击、悬停、拖动全部穿透到画布——点压暗表等于点空白(取消聚焦)
+      pointerEvents: (d) => (isDimmedTable(d.data?.table) ? 'none' : 'auto')
     }
   },
   // 线型:curve=字段对齐贝塞尔;orth/orth-round=正交折线(倒角半径挂在图级边样式上,仅 field-polyline 消费)
@@ -1164,9 +1311,18 @@ const graphOptions = computed(() => ({
     // 否则按住 Shift 拖节点会一边拖节点一边画框选)
     { type: 'drag-element', enable: (e) => !e.shiftKey },
     // mapping 模式:用 G6 内置 create-edge(trigger=click)点两端字段行连线,自带橡皮筋辅助边;
-    // 字段名由容器点击委托记录(见 onCreateEdge),两端不合法(同侧表/未点字段行)的新建请求直接取消
+    // 字段名由容器点击委托记录(见 onCreateEdge),两端不合法(同侧表/未点字段行)的新建请求直接取消;
+    // enable 只放行字段行上的点击(经 nativeEvent 命中 [data-rg-column])——标题区点击是「聚焦连线」语义,
+    // 不起橡皮筋;橡皮筋的取消(canvas/edge click)在 create-edge 内部不经 enable 判定,不受影响
     ...(props.mode === 'mapping'
-      ? [{ type: 'create-edge', trigger: 'click', style: mappingEdgeStyle(), onCreate: onCreateEdge, onFinish: onFinishEdge }]
+      ? [{
+          type: 'create-edge',
+          trigger: 'click',
+          enable: (e) => !!e?.nativeEvent?.target?.closest?.('[data-rg-column]'),
+          style: mappingEdgeStyle(),
+          onCreate: onCreateEdge,
+          onFinish: onFinishEdge
+        }]
       : [])
   ]
 }))
@@ -1194,13 +1350,21 @@ function onNodeClick(id) {
 
 function onEdgeClick(id) {
   const rel = relById.get(id)
-  if (rel) emit('edge-click', rel)
+  // 聚焦态压暗线(与聚焦表无关)禁用交互:不进删除确认选中态
+  if (!rel || isDimmedEdge(rel)) return
+  emit('edge-click', rel)
 }
 
 /** 点画布空白(底座 canvas-click):清空选中(框选松手后补发的那次 click 已由底座吞掉,不会误清,见 BaseGraphCanvas);
- *  同时转发给父级——mapping 模式用来收起连线删除确认条 */
+ *  mapping 模式同时取消「聚焦表」——本次点击若正在收掉连线橡皮筋,辅助元素要等事件派发完才被 create-edge 清掉,
+ *  故延一拍再重绘(不在连线中也无妨,重绘本就异步);同时转发给父级——mapping 模式用来收起连线删除确认条 */
 function onCanvasClick() {
   clearSelection()
+  if (focusTables.value.size) {
+    focusTables.value = new Set()
+    // 本次点击若正在收掉连线橡皮筋,辅助元素要等事件派发完才被 create-edge 清掉,延一拍再重绘
+    setTimeout(() => repaintInPlace(), 0)
+  }
   emit('canvas-click')
 }
 
@@ -1235,15 +1399,27 @@ async function rejectSelected() {
  *  单选经底座 setSelection 接入统一选中状态;Shift+点击增减由底座 click-select 处理,这里不重复;
  *  拖拽节点后的残留 click(位移>4px)不响应 */
 function onContainerClick(ev) {
-  // mapping 模式:点字段行 = 派发 field-click(连线本身交给 create-edge 行为);字段名在 pointerdown 记录
+  // mapping 模式:点字段行 = 派发 field-click(连线本身交给 create-edge 行为);字段名在 pointerdown 记录;
+  // 点标题区(表名块) = 聚焦该表 ↔ 基准表的连线(其余表与连线变暗;基准表不聚焦,点击 = 取消聚焦)
   if (props.mode === 'mapping') {
-    const colEl = ev.target?.closest?.('[data-rg-column]')
-    if (!colEl) return
     const moved = downPos && (Math.abs(ev.clientX - downPos[0]) + Math.abs(ev.clientY - downPos[1]) > 4)
-    if (moved) return
-    const table = colEl.getAttribute('data-rg-column-table')
-    const column = colEl.getAttribute('data-rg-column')
-    if (table && column) emit('field-click', { table, column })
+    const colEl = ev.target?.closest?.('[data-rg-column]')
+    if (colEl) {
+      if (!moved) {
+        const table = colEl.getAttribute('data-rg-column-table')
+        const column = colEl.getAttribute('data-rg-column')
+        if (table && column) emit('field-click', { table, column })
+      }
+      return
+    }
+    const titleEl = ev.target?.closest?.('.rg-node-title')
+    if (!titleEl || moved) return
+    // 连线橡皮筋进行中不响应:聚焦重绘会把辅助边清掉、打断连线
+    if (createEdgePending()) return
+    // Shift+点击交给底座 click-select 增减选中(聚焦集合随 selection-change 同步),这里不做单选替换
+    if (ev.shiftKey) return
+    const t = titleEl.getAttribute('data-rg-table')
+    applyFocus(!t || t === props.anchorTable ? '' : t)
     return
   }
   // 「+N 个字段」/「收起字段」操作行:切换展开态(属于节点内操作,不触发选中)
@@ -1274,13 +1450,18 @@ function onContainerPointerdown(ev) {
   downPos = [ev.clientX, ev.clientY]
   if (ev.target?.closest?.('.rg-node-title, .rg-more-row')) lastTitleClick = Date.now()
   // mapping 模式:字段名在 pointerdown 就记下来——G6 的 node:click 由 pointerup 合成派发(早于 DOM click),
-  // create-edge 的 onCreate 回调发生在那一刻,晚于 click 再记就来不及了
+  // create-edge 的 onCreate 回调发生在那一刻,晚于 click 再记就来不及了;
+  // 橡皮筋未激活时的这次按下同时记为「本次连线起点」(pendingStartField,锚定辅助边 source 端用;
+  // 激活中的按下是终点,不能覆盖起点)
   if (props.mode === 'mapping') {
     const colEl = ev.target?.closest?.('[data-rg-column]')
     if (colEl) {
       const table = colEl.getAttribute('data-rg-column-table')
       const column = colEl.getAttribute('data-rg-column')
-      if (table && column) noteFieldClick(table, column)
+      if (table && column) {
+        if (!createEdgePending()) pendingStartField = { table, column }
+        noteFieldClick(table, column)
+      }
     }
   }
 }
