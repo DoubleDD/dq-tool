@@ -6,6 +6,6 @@ package com.example.dq.model
  * @property table   所属表名
  * @property name    字段名
  * @property type    展示类型(如 varchar(50)、decimal(10,2))
- * @property comment 字段备注(数据库 COMMENT,可能为空串;Oracle 驱动默认不返回 REMARKS,与表结构页同口径)
+ * @property comment 字段备注(数据库 COMMENT,可能为空串;Oracle 靠连接属性 remarksReporting=true 打开 REMARKS 返回)
  */
 data class SchemaColumn(val table: String, val name: String, val type: String, val comment: String = "")

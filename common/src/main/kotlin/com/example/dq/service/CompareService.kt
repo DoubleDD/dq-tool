@@ -20,6 +20,7 @@ import com.example.dq.model.FieldIssueRank
 import com.example.dq.model.MappingSuggestRequest
 import com.example.dq.model.MappingSuggestTargetView
 import com.example.dq.model.MappingSuggestView
+import com.example.dq.model.PendingReason
 import com.example.dq.repository.CompareRepository
 import com.example.dq.repository.TableSystemRepository
 import com.example.dq.util.ExcelCells
@@ -32,6 +33,7 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook
 import org.apache.poi.xssf.usermodel.XSSFCellStyle
 import org.apache.poi.xssf.usermodel.XSSFColor
 import org.slf4j.LoggerFactory
+import java.time.format.DateTimeFormatter
 import java.io.OutputStream
 import java.math.BigDecimal
 import java.sql.Types
@@ -72,6 +74,13 @@ class CompareService(
     private val aiMappingChat: AiChat = { config, system, user ->
         AiService().chat(config, system, user, AiScene.COMPARE_MAPPING)
     },
+    /** 「数据最新更新时间」时间字段语义匹配的 LLM 调用点(默认 COMPARE_TIME 场景,测试可注入 fake) */
+    private val aiTimeChat: AiChat = { config, system, user ->
+        AiService().chat(config, system, user, AiScene.COMPARE_TIME)
+    },
+    /** 表字段清单读取点(默认走 [MetadataService] 缓存优先路径;测试可注入 fake 避免连业务库) */
+    private val columnsLister: (datasourceId: Long, db: String, schema: String, table: String) -> List<ColumnMeta> =
+        { dsId, db, schema, table -> metadataService.listTableColumns(dsId, db, schema, table) },
 ) {
 
     /** 匹配逻辑 3 的 LLM 调用点:给定可用 AI 配置与会话内容,返回模型回答 */
@@ -98,6 +107,30 @@ class CompareService(
      * (RUNNING,total=1+目标数)→ 后台执行。返回任务 id
      */
     fun submit(req: CreateCompareJobRequest): Long {
+        val r = resolveRequest(req)
+        val jobId = repo.insertJob(r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
+            r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size, r.displayField,
+            r.matchMode.value, r.compareMode.value)
+        for (t in r.targets) {
+            repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson)
+        }
+        executor.execute { run(jobId) }
+        log.info("比对任务已提交: id={}, 名称={}, 基准={}.{}, 目标数={}, 匹配逻辑={}, 对比模式={}",
+            jobId, r.name, r.baseDb, r.baseTable, r.targets.size, r.matchMode.value, r.compareMode.value)
+        return jobId
+    }
+
+    /** submit 的校验 + 归一结果(双侧字段都已归一为实际列名) */
+    private data class ResolvedRequest(
+        val name: String, val baseDatasourceId: Long, val baseDb: String, val baseTable: String,
+        val keyField: String, val fields: List<String>, val displayField: String?,
+        val matchMode: MatchMode, val compareMode: CompareMode, val targets: List<ResolvedTarget>)
+
+    /**
+     * submit / updatePending 共用的同步校验与归一:基准数据源存在、目标非空、fields 含 keyField、
+     * 各表字段映射忽略大小写归一为实际列名(目标缺主键列直接报错,缺其他比对列记「列缺失」按不一致计)
+     */
+    private fun resolveRequest(req: CreateCompareJobRequest): ResolvedRequest {
         val name = req.name?.trim().takeUnless { it.isNullOrEmpty() }
             ?: throw IllegalArgumentException("任务名称不能为空")
         val baseDsId = req.baseDatasourceId ?: throw IllegalArgumentException("请选择基准数据源")
@@ -117,8 +150,7 @@ class CompareService(
         // 基准侧:数据源存在 + 表字段映射(请求字段名归一为基准表实际列名,忽略大小写)
         dataSourceService.get(baseDsId)
         val baseDb = req.baseDb ?: ""
-        val baseColumns = metadataService.listTableColumns(
-            baseDsId, baseDb, effectiveSchema(req.baseSchema, baseDb), baseTable)
+        val baseColumns = columnsLister(baseDsId, baseDb, effectiveSchema(req.baseSchema, baseDb), baseTable)
         if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: $baseTable")
         val baseByName = baseColumns.associateBy { it.name.lowercase() }
         if (baseByName[keyField.lowercase()] == null) {
@@ -146,7 +178,7 @@ class CompareService(
             val ds = dataSourceService.get(dsId)
             val db = spec.db ?: ""
             val table = spec.table!!.trim()
-            val cols = metadataService.listTableColumns(dsId, db, effectiveSchema(spec.schema, db), table)
+            val cols = columnsLister(dsId, db, effectiveSchema(spec.schema, db), table)
             if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段: ${ds.name}.$table")
             val colsByName = cols.associateBy { it.name.lowercase() }
             val mapping = normalizeMapping(spec.mapping, fields, baseByName, colsByName, actualKey)
@@ -157,17 +189,8 @@ class CompareService(
             ResolvedTarget(dsId, ds.name, db, spec.schema, table,
                 mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
         }
-
-        val jobId = repo.insertJob(name, baseDsId, baseDb, req.baseSchema, baseTable,
-            actualKey, objectMapper.writeValueAsString(fields), 1 + resolved.size, displayField, matchMode.value,
-            compareMode.value)
-        for (t in resolved) {
-            repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson)
-        }
-        executor.execute { run(jobId) }
-        log.info("比对任务已提交: id={}, 名称={}, 基准={}.{}, 目标数={}, 匹配逻辑={}, 对比模式={}",
-            jobId, name, baseDb, baseTable, resolved.size, matchMode.value, compareMode.value)
-        return jobId
+        return ResolvedRequest(name, baseDsId, baseDb, baseTable, actualKey, fields, displayField,
+            matchMode, compareMode, resolved)
     }
 
     private data class ResolvedTarget(val datasourceId: Long, val dsName: String?,
@@ -237,6 +260,178 @@ class CompareService(
         log.info("比对任务重跑: id={}, 目标数={}", jobId, oldTargets.size)
     }
 
+    // ---------- 待处理(PENDING,比对任务批量导入) ----------
+
+    /** 批量导入建任务时的目标行:mapping 为「基准列名 → 目标列名」(锁定字段 + 大模型推导合并结果),可空 */
+    data class PendingTargetSpec(val datasourceId: Long, val dsName: String?, val db: String,
+                                 val schema: String?, val table: String, val mapping: Map<String, String>?)
+
+    /** 批量导入「先建任务数据」的返回:任务 id + 按输入顺序落库的目标 id(后台映射按顺序回写) */
+    data class PendingCreatedJob(val jobId: Long, val targetIds: List<Long>)
+
+    /**
+     * 落「待处理」任务([CompareImportService] 专用入口):固定 match_mode=CODE_NAME_LLM、
+     * compare_mode=COLUMN(导入任务口径),落 job(PENDING)+ targets(含 mapping),不进执行器。
+     * fields/keyField/displayField 由调用方按基准表实际列名归一好(基准表读不出时按表格原值兜底)
+     */
+    fun createPending(name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
+                      baseTable: String, keyField: String, fields: List<String>, displayField: String?,
+                      targets: List<PendingTargetSpec>, pendingReason: PendingReason,
+                      objectCategory: String?, importId: Long?): Long =
+        createPendingWithTargetIds(name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fields,
+            displayField, targets, pendingReason, objectCategory, importId).jobId
+
+    /**
+     * [createPending] 的详细入口:返回任务 id + 目标 id 列表(与 [targets] 同序),
+     * 供批量导入先快速建档(MAPPING_RUNNING),后台映射线程按目标 id 回写推导结果
+     */
+    fun createPendingWithTargetIds(name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
+                                   baseTable: String, keyField: String, fields: List<String>, displayField: String?,
+                                   targets: List<PendingTargetSpec>, pendingReason: PendingReason,
+                                   objectCategory: String?, importId: Long?): PendingCreatedJob {
+        require(name.isNotBlank() && fields.isNotEmpty() && keyField.isNotBlank()) { "待处理任务缺少必要字段" }
+        val jobId = repo.insertPendingJob(name.take(200), baseDatasourceId, baseDb, baseSchema, baseTable,
+            keyField, objectMapper.writeValueAsString(fields), 1 + targets.size, displayField,
+            MatchMode.CODE_NAME_LLM.value, CompareMode.COLUMN.value,
+            pendingReason.value, objectCategory, importId)
+        val targetIds = targets.map { t ->
+            repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table,
+                t.mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
+        }
+        log.info("比对任务已建档(待处理): id={}, 名称={}, 原因={}, 目标数={}",
+            jobId, name, pendingReason, targets.size)
+        return PendingCreatedJob(jobId, targetIds)
+    }
+
+    /**
+     * 后台字段映射结束(仅 MAPPING_RUNNING 的 PENDING 导入任务):回写基准表归一后的实际字段、
+     * 新待处理原因/失败说明,并按 [targetMappings] 全量回写目标行 mapping(目标 id → 基准列名→目标列名,可空)。
+     * 返回 false = 任务已删除/原因已不在 MAPPING_RUNNING(后台线程自行放弃,目标映射也不再回写)
+     */
+    fun completePendingMapping(jobId: Long, keyField: String, fields: List<String>, displayField: String?,
+                               targetMappings: Map<Long, Map<String, String>?>,
+                               pendingReason: PendingReason, error: String?): Boolean {
+        require(fields.isNotEmpty() && keyField.isNotBlank()) { "字段映射结果缺少必要字段" }
+        val updated = repo.finishPendingMapping(jobId, keyField, objectMapper.writeValueAsString(fields),
+            displayField, pendingReason.value, error)
+        if (updated == 0) return false
+        for ((targetId, mapping) in targetMappings) {
+            repo.updateTargetMapping(targetId,
+                mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
+        }
+        log.info("比对任务字段映射推导结束: id={}, 原因={}, 字段数={}, 目标数={}, 错误={}",
+            jobId, pendingReason, fields.size, targetMappings.size, error)
+        return true
+    }
+
+    /** 后台字段映射:给目标追加说明(单目标推导失败等;PENDING 目标行 error 列作说明用) */
+    fun notePendingTarget(targetId: Long, note: String) = repo.appendTargetNote(targetId, note)
+
+    /** 后台字段映射未结束前(MAPPING_RUNNING)不允许审核/编辑/开跑,避免与映射线程同时回写任务数据 */
+    private fun ensureMappingReady(job: CompareRepository.JobRow) {
+        if (job.pendingReason == PendingReason.MAPPING_RUNNING.value) {
+            throw IllegalStateException("字段映射正在后台推导,请稍候再操作")
+        }
+    }
+
+    /**
+     * 「字段审核」确认映射并开始比对(审核弹窗「确认并开始比对」= confirm + start 合并):仅 PENDING;
+     * 校验口径同 [submit](基准字段必须在比对字段内、目标列必须存在、映射必须含比对主键、目标缺主键列报错),
+     * 全量替换各目标 mapping 后 PENDING→RUNNING 进执行器。也是 DS_ERROR 任务的复活出口(先修数据源再确认)
+     */
+    fun confirmMapping(jobId: Long, mappings: Map<Long, Map<String, String>>) {
+        val job = repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
+        if (job.status != "PENDING") throw IllegalStateException("仅「待处理」任务可以确认字段映射")
+        ensureMappingReady(job)
+        val fields = parseFields(job.fieldsJson)
+        val baseColumns = columnsLister(job.baseDatasourceId, job.baseDb,
+            effectiveSchema(job.baseSchema, job.baseDb), job.baseTable)
+        if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: ${job.baseTable}")
+        val baseByName = baseColumns.associateBy { it.name.lowercase() }
+        val targets = repo.listTargets(jobId)
+        val targetsById = targets.associateBy { it.id }
+        for ((targetId, raw) in mappings) {
+            val t = targetsById[targetId]
+                ?: throw IllegalArgumentException("目标不属于该任务: $targetId")
+            val ds = dataSourceService.get(t.datasourceId)
+            val cols = columnsLister(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName)
+            if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段: ${ds.name}.${t.tableName}")
+            val colsByName = cols.associateBy { it.name.lowercase() }
+            val mapping = normalizeMapping(raw, fields, baseByName, colsByName, job.keyField)
+            val targetKey = mapping?.get(job.keyField) ?: job.keyField
+            if (colsByName[targetKey.lowercase()] == null) {
+                throw IllegalArgumentException("目标表缺少比对主键列: ${ds.name}.${t.tableName} 无 $targetKey")
+            }
+            repo.updateTargetMapping(targetId,
+                mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
+        }
+        if (repo.markPendingRunning(jobId, 1 + targets.size) == 0) {
+            throw IllegalStateException("任务状态已变化,请刷新后重试")
+        }
+        executor.execute { run(jobId) }
+        log.info("比对任务映射已确认,开始比对: id={}, 目标数={}", jobId, targets.size)
+    }
+
+    /**
+     * 「待处理」任务向导编辑提交:仅 PENDING;校验口径同 [submit](匹配逻辑/对比模式也随请求改,
+     * 编辑不做限制,与终态任务编辑同口径),tx 内替换 job 元数据 + 删旧 targets 重建(照 [rerun] 清空重建写法),
+     * 保持 PENDING——是否立即运行由前端再调 [confirmMapping]/[start]
+     */
+    fun updatePending(jobId: Long, req: CreateCompareJobRequest) {
+        val job = repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
+        if (job.status != "PENDING") throw IllegalStateException("仅「待处理」任务可以编辑")
+        ensureMappingReady(job)
+        val r = resolveRequest(req)
+        repo.replacePendingJob(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
+            r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size, r.displayField,
+            r.matchMode.value, r.compareMode.value,
+            r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table, it.mappingJson) })
+        log.info("待处理比对任务已更新: id={}, 名称={}, 目标数={}", jobId, r.name, r.targets.size)
+    }
+
+    /**
+     * 向导编辑提交统一入口(PUT /api/compare-jobs/{id}):
+     * PENDING(批量导入待处理)照 [updatePending] 口径保存并保持待处理;
+     * 终态(DONE/FAILED/CANCELED,已完成任务再次编辑)校验同 [submit]、匹配逻辑/对比模式允许改,
+     * tx 内替换元数据与目标清单并直接重跑(RUNNING),旧差异明细随目标清单一并清掉
+     */
+    fun update(jobId: Long, req: CreateCompareJobRequest) {
+        val job = repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
+        if (job.status == "PENDING") {
+            updatePending(jobId, req)
+            return
+        }
+        if (job.status == "RUNNING") throw IllegalStateException("任务运行中,不能编辑")
+        val r = resolveRequest(req)
+        val updated = repo.replaceAndRestart(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema,
+            r.baseTable, r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size,
+            r.displayField, r.matchMode.value, r.compareMode.value,
+            r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table, it.mappingJson) })
+        if (updated == 0) throw IllegalStateException("任务状态已变化,请刷新后重试")
+        executor.execute { run(jobId) }
+        log.info("比对任务已编辑并重跑: id={}, 名称={}, 目标数={}", jobId, r.name, r.targets.size)
+    }
+
+    /**
+     * 「待处理」任务直接开始比对(映射已就绪、无需再改的场景):仅 PENDING 且非 DS_ERROR
+     * (数据源异常必须先修数据源、走 [confirmMapping] 确认);PENDING→RUNNING 进执行器
+     */
+    fun start(jobId: Long) {
+        val job = repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
+        if (job.status != "PENDING") throw IllegalStateException("仅「待处理」任务可以开始比对")
+        ensureMappingReady(job)
+        if (job.pendingReason == PendingReason.DS_ERROR.value) {
+            throw IllegalStateException("任务涉及异常数据源,请先修复数据源并经「字段审核」确认后再开始")
+        }
+        val targets = repo.listTargets(jobId)
+        if (targets.isEmpty()) throw IllegalStateException("任务没有比对目标,不能开始比对")
+        if (repo.markPendingRunning(jobId, 1 + targets.size) == 0) {
+            throw IllegalStateException("任务状态已变化,请刷新后重试")
+        }
+        executor.execute { run(jobId) }
+        log.info("待处理比对任务开始执行: id={}, 目标数={}", jobId, targets.size)
+    }
+
     // ---------- 字段映射预生成(列级对比) ----------
 
     /**
@@ -264,8 +459,7 @@ class CompareService(
         // 基准侧:数据源存在 + 字段清单(请求字段归一为实际列名;留空 = 全部字段)
         dataSourceService.get(baseDsId)
         val baseDb = req.baseDb ?: ""
-        val baseColumns = metadataService.listTableColumns(
-            baseDsId, baseDb, effectiveSchema(req.baseSchema, baseDb), baseTable)
+        val baseColumns = columnsLister(baseDsId, baseDb, effectiveSchema(req.baseSchema, baseDb), baseTable)
         if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: $baseTable")
         val baseByName = baseColumns.associateBy { it.name.lowercase() }
         val fields = req.fields?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct()?.map { f ->
@@ -287,7 +481,7 @@ class CompareService(
             try {
                 val ds = dataSourceService.get(dsId)
                 val db = spec.db ?: ""
-                val cols = metadataService.listTableColumns(dsId, db, effectiveSchema(spec.schema, db), table)
+                val cols = columnsLister(dsId, db, effectiveSchema(spec.schema, db), table)
                 if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段")
                 val prompt = CompareMappingPrompts.buildMappingPrompt(
                     baseLoc, baseFieldItems, loc(db, spec.schema, table),
@@ -312,16 +506,20 @@ class CompareService(
 
     // ---------- 后台执行 ----------
 
-    /** 任务执行体:读基准全量 → 逐目标比对落明细与指标 → 完成;基准失败整个任务 FAILED,单目标失败不炸任务 */
+    /** 任务执行体:读基准全量 → 逐目标比对落明细与指标 → 完成;基准失败整个任务 FAILED,单目标失败不炸任务。
+     *  只接 RUNNING(PENDING 是等用户操作的静止状态,经 confirmMapping/start 翻转后才进执行器) */
     private fun run(jobId: Long) {
         val job = repo.getJob(jobId) ?: return
+        if (job.status != "RUNNING") {
+            log.warn("比对任务不在运行中,跳过执行: id={}, 状态={}", jobId, job.status)
+            return
+        }
         try {
             repo.updateStage(jobId, "连接数据源,读取基准表…")
             val baseDs = dataSourceService.get(job.baseDatasourceId)
             val baseDialect = dialectFactory.get(baseDs.dbType!!)
             val baseSchema = effectiveSchema(job.baseSchema, job.baseDb)
-            val baseColumns = metadataService.listTableColumns(
-                job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable)
+            val baseColumns = columnsLister(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable)
             val baseByName = baseColumns.associateBy { it.name.lowercase() }
             val fields = parseFields(job.fieldsJson)
             val keyColumn = baseByName[job.keyField.lowercase()]
@@ -336,6 +534,9 @@ class CompareService(
             if (mode.requiresName && displayField == null) {
                 log.warn("比对任务匹配逻辑 {} 缺少对象名称字段,退化为「只按编码对齐」: jobId={}", mode.value, jobId)
             }
+            // 基准表「数据最新更新时间」快照:探测时间字段取 MAX,失败/无字段留 NULL(导出留空)
+            repo.updateBaseDataUpdatedAt(jobId, detectLatestDataTime(
+                job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseColumns, baseDialect))
             val baseMap = loadRows(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseDialect,
                 fields.map { SelectedCol(it, baseByName.getValue(it.lowercase()).name) }, keyColumn.name)
             repo.updateProgress(jobId, 1, "基准表读取完成(共 ${baseMap.size} 行)")
@@ -378,7 +579,7 @@ class CompareService(
         val ds = dataSourceService.get(t.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
         val schema = effectiveSchema(t.schemaName, t.dbName)
-        val cols = metadataService.listTableColumns(t.datasourceId, t.dbName, schema, t.tableName)
+        val cols = columnsLister(t.datasourceId, t.dbName, schema, t.tableName)
         if (cols.isEmpty()) throw IllegalStateException("目标表不存在或没有字段: ${t.tableName}")
         val byName = cols.associateBy { it.name.lowercase() }
         val mapping = parseMapping(t.fieldMappingJson).mapKeys { it.key.lowercase() }
@@ -399,6 +600,9 @@ class CompareService(
                 mapping[f.lowercase()]?.let { col -> byName[col.lowercase()]?.let { SelectedCol(f, it.name) } }
             }
         }
+        // 目标表「数据最新更新时间」快照:口径同基准表(探测时间字段取 MAX,失败/无字段留 NULL)
+        repo.updateTargetDataUpdatedAt(t.id, detectLatestDataTime(
+            t.datasourceId, t.dbName, schema, t.tableName, cols, dialect))
         val targetMap = loadRows(t.datasourceId, t.dbName, schema, t.tableName, dialect, select, keyColumn.name)
 
         // 对象对齐:编码/名称两路(纯函数),匹配逻辑 3 再对残余调用大模型归一化补配
@@ -480,11 +684,69 @@ class CompareService(
         return map
     }
 
+    // ---------- 数据最新更新时间(导出总览) ----------
+
+    /**
+     * 探测并读取一张表的「数据最新更新时间」:名称/注释规则优先([CompareTimeFieldPrompts.detectByRule]),
+     * 没有命中则交大模型语义挑字段,命中后对该列执行 MAX() 取最新值。
+     * 任何一步失败(未配置大模型/调用失败/无合适字段/取数失败)都返回 null,由调用方落 NULL、导出留空,
+     * 绝不影响比对主流程(只记 debug)。
+     */
+    private fun detectLatestDataTime(datasourceId: Long, database: String, schema: String, table: String,
+                                     columns: List<ColumnMeta>, dialect: DbDialect): String? {
+        val column = try {
+            pickLatestTimeColumn(columns, table) { t, cols -> pickTimeColumnByAi(t, cols) }
+        } catch (e: Exception) {
+            log.debug("最新更新时间字段识别失败(忽略): {}: {}", table, e.message)
+            null
+        } ?: return null
+        return try {
+            dataSourceService.getConnection(datasourceId, database.ifBlank { null }).use { conn ->
+                conn.createStatement().use { stmt ->
+                    // 与分段扫描/比对读行同口径的单条 SQL 超时(系统设置可改)
+                    stmt.queryTimeout = systemSettingsService.scanSettings().statementTimeoutSeconds
+                    stmt.executeQuery(dialect.maxValueSql(schema, table, column.name)).use { rs ->
+                        if (rs.next()) formatLatestTime(rs.getObject(1)) else null
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log.debug("最新更新时间取数失败(忽略): {}.{}.{}: {}", database, schema, table, e.message)
+            null
+        }
+    }
+
+    /** 时间字段语义匹配:未配置大模型/调用失败返回 null(降级为导出留空,不炸任务) */
+    private fun pickTimeColumnByAi(table: String, columns: List<ColumnMeta>): ColumnMeta? {
+        val config = aiConfigService?.findConfig() ?: return null
+        val answer = try {
+            aiTimeChat.call(config, CompareTimeFieldPrompts.SYSTEM_PROMPT,
+                CompareTimeFieldPrompts.buildPrompt(table, columns))
+        } catch (e: Exception) {
+            log.debug("最新更新时间字段语义匹配调用失败(忽略): {}: {}", table, e.message)
+            return null
+        }
+        return CompareTimeFieldPrompts.parseAnswer(answer, columns)
+    }
+
+    /** MAX() 取值的展示格式化:时间族统一「yyyy-MM-dd HH:mm:ss」,其余原样 toString */
+    private fun formatLatestTime(value: Any?): String? = when (value) {
+        null -> null
+        is java.sql.Timestamp -> value.toLocalDateTime().format(LATEST_TIME_FORMATTER)
+        is java.time.LocalDateTime -> value.format(LATEST_TIME_FORMATTER)
+        is java.time.OffsetDateTime -> value.toLocalDateTime().format(LATEST_TIME_FORMATTER)
+        is java.time.Instant -> java.time.LocalDateTime.ofInstant(value, java.time.ZoneId.systemDefault())
+            .format(LATEST_TIME_FORMATTER)
+        is java.util.Date -> java.time.LocalDateTime.ofInstant(value.toInstant(), java.time.ZoneId.systemDefault())
+            .format(LATEST_TIME_FORMATTER)
+        else -> value.toString()
+    }
+
     // ---------- 查询 / 归档 / 删除 ----------
 
-    /** 任务列表(新的在前);includeArchived=true 时含已归档 */
-    fun list(includeArchived: Boolean): List<CompareJobView> =
-        repo.listJobs(includeArchived).map { toJobView(it) }
+    /** 任务列表(新的在前);includeArchived=true 时含已归档;filter 各维度下推 SQL AND 组合 */
+    fun list(includeArchived: Boolean, filter: CompareRepository.JobFilter = CompareRepository.JobFilter()): List<CompareJobView> =
+        repo.listJobs(includeArchived, filter).map { toJobView(it) }
 
     /** 后台任务中心轮询:RUNNING 任务瘦出行(跨全部库,1s 一轮;不解析比对字段 JSON/不解析数据源名) */
     fun listActive(): List<CompareJobActiveView> {
@@ -526,12 +788,22 @@ class CompareService(
         repo.setArchived(id, archived)
     }
 
-    /** 删除任务(tx 级联删三表);RUNNING 中禁止删 */
+    /** 删除任务(tx 级联删三表);RUNNING 中禁止删(PENDING 是静止状态,放行) */
     fun delete(id: Long) {
         val job = repo.getJob(id) ?: throw IllegalArgumentException("比对任务不存在: $id")
         if (job.status == "RUNNING") throw IllegalStateException("任务运行中,不能删除")
         repo.deleteJob(id)
         log.info("比对任务已删除: id={}, 名称={}", id, job.name)
+    }
+
+    /**
+     * 差异导出文件名:跟随任务名(`\/:*?"<>|` 清洗为 `_`),任务名为空回退旧格式「比对总览-{id}.xlsx」。
+     * 导入任务的任务名本身带 文件名-sheet 名,导出件可直接对上来源
+     */
+    fun exportFileName(id: Long): String {
+        val job = repo.getJob(id) ?: throw IllegalArgumentException("比对任务不存在: $id")
+        val base = job.name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        return if (base.isEmpty()) "比对总览-$id.xlsx" else "$base.xlsx"
     }
 
     // ---------- 差异导出 / 质量报告 ----------
@@ -561,12 +833,12 @@ class CompareService(
         if (targets.size > MAX_SHEETS - 1) {
             throw IllegalStateException("比对系统数超过 Excel 上限(${MAX_SHEETS - 1}),无法导出为比对报告")
         }
-        val counts = repo.countForExport(jobId)
         val context = exportContext(job, targets)
-        val overview = buildOverviewRows(job, targets, counts, context)
-        // 每目标差异明细只读一次:行级/字段级汇总与逐目标明细 sheet 复用同一份
+        // 每目标差异明细只读一次:总览「差异条数」、行级/字段级汇总与逐目标明细 sheet 复用同一份
         val diffsByTarget = LinkedHashMap<Long, List<CompareRepository.DiffRow>>()
         for (t in targets) diffsByTarget[t.id] = repo.listDiffsForExport(jobId, t.id)
+        val overview = buildOverviewRows(job, targets,
+            diffsByTarget.mapValues { (_, rows) -> objectLevelDiffs(job, rows) }, context)
 
         SXSSFWorkbook(SXSSF_ROW_WINDOW).use { wb ->
             // 差异高亮样式(与前端差异明细页问题格同一底色 #ffebee):一眼定位不一致单元格
@@ -603,7 +875,7 @@ class CompareService(
 
     /** 总览行构建(纯函数,便于单测):第一行为基准表本身(无目标 id、与基准差留空),之后一行一个比对目标 */
     internal fun buildOverviewRows(job: CompareRepository.JobRow, targets: List<CompareRepository.TargetRow>,
-                                   counts: Map<Long, Map<String, Int>>,
+                                   objectDiffs: Map<Long, ObjectLevelDiffs>,
                                    ctx: ExportContext): List<CompareExportOverviewRow> {
         val baseCount = targets.mapNotNull { it.baseCount }.maxOrNull()
         val rows = ArrayList<CompareExportOverviewRow>(targets.size + 1)
@@ -612,7 +884,8 @@ class CompareService(
             tableComment = ctx.comment(job.baseDatasourceId, job.baseDb, job.baseTable),
             systemName = ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable),
             rowCount = baseCount,
-            dataUpdatedAt = DATA_UPDATED_AT_PLACEHOLDER,
+            // 数据最新更新时间 = 比对执行时探测时间字段取 MAX 的快照;没有可用字段/取数失败/老任务留空
+            dataUpdatedAt = job.baseDataUpdatedAt.orEmpty(),
             diffFromBase = null,
             matchedCount = null,
             diffCount = null,
@@ -628,16 +901,59 @@ class CompareService(
                 tableComment = ctx.comment(t.datasourceId, t.dbName, t.tableName),
                 systemName = ctx.systemName(t.datasourceId, t.dbName, t.tableName),
                 rowCount = targetCount,
-                dataUpdatedAt = DATA_UPDATED_AT_PLACEHOLDER,
+                // 口径同基准行:该目标表探测到的时间字段 MAX 快照,没有则留空
+                dataUpdatedAt = t.dataUpdatedAt.orEmpty(),
                 diffFromBase = if (targetCount != null && perTargetBase != null) targetCount - perTargetBase else null,
                 matchedCount = t.matchedCount,
-                // 差异条数 = 非 SAME 差异行数(缺失 + 多余 + 不一致对象,不含 SAME)
-                diffCount = counts[t.id].orEmpty().values.sum(),
-                diffReason = t.diffReason(baseCount = perTargetBase, targetCount = targetCount),
+                // 差异条数 = 对象级差异(缺失 + 多余 + 编码不一致的对象),
+                // 纯字段值不一致不计(名称等字段差异由字段级汇总/明细 sheet 展开),与「行级对比明细」同口径
+                diffCount = objectDiffs[t.id]?.total ?: 0,
+                diffReason = t.diffReason(baseCount = perTargetBase, targetCount = targetCount,
+                    identityDiff = objectDiffs[t.id]?.identity ?: 0),
                 targetId = t.id,
             ))
         }
         return rows
+    }
+
+    /** 总览「差异条数」用的对象级差异计数:缺失 + 多余 + 身份(对象编码)不一致,纯字段值不一致不计 */
+    internal data class ObjectLevelDiffs(val missing: Int, val extra: Int, val identity: Int) {
+        val total: Int get() = missing + extra + identity
+    }
+
+    /** 按目标统计对象级差异(与行级对比明细同口径):MISSING/EXTRA 恒为对象级差异,DIFF 看两侧对象编码取值 */
+    private fun objectLevelDiffs(job: CompareRepository.JobRow,
+                                 rows: List<CompareRepository.DiffRow>): ObjectLevelDiffs {
+        var missing = 0
+        var extra = 0
+        var identity = 0
+        for (row in rows) {
+            when (row.diffType) {
+                "MISSING" -> missing++
+                "EXTRA" -> extra++
+                else -> if (hasIdentityDiff(job, row, parseValueMap(row.diffJson))) identity++
+            }
+        }
+        return ObjectLevelDiffs(missing, extra, identity)
+    }
+
+    /** DIFF 行目标侧身份取值(编码 to 名称):diff_json 快照优先,缺快照/字段缺失标记时回落 object_key/object_name */
+    private fun targetIdentity(job: CompareRepository.JobRow, row: CompareRepository.DiffRow,
+                               rowMap: Map<String, FieldDiff>): Pair<String?, String?> =
+        (rowMap[job.keyField]?.value?.takeIf { it != MISSING_COLUMN_MARK } ?: row.objectKey) to
+            (job.displayField?.let { rowMap[it]?.value?.takeIf { v -> v != MISSING_COLUMN_MARK } }
+                ?: row.objectName)
+
+    /**
+     * 是否对象身份层面的差异:身份字段取任务的**比对主键(对象编码)**——编码相同即同一个对象,
+     * 名称只是显示/兜底对齐字段,取值不同属普通字段差异(由字段级汇总与各目标明细 sheet 展开),
+     * **不计入对象级差异**;按名称/大模型兜底配上的对象两侧编码不同,仍算身份差异。
+     * 总览「差异条数」与「行级对比明细」共用本口径(与任务匹配逻辑的身份字段一致)。
+     */
+    private fun hasIdentityDiff(job: CompareRepository.JobRow, row: CompareRepository.DiffRow,
+                                rowMap: Map<String, FieldDiff>): Boolean {
+        val targetCode = rowMap[job.keyField]?.value?.takeIf { it != MISSING_COLUMN_MARK } ?: row.objectKey
+        return row.objectKey.orEmpty() != targetCode.orEmpty()
     }
 
     /**
@@ -760,8 +1076,9 @@ class CompareService(
      * - 编码/名称取双侧各自取值:DIFF 行业务侧优先取 diff_json 里目标侧真实值(靠名称/大模型配上的对象
      *   两侧编码不同,差异照常体现;老紧凑格式没有该字段快照时回落基准侧);MISSING 行业务侧留空、
      *   EXTRA 行基准侧留空(object_key/object_name 此时即目标侧取值)
-     * - 只列身份层面有差异的行:编码/名称是「选择基准表」里指定的对齐键,DIFF 行两侧都一致的
-     *   直接跳过(其字段级不一致在各目标明细 sheet 体现);MISSING/EXTRA 行天然是身份差异,始终列出
+     * - 只列身份层面有差异的行:**身份字段取比对主键(对象编码)**——DIFF 行两侧编码一致的直接跳过
+     *   (名称等字段级不一致在各目标明细 sheet 体现),编码不同的(按名称/大模型兜底配上的)才列出;
+     *   MISSING/EXTRA 行天然是对象级差异,始终列出
      * - 差异说明:DIFF 只展开身份字段(编码/名称)的差异(见 [describeDiff],字段名取基准表注释;
      *   其余字段的不一致属列级口径,不在此展开),MISSING/EXTRA 写「基准有目标无」/「目标有基准无」
      * - 差异类型(末列,见 [rowLevelTypeLabel]):不一致(DIFF)/ 缺失(MISSING)/ 多余(EXTRA),
@@ -791,20 +1108,12 @@ class CompareService(
                 val rowMap = parseValueMap(row.diffJson)
                 val extra = row.diffType == "EXTRA"
                 // 业务侧编码/名称:DIFF 从 diff_json 取目标侧真实值(缺快照/缺列时回落基准侧),MISSING 留空
-                val targetCode = if (row.diffType == "DIFF")
-                    rowMap[job.keyField]?.value?.takeIf { it != MISSING_COLUMN_MARK } ?: row.objectKey
-                else null
-                val targetName = if (row.diffType == "DIFF")
-                    job.displayField?.let { rowMap[it]?.value?.takeIf { v -> v != MISSING_COLUMN_MARK } }
-                        ?: row.objectName
-                else null
+                val (targetCode, targetName) =
+                    if (row.diffType == "DIFF") targetIdentity(job, row, rowMap) else (null to null)
 
-                // 行级 sheet 只呈现对象身份(编码/名称)层面的差异:身份两字段是「选择基准表」里
-                // 指定的对齐键,DIFF 行两侧编码、名称都一致时,差异纯属字段级(各目标明细 sheet 已展开),
-                // 此处不再占位
-                if (row.diffType == "DIFF" &&
-                    row.objectKey.orEmpty() == targetCode.orEmpty() &&
-                    row.objectName.orEmpty() == targetName.orEmpty()) continue
+                // 行级 sheet 只呈现对象身份(对象编码)层面的差异:编码是「选择基准表」里指定的对齐键,
+                // DIFF 行两侧编码一致时,差异纯属字段级(名称等,各目标明细 sheet 已展开),此处不再占位
+                if (row.diffType == "DIFF" && !hasIdentityDiff(job, row, rowMap)) continue
 
                 val excelRow = sheet.createRow(r++)
                 excelRow.createCell(0).setCellValue(job.baseTable)
@@ -836,12 +1145,13 @@ class CompareService(
     /**
      * 字段级差异汇总 sheet(固定第三个 sheet,始终生成):一行一个「比对目标 × 基准字段」,
      * 统计该字段的差异数量并按 缺失/多余/不一致 三类拆分(差异相对基准而言):
-     * - 首行即表头:业务表英文名/业务表中文名 + 基准表字段/字段中文(无注释留空)+ 业务表字段 +
-     *   差异数量/缺失/多余/不一致(数值列)
+     * - 首行即表头:业务表英文名/业务表中文名 + 基准表字段/字段中文(无注释留空)+ 业务表字段/业务表字段中文
+     *   (目标表该列注释,无注释留空)+ 差异数量/缺失/多余/不一致(数值列)
      * - **只列与业务表有连线的字段**:任务带显式字段映射(第三步人工连线)时只列映射键对应的基准字段,
      *   未连线的基准字段(比对时对该目标按「字段缺失」计)属噪音不再列出;
      *   无映射(按名称自动匹配,老任务)时列全部比对字段
-     * - 业务表字段 = 映射里该基准字段连到的目标列名;无映射按基准字段同名(自动匹配口径)
+     * - 业务表字段 = 映射里该基准字段连到的目标列名;无映射按基准字段同名(自动匹配口径);
+     *   业务表字段中文 = 目标表该列注释(取不到留空)
      * - 不一致 = 该字段在 DIFF 行里的不一致次数(口径同 [FieldDiff.isMismatch],含目标缺列);
      *   缺失/多余 = 该目标的 MISSING/EXTRA 对象数(对象级差异,整行缺失/多余即每个比对字段都缺/多,
      *   故同目标各字段同值);差异数量 = 缺失 + 多余 + 不一致 三类合计
@@ -886,17 +1196,21 @@ class CompareService(
                     break@loop
                 }
                 val mismatch = mismatchByField[f] ?: 0
+                val targetColumn = mappingLower[f.lowercase()] ?: f
                 val excelRow = sheet.createRow(r++)
                 excelRow.createCell(0).setCellValue(t.tableName)
                 excelRow.createCell(1).setCellValue(targetComment)
                 excelRow.createCell(2).setCellValue(f)
                 excelRow.createCell(3).setCellValue(
                     ctx.fieldComment(job.baseDatasourceId, job.baseDb, job.baseTable, f).orEmpty())
-                excelRow.createCell(4).setCellValue(mappingLower[f.lowercase()] ?: f)
-                ExcelCells.cell(excelRow.createCell(5), missing + extra + mismatch)
-                ExcelCells.cell(excelRow.createCell(6), missing)
-                ExcelCells.cell(excelRow.createCell(7), extra)
-                ExcelCells.cell(excelRow.createCell(8), mismatch)
+                excelRow.createCell(4).setCellValue(targetColumn)
+                // 业务表字段中文 = 目标表该列注释;目标表无此列/无注释都留空
+                excelRow.createCell(5).setCellValue(
+                    ctx.fieldComment(t.datasourceId, t.dbName, t.tableName, targetColumn).orEmpty())
+                ExcelCells.cell(excelRow.createCell(6), missing + extra + mismatch)
+                ExcelCells.cell(excelRow.createCell(7), missing)
+                ExcelCells.cell(excelRow.createCell(8), extra)
+                ExcelCells.cell(excelRow.createCell(9), mismatch)
             }
         }
         if (truncated) {
@@ -1168,8 +1482,9 @@ class CompareService(
      *   业务表块(业务表字段名/业务表中文/业务表值)+ 末列「差异原因」
      * - 其后一行一个「对象 × 字段」:DIFF 行逐不一致字段各出一行,两侧块分别填字段英文名、
      *   中文注释(无注释留空)、取值——业务表字段名按任务字段映射还原目标列名(无映射按同名);
-     *   差异格红底 = 基准/业务两个取值格标红;目标缺列时业务侧字段名/中文/值都留空、差异原因写
-     *   「业务表无此字段」。
+     *   差异格红底 = 基准/业务两个取值格标红。
+     *   **业务表没有该列的字段(「字段缺失」按不一致计的)不落本 sheet**——那是两侧表结构差异、
+     *   不是基准与业务表之间的数据差异;整行只剩这类字段的对象在本 sheet 也不出现。
      *   MISSING/EXTRA 整行缺失/多余:该对象的全部比对字段都缺/多,按 diff_json 整行快照逐字段展开
      *   (一字段一行)——MISSING 基准块照常填、业务表值留空(列在行不在),EXTRA 反之;
      *   缺失侧取值格与差异原因标红,差异原因写「基准有目标无」/「目标有基准无」;
@@ -1226,20 +1541,16 @@ class CompareService(
                 val missingRow = row.diffType == "MISSING"
                 val extraRow = row.diffType == "EXTRA"
                 val targetColumn = mapping[d.field.lowercase()] ?: d.field
-                // 目标缺列(仅 DIFF):业务侧字段名/中文/值都留空(业务表没有该列,差异原因已写「业务表无此字段」),
-                // 不展示按同名推出来的列名,也不展示内部标记
-                val missingColumn = !missingRow && !extraRow && d.value == MISSING_COLUMN_MARK
                 excelRow.createCell(prefix + 2).setCellValue(d.field)
                 excelRow.createCell(prefix + 3).setCellValue(
                     ctx.fieldComment(job.baseDatasourceId, job.baseDb, job.baseTable, d.field).orEmpty())
                 val baseCell = excelRow.createCell(prefix + 4)
                 baseCell.setCellValue(if (extraRow) "" else d.base.orEmpty())
-                excelRow.createCell(prefix + 5).setCellValue(if (missingColumn) "" else targetColumn)
+                excelRow.createCell(prefix + 5).setCellValue(targetColumn)
                 excelRow.createCell(prefix + 6).setCellValue(
-                    if (missingColumn) ""
-                    else ctx.fieldComment(t.datasourceId, t.dbName, t.tableName, targetColumn).orEmpty())
+                    ctx.fieldComment(t.datasourceId, t.dbName, t.tableName, targetColumn).orEmpty())
                 val targetCell = excelRow.createCell(prefix + 7)
-                targetCell.setCellValue(if (missingColumn || missingRow) "" else d.value.orEmpty())
+                targetCell.setCellValue(if (missingRow) "" else d.value.orEmpty())
                 // 标红:DIFF 标基准/业务两个取值格;MISSING/EXTRA 只标缺失侧取值格
                 when {
                     missingRow -> targetCell.cellStyle = diffStyle
@@ -1274,10 +1585,11 @@ class CompareService(
                         written++
                         continue@loop
                     }
-                    for (d in mismatched) {
+                    // 业务表没有该列(「字段缺失」按不一致计)属两侧表结构差异,不是数据差异,本 sheet 不落;
+                    // 整行只剩这类字段的对象因此也不出现在本 sheet(差异仍计入总览/质量报告口径)
+                    for (d in mismatched.filter { it.value != MISSING_COLUMN_MARK }) {
                         if (written >= MAX_ROWS_PER_SHEET) { truncated = true; break@loop }
-                        writeRow(row, d,
-                            if (d.value == MISSING_COLUMN_MARK) REASON_MISSING_COLUMN else REASON_TEXT_DIFF)
+                        writeRow(row, d, REASON_TEXT_DIFF)
                         written++
                     }
                 }
@@ -1345,15 +1657,17 @@ class CompareService(
     private fun CompareRepository.TargetRow.targetCountOrFallback(): Int? = targetCount ?: fallbackTargetCount(this)
 
     /** 差异原因:自动按差异构成拼写(可导出后人工补充);目标未完成时给出明确说明 */
-    private fun CompareRepository.TargetRow.diffReason(baseCount: Int?, targetCount: Int?): String? {
+    private fun CompareRepository.TargetRow.diffReason(baseCount: Int?, targetCount: Int?,
+                                                       identityDiff: Int = 0): String? {
         if (status != "DONE") return "比对未完成($status)" + (error?.let { ":$it" } ?: "")
         val extra = extraCount ?: 0
         val missing = missingCount ?: 0
         val mismatch = fieldMismatchCount ?: 0
         if (extra == 0 && missing == 0 && mismatch == 0) return "与基准完全一致"
-        val parts = ArrayList<String>(4)
+        val parts = ArrayList<String>(5)
         if (missing > 0) parts.add("基准有目标无的对象 $missing 条")
         if (extra > 0) parts.add("目标有基准无的对象 $extra 条")
+        if (identityDiff > 0) parts.add("编码不一致的对象 $identityDiff 条")
         if (mismatch > 0) parts.add("字段不一致单元格 $mismatch 处")
         if (baseCount != null && targetCount != null && baseCount != targetCount) {
             parts.add("行数相差 ${targetCount - baseCount}(目标 $targetCount / 基准 $baseCount)")
@@ -1400,16 +1714,40 @@ class CompareService(
         )
     }
 
-    /** 服务重启恢复:残留 RUNNING 任务置 FAILED(ServiceEnv.initDatabase 装配时调用一次) */
+    /**
+     * 服务重启恢复:残留 RUNNING 任务置 FAILED(ServiceEnv.initDatabase 装配时调用一次);
+     * 批量导入侧残留「映射推导中」的 PENDING 任务转 MAPPING_REVIEW(推导线程已随重启消亡,
+     * 映射只落了表格锁定项,人工在审核画布补线即可开跑——这是复活出口)
+     */
     fun recoverUnfinished() {
         val n = repo.failRunningOnStartup("应用重启,任务中断")
         repo.failUnfinishedTargets("应用重启,任务中断")
+        val m = repo.recoverMappingOnStartup("应用重启,映射推导中断,请人工审核补线")
         if (n > 0) {
             log.warn("服务重启,{} 个未完成的比对任务已置为失败", n)
+        }
+        if (m > 0) {
+            log.warn("服务重启,{} 个批量导入任务的映射推导中断,已转「映射待审核」", m)
         }
     }
 
     // ---------- 内部辅助 ----------
+
+    /**
+     * 按数据源方言做库/schema 口径归一(批量导入落库与任务视图层共用):早期批量导入把表格「数据库名称」
+     * 整体存进 db、schema 留空,与手工建任务口径(单库方言 db 空、schema=库名)不一致,前端编辑向导/
+     * 字段审核画布按 schemas/{schema}/ 拼字段接口路径会 404(执行路径有 effectiveSchema 兜底,不受影响)。
+     * 数据源已删/方言取不到时按单库口径归一(与差异导出「模式」列显隐的假设一致),保证 schema 有值可读
+     */
+    fun normalizeLocation(datasourceId: Long, db: String?, schema: String?): Pair<String, String?> {
+        val multiDb = try {
+            dataSourceService.get(datasourceId).dbType
+                ?.let { dialectFactory.get(it).supportsMultiDatabase() } == true
+        } catch (e: Exception) {
+            false
+        }
+        return normalizeDbSchema(db, schema, multiDb)
+    }
 
     private fun toJobView(r: CompareRepository.JobRow): CompareJobView {
         val dsName = try {
@@ -1417,23 +1755,28 @@ class CompareService(
         } catch (e: Exception) {
             null // 数据源已删除:名称留空,不影响任务展示
         }
+        val (db, schema) = normalizeLocation(r.baseDatasourceId, r.baseDb, r.baseSchema)
         return CompareJobView(
-            r.id, r.name, r.baseDatasourceId, dsName, r.baseDb, r.baseSchema, r.baseTable, r.keyField,
+            r.id, r.name, r.baseDatasourceId, dsName, db, schema, r.baseTable, r.keyField,
             r.displayField, r.matchMode, r.compareMode ?: CompareMode.ROW.value, parseFields(r.fieldsJson),
             r.status, r.stage, r.totalUnits, r.doneUnits,
             if (r.totalUnits > 0) r.doneUnits * 100 / r.totalUnits else 0,
             r.error, r.archived, r.createdAt, r.startedAt, r.finishedAt,
-            r.startedAt?.let { Duration.between(it, r.finishedAt ?: LocalDateTime.now()).toMillis() })
+            r.startedAt?.let { Duration.between(it, r.finishedAt ?: LocalDateTime.now()).toMillis() },
+            r.pendingReason, r.objectCategory, r.importId, r.importFileName)
     }
 
-    private fun toTargetView(t: CompareRepository.TargetRow) = CompareTargetView(
-        t.id, t.datasourceId, t.dsName, t.dbName, t.schemaName, t.tableName, t.status,
-        t.baseCount, t.targetCount, t.matchedCount,
-        // 老任务没有匹配来源计数:编码命中视为全部命中,名称/大模型补配记 0
-        t.codeMatchedCount ?: t.matchedCount, t.nameMatchedCount ?: 0, t.aiMatchedCount ?: 0,
-        t.missingCount, t.extraCount, t.fieldMismatchCount,
-        t.coverage, t.fieldConsistency, t.completeness, t.score, t.error,
-        parseMapping(t.fieldMappingJson).takeIf { it.isNotEmpty() })
+    private fun toTargetView(t: CompareRepository.TargetRow): CompareTargetView {
+        val (db, schema) = normalizeLocation(t.datasourceId, t.dbName, t.schemaName)
+        return CompareTargetView(
+            t.id, t.datasourceId, t.dsName, db, schema, t.tableName, t.status,
+            t.baseCount, t.targetCount, t.matchedCount,
+            // 老任务没有匹配来源计数:编码命中视为全部命中,名称/大模型补配记 0
+            t.codeMatchedCount ?: t.matchedCount, t.nameMatchedCount ?: 0, t.aiMatchedCount ?: 0,
+            t.missingCount, t.extraCount, t.fieldMismatchCount,
+            t.coverage, t.fieldConsistency, t.completeness, t.score, t.error,
+            parseMapping(t.fieldMappingJson).takeIf { it.isNotEmpty() })
+    }
 
     private fun parseFields(json: String?): List<String> =
         json?.let {
@@ -1605,13 +1948,16 @@ class CompareService(
         /** 列级对比明细 sheet 名(固定第五个 sheet):所有比对系统逐字段取值横向合并,左侧 5 列冻结 */
         private const val MERGED_DETAIL_SHEET_NAME = "列级对比明细"
 
-        /** 列级对比明细「差异原因」:该字段在此系统未连线、未参与比对(各系统比对字段取并集,缺的系统占位) */
+        /** 列级对比明细「差异原因」:该字段在此系统未连线、未参与比对(各系统比对字段取并集,缺的系统占位);
+         *  注意与 [REASON_MISSING_COLUMN]「业务表无此字段」区分:这里是**没连线/没比对**,不是业务表缺这一列 */
         private const val REASON_NOT_COMPARED = "未比对(无此字段)"
 
         /** 字段级差异汇总表头:按「比对目标 × 基准字段」统计差异数量,并按 缺失/多余/不一致 三类拆分;
-         *  业务表字段 = 字段映射里该基准字段连到的目标列(无映射按同名,自动匹配口径) */
+         *  业务表字段 = 字段映射里该基准字段连到的目标列(无映射按同名,自动匹配口径);
+         *  业务表字段中文 = 目标表该列的注释(无注释留空,不回落字段名) */
         private val FIELD_SUMMARY_HEADERS = listOf(
-            "业务表英文名", "业务表中文名", "基准表字段", "字段中文", "业务表字段", "差异数量", "缺失", "多余", "不一致")
+            "业务表英文名", "业务表中文名", "基准表字段", "字段中文", "业务表字段", "业务表字段中文",
+            "差异数量", "缺失", "多余", "不一致")
 
         /** 行级对比明细表头:基准/业务两侧各 表英文名/表中文名/编码/名称 + 差异说明 + 末列差异类型 */
         private val ROW_LEVEL_HEADERS = listOf(
@@ -1654,8 +2000,16 @@ class CompareService(
         /** 差异原因:目标表缺该列 */
         private const val REASON_MISSING_COLUMN = "业务表无此字段"
 
-        /** 「数据最新更新时间」当前未采集,导出统一占位 */
-        private const val DATA_UPDATED_AT_PLACEHOLDER = "—"
+        /** 「数据最新更新时间」MAX() 取值的展示格式(时间族统一到秒) */
+        private val LATEST_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+        /**
+         * 时间字段选取:名称/注释规则优先([CompareTimeFieldPrompts.detectByRule]),
+         * 未命中且提供了 [aiPicker](大模型语义匹配;未配置大模型时传 null)才交大模型;[aiPicker] 返回 null 表示也没有
+         */
+        internal fun pickLatestTimeColumn(columns: List<ColumnMeta>, table: String,
+                                          aiPicker: ((String, List<ColumnMeta>) -> ColumnMeta?)?): ColumnMeta? =
+            CompareTimeFieldPrompts.detectByRule(columns) ?: aiPicker?.invoke(table, columns)
 
         /** 基准行差异原因占位 */
         private const val BASELINE_REASON = "基准表(不参与差异统计)"
@@ -1675,6 +2029,15 @@ class CompareService(
         /** schema 归一:未填时用库名兜底(MySQL 场景 schema=库名,与抽样导出口径一致) */
         internal fun effectiveSchema(schema: String?, db: String): String =
             schema?.takeIf { it.isNotBlank() } ?: db.takeIf { it.isNotBlank() } ?: ""
+
+        /**
+         * 库/schema 存储口径归一(纯函数):单库方言「库就是 schema」——schema 空而 db 有值时把 db 并回
+         * schema、db 置空,与手工建任务口径一致(前端选表/字段接口一律按 schemas/{schema}/ 拼路径,
+         * schema 空串会拼出 // 直接 404);多库方言(db/schema 各一层)或本就合规的行原样返回
+         */
+        internal fun normalizeDbSchema(db: String?, schema: String?, multiDb: Boolean): Pair<String, String?> =
+            if (!multiDb && schema.isNullOrBlank() && !db.isNullOrBlank()) Pair("", db.trim())
+            else Pair(db.orEmpty(), schema)
 
         /** 是否文本型字段(显示名选取口径:字符型或 CLOB) */
         internal fun isTextType(c: ColumnMeta): Boolean =
@@ -1886,7 +2249,11 @@ class CompareService(
  * [LEGACY] 不是用户可选项:老任务 match_mode 为空时按「只按对象编码对齐」解读,保证历史结果口径不回归。
  */
 enum class MatchMode(val value: String, val label: String) {
-    /** 选项 1(界面默认):对象编码与对象名称都完全相等才算同一对象 */
+    /**
+     * 选项 1(界面默认;界面文案「编码+名称」是历史叫法,不代表名称参与配对):
+     * **只按对象编码配对**——编码相同即同一对象,名称写法不同也算命中(名称差异按字段级 DIFF 体现);
+     * 编码没配上的对象不做名称/大模型补配,直接判缺失/多余
+     */
     EXACT("EXACT", "编码+名称"),
     /** 旧版选项(界面不再提供,存量任务兼容保留):有编码先用编码配,编码没配上的再用对象名称配 */
     CODE_THEN_NAME("CODE_THEN_NAME", "先编码后名称"),

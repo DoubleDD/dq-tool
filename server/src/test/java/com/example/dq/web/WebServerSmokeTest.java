@@ -858,4 +858,87 @@ class WebServerSmokeTest {
             stub.stop(0);
         }
     }
+
+    @Test
+    void 比对导入模版下载与导入端点门禁() throws Exception {
+        // 无 compare 菜单的授权:比对导入批次/模版/确认映射/编辑一律 403(compare 是受控功能,同 /api/compare-jobs 门禁)
+        activateLicense();
+        assertEquals(403, get("/api/compare-imports/1").statusCode());
+        assertEquals(403, get("/api/compare-imports/1/file").statusCode());
+        assertEquals(403, get("/api/compare-import-template").statusCode());
+        assertEquals(403, send("POST", "/api/compare-imports/1/confirm", null).statusCode());
+        assertEquals(403, send("POST", "/api/compare-jobs/1/confirm-mapping", "{\"mappings\":{}}").statusCode());
+        assertEquals(403, send("POST", "/api/compare-jobs/1/start", null).statusCode());
+        assertEquals(403, send("PUT", "/api/compare-jobs/1", "{}").statusCode());
+
+        // 开放 compare 菜单后:模版 200,返回 xlsx 文件流(避开 /api/compare-imports/{id} 前缀,不被 {id} 路由吃掉)
+        activateLicense("compare");
+        HttpResponse<byte[]> tpl = client.send(HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + server.port() + "/api/compare-import-template")).build(),
+                HttpResponse.BodyHandlers.ofByteArray());
+        assertEquals(200, tpl.statusCode());
+        assertTrue(tpl.headers().firstValue("Content-Disposition").orElse("").contains("attachment"),
+                String.valueOf(tpl.headers().map()));
+        assertTrue(tpl.body().length > 4 && tpl.body()[0] == 'P' && tpl.body()[1] == 'K', "应为 xlsx(zip) 文件流");
+    }
+
+    @Test
+    void 比对导入批次端点错误映射与未配置大模型拦截() throws Exception {
+        activateLicense("compare");
+        // 批次不存在:详情/原件下载/确认 → 400 统一映射(路由可达)
+        for (String path : new String[]{"/api/compare-imports/999999", "/api/compare-imports/999999/file"}) {
+            HttpResponse<String> resp = get(path);
+            assertEquals(400, resp.statusCode(), path + " -> " + resp.body());
+            assertTrue(resp.body().contains("导入批次不存在"), resp.body());
+        }
+        assertEquals(400, send("POST", "/api/compare-imports/999999/confirm", null).statusCode());
+
+        // confirm 可选 body(用户改绑映射):坏 JSON → 400;合法 body(含 null 值=待新建)→ 走到批次校验(不存在 400)
+        HttpResponse<String> badJson = send("POST", "/api/compare-imports/1/confirm", "not-json");
+        assertEquals(400, badJson.statusCode(), badJson.body());
+        assertTrue(badJson.body().contains("JSON"), badJson.body());
+        HttpResponse<String> mapped = send("POST", "/api/compare-imports/999999/confirm",
+                "{\"mapping\":{\"k1\":null,\"k2\":123}}");
+        assertEquals(400, mapped.statusCode(), mapped.body());
+        assertTrue(mapped.body().contains("导入批次不存在"), mapped.body());
+
+        // 未配置大模型:导入入口即拦 409(提示先完成 AI 配置,文件不落盘)
+        byte[] tpl = client.send(HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + server.port() + "/api/compare-import-template")).build(),
+                HttpResponse.BodyHandlers.ofByteArray()).body();
+        String boundary = "----dq-test-boundary";
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"tasks.xlsx\"\r\n"
+                + "Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n")
+                .getBytes(StandardCharsets.UTF_8));
+        body.write(tpl);
+        body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        HttpRequest upload = HttpRequest.newBuilder(
+                        URI.create("http://localhost:" + server.port() + "/api/compare-imports"))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+                .build();
+        HttpResponse<String> resp = client.send(upload, HttpResponse.BodyHandlers.ofString());
+        assertEquals(409, resp.statusCode(), resp.body());
+        assertTrue(resp.body().contains("AI 配置"), resp.body());
+    }
+
+    @Test
+    void 比对确认映射与编辑端点路由可达且错误映射() throws Exception {
+        activateLicense("compare");
+        // 任务不存在 → 400(路由可达;mappings 键 targetId 字符串转 Long 正常)
+        HttpResponse<String> cm = send("POST", "/api/compare-jobs/999999/confirm-mapping",
+                "{\"mappings\":{\"12\":{\"code\":\"code\"}}}");
+        assertEquals(400, cm.statusCode(), cm.body());
+        assertTrue(cm.body().contains("比对任务不存在"), cm.body());
+        // targetId 键非法 → 400 统一映射
+        assertEquals(400, send("POST", "/api/compare-jobs/999999/confirm-mapping",
+                "{\"mappings\":{\"abc\":{}}}").statusCode());
+        // 向导编辑提交:任务不存在 → 400(请求体先过与 submit 同口径校验)
+        assertEquals(400, send("PUT", "/api/compare-jobs/999999", "{}").statusCode());
+        // 待处理直启:任务不存在 → 400(路由可达)
+        HttpResponse<String> st = send("POST", "/api/compare-jobs/999999/start", null);
+        assertEquals(400, st.statusCode(), st.body());
+        assertTrue(st.body().contains("比对任务不存在"), st.body());
+    }
 }

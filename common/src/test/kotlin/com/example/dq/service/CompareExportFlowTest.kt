@@ -114,9 +114,12 @@ class CompareExportFlowTest {
             assertEquals("reservoir_base_info", overview.getRow(1).getCell(1).stringCellValue)
             assertEquals(100.0, overview.getRow(1).getCell(3).numericCellValue)
             assertEquals("水库基础信息表", overview.getRow(1).getCell(0).stringCellValue)
+            // 数据最新更新时间:比对时按名称命中 update_time → MAX(update_time),两侧各取各自最新
+            assertEquals("2026-01-03 07:30:00", overview.getRow(1).getCell(4).stringCellValue)
             assertEquals("t_reservoir_info", overview.getRow(2).getCell(1).stringCellValue)
             assertEquals("厂商运管系统", overview.getRow(2).getCell(2).stringCellValue)
             assertEquals(101.0, overview.getRow(2).getCell(3).numericCellValue)
+            assertEquals("2026-02-02 10:00:00", overview.getRow(2).getCell(4).stringCellValue)
             assertEquals(1.0, overview.getRow(2).getCell(5).numericCellValue)
             assertTrue(overview.getRow(2).getCell(8).stringCellValue.contains("行数相差 1"),
                 overview.getRow(2).getCell(8).stringCellValue)
@@ -127,25 +130,32 @@ class CompareExportFlowTest {
             assertEquals("数据级字段对比差异总览", wb.getSheetName(3))
             assertEquals("列级对比明细", wb.getSheetName(4))
             assertTrue(wb.getSheetName(5).startsWith("1_t_reservoir_info"), wb.getSheetName(5))
-            // 行级对比明细:首行即表头,一行一个「对象 × 比对目标」;R001 按编码配上,业务侧名称取目标真实值
+            // 行级对比明细:首行即表头,一行一个「对象 × 比对目标」;只列对象级差异(缺失/多余/编码不一致),
+            // 5 条仅名称改动的对象按编码配上,属字段级差异,不在本 sheet(见下方各目标明细 sheet)
             val rowLevel = wb.getSheetAt(1)
             assertEquals(listOf("基准表英文名", "基准表中文名", "基准编码", "基准名称",
                 "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明", "差异类型"),
                 (0..9).map { rowLevel.getRow(0).getCell(it).stringCellValue })
-            assertEquals(listOf("reservoir_base_info", "水库基础信息表", "R001", "水库1",
-                "t_reservoir_info", "", "R001", "改名水库1",
-                "reservoir_name: 基准「水库1」→ 目标「改名水库1」", "不一致"),
+            assertEquals(listOf("reservoir_base_info", "水库基础信息表", "R091", "水库91",
+                "t_reservoir_info", "", "", "", "基准有目标无", "缺失"),
                 (0..9).map { rowLevel.getRow(1).getCell(it).stringCellValue })
-            // 缺失 3 + 多余 4 + 不一致 5 = 12 行
-            val expectedRows = target.missingCount!! + target.extraCount!! + target.fieldMismatchCount!!
+            // 缺失 3 + 多余 4 = 7 行(名称不一致 5 条不计入对象级差异)
+            val expectedRows = target.missingCount!! + target.extraCount!!
             assertEquals(expectedRows, rowLevel.lastRowNum)
-            // 字段级差异汇总:reservoir_code 无不一致(3 缺失 + 4 多余),reservoir_name 不一致 5 次
+            // 总览「差异条数」与行级对比明细同口径:缺失 3 + 多余 4 = 7(编码全部配上,无身份差异)
+            assertEquals(expectedRows.toDouble(), overview.getRow(2).getCell(7).numericCellValue)
+            // 字段级差异汇总:reservoir_code 无不一致(3 缺失 + 4 多余),reservoir_name 不一致 5 次;
+            // 表头含「业务表字段中文」列(该表未设字段注释,取值留空)
             val fieldSummary = wb.getSheetAt(2)
+            assertEquals(listOf("业务表英文名", "业务表中文名", "基准表字段", "字段中文", "业务表字段", "业务表字段中文",
+                "差异数量", "缺失", "多余", "不一致"),
+                (0..9).map { fieldSummary.getRow(0).getCell(it).stringCellValue })
             assertEquals(listOf("reservoir_code", "reservoir_name"),
                 (1..2).map { fieldSummary.getRow(it).getCell(2).stringCellValue })
-            assertEquals(7.0, fieldSummary.getRow(1).getCell(5).numericCellValue)   // 3+4+0
-            assertEquals(12.0, fieldSummary.getRow(2).getCell(5).numericCellValue)  // 3+4+5
-            assertEquals(5.0, fieldSummary.getRow(2).getCell(8).numericCellValue)
+            assertEquals("", fieldSummary.getRow(1).getCell(5).stringCellValue)
+            assertEquals(7.0, fieldSummary.getRow(1).getCell(6).numericCellValue)   // 3+4+0
+            assertEquals(12.0, fieldSummary.getRow(2).getCell(6).numericCellValue)  // 3+4+5
+            assertEquals(5.0, fieldSummary.getRow(2).getCell(9).numericCellValue)
             val detail = wb.getSheetAt(5)
             // 字段级明细:首行即表头(定位列 + 对象编码/名称 + 基准/业务两块各三列 + 差异原因),无上下文/图例行;
             // 定位列:厂商库已登记所属系统「厂商运管系统」;MySQL 单库口径 db 留空(schema 即库,不出「模式」列)
@@ -204,22 +214,29 @@ class CompareExportFlowTest {
             conn.createStatement().use { st ->
                 st.execute("DROP TABLE IF EXISTS reservoir_base.reservoir_base_info")
                 st.execute("DROP TABLE IF EXISTS reservoir_vendor.t_reservoir_info")
+                // update_time 为「数据最新更新时间」探测用:两侧都带中文注释,名称命中 update 类规则
                 st.execute("CREATE TABLE reservoir_base.reservoir_base_info(" +
-                    "reservoir_code VARCHAR(32) PRIMARY KEY, reservoir_name VARCHAR(64)) " +
+                    "reservoir_code VARCHAR(32) PRIMARY KEY, reservoir_name VARCHAR(64), " +
+                    "update_time DATETIME COMMENT '更新时间') " +
                     "ENGINE=InnoDB COMMENT='水库基础信息表'")
                 st.execute("CREATE TABLE reservoir_vendor.t_reservoir_info(" +
-                    "reservoir_code VARCHAR(32) PRIMARY KEY, reservoir_name VARCHAR(64)) ENGINE=InnoDB")
+                    "reservoir_code VARCHAR(32) PRIMARY KEY, reservoir_name VARCHAR(64), " +
+                    "update_time DATETIME COMMENT '更新时间') ENGINE=InnoDB")
                 for (i in 1..100) {
-                    // 基准库 100 条全量
-                    st.execute("INSERT INTO reservoir_base.reservoir_base_info VALUES('R%03d','水库%d')".format(i, i))
+                    // 基准库 100 条全量(R100 时间最新,验证取的是 MAX 而不是首行)
+                    val baseTime = if (i == 100) "2026-01-03 07:30:00" else "2026-01-01 08:00:00"
+                    st.execute(("INSERT INTO reservoir_base.reservoir_base_info VALUES" +
+                        "('R%03d','水库%d','%s')").format(i, i, baseTime))
                     // 91~93 在厂商库缺行(基准有目标无 → 缺失 3 条);前 5 条名称被改(逐字段差异 5 处)
                     if (i in 91..93) continue
                     val vendorName = if (i in 1..5) "改名水库$i" else "水库$i"
-                    st.execute("INSERT INTO reservoir_vendor.t_reservoir_info VALUES('R%03d','%s')"
-                        .format(i, vendorName))
+                    st.execute(("INSERT INTO reservoir_vendor.t_reservoir_info VALUES" +
+                        "('R%03d','%s','2026-02-01 09:00:00')").format(i, vendorName))
                 }
-                for (i in 1..4) { // 目标有基准无 → 多余 4 条
-                    st.execute("INSERT INTO reservoir_vendor.t_reservoir_info VALUES('V%03d','厂区水库%d')".format(i, i))
+                for (i in 1..4) { // 目标有基准无 → 多余 4 条(V004 时间最新)
+                    val vendorTime = if (i == 4) "2026-02-02 10:00:00" else "2026-02-01 09:00:00"
+                    st.execute(("INSERT INTO reservoir_vendor.t_reservoir_info VALUES" +
+                        "('V%03d','厂区水库%d','%s')").format(i, i, vendorTime))
                 }
             }
         }

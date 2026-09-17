@@ -14,13 +14,13 @@ data class CompareExportOverviewRow(
     val systemName: String?,
     /** 条数:该侧表实际行数(目标侧含多余行;未采集为 null) */
     val rowCount: Int?,
-    /** 数据最新更新时间:系统当前未采集,导出固定「—」占位 */
+    /** 数据最新更新时间:比对执行时探测时间字段(update 类优先)取 MAX 的快照;无可用字段/取数失败留空 */
     val dataUpdatedAt: String?,
     /** 与基准差:目标行数 − 基准行数(基准行本身留空) */
     val diffFromBase: Int?,
     /** 匹配编码数:双侧都存在的对象数(SAME+DIFF) */
     val matchedCount: Int?,
-    /** 差异条数:缺失 + 多余 + 不一致对象数 */
+    /** 差异条数:对象级差异——缺失 + 多余 + 编码不一致的对象数(名称等字段差异不计,与行级对比明细同口径) */
     val diffCount: Int?,
     /** 差异原因:按差异构成自动生成,可导出后人工补充 */
     val diffReason: String?,

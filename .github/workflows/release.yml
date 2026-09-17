@@ -1,9 +1,7 @@
 # 打 tag(如 v1.0)触发:构建安装包并附加到 GitHub Release
 #   当前启用:Windows x64 jpackage 免安装 zip(server,浏览器 --app 模式)+ windows-tauri NSIS 安装包
-#   + windows-tauri-portable 绿色免安装 zip;
-#   updater-manifest 收尾任务仍注释停用(latest.json 自动更新清单不生成,tauri 应用内自动更新
-#   拿不到新版本;需要时把 updater-manifest 任务块取消注释即可恢复);
-#   macos-tauri 更早已停用;
+#   + windows-tauri-portable 绿色免安装 zip + updater-manifest(合并签名生成 latest.json,仅 tag 触发);
+#   macos-tauri 已停用;
 #   Windows ARM64 / macOS jpackage dmg / Linux deb+rpm 注释停用,需要时取消注释即可
 # 也可在 Actions 页面手动触发(workflow_dispatch),用 target 下拉框只构建其中一个平台
 # (默认 all 三个一起跑;排查单个平台的打包问题时避免白烧另外两个 job 的 runner 时长),
@@ -147,7 +145,7 @@ jobs:
       # (tauri-plugin-updater 2.x 支持裸 exe 下载安装);此处只需重命名签名文件,
       # exe 本身已在 Rename installer 步骤改名;
       # latest.json 不由本任务生成 —— 全平台合并清单由收尾的 updater-manifest 任务统一产出
-      # (updater-manifest 当前仍停用,此签名产物暂无人消费,保留步骤以便随时恢复)
+      # (本任务只产出并上传 .sig;updater 客户端下载安装的就是上面改名后的 setup.exe)
       - name: Prepare updater artifacts
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
@@ -336,66 +334,66 @@ jobs:
   #           tauri/src-tauri/target/release/bundle/dmg/*.dmg
   #           tauri/src-tauri/target/release/bundle/macos/*.app.tar.gz
 
-  # updater-manifest 整个任务暂时停用(2026-08 起;windows-tauri 已恢复构建,
-  # 但没有本任务合并签名生成 latest.json,tauri 应用内自动更新拿不到新版本;
-  # 需要自动更新时把本任务块取消注释即可,windows-tauri 的签名产物步骤一直保留着)
-  # updater-manifest:
-  #   # 收尾:合并各平台 updater 签名生成统一的 latest.json 挂 Release;
-  #   # 应用内 updater 经 /releases/latest/download/latest.json 永远拿到最新版信息
-  #   runs-on: ubuntu-latest
-  #   if: startsWith(github.ref, 'refs/tags/')
-  #   needs: [windows-tauri]  # macos-tauri 任务暂时停用,恢复后加回 [windows-tauri, macos-tauri]
-  #   steps:
-  #     - uses: actions/checkout@v7 # 读 tauri.conf.json 的版本号
-  #
-  #     # merge-multiple:pattern 只匹配到 1 个 artifact 时不再建按 artifact 命名的子目录
-  #     # (直接平铺进 path),多平台恢复后又会建子目录 —— 目录结构随平台数量变化;
-  #     # 合并平铺到 sigs/ 让下游脚本的路径恒定,与启用几个平台无关
-  #     - uses: actions/download-artifact@v7
-  #       with:
-  #         pattern: updater-sig-*
-  #         path: sigs
-  #         merge-multiple: true
-  #
-  #     # 平台 key 是 updater 客户端按 target triple 查表的固定标识,不能随意改
-  #     - name: Generate merged latest.json
-  #       env:
-  #         TAG: ${{ github.ref_name }}
-  #       run: |
-  #         set -euo pipefail
-  #         v=$(node -p "require('./tauri/src-tauri/tauri.conf.json').version")
-  #         V="$v" node <<'EOF'
-  #         const fs = require('fs'), path = require('path');
-  #         const v = process.env.V, tag = process.env.TAG;
-  #         const base = `https://github.com/DoubleDD/dq-tool/releases/download/${tag}`;
-  #         // updater 平台 key -> Release 上的更新包文件名;签名文件同名加 .sig,
-  #         // 下载时 merge-multiple 平铺在 sigs/ 下(见上一步注释)
-  #         const map = {
-  #           'windows-x86_64': `dq-tool-${v}-windows-x64-setup.exe`,
-  #           // macos-tauri 任务暂时停用;恢复时连同 needs 与 macos-tauri 任务块一起取消注释
-  #           // 'darwin-aarch64': `dq-tool-${v}-macos-arm64.app.tar.gz`,
-  #           // Intel 构建已停用(macos-tauri 矩阵同步注释);恢复时两边一起取消注释
-  #           // 'darwin-x86_64': `dq-tool-${v}-macos-x86_64.app.tar.gz`,
-  #         };
-  #         const platforms = {};
-  #         for (const [key, file] of Object.entries(map)) {
-  #           const signature = fs.readFileSync(path.join('sigs', `${file}.sig`), 'utf8').trim();
-  #           platforms[key] = { signature, url: `${base}/${file}` };
-  #         }
-  #         const latest = {
-  #           version: v,
-  #           notes: '',
-  #           pub_date: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
-  #           platforms,
-  #         };
-  #         fs.writeFileSync('latest.json', JSON.stringify(latest, null, 2));
-  #         console.log(JSON.stringify(latest, null, 2));
-  #         EOF
-  #
-  #     - name: Attach latest.json to GitHub Release
-  #       uses: softprops/action-gh-release@v3
-  #       with:
-  #         files: latest.json
+  # updater-manifest:收尾合并各平台 updater 签名,生成统一的 latest.json 挂 Release。
+  # 2026-08 曾随 macos-tauri 一起停用 —— 没有 latest.json 时 tauri 应用内自动更新永远拿不到新版本;
+  # 2026-09-17 恢复 Windows 线(windows-tauri 的签名产物步骤一直保留着,直接启用即可)。
+  updater-manifest:
+    # 收尾:合并各平台 updater 签名生成统一的 latest.json 挂 Release;
+    # 应用内 updater 经 /releases/latest/download/latest.json 永远拿到最新版信息
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows-tauri]  # macos-tauri 任务暂时停用,恢复后加回 [windows-tauri, macos-tauri]
+    steps:
+      - uses: actions/checkout@v7 # 读 tauri.conf.json 的版本号
+
+      # merge-multiple:pattern 只匹配到 1 个 artifact 时不再建按 artifact 命名的子目录
+      # (直接平铺进 path),多平台恢复后又会建子目录 —— 目录结构随平台数量变化;
+      # 合并平铺到 sigs/ 让下游脚本的路径恒定,与启用几个平台无关
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: updater-sig-*
+          path: sigs
+          merge-multiple: true
+
+      # 平台 key 是 updater 客户端按 target triple 查表的固定标识,不能随意改
+      - name: Generate merged latest.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          v=$(node -p "require('./tauri/src-tauri/tauri.conf.json').version")
+          V="$v" node <<'EOF'
+          const fs = require('fs'), path = require('path');
+          const v = process.env.V, tag = process.env.TAG;
+          const base = `https://github.com/DoubleDD/dq-tool/releases/download/${tag}`;
+          // updater 平台 key -> Release 上的更新包文件名;签名文件同名加 .sig,
+          // 下载时 merge-multiple 平铺在 sigs/ 下(见上一步注释)
+          const map = {
+            'windows-x86_64': `dq-tool-${v}-windows-x64-setup.exe`,
+            // macos-tauri 任务暂时停用;恢复时连同 needs 与 macos-tauri 任务块一起取消注释
+            // 'darwin-aarch64': `dq-tool-${v}-macos-arm64.app.tar.gz`,
+            // Intel 构建已停用(macos-tauri 矩阵同步注释);恢复时两边一起取消注释
+            // 'darwin-x86_64': `dq-tool-${v}-macos-x86_64.app.tar.gz`,
+          };
+          const platforms = {};
+          for (const [key, file] of Object.entries(map)) {
+            const signature = fs.readFileSync(path.join('sigs', `${file}.sig`), 'utf8').trim();
+            platforms[key] = { signature, url: `${base}/${file}` };
+          }
+          const latest = {
+            version: v,
+            notes: '',
+            pub_date: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+            platforms,
+          };
+          fs.writeFileSync('latest.json', JSON.stringify(latest, null, 2));
+          console.log(JSON.stringify(latest, null, 2));
+          EOF
+
+      - name: Attach latest.json to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: latest.json
 
   # ── 以下平台暂时停用(2026-08),需要时取消注释恢复 ──────────────────────────
   #

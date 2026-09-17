@@ -19,6 +19,7 @@ dq-tool 是一个轻量级单体应用:交付的 fat jar 是**纯 API 服务**(�
 - **导入导出格式向后兼容是铁律**:旧版本导出的文件必须能被新版本导入(客户拿到导出文件后的处理方式不可控);格式演进优先在同版本内追加可选字段(导入忽略未知字段+缺省值兜底),确需破坏性变更时在导出文件升 `version` 并在导入端做版本检测、分版本解析,禁止让旧文件静默报错(细则见 代码约定与安全)
 - 前端构建与后端运行解耦:`make dev` / `make dev-headless`(`:server:run`,走 classpath 静态)不构建前端,前端开发走 `make dev-web`(vite 5173);`:server:shadowJar` **排除 `static/**`**,交付 jar 是纯 API 服务;`processResources` 仍把 `web/dist` 拷入 dev/测试 classpath;前端产物由 Tauri(`frontendDist` 直载 `web/dist`)与 jpackage(脚本 xcopy `web/dist` + `-Ddq.web.static-dir`)各自构建
 - Tauri 交付形态:webview 从本地 `frontendDist` 直载,跨域访问 `127.0.0.1:<动态端口>`;后端 `dq.access-token` 由 Rust 每次启动随机生成并经 `-Ddq.access-token` 注入,前端从 IPC `api_base()` 取 `{base,token}` 后走 `X-Dq-Token` 头(SSE 走 `?token=`);CORS 用 `anyHost()` 只对 `/api/*` 开放,门禁豁免清单固定为 `/api/health`、`/api/license/status`、`/api/lan/share/**`,不得扩大
+- **所有下载/导出入口必须走 `web/src/utils/download.js`**(`downloadFile`/`downloadText`/`downloadDataUrl`),兼容浏览器·jpackage `--app`(同源 + Cookie)与 Tauri 套壳(tauri:// 源 + token,原生保存框)两种形态;禁止裸 `<a href="/api/...">`/裸 `window.open`——相对 `/api` 在 Tauri 下会把整个 webview 导航走(细则见 前端页面与按钮逻辑 贯穿性机制 10)
 - `data/`(H2 数据文件)不应提交或外发;功能性 `.bat` 注释一律用英文且必须保持 CRLF 行尾
 
 ## 快速命令
@@ -61,6 +62,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [代码约定与安全](docs/wiki/代码约定与安全.md) — 分层与装配约定、配置/迁移新增流程、错误日志纪律、加密与敏感信息边界
 - [桌面版与数据目录](docs/wiki/桌面版与数据目录.md) — 托盘/心跳看门狗生命周期、headless 行为、数据目录与日志滚动
 - [打包与发布](docs/wiki/打包与发布.md) — jpackage/tauri 安装包、内嵌完整 JRE、版本号映射、CI release.yml 启停状态、.bat 坑
+- [Tauri 兼容性](docs/wiki/Tauri兼容性.md) — 三形态差异与兼容性问题台账(拖放/更新/静默启动/Origin·CORS)、新增功能的跨形态检查清单
 - [发布 skill](.agents/skills/dq-tool-release/SKILL.md) — AI 代理发布全流程:提交改动到 main → 推 GitHub → 指定 tag 指向最新提交并推送
 
 ### 实施计划与存档
@@ -72,6 +74,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [后台任务中心实施计划](docs/plans/后台任务中心-实施计划.md) — **已实施**(2026-09-14 随 2.0.7 发布)
 - [Tauri 直载前端 · jar 转纯 API 服务实施计划](docs/plans/Tauri直载前端-jar转纯API服务-实施计划.md) — **已实施**(T14 三平台真机 Origin 待回填);[现场交接说明](docs/plans/Tauri直载前端-jar转纯API服务-交接说明.md) 收尾后可删
 - [导出中心实施计划](docs/plans/导出中心-实施计划.md) — **待办**(2026-09-14 调研定稿):15 处导出统一登记可查
+- [比对任务批量导入实施计划](docs/plans/比对任务批量导入-实施计划.md) — **已实施**(2026-09-17):Excel 一 sheet 一任务,原件留档可下载,数据源确认 → 大模型推导映射 → 人工审核开跑;任务状态机加「待处理」
 - [错误收集系统(错误中心)实施计划](docs/plans/错误收集系统-实施计划.md) — **已实施**:统一采集/落库/聚合/查看
 
 ### 其他文档

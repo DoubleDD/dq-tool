@@ -2,6 +2,7 @@ package com.example.dq.repository
 
 import com.example.dq.model.MetaSyncItem
 import com.example.dq.model.MetaSyncJob
+import com.example.dq.model.MetaSyncSchemaRef
 import com.example.dq.model.MetaSyncTableRef
 import com.fasterxml.jackson.core.type.TypeReference
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -30,7 +31,8 @@ class MetaSyncRepository(private val jdbc: Jdbc) {
             rs.getInt("db_count"), rs.getInt("schema_count"), rs.getInt("table_count"),
             rs.getString("progress"), rs.getString("error"),
             ts(rs, "started_at"), ts(rs, "finished_at"),
-            parseTables(rs.getString("tables_json")))
+            parseTables(rs.getString("tables_json")),
+            parseSchemas(rs.getString("schemas_json")))
     }
 
     /** 表级同步清单反序列化:NULL/空/解析失败一律按整数据源同步(空清单)处理 */
@@ -38,6 +40,14 @@ class MetaSyncRepository(private val jdbc: Jdbc) {
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching {
             json.readValue(raw, object : TypeReference<List<MetaSyncTableRef>>() {})
+        }.getOrDefault(emptyList())
+    }
+
+    /** 库/schema 级同步清单反序列化:NULL/空/解析失败一律按空清单处理 */
+    private fun parseSchemas(raw: String?): List<MetaSyncSchemaRef> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            json.readValue(raw, object : TypeReference<List<MetaSyncSchemaRef>>() {})
         }.getOrDefault(emptyList())
     }
 
@@ -103,12 +113,15 @@ class MetaSyncRepository(private val jdbc: Jdbc) {
 
     // ---------- 明细操作 ----------
 
-    /** 批量插入明细(datasourceId → 名称快照;单事务);tablesByDatasource 非空时该明细为表级同步(V57) */
+    /** 批量插入明细(datasourceId → 名称快照;单事务);tablesByDatasource/schemasByDatasource 非空时
+     *  该明细分别为表级(V57)/schema 级(V58)同步,两者皆空 = 整数据源 */
     fun insertItems(jobId: Long, items: List<Pair<Long, String>>,
-                    tablesByDatasource: Map<Long, List<MetaSyncTableRef>> = emptyMap()) {
+                    tablesByDatasource: Map<Long, List<MetaSyncTableRef>> = emptyMap(),
+                    schemasByDatasource: Map<Long, List<MetaSyncSchemaRef>> = emptyMap()) {
         jdbc.tx { conn ->
             conn.prepareStatement(
-                "INSERT INTO meta_sync_item(job_id, datasource_id, datasource_name, tables_json) VALUES (?,?,?,?)")
+                "INSERT INTO meta_sync_item(job_id, datasource_id, datasource_name, tables_json, schemas_json) " +
+                    "VALUES (?,?,?,?,?)")
                 .use { ps ->
                     for ((dsId, name) in items) {
                         ps.setLong(1, jobId)
@@ -117,6 +130,9 @@ class MetaSyncRepository(private val jdbc: Jdbc) {
                         val tables = tablesByDatasource[dsId]
                         if (tables.isNullOrEmpty()) ps.setNull(4, java.sql.Types.CLOB)
                         else ps.setString(4, json.writeValueAsString(tables))
+                        val schemas = schemasByDatasource[dsId]
+                        if (schemas.isNullOrEmpty()) ps.setNull(5, java.sql.Types.CLOB)
+                        else ps.setString(5, json.writeValueAsString(schemas))
                         ps.addBatch()
                     }
                     ps.executeBatch()

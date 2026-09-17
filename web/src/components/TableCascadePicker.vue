@@ -6,6 +6,8 @@
  * - 多库方言(SQL Server / Kingbase):`/databases` 出库清单,再 `/schemas?db=` 出模式清单,四栏齐全;
  * - 其余方言(SQL Server/Kingbase 之外)没有独立的模式层,库/schema 合并落在第二栏,第三栏隐藏——即「三栏级联」。
  * 每一栏都可输入关键字过滤(表栏匹配表名或注释);只有唯一选项的库/模式层自动选中,减少点击。
+ * `level='schema'` 时终态粒度升到库/schema:表栏隐藏,终态栏(单库方言第二栏/多库方言第三栏)
+ * 变 +/− 逐条切换(toggle 载荷为 `{ name }`),供元数据同步「指定库/schema」等场景使用。
  *
  * 状态全部通过 `v-model:xxx` 回传父级,父级仍持有 form;表变更额外 emit table-change 供父级补默认任务名。
  */
@@ -33,6 +35,9 @@ const props = defineProps({
   // 逐表勾选模式(比对任务第三步):表行右侧显示 +/− —— 未加过显示 +,已加过显示绿色 −,
   // 点行或点图标都 toggle;关闭时维持单选(点行即选中)语义,供第一步选基准表使用
   toggleable: { type: Boolean, default: false },
+  // 终态粒度:table=选到表(默认);schema=选到库/schema——终态栏(单库方言第二栏/多库方言第三栏)
+  // 变 +/− 逐条切换(toggleable 语义挪到该栏),表栏隐藏;addedTables/disabledTables 此时装的是 schema 名
+  level: { type: String, default: 'table' },
   // 当前数据源+库/schema 下已加入目标的表名(toggleable 时用来把行渲染成「已加」绿色 − 态)
   addedTables: { type: Array, default: () => [] }
 })
@@ -55,6 +60,10 @@ const tableLoading = ref(false)
 const currentDs = computed(() => props.datasources.find((d) => String(d.id) === String(props.datasourceId)))
 // 多库方言(SQL Server/Kingbase)先选库再选模式;与对象管理选表组件同一判定
 const multiDb = computed(() => ['SQLSERVER', 'KINGBASE'].includes(currentDs.value?.dbType))
+// schema 终态粒度:终态栏 +/− 逐条切换,表栏隐藏
+const schemaLevel = computed(() => props.level === 'schema')
+// 第二栏是否为终态 schema 栏(单库方言:库/schema 合并落在第二栏)
+const lane2Toggle = computed(() => schemaLevel.value && !multiDb.value)
 
 /** 第二栏数据:多库方言是库清单,其余方言直接是库/schema 清单 */
 const lane2Options = computed(() => (multiDb.value ? databases.value : schemas.value))
@@ -209,10 +218,18 @@ function onTableClick(t) {
   pickTable(t)
 }
 
-/** 库/模式层只有一个候选时自动选中,省一次点击(表不自动选,避免误提交) */
+/** schema 终态粒度:终态栏行点击/图标点击都 toggle(禁用项不响应),载荷只带 name(schema 名) */
+function onSchemaRowClick(name) {
+  if (isTableDisabled(name)) return
+  emit('toggle', { name })
+}
+
+/** 库/模式层只有一个候选时自动选中,省一次点击(schema 终态粒度下终态栏不自动选,避免误加入) */
 function autoPickOne() {
-  if (multiDb.value && props.db && !props.schema && schemas.value.length === 1) pickSchema(schemas.value[0])
-  if (!props.db && !props.schema && lane2Options.value.length === 1) pickLane2(lane2Options.value[0])
+  if (!schemaLevel.value && multiDb.value && props.db && !props.schema && schemas.value.length === 1) pickSchema(schemas.value[0])
+  if (!props.db && !props.schema && lane2Options.value.length === 1 && (multiDb.value || !schemaLevel.value)) {
+    pickLane2(lane2Options.value[0])
+  }
 }
 
 // 数据源变化:重拉第二栏(多库方言拉库清单,其余方言拉库/schema 清单)
@@ -249,11 +266,11 @@ watch(() => props.db, async (db) => {
   autoPickOne()
 })
 
-// 模式变化:重拉表清单
+// 模式变化:重拉表清单(schema 终态粒度无表栏,跳过)
 watch(() => props.schema, async (schema) => {
   tables.value = []
   tableKeyword.value = ''
-  if (!schema) return
+  if (!schema || schemaLevel.value) return
   await loadTables()
 })
 
@@ -265,8 +282,16 @@ const widths = reactive({ ds: 0, db: 0, schema: 0, table: 0 })
 const MIN_COL_PX = 110
 const MIN_TABLE_PX = 180
 
-/** 当前可见栏的 key 顺序(与模板中的栏位一致) */
-const visibleKeys = computed(() => (multiDb.value ? ['ds', 'db', 'schema', 'table'] : ['ds', 'db', 'table']))
+/** 当前可见栏的 key 顺序(与模板中的栏位一致;schema 终态粒度没有表栏) */
+const visibleKeys = computed(() => {
+  if (multiDb.value) return schemaLevel.value ? ['ds', 'db', 'schema'] : ['ds', 'db', 'schema', 'table']
+  return schemaLevel.value ? ['ds', 'db'] : ['ds', 'db', 'table']
+})
+
+/** 是否最右栏(吃剩余空间;schema 终态粒度下第二/三栏成为最右栏) */
+function isLastLane(key) {
+  return key === visibleKeys.value[visibleKeys.value.length - 1]
+}
 
 /** 栏位行内样式:0 表示未拖过,交给 CSS 默认比例;最右栏恒不写宽,吃剩余 */
 function colStyle(key) {
@@ -336,8 +361,9 @@ function resetWidths() {
       </div>
       <div class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('ds', $event)" @dblclick="resetWidths" />
 
-      <!-- 第二栏:数据库(其余方言没有独立模式层,库/schema 清单直接落在这里) -->
-      <div class="cascade-col col-db" :style="colStyle('db')">
+      <!-- 第二栏:数据库(其余方言没有独立模式层,库/schema 清单直接落在这里;
+           schema 终态粒度的单库方言下此栏即终态栏,行尾 +/− 逐条加入/移出) -->
+      <div class="cascade-col col-db" :class="{ 'col-last': isLastLane('db') }" :style="colStyle('db')">
         <div class="cascade-head">数据库<span class="cascade-count">{{ dbOptions.length }}</span></div>
         <div class="cascade-search">
           <el-input v-model="dbKeyword" size="small" clearable :placeholder="multiDb ? '过滤数据库' : '过滤库/schema'"
@@ -345,33 +371,53 @@ function resetWidths() {
         </div>
         <div v-loading="dbLoading || (!multiDb && schemaLoading)" class="cascade-list">
           <div v-for="d in dbOptions" :key="d" class="cascade-item"
-               :class="{ active: multiDb ? d === db : d === schema }" @click="pickLane2(d)">
+               :class="{ active: !lane2Toggle && (multiDb ? d === db : d === schema),
+                         disabled: lane2Toggle && isTableDisabled(d),
+                         added: lane2Toggle && isTableAdded(d) }"
+               @click="lane2Toggle ? onSchemaRowClick(d) : pickLane2(d)">
             <span class="cascade-name">{{ d }}</span>
+            <el-tooltip v-if="lane2Toggle && !isTableDisabled(d)" :content="(isTableAdded(d) ? '移出' : '加入') + label"
+                        placement="left" :show-after="200">
+              <span class="cascade-toggle" :class="{ remove: isTableAdded(d) }" @click.stop="onSchemaRowClick(d)">
+                <el-icon><Minus v-if="isTableAdded(d)" /><Plus v-else /></el-icon>
+              </span>
+            </el-tooltip>
           </div>
           <div v-if="!dbOptions.length" class="cascade-empty">
             {{ !datasourceId ? '请先选择数据源' : (multiDb ? '该数据源下没有库' : '该数据源下没有库/schema') }}
           </div>
         </div>
       </div>
-      <div class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('db', $event)" @dblclick="resetWidths" />
+      <!-- 第二栏后的分隔条:schema 终态粒度的单库方言下第二栏已是最右栏,不再需要 -->
+      <div v-if="multiDb || !schemaLevel" class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('db', $event)" @dblclick="resetWidths" />
 
-      <!-- 第三栏:模式(仅多库方言动态显示) -->
-      <div v-if="multiDb" class="cascade-col col-schema" :style="colStyle('schema')">
+      <!-- 第三栏:模式(仅多库方言动态显示;schema 终态粒度下此栏为终态栏,行尾 +/− 逐条加入/移出) -->
+      <div v-if="multiDb" class="cascade-col col-schema" :class="{ 'col-last': isLastLane('schema') }" :style="colStyle('schema')">
         <div class="cascade-head">模式<span class="cascade-count">{{ schemaOptions.length }}</span></div>
         <div class="cascade-search">
           <el-input v-model="schemaKeyword" size="small" clearable placeholder="过滤模式" :disabled="!db" :prefix-icon="Search" />
         </div>
         <div v-loading="schemaLoading" class="cascade-list">
-          <div v-for="s in schemaOptions" :key="s" class="cascade-item" :class="{ active: s === schema }" @click="pickSchema(s)">
+          <div v-for="s in schemaOptions" :key="s" class="cascade-item"
+               :class="{ active: !schemaLevel && s === schema,
+                         disabled: schemaLevel && isTableDisabled(s),
+                         added: schemaLevel && isTableAdded(s) }"
+               @click="schemaLevel ? onSchemaRowClick(s) : pickSchema(s)">
             <span class="cascade-name">{{ s }}</span>
+            <el-tooltip v-if="schemaLevel && !isTableDisabled(s)" :content="(isTableAdded(s) ? '移出' : '加入') + label"
+                        placement="left" :show-after="200">
+              <span class="cascade-toggle" :class="{ remove: isTableAdded(s) }" @click.stop="onSchemaRowClick(s)">
+                <el-icon><Minus v-if="isTableAdded(s)" /><Plus v-else /></el-icon>
+              </span>
+            </el-tooltip>
           </div>
           <div v-if="!schemaOptions.length" class="cascade-empty">{{ db ? '该库下没有模式' : '请先选择数据库' }}</div>
         </div>
       </div>
-      <div v-if="multiDb" class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('schema', $event)" @dblclick="resetWidths" />
+      <div v-if="multiDb && !schemaLevel" class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('schema', $event)" @dblclick="resetWidths" />
 
-      <!-- 第四栏:表(选项带注释);toggleable 时每行右侧给 +/− 做「加入/移出目标」 -->
-      <div class="cascade-col col-table" :style="colStyle('table')">
+      <!-- 第四栏:表(选项带注释,schema 终态粒度隐藏);toggleable 时每行右侧给 +/− 做「加入/移出目标」 -->
+      <div v-if="!schemaLevel" class="cascade-col col-table" :style="colStyle('table')">
         <div class="cascade-head">表<span class="cascade-count">{{ tableOptions.length }}</span></div>
         <div class="cascade-search">
           <el-input v-model="tableKeyword" size="small" clearable placeholder="过滤表名/注释" :disabled="!schema" :prefix-icon="Search" />
@@ -464,6 +510,10 @@ function resetWidths() {
   flex: 0 0 20%;
 }
 .col-table {
+  flex: 1 1 40%;
+}
+/* schema 终态粒度:最右栏(第二/三栏)吃掉剩余空间 */
+.cascade-col.col-last {
   flex: 1 1 40%;
 }
 .cascade-head {

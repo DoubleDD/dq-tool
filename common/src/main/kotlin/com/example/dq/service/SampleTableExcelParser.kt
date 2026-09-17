@@ -23,8 +23,8 @@ object SampleTableExcelParser {
     /** 数据行必需列:缺失/为空的行收集为无效行(ROW_SKIPPED),不参与后续导入与导出 */
     private val REQUIRED_HEADERS = listOf("数据库类型", "地址", "数据库名称", "表英文名称")
 
-    /** Excel 里的数据库类型写法 → DbType(大小写不敏感) */
-    private val DB_TYPE_ALIASES = mapOf(
+    /** Excel 里的数据库类型写法 → DbType(大小写不敏感;比对导入解析 [CompareImportExcelParser] 同用此口径) */
+    internal val DB_TYPE_ALIASES = mapOf(
         "mysql" to DbType.MYSQL,
         "kingbase" to DbType.KINGBASE,
         "sqlserver" to DbType.SQLSERVER,
@@ -180,40 +180,17 @@ object SampleTableExcelParser {
 
     /** 数据源身份 key:type|host小写|port|username或空|database;两侧(Excel 行/已存数据源)口径必须一致 */
     fun dsKey(dbType: DbType, host: String, port: Int, username: String?, database: String): String =
-        "${dbType.name}|${host.trim().lowercase()}|$port|${username.orEmpty()}|$database"
+        DatasourceKeyMatcher.fullKey(dbType, host, port, username, database)
 
     /**
      * 从已存数据源的 jdbcUrl 反解身份 key(host/port 经 JdbcUrlRewriter,库名按方言从 URL 提取);
      * URL 解析不出或提取不到库名时返回 null——该数据源不参与批量导入的去重匹配
      */
-    fun keyOfExisting(ds: DataSourceConfig): String? {
-        val type = ds.dbType ?: return null
-        val url = ds.jdbcUrl ?: return null
-        val (host, port) = try {
-            JdbcUrlRewriter.extractHostPort(url)
-        } catch (e: IllegalArgumentException) {
-            return null
-        }
-        val database = extractDatabase(type, url) ?: return null
-        return dsKey(type, host, port, ds.username, database)
-    }
+    fun keyOfExisting(ds: DataSourceConfig): String? = DatasourceKeyMatcher.fullKeyOf(ds)
 
     /** 从 jdbcUrl + 用户名算身份 key(与 [keyOfExisting] 同口径);URL 无法识别/解析不出/提取不到库名返回 null */
-    fun keyOfJdbcUrl(url: String?, username: String?): String? {
-        if (url.isNullOrBlank()) return null
-        val type = try {
-            DbType.fromJdbcUrl(url)
-        } catch (e: IllegalArgumentException) {
-            return null
-        }
-        val (host, port) = try {
-            JdbcUrlRewriter.extractHostPort(url)
-        } catch (e: IllegalArgumentException) {
-            return null
-        }
-        val database = extractDatabase(type, url) ?: return null
-        return dsKey(type, host, port, username, database)
-    }
+    fun keyOfJdbcUrl(url: String?, username: String?): String? =
+        DatasourceKeyMatcher.fullKeyOfJdbcUrl(url, username)
 
     /** 生成导入模版 xlsx:表头 + 一行示例数据(前端「下载模版」按钮) */
     fun writeTemplate(out: java.io.OutputStream) {
@@ -231,16 +208,5 @@ object SampleTableExcelParser {
             example.forEachIndexed { i, v -> row.createCell(i).setCellValue(v) }
             wb.write(out)
         }
-    }
-
-    /** 从 jdbcUrl 提取库名:普通形态取 `://h:p/` 后到 ? 前的路径段;sqlserver 取 databaseName 参数;oracle 取 @// 后服务名;dm 无库名恒空串 */
-    private fun extractDatabase(type: DbType, url: String): String? = when (type) {
-        DbType.DM -> ""
-        DbType.SQLSERVER ->
-            Regex("""databaseName=([^;]+)""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)
-        DbType.ORACLE ->
-            Regex("""@//[^/]+/([^?;]+)""").find(url)?.groupValues?.get(1)
-        else ->
-            Regex("""://[^/]+/([^?;]+)""").find(url)?.groupValues?.get(1)
     }
 }

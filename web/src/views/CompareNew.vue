@@ -1,7 +1,16 @@
 <template>
   <div class="page-card card-fill">
     <div class="toolbar">
-      <h3 style="margin: 0">新建比对任务</h3>
+      <div class="title-wrap">
+        <h3 style="margin: 0">{{ isEdit ? `编辑比对任务(T-${editJobId})` : '新建比对任务' }}</h3>
+        <!-- 编辑模式标题旁显示任务状态标签(口径同列表页;待处理带原因悬浮提示) -->
+        <el-tooltip v-if="isEdit && editJobStatus === 'PENDING'" :content="pendingReasonTip" placement="top" :show-after="200">
+          <el-tag type="info" size="small">待处理</el-tag>
+        </el-tooltip>
+        <el-tag v-else-if="isEdit && editJobStatus" :type="statusTagType(editJobStatus)" size="small">
+          {{ statusText(editJobStatus) }}
+        </el-tag>
+      </div>
       <div class="toolbar-actions">
         <el-button @click="router.push('/compare')">返回列表</el-button>
       </div>
@@ -102,6 +111,7 @@
         label="比对系统"
         panel-title="已添加比对系统"
         empty-text="还没有比对系统,请在左侧选好库/模式后,点表名右侧的 + 加入(至少 1 个)"
+        :panel-max-height="168"
         @lane-change="onLaneChange"
       />
     </div>
@@ -119,7 +129,7 @@
         <!-- 列级对比:大模型预生成字段映射,放工具条最左(基准表全字段产出建议);人工在画布审核后可再手动增删 -->
         <template #toolbar-prepend>
           <template v-if="compareMode === 'COLUMN'">
-            <el-button type="primary" plain :loading="aiSuggesting" :disabled="!targets.length" @click="aiSuggestMapping">
+            <el-button size="small" type="primary" plain :loading="aiSuggesting" :disabled="!targets.length" @click="aiSuggestMapping">
               AI 预生成字段映射
             </el-button>
             <!-- <span class="ai-suggest-tip">{{ aiSuggestNote || '大模型按字段名/注释逐目标产出映射建议,请在画布核对连线后再提交' }}</span> -->
@@ -132,23 +142,55 @@
     <div class="wizard-actions">
       <el-button :disabled="step === 0" @click="step--">上一步</el-button>
       <el-button v-if="step < 2" type="primary" @click="next">下一步</el-button>
-      <el-button v-else type="primary" :loading="submitting" @click="submit">开始比对</el-button>
+      <template v-else>
+        <!-- 按钮文案分态:新建=开始比对 / 待处理编辑=保存修改(仍待处理) / 终态编辑=保存并重新比对 -->
+        <el-button type="primary" :loading="submitting" :disabled="starting" @click="submit">{{ submitText }}</el-button>
+        <!-- 待处理编辑多一个「保存并比对」:保存后直接 start 直启,省掉回列表再点「字段审核」 -->
+        <el-button v-if="isEdit && editJobStatus === 'PENDING'" type="primary" :loading="starting" :disabled="submitting"
+                   @click="submitAndStart">保存并比对</el-button>
+      </template>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { QuestionFilled } from '@element-plus/icons-vue'
 import { ElMessage } from '../utils/notify'
-import request, { createCompareJob, suggestCompareMapping } from '../api'
+import request, { createCompareJob, getCompareJob, startCompareJob, suggestCompareMapping, updateCompareJob } from '../api'
+import { statusTagType, statusText } from '../utils/format'
 import { watchTask } from '../stores/backgroundTasks'
 import TableCascadePicker from '../components/TableCascadePicker.vue'
 import TableMultiPicker from '../components/TableMultiPicker.vue'
 import CompareFieldMapping from '../components/CompareFieldMapping.vue'
 
 const router = useRouter()
+
+// ---------- 编辑模式(/compare/new?edit=<jobId>:「待处理」导入任务逐步确认/修改,终态任务再次编辑并重跑) ----------
+// 组件按 route.fullPath 作 keep-alive key,?edit 变化即整页重挂载,query 只读一次即可
+const route = useRoute()
+const rawEditId = Number(route.query.edit)
+// edit 非法(缺省/非数字)时按新建模式处理
+const editJobId = Number.isInteger(rawEditId) && rawEditId > 0 ? rawEditId : null
+const isEdit = !!editJobId
+// 被编辑任务的状态(prefillEdit 反填时记录):PENDING=导入待处理(保存仍待处理)/终态=保存并直接重跑
+const editJobStatus = ref(null)
+// 被编辑任务的待处理原因(仅 PENDING;标题状态标签的悬浮提示用)
+const editJobPendingReason = ref(null)
+// 待处理原因 → 提示文案(与任务列表 PENDING_REASON_TIPS 同一取值口径)
+const PENDING_REASON_TIPS = {
+  DS_ERROR: '数据源异常:涉及的数据源连不上或未实测通过;修复数据源后仍可经「字段审核」确认开跑',
+  MAPPING_RUNNING: '映射推导中:数据源连接实测与字段映射正在后台推导,完成后转「映射待审核」,届时可逐个审核',
+  MAPPING_REVIEW: '映射待审核:字段映射已预生成,需人工审核(「字段审核」或「编辑」)确认后开始比对',
+  IMPORT_ERROR: '导入异常:基准表校验未通过(表不存在或缺身份字段),请在本页修正后保存'
+}
+const pendingReasonTip = computed(() => PENDING_REASON_TIPS[editJobPendingReason.value] || '待处理:需人工处理后才开始比对')
+// 提交按钮文案:新建=开始比对;编辑待处理=保存修改(仍待处理);编辑终态=保存并重新比对
+const submitText = computed(() => {
+  if (!isEdit) return '开始比对'
+  return editJobStatus.value === 'PENDING' ? '保存修改' : '保存并重新比对'
+})
 
 const step = ref(0)
 // 已激活的最远步骤(0 起,经「下一步」校验通过才推进):决定步骤条高亮位置与哪些步骤可点击回看
@@ -191,9 +233,10 @@ const displayField = ref('')
 // 文本型 jdbcType(与后端 CompareService.isTextType 同一口径:字符型 + CLOB/NCLOB)
 const TEXT_JDBC_TYPES = new Set([1, 12, -1, -15, -9, -16, 2005, 2011])
 
-// 匹配逻辑(与后端 CompareService.MatchMode 同一取值;EXACT=最严格,大模型归一化需要指定对象名称字段)
+// 匹配逻辑(与后端 CompareService.MatchMode 同一取值;EXACT=最严格:只按对象编码配对,
+// 名称写法不同也算命中、名称差异走字段级差异;大模型归一化需要指定对象名称字段)
 const MATCH_MODES = [
-  { value: 'EXACT', label: '编码+名称', tip: '对比表的对象编码与对象名称都与基准表完全一致,才算同一个对象(最严格,差异看得最细)' },
+  { value: 'EXACT', label: '编码+名称', tip: '只按对象编码配对:编码一致即同一个对象(名称写法不同也算同一个对象,名称差异按字段差异体现);编码没配上的对象直接算缺失/多余,不做名称或大模型补配(最严格,差异看得最细)' },
   { value: 'CODE_NAME_LLM', label: '先编码后名称+大模型归一化', tip: '先用对象编码配;编码没配上的再按对象名称配;都没配上的交大模型按业务含义再认一轮(需要先配好大模型,残余过多时会自动跳过并提示)' }
 ]
 const matchMode = ref('EXACT')
@@ -262,6 +305,8 @@ function onLaneChange(ctx) {
 // 第 3 步字段映射:数组与 targets 同序,元素为 { 基准字段名: 目标列名 }
 const mappings = ref([])
 const submitting = ref(false)
+// 待处理编辑「保存并比对」进行中(PUT 保存 + start 直启两步)
+const starting = ref(false)
 // 列级对比:AI 预生成字段映射的状态与逐目标结果提示(提示随对比表清单变化失效)
 const aiSuggesting = ref(false)
 const aiSuggestNote = ref('')
@@ -433,66 +478,173 @@ function next() {
   }
 }
 
-async function submit() {
-  if (!targets.value.length) return ElMessage.warning('请至少添加 1 个对比表(数据源 + 库/模式 + 表)')
+/** 提交前校验(新建/编辑/保存并比对共用):不通过时弹提示并返回 false */
+function validateSubmit() {
+  if (!targets.value.length) {
+    ElMessage.warning('请至少添加 1 个对比表(数据源 + 库/模式 + 表)')
+    return false
+  }
   if (matchModeRequiresName.value && !displayField.value) {
-    return ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请回到第 1 步选择`)
+    ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请回到第 1 步选择`)
+    return false
   }
   const unmapped = targets.value.filter((t, i) => !isKeyMapped(mappings.value[i]))
   if (unmapped.length) {
     // 点名是哪几个对比表没连主键(数据源 · 库.模式.表),别让用户在多目标里自己猜
     const names = unmapped.map((t) => targetLabel(t) || t.table).join('、')
-    return ElMessage.warning(`有 ${unmapped.length} 个对比表还没连上比对主键「${keyField.value}」:${names}。请回到第 3 步连线`)
+    ElMessage.warning(`有 ${unmapped.length} 个对比表还没连上比对主键「${keyField.value}」:${names}。请回到第 3 步连线`)
+    return false
   }
+  return true
+}
+
+/**
+ * 组装提交载荷(新建/编辑共用):比对字段 = 第 3 步连线的基准字段并集(有连线即参与比对)+ 身份两字段
+ * (对象编码/对象名称恒参与),保持基准表字段顺序;后端两条约束「映射的基准字段必须在比对字段内」
+ * 「对象名称字段必须在比对字段内」由此一并满足
+ */
+function buildPayload() {
+  const picked = new Set([keyField.value])
+  if (displayField.value) picked.add(displayField.value)
+  for (const m of mappings.value) {
+    for (const bf of Object.keys(m || {})) picked.add(bf)
+  }
+  const pickedLower = new Set([...picked].map((n) => n.toLowerCase()))
+  const fields = columns.value.map((c) => c.name).filter((n) => pickedLower.has(n.toLowerCase()))
+  return {
+    name: form.name.trim(),
+    baseDatasourceId: Number(form.datasourceId),
+    baseDb: form.db || null,
+    baseSchema: form.schema,
+    baseTable: form.table,
+    keyField: keyField.value,
+    fields,
+    displayField: displayField.value || null,
+    // 对象对齐匹配逻辑(第 1 步选择):EXACT / CODE_NAME_LLM;编辑模式同样允许改(不做限制)
+    matchMode: matchMode.value,
+    // 对比模式(第 1 步复选框):ROW 仅行级 / COLUMN 行级+列级;编辑模式同样允许改
+    compareMode: compareMode.value,
+    targets: targets.value.map((t, i) => ({
+      datasourceId: Number(t.datasourceId),
+      db: t.db || null,
+      schema: t.schema,
+      table: t.table,
+      // 第 3 步人工连线的字段映射;空对象 = 不指定,后端按字段名自动匹配
+      mapping: Object.keys(mappings.value[i] || {}).length ? mappings.value[i] : null
+    }))
+  }
+}
+
+async function submit() {
+  if (!validateSubmit()) return
   submitting.value = true
   try {
-    // 比对字段 = 第 3 步连线的基准字段并集(有连线即参与比对)+ 身份两字段(对象编码/对象名称恒参与),
-    // 保持基准表字段顺序;后端两条约束「映射的基准字段必须在比对字段内」「对象名称字段必须在比对字段内」由此一并满足
-    const picked = new Set([keyField.value])
-    if (displayField.value) picked.add(displayField.value)
-    for (const m of mappings.value) {
-      for (const bf of Object.keys(m || {})) picked.add(bf)
+    const payload = buildPayload()
+    if (isEdit) {
+      // 编辑模式:PUT 更新;待处理任务保持 PENDING(原因归一 MAPPING_REVIEW,回列表「字段审核」开跑,
+      // 或直接点旁边的「保存并比对」),终态任务保存后按新配置直接重跑(旧差异明细覆盖,后端口径)
+      await updateCompareJob(editJobId, payload)
+      if (editJobStatus.value === 'PENDING') {
+        ElMessage.success(`任务 T-${editJobId} 已保存,仍为「待处理」:请回列表经「字段审核」确认后开始比对`)
+      } else {
+        ElMessage.success(`任务 T-${editJobId} 已保存,开始重新比对`)
+        watchTask() // 终态编辑=重跑:同样登记全局后台任务跟踪器
+      }
+    } else {
+      const res = await createCompareJob(payload)
+      ElMessage.success(`比对任务 T-${res.jobId} 已创建,开始执行`)
+      watchTask() // 登记到全局后台任务跟踪器:离开列表页也能在头栏看进度、完成收通知
     }
-    const pickedLower = new Set([...picked].map((n) => n.toLowerCase()))
-    const fields = columns.value.map((c) => c.name).filter((n) => pickedLower.has(n.toLowerCase()))
-    const res = await createCompareJob({
-      name: form.name.trim(),
-      baseDatasourceId: Number(form.datasourceId),
-      baseDb: form.db || null,
-      baseSchema: form.schema,
-      baseTable: form.table,
-      keyField: keyField.value,
-      fields,
-      displayField: displayField.value || null,
-      // 对象对齐匹配逻辑(第 1 步选择):EXACT / CODE_NAME_LLM
-      matchMode: matchMode.value,
-      // 对比模式(第 1 步复选框):ROW 仅行级 / COLUMN 行级+列级
-      compareMode: compareMode.value,
-      targets: targets.value.map((t, i) => ({
-        datasourceId: Number(t.datasourceId),
-        db: t.db || null,
-        schema: t.schema,
-        table: t.table,
-        // 第 3 步人工连线的字段映射;空对象 = 不指定,后端按字段名自动匹配
-        mapping: Object.keys(mappings.value[i] || {}).length ? mappings.value[i] : null
-      }))
-    })
-    ElMessage.success(`比对任务 T-${res.jobId} 已创建,开始执行`)
-    watchTask() // 登记到全局后台任务跟踪器:离开列表页也能在头栏看进度、完成收通知
     router.push('/compare')
   } finally {
     submitting.value = false
   }
 }
 
+/**
+ * 待处理任务「保存并比对」:先按编辑口径 PUT 保存(校验/落库同 submit),再调 start 直启,
+ * 省掉「回列表 → 字段审核 → 确认」一圈;start 被拦(DS_ERROR/映射未就绪等)时任务已保存、
+ * 仍停「待处理」,错误由拦截器提示
+ */
+async function submitAndStart() {
+  if (!validateSubmit()) return
+  starting.value = true
+  try {
+    await updateCompareJob(editJobId, buildPayload())
+    await startCompareJob(editJobId)
+    ElMessage.success(`任务 T-${editJobId} 已保存,开始比对`)
+    watchTask() // 与终态编辑重跑同口径:登记全局后台任务跟踪器
+    router.push('/compare')
+  } catch { /* 拦截器已提示 */ } finally {
+    starting.value = false
+  }
+}
+
+/**
+ * 编辑预填(?edit=<jobId>):拉任务详情反填三步全部数据——任务名、基准四元组、身份字段、
+ * 对比表清单与既有连线。可编辑状态:PENDING(待处理,保存后仍待处理)与终态 DONE/FAILED/CANCELED
+ * (已完成再次编辑,保存后直接重跑);所有内容均可改(含对比模式/匹配逻辑,与终态编辑同口径)。
+ * RUNNING 不可编辑。
+ * 反填期间抑制数据链监听(suppressInvalidate),否则逐字段赋值会被误判成「用户改了第 1 步」
+ * 而清空后两步;字段清单手动 loadColumns 一次(它会记录 loadedTableKey,之后回看重选同一张表
+ * 不再清空重载),身份字段在其后改回任务值(loadColumns 默认按主键列/首文本列重置,不代表任务实际选择)
+ */
+async function prefillEdit(jobId) {
+  let d
+  try {
+    d = await getCompareJob(jobId)
+  } catch {
+    router.push('/compare') // 拦截器已提示
+    return
+  }
+  const job = d?.job
+  if (!job) return
+  if (!['PENDING', 'DONE', 'FAILED', 'CANCELED'].includes(job.status)) {
+    ElMessage.warning('仅「待处理」或已结束的任务可以编辑')
+    router.push('/compare')
+    return
+  }
+  editJobStatus.value = job.status
+  editJobPendingReason.value = job.pendingReason
+  suppressInvalidate = true
+  try {
+    form.name = job.name
+    form.datasourceId = String(job.baseDatasourceId)
+    form.db = job.baseDb || ''
+    form.schema = job.baseSchema || ''
+    form.table = job.baseTable
+    columnCompare.value = job.compareMode === 'COLUMN'
+    matchMode.value = job.matchMode || 'EXACT'
+    targets.value = (d.targets || []).map((t) => ({
+      datasourceId: t.datasourceId, db: t.db || '', schema: t.schema || '', table: t.table
+    }))
+    mappings.value = (d.targets || []).map((t) => ({ ...(t.mapping || {}) }))
+  } finally {
+    // 等本轮 watch 冲刷完再解除抑制:反填触发的数据链监听(基准四元组/对比表清单变化)全部被跳过
+    await nextTick()
+    suppressInvalidate = false
+  }
+  await loadColumns()
+  // 身份字段改回任务值;基准表读不出(IMPORT_ERROR)时按任务原值兜底,便于修正后重选
+  if (job.keyField) keyField.value = job.keyField
+  if (job.displayField) displayField.value = job.displayField
+}
+
 onMounted(async () => {
   try {
     datasources.value = await request.get('/datasources') || []
   } catch { /* 拦截器已提示 */ }
+  // 编辑模式:数据源清单到位后再反填(级联选择器的多库判定依赖 dbType)
+  if (isEdit) await prefillEdit(editJobId)
 })
 </script>
 
 <style scoped>
+.title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .toolbar-actions {
   display: flex;
   gap: 12px;

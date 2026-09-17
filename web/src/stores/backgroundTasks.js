@@ -4,14 +4,16 @@
  * - 任务种类注册表 KINDS:每种任务一个适配器(fetch 活动清单/toRow 行渲染/notify 终态文案与落点),
  *   新任务类型(扫描/元数据同步/报告导出)接入只需加一个适配器;
  * - 单 poll 循环:存在活动任务时 1s 一轮并发拉各 kind 的 active 接口,全部终态即停,零任务零开销;
- *   App 挂载时先拉一次,兜住「提交后刷新页面」的场景;单个 kind 故障(如 compare 未授权 403)静默跳过,不炸循环;
+ *   App 挂载时先拉一次,兜住「提交后刷新页面」的场景;单个 kind 故障静默跳过,不炸循环;
+ * - 授权菜单裁剪(见 KIND_MENU):后端按菜单门禁的前缀(compare)在授权未开放时**不发起请求**,
+ *   从源头避免每次启动打一发必 403 的探测(未授权实例的 403 曾以 API_403 落进错误中心);
  * - 终态检测:上一轮仍在活动清单、本轮消失的任务,回源详情接口定 DONE/FAILED 后经 utils/notify.js
  *   弹通知(可点击直达结果现场)并留痕通知中心铃铛;
  * - ack 去重:页面自行渲染到任务终态(推导弹窗/CompareTasks/CompareDiff)先 ackTask(kind, id),
  *   跟踪器跳过已 ack 的任务不再弹通知(1s 轮询同窗内可能有漏网,属可接受 race,不追求强一致)。
  */
 import { reactive } from 'vue'
-import router, { fetchLicenseStatus } from '../router'
+import router, { fetchLicenseStatus, grantedMenus } from '../router'
 import request, { listActiveCompareJobs, listActiveInferJobs, getCompareJob } from '../api'
 import { ElMessage } from '../utils/notify'
 
@@ -75,6 +77,23 @@ const KINDS = {
 /** 活动任务统一视图行(BackgroundTasksDrawer 与 App.vue 头栏指示器共用) */
 export const backgroundTasks = reactive({ list: [] })
 
+/**
+ * 任务种类 → 授权菜单门禁 key(口径同后端 WebServer 的 /api/* 前置校验)。
+ * 只有 compare 需要:后端对 `/api/compare-jobs` 前缀做 compare 菜单校验,未开放时请求必 403。
+ * relation-infer 后端**不按菜单校验**(数据源页下钻的表列表/表详情也能发起推导,只有 /relations 页面归 relations 菜单),
+ * 故不列入本表——按菜单裁剪它会让「只有数据源菜单」的实例丢掉推导任务的进度与完成通知。
+ */
+const KIND_MENU = { compare: 'compare' }
+
+/** 当前授权开放菜单 key;initBackgroundTasks 每次取到授权状态后刷新,未取得时按空集 → 受门禁的 kind 一律不轮询 */
+let grantedMenuKeys = []
+
+/** 该 kind 当前是否可轮询:无菜单要求的恒可,有要求的需授权码开放该菜单 */
+function kindEnabled(kind) {
+  const menu = KIND_MENU[kind]
+  return !menu || grantedMenuKeys.includes(menu)
+}
+
 // 已被页面自行消化终态的任务 key('kind:id'),全局通知跳过;终态处理完即清,防止无限增长
 const acked = new Set()
 let prevKeys = new Set() // 上一轮活动任务的 key 集合:消失 = 进入终态
@@ -92,13 +111,15 @@ async function tick() {
   if (ticking) return
   ticking = true
   try {
-    const results = await Promise.all(Object.entries(KINDS).map(async ([kind, k]) => {
-      try {
-        return [kind, await k.fetch()]
-      } catch {
-        return [kind, null] // 单 kind 故障(compare 未授权 403/会话过期等)静默跳过
-      }
-    }))
+    const results = await Promise.all(Object.entries(KINDS)
+      .filter(([kind]) => kindEnabled(kind))
+      .map(async ([kind, k]) => {
+        try {
+          return [kind, await k.fetch()]
+        } catch {
+          return [kind, null] // 单 kind 故障(会话过期等)静默跳过;菜单未开放已在源头裁掉,不靠容忍 403
+        }
+      }))
     const rows = []
     const curKeys = new Set()
     for (const [kind, list] of results) {
@@ -155,6 +176,10 @@ export async function initBackgroundTasks() {
   // 复用路由守卫的授权状态缓存(同一次请求);后端不可达时 fetchLicenseStatus 放行,口径同守卫
   const status = await fetchLicenseStatus()
   if (!(status.activated && !status.expired)) return
+  // 授权菜单裁剪:未开放 compare 菜单的实例不发起 /compare-jobs/active(必 403,属预期内状态,
+  // 不该每次启动都往错误中心记一条 API_403);后端不可达时的放行状态无 menus 字段,
+  // grantedMenus 按旧 features 推导同样不含 compare,默认安全
+  grantedMenuKeys = grantedMenus(status)
   await tick()
   if (backgroundTasks.list.length) startPolling()
 }

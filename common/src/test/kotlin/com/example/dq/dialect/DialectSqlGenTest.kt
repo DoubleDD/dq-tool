@@ -369,13 +369,15 @@ class DialectSqlGenTest {
                 PostgresDialect().connectionTimeoutProperties(15_000, 1_800_000))
         assertEquals(mapOf("connectTimeout" to "1", "socketTimeout" to "1"),
                 PostgresDialect().connectionTimeoutProperties(1, 1))
-        assertEquals(mapOf("oracle.net.CONNECT_TIMEOUT" to "15000", "oracle.jdbc.ReadTimeout" to "1800000"),
+        assertEquals(mapOf("remarksReporting" to "true",
+                "oracle.net.CONNECT_TIMEOUT" to "15000", "oracle.jdbc.ReadTimeout" to "1800000"),
                 OracleDialect().connectionTimeoutProperties(15_000, 1_800_000))
         assertEquals(mapOf("loginTimeout" to "15", "socketTimeout" to "1800000"),
                 SqlServerDialect().connectionTimeoutProperties(15_000, 1_800_000))
-        // <=0 表示不限制:对应键不出现在属性里
+        // <=0 表示不限制:对应超时键不出现在属性里(Oracle 的 remarksReporting 为连接级必备属性,恒在)
         assertTrue(MySqlDialect().connectionTimeoutProperties(0, 0).isEmpty())
-        assertTrue(OracleDialect().connectionTimeoutProperties(-1, 0).isEmpty())
+        assertEquals(mapOf("remarksReporting" to "true"),
+                OracleDialect().connectionTimeoutProperties(-1, 0))
         // 未覆盖方言(达梦)不干预,返回空
         assertTrue(DmDialect().connectionTimeoutProperties(15_000, 1_800_000).isEmpty())
     }
@@ -603,5 +605,20 @@ class DialectSqlGenTest {
             mssql.distinctSampleSql("dbo", "t", "code", 1000))
         assertEquals("SELECT TOP 1 [code] FROM [dbo].[t] WHERE [code] IS NOT NULL GROUP BY [code] HAVING COUNT(*) > 1",
             mssql.hasDuplicateSql("dbo", "t", "code"))
+    }
+
+    // ---------- 数据最新更新时间:maxValueSql ----------
+
+    @Test
+    fun `取最大值SQL按方言限定表名并转义列名`() {
+        assertEquals("SELECT MAX(`code`) FROM `db1`.`t`", MySqlDialect().maxValueSql("db1", "t", "code"))
+        assertEquals("SELECT MAX(\"code\") FROM \"public\".\"t\"", PostgresDialect().maxValueSql("public", "t", "code"))
+        assertEquals("SELECT MAX(\"code\") FROM \"S\".\"t\"", OracleDialect().maxValueSql("S", "t", "code"))
+        assertEquals("SELECT MAX(\"code\") FROM \"S\".\"t\"", DmDialect().maxValueSql("S", "t", "code"))
+        assertEquals("SELECT MAX([code]) FROM [dbo].[t]", SqlServerDialect().maxValueSql("dbo", "t", "code"))
+        // schema 为空:只 quote 表名(单库方言)
+        assertEquals("SELECT MAX(`code`) FROM `t`", MySqlDialect().maxValueSql("", "t", "code"))
+        // 列名含方言引用字符时经 quote 转义
+        assertEquals("SELECT MAX(`a``b`) FROM `db1`.`t`", MySqlDialect().maxValueSql("db1", "t", "a`b"))
     }
 }

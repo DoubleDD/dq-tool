@@ -1,6 +1,7 @@
 # AGENTS.md — tauri 模块(Tauri 2 桌面壳)
 
-> 本文件面向 AI 编码代理,描述 tauri 子模块的定位与侧车(sidecar)接入要点。项目全景见根 AGENTS.md。
+> 本文件面向 AI 编码代理,描述 tauri 子模块的定位与侧车(sidecar)接入要点。项目全景见根 AGENTS.md;
+> 兼容性问题台账(拖放/更新/静默启动/Origin·CORS)与跨形态回归清单见 [docs/wiki/Tauri兼容性.md](../docs/wiki/Tauri兼容性.md)。
 
 ## 模块定位
 
@@ -102,9 +103,23 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   `std::io::copy` 流式写盘(大文件不经内存/IPC);返回保存路径供前端 toast,取消返回 null。
   **ureq 是唯一 HTTP client**(阻塞式,不引 async runtime),仅为本命令引入;
   前端统一封装在 web `utils/download.js` 的 `downloadFile(apiPath)`,非 tauri 环境回退 `window.open`
+- **必须关闭 Tauri 拖放处理器**(窗口构建链 `.disable_drag_drop_handler()`,2026-09):Tauri 默认开启拖放处理器,
+  Windows 上 wry 会枚举 WebView2 子窗口 `RevokeDragDrop` + `RegisterDragDrop`,用只认 `CF_HDROP` 的
+  `IDropTarget` 替换系统原本的 target(`wry/src/webview2/drag_drop.rs`),非文件拖拽在 `DragOver` 一律回
+  `DROPEFFECT_NONE` —— 前端**所有 HTML5 拖放失效**:`el-upload` 拖拽区(批量导入/抽样导出/数据源导入)、
+  对象管理 `el-tree` 拖动移动、数据源卡片拖到分组。浏览器 / jpackage 形态没有这层宿主覆盖,**只测浏览器发现不了**。
+  Tauri 官方说明:"Disabling it is required to use HTML5 drag and drop on the frontend on Windows"
+  (`tauri-2.11.5/src/webview/webview_window.rs` 该方法的文档注释)。本应用不监听 `tauri://drag-drop` 事件,
+  关闭零副作用(代价是 Rust 侧不再收到文件拖入事件,当前无人消费);G6 画布走 pointer 事件,不受影响。
+  **新增/改动依赖原生拖放的交互,必须在 Tauri(Windows)形态实测一次**
 - **Windows 不弹终端**:crate 根 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`
   使 release exe 为 GUI 子系统(双击不出控制台;debug 保留控制台看日志),拉起 java.exe 子进程时
   再加 `CREATE_NO_WINDOW`(0x08000000)—— 控制台子系统的子进程被 GUI 父进程拉起时会新分配控制台窗口
+- **启动失败必须可见**(2026-09 补,见 [docs/wiki/Tauri兼容性.md](../docs/wiki/Tauri兼容性.md) B2):`fatal()` 除 stderr 外,
+  还把带 UTC 时间戳的一行追加到 `<日志目录>/tauri-startup.log`(日志目录 = 数据目录同级 `logs/`,三态口径同 `data_dir()`),
+  Windows release 另用模块级 `unsafe extern "system"` 声明的 `user32!MessageBoxW` 弹一个置顶错误框
+  (不为此引 `windows-sys`;dev 构建保留控制台、不弹框,故该分支仅 release 编译)。原因:release exe 无控制台,
+  只 eprintln 等于「双击没反应、无日志可查」。**新增任何启动期直接退出的分支都必须走 `fatal()`,不要自己 `eprintln! + exit`**
 
 ## 自动更新(tauri-plugin-updater)
 
@@ -112,7 +127,7 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 - 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,更新 UI 用原生对话框不与页面耦合)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
 
 - 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 与本地统一由 package-tauri-win.bat / package-tauri-mac.sh 未配置环境变量时自动读该文件(tauri CLI 只认内容、不认 `_PATH` 变体——但会把变量值当路径探测,指向文件路径亦可);**密码变量 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 存在(私钥无密码即为空值)时 CLI 直接使用;缺失时走 `--ci`/`CI` 环境变量兜底按空密码处理,都没有则交互式询问密码、无终端环境签名失败**——mac 脚本直接 export 空值;win bat 因 cmd 无法定义空值环境变量(且空值经 npm 多层子进程传递不可靠),未配置密码变量时改置 `CI=true` 让 CLI 按空密码签名(行为见 tauri-cli `bundle.rs` sign_updaters);**丢私钥 = 更新链断裂,需换密钥对并发全量包**。注意:tauri CLI 对「配了 pubkey 但无私钥」直接报错失败(sign_updaters 的 "A public key has been found, but no private key"),win bat 仍在密钥读不到时提前 exit 1 给出更明确的报错;另:tauri CLI 2.11+ 的 v2 updater 模式对 NSIS **不再产出 .nsis.zip**(自包含安装包,直接签 `setup.exe` 得 `setup.exe.sig`,tauri-plugin-updater 2.x 支持裸 exe 下载安装),bat 构建后以 `*-setup.exe.sig` 存在作为签名成功的快速失败判据(2026-08 v1.6 曾误按 .nsis.zip 判,CI 必挂)
-- `createUpdaterArtifacts: true` 产出带签名的安装包本身:`dq-tool_<v>_x64-setup.exe` + `.exe.sig`(v2 updater 直接下载运行 NSIS 安装包,不再打 zip;macOS 对应 `.app.tar.gz` + `.sig`);CI 生成 `latest.json`(version/signature/url)挂 Release
+- `createUpdaterArtifacts: true` 产出带签名的安装包本身:`dq-tool_<v>_x64-setup.exe` + `.exe.sig`(v2 updater 直接下载运行 NSIS 安装包,不再打 zip;macOS 对应 `.app.tar.gz` + `.sig`);`latest.json`(version/signature/url)由 `release.yml` 的 `updater-manifest` 收尾任务合并各平台 `updater-sig-*` 生成并挂 Release —— **该任务 2026-08 曾停用、2026-09-17 恢复启用**;没有它应用内更新永远 404,改 CI 时不要把它连同 macos-tauri 一起注释掉
 - `nsis.installMode: "currentUser"`(装 `%LOCALAPPDATA%\Programs`,**更新免 UAC**,高频迭代必需;旧 perMachine 安装需手工卸载重装一次)
 - **版本纪律:updater 按 semver 比较,每次发版必须递增 tauri.conf.json 的 version**,否则同版本不会被识别为更新
 

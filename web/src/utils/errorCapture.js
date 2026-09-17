@@ -7,6 +7,7 @@
  *  - Vue app.config.errorHandler    → 组件渲染/生命周期/事件处理里的异常
  *  - console.error 包装             → 业务/三方库主动打的错误日志
  *  - axios 响应拦截器(api/index.js)→ 接口 4xx/5xx 与网络错误
+ *    (调用方标了 `_silent` 的请求由拦截器过滤,不进错误中心——静默接口由调用方自行兜底)
  *
  * 防刷屏与自保:
  *  - 同指纹 3s 窗口内只上报一次;本地队列攒批(满 10 条或 1s)合并发送,单批最多 50 条;
@@ -273,6 +274,7 @@ function readable(value) {
 /**
  * axios 响应拦截器专用:上报接口错误。
  * 排除:上报接口自身、401(授权失效属状态,由跳激活页处理)、503(内核就绪前的启动状态)。
+ * 注意调用方:拦截器只对**未标 `_silent`** 的请求调用本函数,静默请求(轮询等,失败由调用方自行消化)不上报。
  * @param {any} error axios error
  * @param {string} url 请求路径
  * @param {string} method 请求方法

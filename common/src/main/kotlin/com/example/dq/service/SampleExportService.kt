@@ -21,12 +21,8 @@ import org.slf4j.LoggerFactory
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.Callable
 import java.util.Comparator
-import java.util.concurrent.ExecutorCompletionService
 import java.util.concurrent.Executors
-import java.util.concurrent.Future
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -201,7 +197,7 @@ class SampleExportService(
         repo.updateStage(taskId, "导入数据源")
         val unique = rows.distinctBy { it.dsKey }
         val existingByKey = dataSourceRepo.findAll().mapNotNull { ds ->
-            SampleTableExcelParser.keyOfExisting(ds)?.let { it to ds }
+            DatasourceKeyMatcher.fullKeyOf(ds)?.let { it to ds }
         }.toMap()
 
         // 先落全部「校验中」再开测(测连期间明细不留空白);报告行按下标定位,处理完原地翻最终结果
@@ -250,11 +246,12 @@ class SampleExportService(
         val needTestKeys = needTest.map { it.dsKey }.toSet()
         // 按生命周期回调:onStart=真正进线程执行时翻「校验中」(在池队列里等的不算),onEach=完成翻最终结果;
         // 谁先测完谁先翻,排在前面的慢源/超时源不堵后面的快源
-        testConnectionsConcurrently(
+        ConnectionTester.testAll(
             needTest.associate { row ->
                 row.dsKey to TestConnectionRequest(
                     jdbcUrl = withMssqlDefaults(row.jdbcUrl), username = row.username, password = row.password)
             },
+            ::testRequestError,
             onStart = { key ->
                 report[testingBase + indexByKey.getValue(key)]["action"] = "TESTING"
                 persistReport()
@@ -298,64 +295,6 @@ class SampleExportService(
         return report to testingBase
     }
 
-    /**
-     * 并发实测一组连接请求(dsKey → 错误消息,null 值表示连通;未测的 key 无此项)。
-     * 检测与导出前复测同一写法:4 线程池 + 单条 20s 超时(超时的单条记「连接超时」算失败,不拖住整批)。
-     * 生命周期回调:[onStart] 在任务**真正进线程开始执行**时触发(还在池队列里等的不触发),
-     * [onEach] 在单个完成时按完成先后触发——调用方据此把报告行从「排队中」翻「校验中」再翻最终结果。
-     * 回调在多线程上触发(各自的数据源行互不相干),全部完成后返回汇总 map;
-     * 回调里抛出的异常(如暂停中的任务被取消)会上抛给调用方
-     */
-    private fun testConnectionsConcurrently(
-        toTest: Map<String, TestConnectionRequest>,
-        onStart: ((String) -> Unit)? = null,
-        onEach: ((String, String?) -> Unit)? = null,
-    ): Map<String, String?> {
-        val errors = LinkedHashMap<String, String?>()
-        if (toTest.isEmpty()) return errors
-        val idx = AtomicInteger()
-        val pool = Executors.newFixedThreadPool(minOf(4, toTest.size)) { r ->
-            Thread(r, "sample-export-dstest-" + idx.incrementAndGet()).apply { isDaemon = true }
-        }
-        try {
-            val completion = ExecutorCompletionService<Pair<String, String?>>(pool)
-            val futures = LinkedHashMap<String, Future<Pair<String, String?>>>()
-            val pending = LinkedHashMap<String, Long>() // dsKey → 提交时间(nanoTime),超时尚未完成的记超时
-            for ((key, req) in toTest) {
-                futures[key] = completion.submit(Callable {
-                    onStart?.invoke(key)
-                    key to testRequestError(req)
-                })
-                pending[key] = System.nanoTime()
-            }
-            val timeoutNanos = TimeUnit.SECONDS.toNanos(DS_TEST_TIMEOUT_SECONDS)
-            while (pending.isNotEmpty()) {
-                val done = completion.poll(200, TimeUnit.MILLISECONDS)
-                if (done != null) {
-                    val (key, err) = done.get()
-                    // 已按超时登记过的任务(被取消)可能随后出现在完成队列,跳过不重复处理
-                    if (pending.remove(key) != null) {
-                        errors[key] = err
-                        onEach?.invoke(key, err)
-                    }
-                    continue
-                }
-                // 暂无新完成:把超过单条超时的任务记「连接超时」并取消(其线程由 shutdownNow 回收)
-                val now = System.nanoTime()
-                for (key in pending.filterValues { now - it > timeoutNanos }.keys.toList()) {
-                    pending.remove(key)
-                    futures.getValue(key).cancel(true)
-                    val msg = "连接超时(${DS_TEST_TIMEOUT_SECONDS} 秒)"
-                    errors[key] = msg
-                    onEach?.invoke(key, msg)
-                }
-            }
-        } finally {
-            pool.shutdownNow()
-        }
-        return errors
-    }
-
     /** 实测单个连接请求;返回 null 表示连通,否则为错误消息 */
     private fun testRequestError(req: TestConnectionRequest): String? = try {
         dataSourceService.testConnection(req)
@@ -377,7 +316,7 @@ class SampleExportService(
         synchronized(dsWriteLock) {
             val fresh = dataSourceRepo.findAll()
             val existing = fresh.mapNotNull { ds ->
-                SampleTableExcelParser.keyOfExisting(ds)?.let { it to ds }
+                DatasourceKeyMatcher.fullKeyOf(ds)?.let { it to ds }
             }.toMap()[row.dsKey]
             val usedNames = fresh.mapNotNull { it.name }.toMutableSet()
             if (existing == null) {
@@ -449,11 +388,11 @@ class SampleExportService(
      */
     private fun resolveOutcomesForExport(items: List<SampleExportRepository.ItemRow>): Map<String, DsOutcome> {
         val existingByKey = dataSourceRepo.findAll().mapNotNull { ds ->
-            SampleTableExcelParser.keyOfExisting(ds)?.let { it to ds }
+            DatasourceKeyMatcher.fullKeyOf(ds)?.let { it to ds }
         }.toMap()
         val uniqueKeys = items.mapNotNull { it.dsKey }.distinct()
         // ERROR 的先并发实测(用已存连接信息,可能用户已就地修过)
-        val testErrors = testConnectionsConcurrently(uniqueKeys.mapNotNull { key ->
+        val testErrors = ConnectionTester.testAll(uniqueKeys.mapNotNull { key ->
             existingByKey[key]?.takeIf { it.connStatus == "ERROR" }?.let { ds ->
                 val c = dataSourceService.get(ds.id!!)
                 key to TestConnectionRequest(
@@ -462,7 +401,7 @@ class SampleExportService(
                     sshUsername = c.sshUsername, sshAuthMethod = c.sshAuthMethod,
                     sshPassword = c.sshPassword, sshPrivateKey = c.sshPrivateKey, sshPassphrase = c.sshPassphrase)
             }
-        }.toMap())
+        }.toMap(), ::testRequestError)
         val outcomes = LinkedHashMap<String, DsOutcome>()
         for (key in uniqueKeys) {
             val ds = existingByKey[key]
@@ -809,9 +748,6 @@ class SampleExportService(
 
         /** 单元格字符串截断长度(与数据预览/AI 抽样同口径) */
         private const val MAX_CELL_CHARS = 1000
-
-        /** 单数据源实测超时(比诊断实测的 40s 短:批量导入场景单个卡住不应拖住整批) */
-        private const val DS_TEST_TIMEOUT_SECONDS = 20L
 
         private val CATALOG_HEADERS = listOf(
             "序号", "系统来源名称", "实际系统或模式描述", "数据库名称", "模式名称",

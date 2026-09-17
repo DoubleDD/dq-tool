@@ -3,6 +3,8 @@ package com.example.dq.service
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.MetaSyncDetail
 import com.example.dq.model.MetaSyncItem
+import com.example.dq.model.MetaSyncSchemaRef
+import com.example.dq.model.MetaSyncSchemaSelector
 import com.example.dq.model.MetaSyncTableRef
 import com.example.dq.model.MetaSyncTableSelector
 import com.example.dq.repository.MetaSyncRepository
@@ -17,6 +19,8 @@ import java.util.concurrent.atomic.AtomicInteger
  * 路径,缓存存全量不按白名单裁剪,与懒加载口径一致);每库结束刷库概览(schema_stat)。
  * 表级模式(V57,明细带 tables_json)只回源指定表:所在 schema 表清单整粒度覆盖 + 指定表逐张
  * 刷字段/索引/lite 字段 + 重算 schema 字段总数,库清单与库概览不动。
+ * 库/schema 级模式(V58,明细带 schemas_json)只回源指定库/schema:所在库 schema 清单整粒度覆盖 +
+ * 逐 schema 走与整库相同的单 schema 同步体 + 每库刷库概览,数据源级库清单不动。
  * DDL 不同步(Oracle/达梦逐表取 DDL 太慢,保留按需浏览+缓存降级现状)。
  *
  * 任务范式同 SampleExportService:任务落 H2(meta_sync_job/meta_sync_item)+ 4 线程守护池 +
@@ -41,28 +45,36 @@ class MetaSyncService(
     private class SyncCanceledException : RuntimeException()
 
     /**
-     * 提交同步任务:datasourceIds 与 tables 全空抛 IllegalArgumentException(400);
+     * 提交同步任务:datasourceIds、schemas、tables 全空抛 IllegalArgumentException(400);
      * 已有未结束任务抛 IllegalStateException(409);落 job+items 后异步执行,立即返回 jobId。
-     * tables 非空时按数据源分组成表级明细(该数据源只同步指定表),与整数据源明细可同批混合
+     * schemas/tables 非空时按数据源分组成 schema 级/表级明细(该数据源只同步指定范围),三种粒度可同批混合;
+     * 同一数据源同时出现多种粒度时按 整数据源 > schema 级 > 表级 取最高粒度(明细表有 (job_id, datasource_id) 唯一键)
      */
-    fun submit(datasourceIds: List<Long>, tables: List<MetaSyncTableSelector> = emptyList()): Long {
+    fun submit(datasourceIds: List<Long>, tables: List<MetaSyncTableSelector> = emptyList(),
+               schemas: List<MetaSyncSchemaSelector> = emptyList()): Long {
         val ids = datasourceIds.distinct()
-        // 表级明细按数据源分组去重(同一张表重复提交只同步一次)
+        // 表级/schema 级明细按数据源分组去重(同一对象重复提交只同步一次)
         val tablesByDs = tables.groupBy { it.datasourceId }
             .mapValues { (_, refs) ->
                 refs.map { MetaSyncTableRef(it.db?.ifBlank { null }, it.schema, it.table) }.distinct()
             }
-        if (ids.isEmpty() && tablesByDs.isEmpty()) {
-            throw IllegalArgumentException("请选择要同步的数据源或表")
+        val schemasByDs = schemas.groupBy { it.datasourceId }
+            .mapValues { (_, refs) ->
+                refs.map { MetaSyncSchemaRef(it.db?.ifBlank { null }, it.schema) }.distinct()
+            }
+        if (ids.isEmpty() && tablesByDs.isEmpty() && schemasByDs.isEmpty()) {
+            throw IllegalArgumentException("请选择要同步的数据源、库/schema 或表")
         }
         if (repo.hasRunning()) {
             throw IllegalStateException("已有元数据同步任务正在运行,请等待其完成或先取消")
         }
-        // 校验数据源存在并快照名称(删除后明细仍可展示);
-        // 同时出现在两种模式的数据源按整数据源同步(明细表有 (job_id, datasource_id) 唯一键,不能重复)
-        val tableOnlyDs = tablesByDs.keys.filter { it !in ids }
+        // 粒度归一:整数据源 > schema 级 > 表级,每个数据源只落一行明细
+        val schemaOnlyDs = schemasByDs.keys.filter { it !in ids }
+        val tableOnlyDs = tablesByDs.keys.filter { it !in ids && it !in schemaOnlyDs }
+        val schemaItems = schemasByDs.filterKeys { it in schemaOnlyDs }
         val tableItems = tablesByDs.filterKeys { it in tableOnlyDs }
-        val allIds = ids + tableOnlyDs
+        val allIds = ids + schemaOnlyDs + tableOnlyDs
+        // 校验数据源存在并快照名称(删除后明细仍可展示)
         val items = allIds.map { id ->
             val ds = try {
                 dataSourceService.get(id)
@@ -72,9 +84,10 @@ class MetaSyncService(
             id to (ds.name ?: "数据源$id")
         }
         val jobId = repo.insertJob(items.size)
-        repo.insertItems(jobId, items, tableItems)
+        repo.insertItems(jobId, items, tableItems, schemaItems)
         executor.execute { run(jobId) }
-        log.info("元数据批量同步任务已提交: id={}, 数据源数={}, 表级明细数={}", jobId, items.size, tableItems.size)
+        log.info("元数据批量同步任务已提交: id={}, 数据源数={}, schema级明细数={}, 表级明细数={}",
+            jobId, items.size, schemaItems.size, tableItems.size)
         return jobId
     }
 
@@ -118,9 +131,11 @@ class MetaSyncService(
             }
             repo.markItemRunning(item.id)
             try {
-                val (dbCount, schemaCount, tableCount) =
-                    if (item.tables.isEmpty()) syncDatasource(jobId, item)
-                    else syncTables(jobId, item)
+                val (dbCount, schemaCount, tableCount) = when {
+                    item.tables.isNotEmpty() -> syncTables(jobId, item)
+                    item.schemas.isNotEmpty() -> syncSchemas(jobId, item)
+                    else -> syncDatasource(jobId, item)
+                }
                 repo.finishItem(item.id, dbCount, schemaCount, tableCount)
                 repo.incrDone(jobId)
                 log.info("元数据同步完成: jobId={}, 数据源={}({}), schema={}, 表={}",
@@ -192,24 +207,62 @@ class MetaSyncService(
             schemas.forEachIndexed { schemaIdx, schema ->
                 checkCanceled(jobId)
                 repo.updateItemProgress(item.id, "正在同步 schema $schema(${schemaIdx + 1}/${schemas.size})")
-                val tables = synced(jobId) { metadataService.listTables(dsId, db, schema, refresh = true) }
-                synced(jobId) { metadataService.listSchemaColumns(dsId, db, schema, refresh = true) }
-                tableCount += tables.size
-                tables.forEachIndexed { tableIdx, table ->
-                    checkCanceled(jobId)
-                    val tableName = table.name ?: ""
-                    repo.updateItemProgress(item.id, "正在同步表 $tableName(${tableIdx + 1}/${tables.size})")
-                    synced(jobId) { metadataService.listTableColumns(dsId, db, schema, tableName, refresh = true) }
-                    synced(jobId) { metadataService.listTableIndexes(dsId, db, schema, tableName, refresh = true) }
-                }
-                // 字段总数最后刷:表清单/单表字段/整库字段清单的覆盖刷新都会按粒度失效该缓存
-                synced(jobId) { metadataService.countColumns(dsId, db, schema, refresh = true) }
+                tableCount += syncSchema(jobId, item, db, schema)
             }
             // 每库结束刷库概览(表数量/体积/最近扫描)
             synced(jobId) { metadataService.listSchemaStats(dsId, db, refresh = true) }
         }
         val dbCount = if (dialect.supportsMultiDatabase()) databases.size else 0
         return Triple(dbCount, schemaCount, tableCount)
+    }
+
+    /**
+     * 库/schema 级同步:只回源明细里指定的库/schema——所在库的 schema 清单整粒度覆盖(增删 schema 对齐),
+     * 每个指定 schema 走与整库同步相同的单 schema 同步体(表清单/lite 字段/逐表字段+索引/字段总数),
+     * 每库结束刷库概览;库清单(`meta_database` 数据源级)不动。返回 (库数, schema 数, 表数)
+     */
+    private fun syncSchemas(jobId: Long, item: MetaSyncItem): Triple<Int, Int, Int> {
+        val dsId = item.datasourceId
+        ensureConnectable(dsId)
+        val ds = dataSourceService.get(dsId)
+        val dialect = dialectFactory.get(ds.dbType!!)
+
+        // 按库分组;库名空串归一为 null(单库方言无库一层)
+        val groups = item.schemas.groupBy { it.db?.takeIf { d -> d.isNotBlank() } }
+        var tableCount = 0
+        for ((db, refs) in groups) {
+            checkCanceled(jobId)
+            synced(jobId) { metadataService.listSchemas(dsId, db, unfiltered = true, refresh = true) }
+            refs.forEachIndexed { idx, ref ->
+                checkCanceled(jobId)
+                repo.updateItemProgress(item.id, "正在同步 schema ${ref.schema}(${idx + 1}/${refs.size})")
+                tableCount += syncSchema(jobId, item, db, ref.schema)
+            }
+            // 每库结束刷库概览(表数量/体积/最近扫描)
+            synced(jobId) { metadataService.listSchemaStats(dsId, db, refresh = true) }
+        }
+        val dbCount = if (dialect.supportsMultiDatabase()) groups.size else 0
+        return Triple(dbCount, item.schemas.size, tableCount)
+    }
+
+    /**
+     * 同步单个 schema 的结构缓存:表清单 → 整库 lite 字段清单 → 逐表详细字段+索引 → 字段总数,
+     * 全部整粒度覆盖;整库同步与库/schema 级同步共用。返回表数
+     */
+    private fun syncSchema(jobId: Long, item: MetaSyncItem, db: String?, schema: String): Int {
+        val dsId = item.datasourceId
+        val tables = synced(jobId) { metadataService.listTables(dsId, db, schema, refresh = true) }
+        synced(jobId) { metadataService.listSchemaColumns(dsId, db, schema, refresh = true) }
+        tables.forEachIndexed { tableIdx, table ->
+            checkCanceled(jobId)
+            val tableName = table.name ?: ""
+            repo.updateItemProgress(item.id, "正在同步表 $tableName(${tableIdx + 1}/${tables.size})")
+            synced(jobId) { metadataService.listTableColumns(dsId, db, schema, tableName, refresh = true) }
+            synced(jobId) { metadataService.listTableIndexes(dsId, db, schema, tableName, refresh = true) }
+        }
+        // 字段总数最后刷:表清单/单表字段/整库字段清单的覆盖刷新都会按粒度失效该缓存
+        synced(jobId) { metadataService.countColumns(dsId, db, schema, refresh = true) }
+        return tables.size
     }
 
     /**

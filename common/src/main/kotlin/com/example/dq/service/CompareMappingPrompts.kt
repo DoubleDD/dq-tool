@@ -36,15 +36,27 @@ object CompareMappingPrompts {
     fun columnItemOf(c: ColumnMeta): ColumnItem =
         ColumnItem(c.name, c.displayType, c.comment?.takeIf { it.isNotBlank() })
 
-    /** 拼映射 prompt:基准需映射字段清单 + 目标全列清单 + 输出格式约束;纯函数 */
+    /**
+     * 拼映射 prompt:基准需映射字段清单 + 目标全列清单 + 输出格式约束;纯函数。
+     * [lockedFields](基准字段 → 目标列,比对批量导入里表格直接给出的身份字段)从待推导清单剔除,
+     * 并在输出约定里明确排除(模型只需推导其余字段)
+     */
     @JvmStatic
     fun buildMappingPrompt(baseTable: String, baseFields: List<ColumnItem>,
-                           targetTable: String, targetColumns: List<ColumnItem>): String {
+                           targetTable: String, targetColumns: List<ColumnItem>,
+                           lockedFields: Map<String, String> = emptyMap()): String {
+        val lockedByLower = lockedFields.keys.map { it.lowercase() }.toSet()
+        val pendingFields = baseFields.filter { it.name.lowercase() !in lockedByLower }
         val sb = StringBuilder()
-        sb.append("基准表 ").append(baseTable).append(" 需要映射的字段(共 ").append(baseFields.size).append(" 个):\n")
-        appendColumns(sb, baseFields)
+        sb.append("基准表 ").append(baseTable).append(" 需要映射的字段(共 ").append(pendingFields.size).append(" 个):\n")
+        appendColumns(sb, pendingFields)
         sb.append("\n目标表 ").append(targetTable).append(" 的全部列(共 ").append(targetColumns.size).append(" 个):\n")
         appendColumns(sb, targetColumns)
+        if (lockedFields.isNotEmpty()) {
+            sb.append("\n以下基准字段已人工锁定映射,不在需要映射的字段内,不要输出: ")
+                .append(lockedFields.entries.joinToString(", ") { "\"${it.key}\"→\"${it.value}\"" })
+                .append("。")
+        }
         sb.append("\n请输出基准字段到目标列的映射对象,键为基准字段名、值为目标列名,形如 ")
             .append("{\"基准字段1\":\"目标列1\",\"基准字段2\":\"目标列2\"}。")
             .append("只输出 JSON 对象本身,没有映射时输出 {}。")

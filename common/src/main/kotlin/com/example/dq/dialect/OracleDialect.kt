@@ -302,10 +302,16 @@ class OracleDialect : AbstractDialect() {
         return emptyMap()
     }
 
-    /** Oracle thin 驱动:建连与单次网络读取超时(毫秒);不设置时驱动默认几乎不设上限,半死库可卡到分钟级 */
+    /**
+     * Oracle thin 驱动连接属性:
+     * - remarksReporting=true:ojdbc 默认不返回 REMARKS(getColumns/getTables 注释列恒空),
+     *   不显式打开则字段注释全部拿不到(DBeaver 等工具同样靠该属性或直查 all_col_comments)
+     * - 建连与单次网络读取超时(毫秒):不设置时驱动默认几乎不设上限,半死库可卡到分钟级
+     */
     @Throws(SQLException::class)
     override fun connectionTimeoutProperties(connectTimeoutMs: Int, readTimeoutMs: Int): Map<String, String> =
         buildMap {
+            put("remarksReporting", "true")
             if (connectTimeoutMs > 0) put("oracle.net.CONNECT_TIMEOUT", connectTimeoutMs.toString())
             if (readTimeoutMs > 0) put("oracle.jdbc.ReadTimeout", readTimeoutMs.toString())
         }

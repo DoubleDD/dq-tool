@@ -6,6 +6,7 @@ import com.example.dq.discovery.LanDiscoveryService
 import com.example.dq.model.AiScene
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.AiUsageRepository
+import com.example.dq.repository.CompareImportRepository
 import com.example.dq.repository.CompareRepository
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.Jdbc
@@ -38,6 +39,7 @@ import com.example.dq.service.AiUsageService
 import com.example.dq.service.AnnotationTransferService
 import com.example.dq.service.AutoTagService
 import com.example.dq.service.ChangelogService
+import com.example.dq.service.CompareImportService
 import com.example.dq.service.CompareService
 import com.example.dq.service.DataSourceService
 import com.example.dq.service.DataSourceTransferService
@@ -130,6 +132,7 @@ class ServiceEnv(val config: AppConfig) {
     val relationInferJobRepo = RelationInferJobRepository(jdbc)
     val metaSyncRepo = MetaSyncRepository(jdbc)
     val compareRepo = CompareRepository(jdbc)
+    val compareImportRepo = CompareImportRepository(jdbc)
 
     // 基础组件
     val crypto = CryptoUtil(config)
@@ -207,6 +210,12 @@ class ServiceEnv(val config: AppConfig) {
         // 匹配逻辑 3 的补配调用计入 AI 用量统计(场景:比对匹配)
         aiChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MATCH) },
         // 列级对比字段映射预生成(场景:比对映射)
+        aiMappingChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MAPPING) },
+        // 导出「数据最新更新时间」的时间字段语义匹配(场景:比对时间)
+        aiTimeChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_TIME) })
+    /** 比对任务批量导入:一 sheet 一任务,数据源实测建档 + 大模型推导字段映射,任务落 PENDING 待人工审核 */
+    val compareImportService = CompareImportService(compareImportRepo, dataSourceRepo, dataSourceService,
+        metadataService, compareService, aiConfigService, config,
         aiMappingChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MAPPING) })
 
     /**
@@ -225,6 +234,7 @@ class ServiceEnv(val config: AppConfig) {
         relationInferJobRepo.failRunningOnStartup()
         metaSyncService.recoverUnfinished()
         compareService.recoverUnfinished()
+        compareImportService.recoverUnfinished()
         // 错误中心最后就绪:此前(建表/迁移/恢复期)产生的错误已落 logs/error-spool.jsonl,此处回灌入库并执行保留策略
         errorCenterService.markReady()
     }

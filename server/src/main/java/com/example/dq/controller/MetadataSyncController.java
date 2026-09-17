@@ -1,6 +1,7 @@
 package com.example.dq.controller;
 
 import com.example.dq.model.MetaSyncDetail;
+import com.example.dq.model.MetaSyncSchemaSelector;
 import com.example.dq.model.MetaSyncTableSelector;
 import com.example.dq.service.MetaSyncService;
 import io.javalin.http.Context;
@@ -17,7 +18,8 @@ public class MetadataSyncController {
         this.service = service;
     }
 
-    /** 启动同步(body {"datasourceIds":[...], "tables":[{datasourceId,db,schema,table}]} 二选一或混合);
+    /** 启动同步(body {"datasourceIds":[...], "schemas":[{datasourceId,db,schema}],
+     *  "tables":[{datasourceId,db,schema,table}]} 三种粒度可只传其一或混合);
      * 全空 400,已有运行中任务 409;后台执行,返回 jobId */
     public void submit(Context ctx) {
         SyncRequest req = ctx.bodyAsClass(SyncRequest.class);
@@ -28,7 +30,13 @@ public class MetadataSyncController {
                     .map(t -> new MetaSyncTableSelector(t.datasourceId,
                             t.db == null || t.db.isBlank() ? null : t.db, t.schema, t.table))
                     .toList();
-        ctx.json(Map.of("jobId", service.submit(ids, tables)));
+        List<MetaSyncSchemaSelector> schemas = req == null || req.schemas == null ? List.of()
+                : req.schemas.stream()
+                    .filter(s -> s != null && s.datasourceId != null && s.schema != null)
+                    .map(s -> new MetaSyncSchemaSelector(s.datasourceId,
+                            s.db == null || s.db.isBlank() ? null : s.db, s.schema))
+                    .toList();
+        ctx.json(Map.of("jobId", service.submit(ids, tables, schemas)));
     }
 
     /** 最近一次任务(含明细),页面打开时恢复轮询;从未同步过返回 204 */
@@ -52,10 +60,11 @@ public class MetadataSyncController {
         ctx.json(Map.of("ok", true));
     }
 
-    /** 启动同步请求体:datasourceIds=整数据源同步;tables=表级同步(两批可混合) */
+    /** 启动同步请求体:datasourceIds=整数据源同步;schemas=库/schema 级同步;tables=表级同步(可混合) */
     public static class SyncRequest {
         public List<Long> datasourceIds;
         public List<TableRef> tables;
+        public List<SchemaRef> schemas;
     }
 
     /** 表级同步的表定位 */
@@ -64,6 +73,13 @@ public class MetadataSyncController {
         public String db;
         public String schema;
         public String table;
+    }
+
+    /** 库/schema 级同步的 schema 定位 */
+    public static class SchemaRef {
+        public Long datasourceId;
+        public String db;
+        public String schema;
     }
 
     private static long id(Context ctx) {

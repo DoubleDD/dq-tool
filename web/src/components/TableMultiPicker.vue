@@ -1,11 +1,12 @@
 <script setup>
 /**
  * 多表选择器:左侧级联挑表(复用 TableCascadePicker 的 toggleable 模式,表行 +/− 逐张加入/移出),
- * 右侧「已选清单」面板逐条可删。比对任务「选择比对系统」与元数据同步表级选择共用。
+ * 右侧「已选清单」面板逐条可删。比对任务「选择比对系统」与元数据同步表级/库级选择共用。
  *
- * - v-model:已选表清单 `[{ datasourceId, db, schema, table }]`,可跨数据源/库/schema 累积;
- * - 表行点 + 时先过 `validateAdd`(返回字符串即当警告文案拦截,如比对任务拦「基准表本身」),放行即入列;
- * - 移出(表行 − 或清单「删除」)组件内直接完成,父级经 v-model 感知;
+ * - v-model:已选清单,`level='table'`(默认)为 `[{ datasourceId, db, schema, table }]`;
+ *   `level='schema'` 为 `[{ datasourceId, db, schema }]`,均可跨数据源/库/schema 累积;
+ * - 终态栏点 + 时先过 `validateAdd`(返回字符串即当警告文案拦截,如比对任务拦「基准表本身」),放行即入列;
+ * - 移出(栏内 − 或清单「删除」)组件内直接完成,父级经 v-model 感知;
  * - `lane-change` 回抛级联当前所在 数据源/库/schema,父级据此算 `disabledTables` 等联动数据。
  */
 import { computed, reactive, watch } from 'vue'
@@ -13,58 +14,67 @@ import { ElMessage } from '../utils/notify'
 import TableCascadePicker from './TableCascadePicker.vue'
 
 const props = defineProps({
-  // 已选表清单:[{ datasourceId, db, schema, table }]
+  // 已选清单:table 粒度为 [{ datasourceId, db, schema, table }];schema 粒度为 [{ datasourceId, db, schema }]
   modelValue: { type: Array, default: () => [] },
   // 可选数据源清单(由父级拉取,口径与页面工具栏一致)
   datasources: { type: Array, default: () => [] },
-  // 当前级联所在 数据源+库/schema 下禁止选择的表名(比对任务:基准表本身),命中项在级联里置灰
+  // 当前级联所在栏位下禁止选择的表名/schema 名(比对任务:基准表本身),命中项在级联里置灰
   disabledTables: { type: Array, default: () => [] },
   // 加入前的校验钩子:返回 true/undefined 放行;返回字符串则当作警告文案弹出并拦截
   validateAdd: { type: Function, default: null },
-  // 表行 +/− 悬浮提示里的对象名(「加入比对系统」/「移出比对系统」)
+  // 选择粒度:table=选到表(默认);schema=选到库/schema(级联终态栏为库/schema 栏)
+  level: { type: String, default: 'table' },
+  // 终态栏 +/− 悬浮提示里的对象名(「加入比对系统」/「移出比对系统」)
   label: { type: String, default: '表' },
   // 右侧清单面板标题与空态文案
   panelTitle: { type: String, default: '已选表' },
   emptyText: { type: String, default: '还没有已选表,请在左侧选好库/schema 后,点表名右侧的 + 加入' },
-  // 右侧面板宽度与清单最大高度(数字按 px 处理,字符串原样使用)
+  // 右侧面板宽度;清单默认撑满与左侧级联同高,panelMaxHeight 传值时作为上限(数字按 px 处理,字符串原样使用)
   panelWidth: { type: [Number, String], default: 420 },
-  panelMaxHeight: { type: [Number, String], default: 168 }
+  panelMaxHeight: { type: [Number, String], default: null }
 })
 const emit = defineEmits(['update:modelValue', 'lane-change'])
 
-// 级联面板当前所在的 数据源/库/schema(具体表在表行上用 +/− 逐张切换,不走 v-model:table)
+// 级联面板当前所在的 数据源/库/schema(schema 粒度只用前两级;具体对象在终态栏用 +/− 逐条切换)
 const pick = reactive({ datasourceId: '', db: '', schema: '' })
 watch(pick, (v) => emit('lane-change', { ...v }))
 
-/** 与当前级联所在 数据源+库/schema 同栏 */
+const schemaLevel = computed(() => props.level === 'schema')
+
+/** 与当前级联所在栏位同栏:schema 粒度按 数据源+库;table 粒度按 数据源+库+schema */
 function sameLane(t) {
-  return String(t.datasourceId) === String(pick.datasourceId) &&
-    (t.db || '') === (pick.db || '') && t.schema === pick.schema
+  if (String(t.datasourceId) !== String(pick.datasourceId)) return false
+  if ((t.db || '') !== (pick.db || '')) return false
+  return schemaLevel.value ? true : t.schema === pick.schema
 }
 
-// 当前库/schema 下已入列的表名:交给级联组件渲染成绿色「−」态
-const addedTables = computed(() => props.modelValue.filter(sameLane).map((t) => t.table))
+// 当前栏位下已入列的名字(schema 粒度是 schema 名,table 粒度是表名):交给级联组件渲染成绿色「−」态
+const addedTables = computed(() => props.modelValue.filter(sameLane)
+  .map((t) => (schemaLevel.value ? t.schema : t.table)))
 
 function dsOf(t) {
   return props.datasources.find((d) => String(d.id) === String(t.datasourceId))
 }
 
-/** 定位串:库/schema.表(多库方言带库名前缀)。清单里与数据源名分两行展示,避免单行截断 */
+/** 定位串:库/schema(.表)。清单里与数据源名分两行展示,避免单行截断 */
 function locOf(t) {
   const schemaPart = t.db ? `${t.db}.${t.schema}` : t.schema
-  return `${schemaPart ? schemaPart + '.' : ''}${t.table}`
+  return schemaLevel.value ? schemaPart : `${schemaPart ? schemaPart + '.' : ''}${t.table}`
 }
 
-/** 表行「+/−」:已加过就移出;没加过先过 validateAdd,放行即入列 */
+/** 终态栏「+/−」:已加过就移出;没加过先过 validateAdd,放行即入列 */
 function onToggle(t) {
-  const idx = props.modelValue.findIndex((x) => sameLane(x) && x.table === t.name)
+  const idx = props.modelValue.findIndex((x) =>
+    sameLane(x) && (schemaLevel.value ? x.schema === t.name : x.table === t.name))
   if (idx >= 0) {
     const next = [...props.modelValue]
     next.splice(idx, 1)
     emit('update:modelValue', next)
     return
   }
-  const target = { datasourceId: pick.datasourceId, db: pick.db, schema: pick.schema, table: t.name }
+  const target = schemaLevel.value
+    ? { datasourceId: pick.datasourceId, db: pick.db, schema: t.name }
+    : { datasourceId: pick.datasourceId, db: pick.db, schema: pick.schema, table: t.name }
   const verdict = props.validateAdd?.(target)
   if (typeof verdict === 'string' && verdict) return ElMessage.warning(verdict)
   emit('update:modelValue', [...props.modelValue, target])
@@ -78,7 +88,8 @@ function removeAt(i) {
 
 const px = (v) => (typeof v === 'number' ? `${v}px` : v)
 const sideStyle = computed(() => ({ width: px(props.panelWidth) }))
-const listStyle = computed(() => ({ maxHeight: px(props.panelMaxHeight) }))
+// panelMaxHeight 为空时清单撑满面板(与左侧级联同高);传值时作为上限、内容贴合
+const listStyle = computed(() => (props.panelMaxHeight ? { maxHeight: px(props.panelMaxHeight) } : {}))
 </script>
 
 <template>
@@ -93,6 +104,7 @@ const listStyle = computed(() => ({ maxHeight: px(props.panelMaxHeight) }))
         :disabled-tables="disabledTables"
         :added-tables="addedTables"
         :label="label"
+        :level="level"
         :show-selected="false"
         toggleable
         @toggle="onToggle"
@@ -143,9 +155,12 @@ const listStyle = computed(() => ({ maxHeight: px(props.panelMaxHeight) }))
   display: flex;
   flex-direction: column;
 }
-/* 已选清单卡:高度贴合内容,条数多时列表内部滚动(最大高度由 panelMaxHeight 控制) */
+/* 已选清单卡:默认撑满侧栏高度(与左侧级联同高),清单内部滚动;panelMaxHeight 传值时退化为内容贴合 */
 .picked-panel {
-  flex: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--el-border-color);
   border-radius: 4px;
   overflow: hidden;
@@ -168,7 +183,8 @@ const listStyle = computed(() => ({ maxHeight: px(props.panelMaxHeight) }))
   color: var(--el-text-color-secondary);
 }
 .picked-list {
-  flex: none;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   padding: 4px;
 }

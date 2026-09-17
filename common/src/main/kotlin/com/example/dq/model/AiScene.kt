@@ -14,6 +14,8 @@ enum class AiScene(val label: String) {
     COMPARE_MATCH("比对匹配"),
     /** 数据比对·列级对比:大模型按字段名/注释预生成「基准字段 → 目标列」映射,人工审核 */
     COMPARE_MAPPING("比对映射"),
+    /** 数据比对·导出:名称/注释未命中时,大模型从字段清单里挑「数据最新修改时间」字段 */
+    COMPARE_TIME("比对时间"),
     /** 「AI 配置」连通性测试 */
     TEST("连通测试"),
     ;

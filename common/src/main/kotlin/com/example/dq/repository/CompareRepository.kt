@@ -18,7 +18,21 @@ class CompareRepository(private val jdbc: Jdbc) {
                       val fieldsJson: String?,
                       val status: String, val stage: String?,
                       val totalUnits: Int, val doneUnits: Int, val error: String?, val archived: Boolean,
-                      val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?)
+                      val createdAt: LocalDateTime?, val startedAt: LocalDateTime?, val finishedAt: LocalDateTime?,
+                      /** 待处理原因(仅 PENDING;V59) */
+                      val pendingReason: String? = null,
+                      /** 所属水利对象类别名称(批量导入取自表格基准行,自由文本不校验;V59) */
+                      val objectCategory: String? = null,
+                      /** 来源导入批次 id(向导手工建为 NULL;V59) */
+                      val importId: Long? = null,
+                      /** 来源导入文件名(LEFT JOIN compare_import 取;查询 SQL 必须带该别名) */
+                      val importFileName: String? = null,
+                      /** 基准表最新更新时间快照(比对执行时探测时间字段取 MAX;V60,未采集/无字段为 NULL) */
+                      val baseDataUpdatedAt: String? = null)
+
+    /** 任务查询统一带 import_id 左联 compare_import 取来源文件名([jobMapper] 依赖 import_file_name 别名) */
+    private val jobSelect = "SELECT j.*, i.file_name AS import_file_name " +
+        "FROM compare_job j LEFT JOIN compare_import i ON i.id = j.import_id"
 
     private val jobMapper: (ResultSet) -> JobRow = { rs ->
         JobRow(rs.getLong("id"), rs.getString("name"), rs.getLong("base_datasource_id"),
@@ -27,7 +41,10 @@ class CompareRepository(private val jdbc: Jdbc) {
             rs.getString("compare_mode"), rs.getString("fields_json"),
             rs.getString("status"), rs.getString("stage"),
             rs.getInt("total_units"), rs.getInt("done_units"), rs.getString("error"), rs.getBoolean("archived"),
-            ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"))
+            ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"),
+            rs.getString("pending_reason"), rs.getString("object_category"),
+            rs.getLong("import_id").let { if (rs.wasNull()) null else it }, rs.getString("import_file_name"),
+            rs.getString("base_data_updated_at"))
     }
 
     // ---------- 目标行 ----------
@@ -39,7 +56,9 @@ class CompareRepository(private val jdbc: Jdbc) {
                          val missingCount: Int?,
                          val extraCount: Int?, val fieldMismatchCount: Int?, val coverage: Double?,
                          val fieldConsistency: Double?, val completeness: Double?, val score: Double?,
-                         val error: String?, val fieldMappingJson: String? = null)
+                         val error: String?, val fieldMappingJson: String? = null,
+                         /** 该目标表最新更新时间快照(比对执行时探测时间字段取 MAX;V60,未采集/无字段为 NULL) */
+                         val dataUpdatedAt: String? = null)
 
     private val targetMapper: (ResultSet) -> TargetRow = { rs ->
         TargetRow(rs.getLong("id"), rs.getLong("job_id"), rs.getLong("datasource_id"), rs.getString("ds_name"),
@@ -51,7 +70,7 @@ class CompareRepository(private val jdbc: Jdbc) {
             intOrNull(rs, "missing_count"), intOrNull(rs, "extra_count"), intOrNull(rs, "field_mismatch_count"),
             doubleOrNull(rs, "coverage"), doubleOrNull(rs, "field_consistency"),
             doubleOrNull(rs, "completeness"), doubleOrNull(rs, "score"), rs.getString("error"),
-            rs.getString("field_mapping_json"))
+            rs.getString("field_mapping_json"), rs.getString("data_updated_at"))
     }
 
     // ---------- 差异明细行 ----------
@@ -95,21 +114,220 @@ class CompareRepository(private val jdbc: Jdbc) {
             name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fieldsJson, displayField,
             matchMode, compareMode, totalUnits)
 
-    fun getJob(id: Long): JobRow? =
-        jdbc.queryOne("SELECT * FROM compare_job WHERE id=?", id, mapper = jobMapper)
+    /**
+     * 落「待处理」任务(批量导入专用,V59):status=PENDING、不进执行器、started_at 留空;
+     * pendingReason 记待处理原因(DS_ERROR/MAPPING_RUNNING/MAPPING_REVIEW/IMPORT_ERROR),
+     * objectCategory 为所属水利对象类别名称(取自导入表格基准行原值,自由文本不校验),importId 为来源批次
+     */
+    fun insertPendingJob(name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
+                         baseTable: String, keyField: String, fieldsJson: String, totalUnits: Int,
+                         displayField: String?, matchMode: String?, compareMode: String?,
+                         pendingReason: String, objectCategory: String?, importId: Long?): Long =
+        jdbc.insert("INSERT INTO compare_job(name, base_datasource_id, base_db, base_schema, base_table, " +
+            "key_field, fields_json, display_field, match_mode, compare_mode, status, pending_reason, " +
+            "object_category, import_id, total_units) VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?)",
+            name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fieldsJson, displayField,
+            matchMode, compareMode, pendingReason, objectCategory, importId, totalUnits)
 
-    /** 任务列表:新的在前;includeArchived=false 时不返回已归档任务 */
-    fun listJobs(includeArchived: Boolean): List<JobRow> =
-        if (includeArchived) {
-            jdbc.query("SELECT * FROM compare_job ORDER BY created_at DESC, id DESC", mapper = jobMapper)
+    /** 待处理任务编辑时重建的目标行(照 rerun 的清空重建口径) */
+    data class NewTarget(val datasourceId: Long, val dsName: String?, val dbName: String,
+                         val schemaName: String?, val tableName: String, val fieldMappingJson: String?)
+
+    /**
+     * 「待处理」任务编辑提交(向导编辑模式):tx 内替换 job 元数据 + 删旧目标(与差异明细)按新清单重建。
+     * 保持 PENDING 与 import 溯源列不动;匹配逻辑/对比模式随请求改(编辑不做限制,与终态任务编辑同口径);
+     * pending_reason 归一为 MAPPING_REVIEW(编辑后映射仍需人工审核),进度/错误清零
+     */
+    fun replacePendingJob(id: Long, name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
+                          baseTable: String, keyField: String, fieldsJson: String, totalUnits: Int,
+                          displayField: String?, matchMode: String?, compareMode: String?,
+                          targets: List<NewTarget>) {
+        jdbc.tx { conn ->
+            conn.prepareStatement(
+                "UPDATE compare_job SET name=?, base_datasource_id=?, base_db=?, base_schema=?, base_table=?, " +
+                    "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, total_units=?, done_units=0, stage=NULL, " +
+                    "base_data_updated_at=NULL, error=NULL, pending_reason='MAPPING_REVIEW' " +
+                "WHERE id=? AND status='PENDING'").use { ps ->
+                ps.setString(1, name)
+                ps.setLong(2, baseDatasourceId)
+                ps.setString(3, baseDb)
+                ps.setString(4, baseSchema)
+                ps.setString(5, baseTable)
+                ps.setString(6, keyField)
+                ps.setString(7, fieldsJson)
+                ps.setString(8, displayField)
+                ps.setString(9, matchMode)
+                ps.setString(10, compareMode)
+                ps.setInt(11, totalUnits)
+                ps.setLong(12, id)
+                ps.executeUpdate()
+            }
+            for (sql in listOf("DELETE FROM compare_diff WHERE job_id=?",
+                "DELETE FROM compare_target WHERE job_id=?")) {
+                conn.prepareStatement(sql).use { ps ->
+                    ps.setLong(1, id)
+                    ps.executeUpdate()
+                }
+            }
+            conn.prepareStatement("INSERT INTO compare_target(job_id, datasource_id, ds_name, db_name, " +
+                "schema_name, table_name, field_mapping_json, status) VALUES (?,?,?,?,?,?,?,'PENDING')").use { ps ->
+                for (t in targets) {
+                    ps.setLong(1, id)
+                    ps.setLong(2, t.datasourceId)
+                    ps.setString(3, t.dsName)
+                    ps.setString(4, t.dbName)
+                    ps.setString(5, t.schemaName)
+                    ps.setString(6, t.tableName)
+                    ps.setString(7, t.fieldMappingJson)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+            }
+        }
+    }
+
+    /** 待处理 → 运行中:进度/错误/待处理原因清零,补 started_at;WHERE 守 PENDING 防并发双启,返回影响行数 */
+    fun markPendingRunning(id: Long, totalUnits: Int): Int =
+        jdbc.update("UPDATE compare_job SET status='RUNNING', stage=NULL, total_units=?, done_units=0, " +
+            "error=NULL, pending_reason=NULL, " +
+            "started_at=CURRENT_TIMESTAMP, finished_at=NULL WHERE id=? AND status='PENDING'", totalUnits, id)
+
+    /**
+     * 终态任务(DONE/FAILED/CANCELED)「编辑并重跑」(向导编辑提交,2026-09):tx 内替换 job 元数据
+     * (终态任务匹配逻辑/对比模式允许改,与新建同口径)+ 删旧 targets(与差异明细)按新清单重建,
+     * 并直接置 RUNNING 补 started_at;WHERE 守终态防并发(编辑期间有人点了重跑/删除),
+     * 返回 UPDATE 影响行数(0 = 状态已变化,调用方抛错,tx 回滚)
+     */
+    fun replaceAndRestart(id: Long, name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
+                          baseTable: String, keyField: String, fieldsJson: String, totalUnits: Int,
+                          displayField: String?, matchMode: String, compareMode: String,
+                          targets: List<NewTarget>): Int = jdbc.tx { conn ->
+        val updated = conn.prepareStatement(
+            "UPDATE compare_job SET name=?, base_datasource_id=?, base_db=?, base_schema=?, base_table=?, " +
+                "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, total_units=?, " +
+                "done_units=0, stage=NULL, error=NULL, pending_reason=NULL, status='RUNNING', " +
+                "started_at=CURRENT_TIMESTAMP, finished_at=NULL, base_data_updated_at=NULL " +
+            "WHERE id=? AND status IN ('DONE','FAILED','CANCELED')").use { ps ->
+            ps.setString(1, name)
+            ps.setLong(2, baseDatasourceId)
+            ps.setString(3, baseDb)
+            ps.setString(4, baseSchema)
+            ps.setString(5, baseTable)
+            ps.setString(6, keyField)
+            ps.setString(7, fieldsJson)
+            ps.setString(8, displayField)
+            ps.setString(9, matchMode)
+            ps.setString(10, compareMode)
+            ps.setInt(11, totalUnits)
+            ps.setLong(12, id)
+            ps.executeUpdate()
+        }
+        if (updated == 0) {
+            0
         } else {
-            jdbc.query("SELECT * FROM compare_job WHERE archived=FALSE ORDER BY created_at DESC, id DESC",
-                mapper = jobMapper)
+            for (sql in listOf("DELETE FROM compare_diff WHERE job_id=?",
+                "DELETE FROM compare_target WHERE job_id=?")) {
+                conn.prepareStatement(sql).use { ps ->
+                    ps.setLong(1, id)
+                    ps.executeUpdate()
+                }
+            }
+            conn.prepareStatement("INSERT INTO compare_target(job_id, datasource_id, ds_name, db_name, " +
+                "schema_name, table_name, field_mapping_json, status) VALUES (?,?,?,?,?,?,?,'PENDING')").use { ps ->
+                for (t in targets) {
+                    ps.setLong(1, id)
+                    ps.setLong(2, t.datasourceId)
+                    ps.setString(3, t.dsName)
+                    ps.setString(4, t.dbName)
+                    ps.setString(5, t.schemaName)
+                    ps.setString(6, t.tableName)
+                    ps.setString(7, t.fieldMappingJson)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+            }
+            updated
+        }
+    }
+
+    /**
+     * 后台字段映射结束(批量导入):回写基准表归一后的实际字段 + 新待处理原因 + 失败说明;
+     * 目标行 mapping 由调用方逐 target [updateTargetMapping]。WHERE 守「PENDING + MAPPING_RUNNING」:
+     * 任务已删除/已被人工处理(原因翻走)时返回 0,后台线程据此放弃回写
+     */
+    fun finishPendingMapping(id: Long, keyField: String, fieldsJson: String, displayField: String?,
+                             pendingReason: String, error: String?): Int =
+        jdbc.update("UPDATE compare_job SET key_field=?, fields_json=?, display_field=?, pending_reason=?, error=? " +
+            "WHERE id=? AND status='PENDING' AND pending_reason='MAPPING_RUNNING'",
+            keyField, fieldsJson, displayField, pendingReason, error?.take(1000), id)
+
+    /** 服务重启:残留「映射推导中」的 PENDING 任务转 MAPPING_REVIEW(推导线程已随重启消亡,人工审核补线复活) */
+    fun recoverMappingOnStartup(error: String): Int =
+        jdbc.update("UPDATE compare_job SET pending_reason='MAPPING_REVIEW', error=? " +
+            "WHERE status='PENDING' AND pending_reason='MAPPING_RUNNING'", error.take(1000))
+
+    fun getJob(id: Long): JobRow? =
+        jdbc.queryOne("$jobSelect WHERE j.id=?", id, mapper = jobMapper)
+
+    /** 任务列表筛选条件(全部可空/空集合 = 不筛;matchMode 传 LEGACY 表示老任务「仅编码」即 match_mode IS NULL) */
+    data class JobFilter(val kw: String? = null,
+                         val status: List<String> = emptyList(),
+                         val tagIds: List<Long> = emptyList(),
+                         val datasourceId: Long? = null,
+                         val matchMode: String? = null,
+                         val compareMode: String? = null)
+
+    /** 任务列表:新的在前;includeArchived=false 时不返回已归档任务;filter 各维度下推 SQL AND 组合 */
+    fun listJobs(includeArchived: Boolean, filter: JobFilter = JobFilter()): List<JobRow> {
+        val where = StringBuilder()
+        val args = mutableListOf<Any?>()
+        if (!includeArchived) where.append("j.archived=FALSE")
+
+        fun and(cond: String) {
+            where.append(if (where.isEmpty()) cond else " AND $cond")
         }
 
-    /** 后台任务中心轮询:RUNNING 任务(跨全部库,id 升序) */
+        filter.kw?.takeIf { it.isNotBlank() }?.let { kw ->
+            and("(LOWER(j.name) LIKE ? OR LOWER(j.base_table) LIKE ? OR LOWER(i.file_name) LIKE ?)")
+            val like = "%${kw.trim().lowercase()}%"
+            args.add(like); args.add(like); args.add(like)
+        }
+        if (filter.status.isNotEmpty()) {
+            and("j.status IN (${filter.status.joinToString(",") { "?" }})")
+            args.addAll(filter.status)
+        }
+        filter.datasourceId?.let { and("j.base_datasource_id=?"); args.add(it) }
+        filter.matchMode?.takeIf { it.isNotBlank() }?.let {
+            // 仅编码口径含老任务(match_mode NULL/空串=老任务仅按编码对齐,V49)
+            if (it == "LEGACY") and("(j.match_mode IS NULL OR j.match_mode='')")
+            else { and("j.match_mode=?"); args.add(it) }
+        }
+        filter.compareMode?.takeIf { it.isNotBlank() }?.let {
+            // 行级口径含老任务(compare_mode NULL=行级老任务兼容,V50)
+            if (it == "ROW") and("(j.compare_mode='ROW' OR j.compare_mode IS NULL)")
+            else { and("j.compare_mode=?"); args.add(it) }
+        }
+        // 表的标记:基准表或任一比对目标表打了所选标记之一即命中(多标记 OR;schema 空串口径对齐 table_tag)
+        if (filter.tagIds.isNotEmpty()) {
+            val inClause = filter.tagIds.joinToString(",") { "?" }
+            and("(EXISTS(SELECT 1 FROM table_tag tt WHERE tt.tag_id IN ($inClause)" +
+                " AND tt.datasource_id=j.base_datasource_id AND tt.db_name=j.base_db" +
+                " AND tt.schema_name=COALESCE(j.base_schema,'') AND tt.table_name=j.base_table)" +
+                " OR EXISTS(SELECT 1 FROM compare_target ct JOIN table_tag tt" +
+                " ON tt.tag_id IN ($inClause) AND tt.datasource_id=ct.datasource_id" +
+                " AND tt.db_name=ct.db_name AND tt.schema_name=COALESCE(ct.schema_name,'')" +
+                " AND tt.table_name=ct.table_name WHERE ct.job_id=j.id))")
+            args.addAll(filter.tagIds); args.addAll(filter.tagIds)
+        }
+
+        val sql = "$jobSelect" + (if (where.isEmpty()) "" else " WHERE $where") +
+            " ORDER BY j.created_at DESC, j.id DESC"
+        return jdbc.query(sql, *args.toTypedArray(), mapper = jobMapper)
+    }
+
+    /** 后台任务中心轮询:RUNNING 任务(跨全部库,id 升序;PENDING 是等用户操作的静止状态,不轮询) */
     fun listActiveJobs(): List<JobRow> =
-        jdbc.query("SELECT * FROM compare_job WHERE status='RUNNING' ORDER BY id", mapper = jobMapper)
+        jdbc.query("$jobSelect WHERE j.status='RUNNING' ORDER BY j.id", mapper = jobMapper)
 
     /** 活动任务的目标进度:jobId → (目标总数, 已出终态数);一次 GROUP BY 覆盖全部活动任务 */
     fun countActiveTargets(jobIds: List<Long>): Map<Long, Pair<Int, Int>> {
@@ -211,6 +429,21 @@ class CompareRepository(private val jdbc: Jdbc) {
         jdbc.update("UPDATE compare_target SET status='FAILED', error=? WHERE id=?", error, id)
     }
 
+    /** 回写基准表最新更新时间快照(比对执行时探测时间字段取 MAX;null = 没有可用时间字段/取数失败) */
+    fun updateBaseDataUpdatedAt(jobId: Long, value: String?) {
+        jdbc.update("UPDATE compare_job SET base_data_updated_at=? WHERE id=?", value, jobId)
+    }
+
+    /** 回写某目标表最新更新时间快照(口径同 [updateBaseDataUpdatedAt]) */
+    fun updateTargetDataUpdatedAt(id: Long, value: String?) {
+        jdbc.update("UPDATE compare_target SET data_updated_at=? WHERE id=?", value, id)
+    }
+
+    /** 全量替换目标字段映射(「字段审核」确认时落库;mappingJson 为 基准列名 → 目标列名 JSON,空 = 自动匹配) */
+    fun updateTargetMapping(id: Long, mappingJson: String?) {
+        jdbc.update("UPDATE compare_target SET field_mapping_json=? WHERE id=?", mappingJson, id)
+    }
+
     /**
      * 给已完成的目标追加说明(如大模型归一化补配部分批次失败):
      * 追加而不是覆盖,保留既有内容;error 列在 DONE 状态下仅作「需要人工关注的说明」用
@@ -220,9 +453,13 @@ class CompareRepository(private val jdbc: Jdbc) {
             "ELSE error || ' | ' || ? END WHERE id=?", note.take(1000), note.take(1000), id)
     }
 
-    /** 重跑前清空既有结果:tx 删差异明细 + 目标(目标行由调用方随后重建) */
+    /** 重跑前清空既有结果:tx 删差异明细 + 目标(目标行由调用方随后重建)+ 清基准表时间快照 */
     fun clearResults(jobId: Long) {
         jdbc.tx { conn ->
+            conn.prepareStatement("UPDATE compare_job SET base_data_updated_at=NULL WHERE id=?").use { ps ->
+                ps.setLong(1, jobId)
+                ps.executeUpdate()
+            }
             for (sql in listOf("DELETE FROM compare_diff WHERE job_id=?",
                 "DELETE FROM compare_target WHERE job_id=?")) {
                 conn.prepareStatement(sql).use { ps ->
@@ -309,16 +546,4 @@ class CompareRepository(private val jdbc: Jdbc) {
     fun listDiffsForExport(jobId: Long, targetId: Long): List<DiffRow> =
         jdbc.query("SELECT * FROM compare_diff WHERE job_id=? AND target_id=? AND diff_type<>'SAME' ORDER BY id",
             jobId, targetId, mapper = diffMapper)
-
-    /**
-     * 导出用差异行数统计:targetId → (diffType → 行数),只统计非 SAME 行。
-     * 总览表的「差异条数」与明细 sheet 拆分策略(一差异行一 sheet / 超量按目标降级)都只看这个计数,
-     * 不必为拿计数把明细全量读进内存
-     */
-    fun countForExport(jobId: Long): Map<Long, Map<String, Int>> =
-        jdbc.query("SELECT target_id, diff_type, COUNT(*) FROM compare_diff " +
-                "WHERE job_id=? AND diff_type<>'SAME' GROUP BY target_id, diff_type", jobId) { rs ->
-            Triple(rs.getLong(1), rs.getString(2), rs.getInt(3))
-        }.groupBy({ it.first }, { it.second to it.third })
-            .mapValues { (_, rows) -> rows.toMap() }
 }

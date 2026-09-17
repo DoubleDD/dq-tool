@@ -153,6 +153,14 @@ fn main() {
             )
             .title("dq-tool 数据质量检测")
             .inner_size(1440.0, 900.0)
+            // 关闭 Tauri 自带的拖放处理器:Windows 上 wry 会把 WebView2 的 OLE drop target
+            // 换成自己的(枚举子窗口 RevokeDragDrop + RegisterDragDrop),而它只认 CF_HDROP,
+            // 非文件拖拽在 DragOver 一律回 DROPEFFECT_NONE —— 前端 HTML5 拖放(el-upload 拖拽
+            // 上传、对象管理树拖动、数据源卡片拖到分组)会全部收不到 drop;浏览器 / jpackage
+            // 形态没有这层宿主覆盖,所以只测浏览器发现不了。Tauri 官方要求:
+            // "Disabling it is required to use HTML5 drag and drop on the frontend on Windows"。
+            // 本应用不监听 tauri://drag-drop 事件,关闭零副作用(G6 画布走 pointer 事件,无关)。
+            .disable_drag_drop_handler()
             .build()?;
             // 常驻模型:关窗只隐藏不退出,后端继续跑;再次打开 = 显示窗口(毫秒级)
             let win_on_close = window.clone();
@@ -404,6 +412,14 @@ fn data_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
     repo_root().join("data")
+}
+
+/// 日志目录:与后端同口径,取数据目录的同级 logs/(开发 ./logs、安装版 ~/.dq-tool/logs、绿色版 <exe>/logs)
+fn logs_dir() -> PathBuf {
+    data_dir()
+        .parent()
+        .map(|p| p.join("logs"))
+        .unwrap_or_else(|| PathBuf::from("logs"))
 }
 
 /// 前端初始化用 IPC:返回后端 API 基址(含动态端口)与访问令牌;后端未就绪返回 null(前端轮询)。
@@ -707,10 +723,97 @@ fn kill_child(child: &Arc<Mutex<Child>>) {
     let _ = child.wait();
 }
 
+/// 启动失败:stderr + 落盘 + (Windows release)原生错误框,然后退出。
+/// Windows 安装版是 GUI 子系统进程、没有控制台,只 eprintln 等于「双击没反应」——
+/// 必须把原因写进日志文件并弹一个用户看得见的框(2026-09 补,见 docs/wiki/Tauri兼容性.md B2)
 fn fatal(msg: &str) -> ! {
     eprintln!("[dq-tool-tauri] 启动失败:{msg}");
+    log_fatal(msg);
+    show_fatal_dialog(msg);
     std::process::exit(1);
 }
+
+/// 把启动失败原因追加到 <日志目录>/tauri-startup.log;日志本身写不进去也绝不再抛异常
+fn log_fatal(msg: &str) {
+    let path = logs_dir().join("tauri-startup.log");
+    let Some(parent) = path.parent() else { return };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let line = format!("{} [dq-tool-tauri] 启动失败:{msg}\n", utc_timestamp());
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// 极简 UTC 时间戳(YYYY-MM-DD HH:MM:SSZ):不引时间库,按 days-from-civil 逆算(便于与后端日志比对)
+fn utc_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (hh, mm, ss) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { yoe + era * 400 + 1 } else { yoe + era * 400 };
+    format!("{year:04}-{month:02}-{day:02} {hh:02}:{mm:02}:{ss:02}Z")
+}
+
+/// Windows release(安装版/绿色版):GUI 子系统无控制台,补一个置顶的原生错误框。
+/// 直接声明 user32 的 MessageBoxW,不为一个弹框引 windows-sys 依赖;dev 构建保留控制台可看,不弹框
+#[cfg(all(windows, not(debug_assertions)))]
+fn show_fatal_dialog(msg: &str) {
+    let log = logs_dir().join("tauri-startup.log");
+    let text = to_wide(&format!(
+        "dq-tool 启动失败:\n\n{msg}\n\n详细信息见日志文件:\n{}",
+        log.display()
+    ));
+    let caption = to_wide("dq-tool 数据质量检测");
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            caption.as_ptr(),
+            MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST,
+        );
+    }
+}
+
+#[cfg(not(all(windows, not(debug_assertions))))]
+fn show_fatal_dialog(_msg: &str) {}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn to_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+// user32!MessageBoxW(仅 Windows release 用;声明在模块级,#[link] 才生效)
+#[cfg(all(windows, not(debug_assertions)))]
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn MessageBoxW(
+        hwnd: *mut core::ffi::c_void,
+        text: *const u16,
+        caption: *const u16,
+        u_type: u32,
+    ) -> i32;
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+const MB_OK: u32 = 0x0000_0000;
+#[cfg(all(windows, not(debug_assertions)))]
+const MB_ICONERROR: u32 = 0x0000_0010;
+#[cfg(all(windows, not(debug_assertions)))]
+const MB_SETFOREGROUND: u32 = 0x0001_0000;
+#[cfg(all(windows, not(debug_assertions)))]
+const MB_TOPMOST: u32 = 0x0004_0000;
 
 // ---- Ctrl+C / SIGTERM 兜底(仅 Unix):终端直接 kill 本进程时不至于留下孤儿 Java 子进程 ----
 // (窗口关闭的正常退出路径由 RunEvent::ExitRequested/Exit 处理;

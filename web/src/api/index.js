@@ -42,12 +42,14 @@ request.interceptors.response.use(
         message = JSON.parse(await error.response.data.text())?.message
       } catch { /* 非 JSON 错误体,忽略 */ }
     }
-    // _silent: true 时不弹全局错误提示(由调用方自行展示,如行内状态反馈)
+    // _silent: true 时不弹全局错误提示(由调用方自行展示,如行内状态反馈),也**不上报前端错误中心**——
+    // 「静默」必须同时覆盖 UI 与采集两端:轮询类接口的失败(未授权实例的菜单 403、会话过期等)属预期内状态,
+    // 调用方已自行兜底,记进错误中心只会变成噪音(2026-09 未开放 compare 菜单实例每次启动一条 API_403)
     if (!error.config?._silent) {
       ElMessage.error(message || error.message || '请求失败')
+      // 前端错误中心:接口 4xx/5xx 与网络错误统一上报(401/503 为状态类响应,内部已排除)
+      reportApiError(error, url, (error.config?.method || 'GET').toUpperCase(), message)
     }
-    // 前端错误中心:接口 4xx/5xx 与网络错误统一上报(401/503 为状态类响应,内部已排除)
-    reportApiError(error, url, (error.config?.method || 'GET').toUpperCase(), message)
     return Promise.reject(error)
   }
 )
@@ -198,10 +200,10 @@ export function moveObjectRelation(id, objectTableId) {
 // 任务结构:{ id, status(PENDING/RUNNING/DONE/FAILED/CANCELED), totalDs, doneDs, failedDs, error,
 //   items: [{ datasourceId, datasourceName, status, dbCount, schemaCount, tableCount, progress, error }] }
 
-/** 启动元数据批量同步;datasourceIds 为整数据源同步 id 数组,tables 为表级同步清单
- *  [{datasourceId, db, schema, table}](可只传其一),返回 { jobId };已有运行中任务时 409(静默,由调用方接管提示) */
-export function startMetadataSync(datasourceIds, tables) {
-  return request.post('/metadata-sync', { datasourceIds, tables }, { _silent: true })
+/** 启动元数据批量同步;datasourceIds 为整数据源同步 id 数组,schemas 为库/schema 级清单 [{datasourceId, db, schema}],
+ *  tables 为表级清单 [{datasourceId, db, schema, table}](可只传其一),返回 { jobId };已有运行中任务时 409(静默,由调用方接管提示) */
+export function startMetadataSync(datasourceIds, tables, schemas) {
+  return request.post('/metadata-sync', { datasourceIds, tables, schemas }, { _silent: true })
 }
 
 /** 最近一次同步任务;无任务返回 null(204/空响应体归一为 null),静默不弹全局错误 */
@@ -235,9 +237,20 @@ export function suggestCompareMapping(payload, timeoutMs = 130000) {
   return request.post('/compare-jobs/mapping-suggest', payload, { timeout: timeoutMs })
 }
 
-/** 任务列表;archived=true 时含已归档(默认不含) */
-export function listCompareJobs(archived = false) {
-  return request.get('/compare-jobs', { params: archived ? { archived: true } : {} })
+/** 任务列表;archived=true 时含已归档(默认不含);
+ *  filters 服务端筛选(空项自动忽略):kw 关键字 / status、tagIds 数组 / datasourceId / matchMode(LEGACY=仅编码) / compareMode */
+export function listCompareJobs(archived = false, filters = null) {
+  const params = {}
+  if (archived) params.archived = true
+  if (filters) {
+    if (filters.kw && filters.kw.trim()) params.kw = filters.kw.trim()
+    if (filters.status && filters.status.length) params.status = filters.status.join(',')
+    if (filters.tagIds && filters.tagIds.length) params.tagIds = filters.tagIds.join(',')
+    if (filters.datasourceId != null && filters.datasourceId !== '') params.datasourceId = filters.datasourceId
+    if (filters.matchMode) params.matchMode = filters.matchMode
+    if (filters.compareMode) params.compareMode = filters.compareMode
+  }
+  return request.get('/compare-jobs', { params })
 }
 
 /** RUNNING 任务瘦出行(后台任务中心 1s 轮询口径;compare 授权校验同前缀,未授权实例静默失败) */
@@ -270,9 +283,51 @@ export function setCompareArchived(id, archived) {
   return request.post(`/compare-jobs/${id}/archive`, null, { params: { archived } })
 }
 
-/** 删除任务(RUNNING 时后端 409) */
+/** 删除任务(RUNNING 时后端 409;PENDING 待处理任务放行) */
 export function deleteCompareJob(id) {
   return request.delete(`/compare-jobs/${id}`)
+}
+
+// ---------- 比对任务批量导入 ----------
+// 批次视图 CompareImportView:{ id, fileName, fileSize, status(DS_REVIEW 待确认数据源 / BUILDING 建任务中 / DONE / FAILED),
+//   dsReport[], taskCount, jobIds[], error };dsReport 逐数据源一行:
+//   { key, name, host, port, databaseName, action(MATCHED 已匹配 / CREATE 待新建 / CREATED 已建档 / REBOUND 改绑 / ERROR 异常 / NOTE 提示), datasourceId, error }
+// 模版下载(GET /api/compare-import-template)与原件下载(GET /api/compare-imports/{id}/file)为流式响应,直接走 downloadFile
+
+/** 上传 Excel 提交导入批次(multipart 字段 file,仅 .xlsx;一 sheet 一任务);未配置大模型 409;返回 { batchId } */
+export function submitCompareImport(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  return request.post('/compare-imports', formData)
+}
+
+/** 导入批次详情(数据源映射报告 + fileName/fileSize;confirm 后异步建任务,轮询到 DONE/FAILED 取 jobIds) */
+export function getCompareImport(id) {
+  return request.get(`/compare-imports/${id}`)
+}
+
+/** 确认数据源映射(仅 DS_REVIEW,否则 409):mapping 为用户逐行选择 { <ds_report 行 key>: 数据源 id 或 null=待新建 },
+ *  缺省/空映射 = 全部按匹配结果照旧;转后台实测建档 + 逐 sheet 建 PENDING 任务,返回 { ok } */
+export function confirmCompareImport(id, mapping) {
+  return request.post(`/compare-imports/${id}/confirm`, mapping ? { mapping } : undefined)
+}
+
+/** 「字段审核」确认映射并开始比对(仅 PENDING,否则 409;校验口径同新建提交);
+ *  mappings: { <targetId>: { 基准字段: 目标列 } },确认后 PENDING→RUNNING 进执行器 */
+export function confirmCompareMapping(id, mappings) {
+  return request.post(`/compare-jobs/${id}/confirm-mapping`, { mappings })
+}
+
+/** 「待处理」任务向导编辑提交(仅 PENDING,否则 409;payload 同 createCompareJob);
+ *  保存后任务仍停 PENDING(原因归一 MAPPING_REVIEW),需再走字段审核确认开跑 */
+export function updateCompareJob(id, payload) {
+  return request.put(`/compare-jobs/${id}`, payload)
+}
+
+/** 「待处理」任务直接开始比对(仅 PENDING 且非 DS_ERROR,否则 409);
+ *  映射已在编辑提交(updateCompareJob)时校验落库——编辑向导「保存并比对」在 PUT 成功后调它 */
+export function startCompareJob(id) {
+  return request.post(`/compare-jobs/${id}/start`)
 }
 
 export default request

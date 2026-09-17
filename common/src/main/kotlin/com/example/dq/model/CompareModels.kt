@@ -62,6 +62,27 @@ enum class CompareMode(val value: String, val label: String) {
     }
 }
 
+/** 待处理原因(compare_job.pending_reason,仅 PENDING 状态有意义;任务进入 RUNNING 时清空) */
+enum class PendingReason(val value: String, val label: String) {
+    /** 涉及异常数据源(连不上/缺用户名口令未实测):先修数据源再确认 */
+    DS_ERROR("DS_ERROR", "数据源异常"),
+    /**
+     * 映射推导中:任务已落库,字段映射(含待新建数据源连接实测)正在后台推导,审核/编辑/直启暂不可用;
+     * 推导完成转 MAPPING_REVIEW,实测失败转 DS_ERROR,重启残留由 recoverUnfinished 转 MAPPING_REVIEW
+     */
+    MAPPING_RUNNING("MAPPING_RUNNING", "映射推导中"),
+    /** 映射待审核:字段映射已预生成,一律要人工审核后才能开始比对 */
+    MAPPING_REVIEW("MAPPING_REVIEW", "映射待审核"),
+    /** 导入异常:基准行校验失败(表不存在/缺身份字段等),需「编辑」修正 */
+    IMPORT_ERROR("IMPORT_ERROR", "导入异常"),
+    ;
+
+    companion object {
+        fun fromValue(raw: String?): PendingReason? =
+            raw?.let { v -> entries.firstOrNull { it.value == v } }
+    }
+}
+
 /** 比对任务列表/详情视图 */
 data class CompareJobView(
     val id: Long,
@@ -82,7 +103,7 @@ data class CompareJobView(
     /** 对比模式:ROW(仅行级)/ COLUMN(行级+列级);老任务为 null,按 ROW 解读 */
     val compareMode: String?,
     val fields: List<String>,
-    /** RUNNING/DONE/FAILED/CANCELED */
+    /** PENDING(待处理)/RUNNING/DONE/FAILED/CANCELED */
     val status: String,
     val stage: String?,
     val totalUnits: Int,
@@ -96,6 +117,14 @@ data class CompareJobView(
     val finishedAt: LocalDateTime?,
     /** 耗时毫秒:未开始为 null;运行中=当前时刻-开始时刻 */
     val durationMillis: Long?,
+    /** 待处理原因(仅 PENDING):DS_ERROR/MAPPING_RUNNING/MAPPING_REVIEW/IMPORT_ERROR;其余状态为 null */
+    val pendingReason: String? = null,
+    /** 所属水利对象类别名称(批量导入时取自表格基准行,自由文本不校验,可空) */
+    val objectCategory: String? = null,
+    /** 来源导入批次 id(向导手工建的为 null) */
+    val importId: Long? = null,
+    /** 来源导入文件名(按 import_id 左联 compare_import 取;手工建为 null) */
+    val importFileName: String? = null,
 )
 
 /** 比对任务详情:任务字段 + 目标指标列表 */
@@ -255,4 +284,26 @@ data class MappingSuggestTargetView(
 /** 字段映射预生成结果:与请求 targets 同序 */
 data class MappingSuggestView(
     val targets: List<MappingSuggestTargetView>,
+)
+
+/**
+ * 比对任务批量导入批次视图(compare_import):原件落盘留档 + 数据源映射报告 + 建出的任务清单。
+ * dsReport 为逐数据源一行:key(地址+端口+库)/名称/地址/端口/库名/action(MATCHED 已匹配 /
+ * CREATE 待新建 / CREATED 已建档 / ERROR 异常 / NOTE 提示)/datasourceId/error(说明)。
+ */
+data class CompareImportView(
+    val id: Long,
+    /** 原始文件名(不变) */
+    val fileName: String,
+    val fileSize: Long?,
+    /** DS_REVIEW 待确认数据源 / BUILDING 建任务中 / DONE / FAILED */
+    val status: String,
+    val dsReport: List<Map<String, Any?>>,
+    /** sheet 数(一 sheet 一任务) */
+    val taskCount: Int,
+    /** 建出的比对任务 id 清单 */
+    val jobIds: List<Long>,
+    val error: String?,
+    val createdAt: LocalDateTime?,
+    val finishedAt: LocalDateTime?,
 )

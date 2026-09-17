@@ -23,11 +23,12 @@ interface DbDialect {
     fun connectionInitSql(): String? = null
 
     /**
-     * 连接级超时属性(JDBC 驱动属性名 → 值),由 DataSourceService 透传给驱动:
+     * 连接级驱动属性(JDBC 驱动属性名 → 值),由 DataSourceService 透传给驱动,以超时为主:
      * 慢库/半死库在建连或挂死查询上不再无限等待(实测无超时时 Oracle 建连可卡 80s+)。
      * 键名各驱动不同(MySQL connectTimeout/socketTimeout、PG connectTimeout/socketTimeout、
      * SQL Server loginTimeout/socketTimeout、Oracle oracle.net.CONNECT_TIMEOUT/oracle.jdbc.ReadTimeout),
      * 因此按方言收敛;默认空表示不干预(驱动默认值)。
+     * 方言也可附带其它必须连接级生效的驱动属性(如 Oracle 的 remarksReporting)。
      *
      * @param connectTimeoutMs 建连超时(毫秒);<=0 表示不限制
      * @param readTimeoutMs 单次网络读取/查询超时(毫秒);<=0 表示不限制
@@ -196,4 +197,7 @@ interface DbDialect {
 
     /** 判重 SQL:某字段(排除 NULL)是否存在重复值,有首行返回即有重复(ER 关系推导基数验证用);标识符必须经 quote() */
     fun hasDuplicateSql(schema: String, table: String, column: String): String
+
+    /** 取单列最大值 SQL(数据比对导出「数据最新更新时间」取数用);标识符必须经 quote() */
+    fun maxValueSql(schema: String, table: String, column: String): String
 }

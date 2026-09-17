@@ -189,6 +189,7 @@ import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
 import { getCompareJob, getCompareReport, listCompareDiffs, rerunCompareJob } from '../api'
 import { formatDateTime, formatNumber } from '../utils/format'
+import { downloadFile } from '../utils/download'
 import { ackTask } from '../stores/backgroundTasks'
 import CompareMappingView from '../components/CompareMappingView.vue'
 
@@ -551,11 +552,10 @@ async function confirmRerun() {
   router.push('/compare')
 }
 
-/** 导出比对报告:总览 sheet + 每差异行一 sheet(GET xlsx 流,不走 axios) */
+/** 导出比对报告:总览 sheet + 每差异行一 sheet;走统一 downloadFile(Tauri 原生保存框/浏览器新开下载,
+ * 不能裸 <a href>:Tauri webview 直载本地页面,相对 /api 会解析到 tauri:// 源把整页导航走) */
 function exportDiffs() {
-  const a = document.createElement('a')
-  a.href = `/api/compare-jobs/${jobId}/export`
-  a.click()
+  downloadFile(`/api/compare-jobs/${jobId}/export`)
 }
 
 onMounted(load)

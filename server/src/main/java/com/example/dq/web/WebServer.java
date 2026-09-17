@@ -14,6 +14,7 @@ import com.example.dq.controller.AiUsageController;
 import com.example.dq.controller.AnnotationController;
 import com.example.dq.controller.ChangelogController;
 import com.example.dq.controller.CompareController;
+import com.example.dq.controller.CompareImportController;
 import com.example.dq.controller.DataSourceController;
 import com.example.dq.controller.DiagnosticsController;
 import com.example.dq.controller.LicenseController;
@@ -129,6 +130,7 @@ public class WebServer {
     private final AtomicReference<ReportExportController> reportCtrl = new AtomicReference<>();
     private final AtomicReference<SampleExportController> sampleExportCtrl = new AtomicReference<>();
     private final AtomicReference<CompareController> compareCtrl = new AtomicReference<>();
+    private final AtomicReference<CompareImportController> compareImportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
     private final AtomicReference<ManualCollectController> manualCollectCtrl = new AtomicReference<>();
     private final AtomicReference<ObjectCatalogController> objectCatalogCtrl = new AtomicReference<>();
@@ -214,7 +216,8 @@ public class WebServer {
             }
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
-                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, metaSyncCtrl, reportCtrl, sampleExportCtrl, compareCtrl, tagCtrl,
+                    dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, metaSyncCtrl, reportCtrl, sampleExportCtrl, compareCtrl,
+                    compareImportCtrl, tagCtrl,
                     manualCollectCtrl, objectCatalogCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     changelogCtrl, lanCtrl, relationCtrl,
@@ -241,6 +244,7 @@ public class WebServer {
                                 AtomicReference<ReportExportController> reportCtrl,
                                 AtomicReference<SampleExportController> sampleExportCtrl,
                                 AtomicReference<CompareController> compareCtrl,
+                                AtomicReference<CompareImportController> compareImportCtrl,
                                 AtomicReference<TagController> tagCtrl,
                                 AtomicReference<ManualCollectController> manualCollectCtrl,
                                 AtomicReference<ObjectCatalogController> objectCatalogCtrl,
@@ -308,8 +312,10 @@ public class WebServer {
                 licenseService.checkMenu(LicenseMenu.LICENSE_ADMIN, false);
                 return;
             }
-            // 数据比对(compare 菜单):需已激活且授权码开放 compare 菜单,未授权 403
-            if (path.startsWith("/api/compare-jobs")) {
+            // 数据比对(compare 菜单):需已激活且授权码开放 compare 菜单,未授权 403;
+            // 批量导入与导入模版同属受控功能,与 /api/compare-jobs 同门禁
+            if (path.startsWith("/api/compare-jobs") || path.startsWith("/api/compare-imports")
+                    || path.startsWith("/api/compare-import-template")) {
                 licenseService.checkMenu(LicenseMenu.COMPARE);
                 return;
             }
@@ -473,6 +479,20 @@ public class WebServer {
         routes.get("/api/compare-jobs/{id}/export", ctx -> compareCtrl.get().export(ctx));
         routes.post("/api/compare-jobs/{id}/rerun", ctx -> compareCtrl.get().rerun(ctx));
         routes.post("/api/compare-jobs/{id}/archive", ctx -> compareCtrl.get().archive(ctx));
+        // 「字段审核」确认映射并开始比对(仅 PENDING)/ 向导编辑提交(PENDING 保存待处理,终态保存并重跑)
+        routes.post("/api/compare-jobs/{id}/confirm-mapping", ctx -> compareCtrl.get().confirmMapping(ctx));
+        // 「待处理」直接开始比对(编辑向导「保存并比对」在 PUT 之后调用;仅 PENDING 且非 DS_ERROR)
+        routes.post("/api/compare-jobs/{id}/start", ctx -> compareCtrl.get().start(ctx));
+        routes.put("/api/compare-jobs/{id}", ctx -> compareCtrl.get().update(ctx));
+
+        // ---- 比对任务批量导入(一 sheet 一任务,原件留档;门禁同 compare) ----
+        routes.post("/api/compare-imports", ctx -> compareImportCtrl.get().submit(ctx));
+        // 注意避开 /api/compare-imports/{id} 同前缀静态段:实测 Javalin 7 会把它路由给 {id} 导致类型转换 400
+        // (同 /api/sample-export-template 先例)
+        routes.get("/api/compare-import-template", ctx -> compareImportCtrl.get().template(ctx));
+        routes.get("/api/compare-imports/{id}", ctx -> compareImportCtrl.get().detail(ctx));
+        routes.get("/api/compare-imports/{id}/file", ctx -> compareImportCtrl.get().downloadFile(ctx));
+        routes.post("/api/compare-imports/{id}/confirm", ctx -> compareImportCtrl.get().confirm(ctx));
 
         // ---- 元数据批量同步(数据源页「刷新」)----
         routes.post("/api/metadata-sync", ctx -> metaSyncCtrl.get().submit(ctx));
@@ -979,6 +999,7 @@ public class WebServer {
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
         sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
         compareCtrl.set(new CompareController(env.getCompareService()));
+        compareImportCtrl.set(new CompareImportController(env.getCompareImportService()));
         tagCtrl.set(new TagController(env.getTagService()));
         manualCollectCtrl.set(new ManualCollectController(env.getManualCollectService()));
         objectCatalogCtrl.set(new ObjectCatalogController(env.getObjectCatalogService()));

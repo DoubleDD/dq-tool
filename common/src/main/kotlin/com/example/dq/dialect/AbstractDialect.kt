@@ -518,6 +518,11 @@ abstract class AbstractDialect : DbDialect {
         return "SELECT $q FROM $from WHERE $q IS NOT NULL GROUP BY $q HAVING COUNT(*) > 1" + limitClause(1)
     }
 
+    override fun maxValueSql(schema: String, table: String, column: String): String {
+        val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
+        return "SELECT MAX(${quote(column)}) FROM $from"
+    }
+
     override fun countRowsSql(schema: String, table: String, where: String?): String {
         val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
         return "SELECT COUNT(*) FROM $from" + wherePart(where)

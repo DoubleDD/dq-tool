@@ -2,6 +2,7 @@ package com.example.dq.controller;
 
 import com.example.dq.model.CreateCompareJobRequest;
 import com.example.dq.model.MappingSuggestRequest;
+import com.example.dq.repository.CompareRepository;
 import com.example.dq.service.CompareService;
 import com.example.dq.web.Validators;
 import io.javalin.http.Context;
@@ -9,6 +10,8 @@ import jakarta.servlet.http.HttpServletResponse;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** 数据比对任务(Javalin handler,路由在 WebServer 注册) */
@@ -32,10 +35,53 @@ public class CompareController {
         ctx.json(service.suggestMappings(req));
     }
 
-    /** 任务列表(新的在前);query archived=true 时含已归档 */
+    /** 任务列表(新的在前);query archived=true 时含已归档;
+     * 筛选参数(可组合):kw 关键字 / status、tagIds 逗号分隔多值 / datasourceId / matchMode(LEGACY=仅编码老任务) / compareMode */
     public void list(Context ctx) {
         boolean includeArchived = "true".equalsIgnoreCase(ctx.queryParam("archived"));
-        ctx.json(service.list(includeArchived));
+        ctx.json(service.list(includeArchived, parseFilter(ctx)));
+    }
+
+    /** 解析列表筛选 query 参数;空值/非法值一律忽略(不筛),保证老前端不带参数时行为不变 */
+    private static CompareRepository.JobFilter parseFilter(Context ctx) {
+        String kw = trimToNull(ctx.queryParam("kw"));
+        List<String> status = splitCsv(ctx.queryParam("status"));
+        List<Long> tagIds = new java.util.ArrayList<>();
+        for (String s : splitCsv(ctx.queryParam("tagIds"))) {
+            try {
+                tagIds.add(Long.parseLong(s));
+            } catch (NumberFormatException ignored) {
+                // 非法 id 忽略,不影响其他条件
+            }
+        }
+        Long datasourceId = null;
+        String ds = trimToNull(ctx.queryParam("datasourceId"));
+        if (ds != null) {
+            try {
+                datasourceId = Long.parseLong(ds);
+            } catch (NumberFormatException ignored) {
+                // 非法 id 忽略
+            }
+        }
+        return new CompareRepository.JobFilter(kw, status, tagIds, datasourceId,
+            trimToNull(ctx.queryParam("matchMode")), trimToNull(ctx.queryParam("compareMode")));
+    }
+
+    private static String trimToNull(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
+    }
+
+    private static List<String> splitCsv(String s) {
+        String t = trimToNull(s);
+        if (t == null) return List.of();
+        List<String> out = new java.util.ArrayList<>();
+        for (String part : t.split(",")) {
+            String v = part.trim();
+            if (!v.isEmpty()) out.add(v);
+        }
+        return out;
     }
 
     /** RUNNING 任务瘦出行(后台任务中心 1s 轮询口径;compare 授权校验同前缀) */
@@ -46,6 +92,44 @@ public class CompareController {
     /** 任务详情:任务字段 + 目标指标列表 */
     public void detail(Context ctx) {
         ctx.json(service.detail(id(ctx)));
+    }
+
+    /** 「字段审核」确认映射并开始比对(仅 PENDING,否则 409;校验失败 400):
+     * body {"mappings": {"<targetId>": {"基准字段": "目标列"}}},确认后 PENDING→RUNNING 进执行器 */
+    public void confirmMapping(Context ctx) {
+        ConfirmMappingRequest req = ctx.bodyAsClass(ConfirmMappingRequest.class);
+        Map<Long, Map<String, String>> mappings = new LinkedHashMap<>();
+        if (req.mappings != null) {
+            for (Map.Entry<String, Map<String, String>> e : req.mappings.entrySet()) {
+                try {
+                    mappings.put(Long.parseLong(e.getKey()), e.getValue());
+                } catch (NumberFormatException nfe) {
+                    throw new IllegalArgumentException("映射目标 id 非法: " + e.getKey());
+                }
+            }
+        }
+        service.confirmMapping(id(ctx), mappings);
+        ctx.json(Map.of("ok", true));
+    }
+
+    /** 「待处理」任务直接开始比对(编辑向导「保存并比对」在 update 后调用;仅 PENDING 且非 DS_ERROR,
+     * 否则 400/409;映射已在编辑提交时按 submit 口径校验落库) */
+    public void start(Context ctx) {
+        service.start(id(ctx));
+        ctx.json(Map.of("ok", true));
+    }
+
+    /** 向导编辑提交(RUNNING 409):body 同 submit;PENDING 保存后仍为「待处理」(是否立即运行由前端再调
+     * confirm-mapping),终态(DONE/FAILED/CANCELED)保存后直接按新配置重新比对(旧差异明细覆盖) */
+    public void update(Context ctx) {
+        CreateCompareJobRequest req = Validators.validate(ctx.bodyAsClass(CreateCompareJobRequest.class));
+        service.update(id(ctx), req);
+        ctx.json(Map.of("ok", true));
+    }
+
+    /** confirm-mapping 请求体:mappings 键为目标 id(JSON 对象键只能是字符串,转 Long) */
+    public static class ConfirmMappingRequest {
+        public Map<String, Map<String, String>> mappings;
     }
 
     /** 差异明细分页:query targetId/diffType/kw/page(size 缺省 20) 组合过滤 */
@@ -82,10 +166,11 @@ public class CompareController {
         ctx.json(Map.of("ok", true));
     }
 
-    /** 比对报告导出 xlsx:首 sheet「总览」一行一系统,其后每个差异行一个 sheet 展开字段级明细 */
+    /** 比对报告导出 xlsx:首 sheet「总览」一行一系统,其后每个差异行一个 sheet 展开字段级明细;
+     * 文件名跟随任务名(导入任务可直接对上来源文件,空名回退「比对总览-{id}.xlsx」) */
     public void export(Context ctx) throws Exception {
         long id = id(ctx);
-        String filename = URLEncoder.encode("比对总览-" + id + ".xlsx", StandardCharsets.UTF_8);
+        String filename = URLEncoder.encode(service.exportFileName(id), StandardCharsets.UTF_8);
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);

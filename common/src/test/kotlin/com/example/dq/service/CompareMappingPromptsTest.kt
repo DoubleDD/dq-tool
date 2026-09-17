@@ -104,6 +104,44 @@ class CompareMappingPromptsTest {
             "抱歉我无法完成", listOf("reservoir_code"), cols("res_code"), "reservoir_code").isEmpty())
     }
 
+    // ---------- lockedFields(比对批量导入:表格给定的身份字段锁定,不进推导范围) ----------
+
+    @Test
+    fun `lockedFields 从待推导清单剔除并在输出约定里排除`() {
+        val p = CompareMappingPrompts.buildMappingPrompt(
+            "db1.reservoir",
+            listOf(CompareMappingPrompts.ColumnItem("reservoir_code", "varchar(32)", "水库编码"),
+                CompareMappingPrompts.ColumnItem("reservoir_name", "varchar(64)", "水库名称"),
+                CompareMappingPrompts.ColumnItem("reservoir_type", "varchar(8)", null)),
+            "db2.t_reservoir", listOf(CompareMappingPrompts.ColumnItem("res_code", "varchar(32)", null)),
+            lockedFields = mapOf("reservoir_code" to "res_code"))
+        // 锁定字段不出现在待映射清单,数量相应减少
+        assertTrue("需要映射的字段(共 2 个)" in p)
+        assertTrue("- reservoir_code" !in p)
+        assertTrue("- reservoir_name" in p)
+        // 输出约定里明示排除
+        assertTrue("已人工锁定映射" in p && "\"reservoir_code\"→\"res_code\"" in p)
+    }
+
+    @Test
+    fun `推导结果与锁定项合并后必含主键`() {
+        val baseFields = listOf(
+            CompareMappingPrompts.ColumnItem("reservoir_code", "varchar(32)", null),
+            CompareMappingPrompts.ColumnItem("reservoir_name", "varchar(64)", null))
+        val locked = mapOf("reservoir_code" to "res_code")
+        val p = CompareMappingPrompts.buildMappingPrompt("b.t1", baseFields, "b.t2",
+            cols("res_code", "res_name").map { CompareMappingPrompts.ColumnItem(it.name, it.displayType, null) },
+            locked)
+        // 锁定字段不在 prompt 里,模型不可能返回它;合并锁定项后映射必含主键
+        assertTrue("reservoir_code" !in p.substringBefore("目标表"))
+        val suggested = CompareMappingPrompts.parseMappingSuggest(
+            """{"reservoir_name": "res_name"}""",
+            listOf("reservoir_code", "reservoir_name"), cols("res_code", "res_name"), "reservoir_code")
+        val merged = suggested + locked
+        assertEquals(mapOf("reservoir_name" to "res_name", "reservoir_code" to "res_code"), merged)
+        assertTrue(merged.keys.any { it.equals("reservoir_code", ignoreCase = true) })
+    }
+
     // ---------- 对比模式归一 ----------
 
     @Test

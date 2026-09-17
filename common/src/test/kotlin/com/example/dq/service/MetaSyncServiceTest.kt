@@ -170,6 +170,11 @@ class MetaSyncServiceTest {
         return awaitJob(syncService.submit(emptyList(), tables.toList()))
     }
 
+    /** 库/schema 级同步提交并轮询到终态 */
+    private fun submitAndAwaitSchemas(vararg schemas: com.example.dq.model.MetaSyncSchemaSelector): com.example.dq.model.MetaSyncDetail {
+        return awaitJob(syncService.submit(emptyList(), emptyList(), schemas.toList()))
+    }
+
     private fun awaitJob(jobId: Long): com.example.dq.model.MetaSyncDetail {
         val deadline = System.currentTimeMillis() + 15_000
         while (System.currentTimeMillis() < deadline) {
@@ -279,6 +284,37 @@ class MetaSyncServiceTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             syncService.submit(emptyList(), emptyList())
+        }
+    }
+
+    @Test
+    fun `schema级同步回源指定schema 库清单不动`() {
+        val detail = submitAndAwaitSchemas(
+            com.example.dq.model.MetaSyncSchemaSelector(DS_ID, null, SCHEMA),
+            com.example.dq.model.MetaSyncSchemaSelector(DS_ID, null, SCHEMA)) // 重复提交去重
+        assertEquals("DONE", detail.job.status) { "任务失败: " + detail.job.error }
+        val item = detail.items.single()
+        assertEquals("DONE", item.status)
+        assertEquals(1, item.schemaCount)
+        assertEquals(2, item.tableCount)
+        assertEquals(0, item.dbCount)
+        assertEquals(1, item.schemas.size) // 重复提交的 PUBLIC 已去重
+
+        // 指定 schema 的结构缓存落齐(与整库同步同口径),含库概览
+        assertTrue(metaCacheRepo.isSchemaListReady(DS_ID, ""))
+        assertTrue(metaCacheRepo.isTableCacheReady(DS_ID, "", SCHEMA))
+        assertTrue(metaCacheRepo.isColumnCacheReady(DS_ID, "", SCHEMA, "T1"))
+        assertTrue(metaCacheRepo.isIndexCacheReady(DS_ID, "", SCHEMA, "T2"))
+        assertTrue(metaCacheRepo.isSchemaColumnsReady(DS_ID, "", SCHEMA))
+        assertNotNull(metaCacheRepo.getColumnCount(DS_ID, "", SCHEMA))
+        assertTrue(schemaStatRepo.findAll(DS_ID, null).isNotEmpty())
+    }
+
+    @Test
+    fun `schema级同步参数校验 不存在的数据源拒绝`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            syncService.submit(emptyList(), emptyList(),
+                listOf(com.example.dq.model.MetaSyncSchemaSelector(999L, null, SCHEMA)))
         }
     }
 
