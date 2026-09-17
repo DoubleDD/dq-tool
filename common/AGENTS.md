@@ -29,6 +29,8 @@ src/main/kotlin/com/example/dq/
                            构造不做持久化重活(建表/迁移/中断恢复),由 initDatabase() 显式完成——
                            server 先绑定端口开窗、前端轮询 /api/health,再调 initDatabase 置就绪;
                            对 Java 友好(属性即 getter,dataSource 暴露给 server 的 AppShutdown)
+  env/H2StoreRepair.kt     H2 文件损坏自愈:server 内核线程在 new ServiceEnv 前预检 *.mv.db,
+                           确认 MVStore 损坏则重命名备份(不删)+ Recover 导出/RunScript 重建,失败以空库兜底(详见 桌面版与数据目录 wiki)
   util/CryptoUtil.kt       AES-GCM(数据库密文);TransferCrypto(导出文件固定口令)/NavicatCrypto(.ncx 密码解密);TransferJson(三种导出文件 JSON 解析入口:UTF-8 优先、GB18030 兜底且记 warn 日志、忽略未知字段);
                            JdbcUrlRewriter(JDBC URL host:port 解析与改写,SSH 隧道用)
 src/main/resources/db/migration/

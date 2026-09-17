@@ -9,6 +9,7 @@ import com.example.dq.config.LegacyTlsSupport;
 import com.example.dq.config.StartupLog;
 import com.example.dq.config.StartupStage;
 import com.example.dq.config.TrayManager;
+import com.example.dq.env.H2StoreRepair;
 import com.example.dq.env.ServiceEnv;
 import com.example.dq.model.ErrorLevel;
 import com.example.dq.model.ErrorSource;
@@ -139,6 +140,9 @@ public class DqApplication {
             long kernelStartNanos = System.nanoTime();
             Thread kernelThread = new Thread(() -> {
                 try {
+                    // H2 文件健康预检:MVStore 损坏(异常关机/跨版本升级遗留)时自动备份并尽力修复,
+                    // 必须在 ServiceEnv 打开连接池之前;此刻单实例锁已保证独占数据目录
+                    H2StoreRepair.checkAll(java.nio.file.Path.of(config.dataDir()), StartupLog::log);
                     ServiceEnv env = new ServiceEnv(KernelConfigAdapter.toKernelConfig(config));
                     env.initDatabase();
                     // 内核与 main 线程并行,耗时不进 main 的阶段打点,单独成行(耗时统计汇总的补充)
