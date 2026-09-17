@@ -552,7 +552,7 @@ async function confirmRerun() {
   router.push('/compare')
 }
 
-/** 导出比对报告:总览 sheet + 每差异行一 sheet;走统一 downloadFile(Tauri 原生保存框/浏览器新开下载,
+/** 导出比对报告:总览 sheet + 每差异行一 sheet;走统一 downloadFile(Tauri 原生保存框/浏览器本窗口 Blob 下载,
  * 不能裸 <a href>:Tauri webview 直载本地页面,相对 /api 会解析到 tauri:// 源把整页导航走) */
 function exportDiffs() {
   downloadFile(`/api/compare-jobs/${jobId}/export`)

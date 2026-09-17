@@ -1,5 +1,6 @@
 import { ElMessage } from './notify'
-import { apiUrl, isTauriEnv } from '../api/base'
+import request from '../api'
+import { isTauriEnv } from '../api/base'
 
 /** tauri 套壳环境(webview 注入 __TAURI_INTERNALS__);统一由 api/base 判定,此处转出一个布尔值保持既有引用可用 */
 export const isTauri = isTauriEnv()
@@ -7,13 +8,23 @@ export const isTauri = isTauriEnv()
 /**
  * 通用下载:桌面端(Tauri)弹原生保存对话框让用户自选保存位置(Rust 侧 save_download_as
  * 命令 GET 本地后端流式接口并写盘,文件名以后端 Content-Disposition 为准);
- * 浏览器环境没有通用的选目录 Web API,保持默认下载行为(window.open 绕开 axios JSON 拦截器)。
+ * 浏览器 / jpackage --app 形态在本窗口内 fetch 成 Blob 再走 a[download](存浏览器默认下载目录)。
  * @param {string} apiPath 完整接口路径(含 query),如 `/api/scans/1/export?cols=`
  */
 export async function downloadFile(apiPath) {
   if (!isTauri) {
-    // 浏览器同源:经 apiUrl 解析(Tauri 分支不走这里,直接把 /api/... 原样交给 Rust 拼 host)
-    window.open(apiUrl(apiPath), '_blank')
+    // 不再 window.open 新开窗口:--app 窗口会把 _blank 新窗口甩给系统默认浏览器(另一个浏览器配置),
+    // 现场出现过新窗口空白、文件导不出来(2026-09 jpackage 免安装版);留在本窗口下载还顺带让
+    // 404(导出 token 过期)/403/500 等错误响应经 axios 拦截器解析出 message 弹提示,而非空白页。
+    // timeout: 0 取消 30s 默认超时——大文件慢速内网下载不受限;错误提示由拦截器统一弹出,这里静默
+    try {
+      const resp = await request.get(apiPath.startsWith('/api/') ? apiPath.slice(4) : apiPath, {
+        responseType: 'blob',
+        timeout: 0,
+        _raw: true
+      })
+      saveBlob(filenameFromDisposition(resp.headers['content-disposition']), resp.data)
+    } catch { /* 拦截器已弹错误提示并上报错误中心 */ }
     return
   }
   try {
@@ -23,6 +34,31 @@ export async function downloadFile(apiPath) {
   } catch (e) {
     ElMessage.error(String(e))
   }
+}
+
+/** Blob 落盘:a[download] 触发浏览器默认下载行为(与 downloadText 同一模式,--app 窗口与 Tauri webview 均可用) */
+function saveBlob(filename, blob) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** 从 Content-Disposition 取下载文件名:优先 filename*=UTF-8''(各导出接口统一口径),退回 filename="..." */
+function filenameFromDisposition(header) {
+  if (header) {
+    const star = /filename\*=UTF-8''([^;]+)/i.exec(header)
+    if (star) {
+      try {
+        return decodeURIComponent(star[1].trim())
+      } catch { /* 百分号编码非法时退回 quoted 解析 */ }
+    }
+    const quoted = /filename="([^"]+)"/i.exec(header)
+    if (quoted) return quoted[1]
+  }
+  return 'download'
 }
 
 /**

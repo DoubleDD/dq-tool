@@ -161,7 +161,7 @@ function stopPolling() {
   }
 }
 
-/** 下载:统一走 downloadFile(浏览器 window.open;Tauri 走 Rust「另存为」并带 token) */
+/** 下载:统一走 downloadFile(浏览器本窗口 Blob 下载;Tauri 走 Rust「另存为」并带 token) */
 function download(row) {
   downloadFile(`/api/report-exports/${row.id}/download`)
 }

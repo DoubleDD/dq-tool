@@ -491,7 +491,7 @@ function onUploadClosed() {
   uploadFile.value = null
 }
 
-/** 下载 zip:统一走 downloadFile(浏览器 window.open;Tauri 走 Rust「另存为」并带 token) */
+/** 下载 zip:统一走 downloadFile(浏览器本窗口 Blob 下载;Tauri 走 Rust「另存为」并带 token) */
 function download(row) {
   downloadFile(`/api/sample-exports/${row.id}/download`)
 }

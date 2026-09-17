@@ -47,7 +47,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['imported'])
 
-// 下载统一走 downloadFile(桌面端原生保存对话框,浏览器 window.open,见 utils/download.js)
+// 下载统一走 downloadFile(桌面端原生保存对话框,浏览器本窗口 Blob 下载,见 utils/download.js)
 function exportSelected() {
   downloadFile(`/api/scans/transfer/export?ids=${encodeURIComponent(props.selectedIds.join(','))}`)
 }
