@@ -125,6 +125,9 @@ public class MetadataController {
     public void generateTableDoc(Context ctx) throws SQLException {
         ctx.json(tableDocService.generate(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"),
                 ctx.pathParam("table")));
+        // 该方法内部经缓存降级编排但响应不走 writeJson:消费并丢弃降级标志,
+        // 避免 ThreadLocal 标志残留在 Jetty 线程上串到下一个请求(误带 X-Dq-Cache-Fallback 头)
+        service.consumeCacheFallback();
     }
 
     /** 手动编辑单表说明 */
@@ -151,6 +154,8 @@ public class MetadataController {
         response.setContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
         dbStructExportService.export(dsId, response.getOutputStream());
+        // 导出内部经缓存降级编排但不走 writeJson:消费并丢弃降级标志,避免残留在 Jetty 线程上串到后续请求
+        service.consumeCacheFallback();
     }
 
     /** 文件名特殊字符转下划线(与 Word 报告产物命名口径一致) */

@@ -94,6 +94,7 @@ src/main/resources/db/migration/
   V58__meta_sync_item_schemas.sql 元数据同步库/schema 级选择:meta_sync_item.schemas_json 列(该明细要同步的库/schema 清单 JSON,NULL/空=非 schema 级;三粒度同数据源优先级:整库 > schema > 表)
   V59__compare_import.sql         比对任务批量导入:compare_job 加 pending_reason/object_category/import_id 三列(ALTER IF NOT EXISTS;PENDING 待处理为静止状态,不进执行器、重启仅把残留 MAPPING_RUNNING 转 MAPPING_REVIEW、删除/归档放行)+ compare_import 批次表(原件落盘 compare-imports/batch-<id>/ 留档、数据源映射报告、任务清单)
   V60__compare_data_updated_at.sql 比对导出总览「数据最新更新时间」:compare_job.base_data_updated_at + compare_target.data_updated_at 快照列(比对执行时探测时间字段取 MAX 落库,老任务 NULL 导出留空)
+  V61__meta_database_multi_db_cleanup.sql 多库方言库清单缓存污染清理:schema 名误写 meta_database 的 db_name='' 槽位(库清单),按 SCHEMA 标记判定删除,下次访问回源重建
 src/main/resources/db/migration-aiusage/   AI 用量独立库(dqaiusage)迁移脚本,独立 flyway_schema_history
   V1__ai_usage_log.sql      用量流水全量建表:token/费用/峰谷时段 + scan_job_id + 扫描标签快照(scan_label/scan_created_at)+ 请求/响应内容(request_content/response_content CLOB,记录截断 5 万字符,供 prompt 调优回溯)
 src/test/kotlin/           方言/分段/级联删除/标记(TagRepository/TagService)/AI prompt/授权码/Flyway 迁移单测 + Testcontainers 端到端(MySQL/PG/SQLServer;SSH 隧道 SshTunnelIntegrationTest:linuxserver/openssh-server 跳板机 + MySQL 网络别名,注意该镜像 sshd 监听 2222 且默认 AllowTcpForwarding no 需 custom-cont-init.d 打开)

@@ -1,5 +1,6 @@
 package com.example.dq.service
 
+import com.example.dq.dialect.DbDialect
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DataSourceConfig
@@ -102,7 +103,7 @@ class MetadataService(
     fun listSchemas(datasourceId: Long, database: String?, unfiltered: Boolean = false, refresh: Boolean = false): List<String> {
         val ds = dataSourceService.get(datasourceId)
         val dialect = dialectOf(ds)
-        val db = normalizeDb(database)
+        val db = schemaCacheDb(dialect, datasourceId, database)
         val cacheReady = metaCacheRepo.isSchemaListReady(datasourceId, db)
         val all = if (!refresh && cacheReady) {
             metaCacheRepo.listNames(datasourceId, db)
@@ -113,7 +114,8 @@ class MetadataService(
                 readCache = { metaCacheRepo.listNames(datasourceId, db) },
             ) {
                 val fresh = fetchSchemas(datasourceId, database)
-                metaCacheRepo.replaceSchemas(datasourceId, db, fresh)
+                // 连接已建立、默认库已解析,重取缓存键避免连接池未建时落空写进库清单槽位
+                metaCacheRepo.replaceSchemas(datasourceId, schemaCacheDb(dialect, datasourceId, database), fresh)
                 fresh
             }
         }
@@ -411,6 +413,19 @@ class MetadataService(
     /** 无库概念方言的 database 归一为空串,与 schema_doc/table_doc/meta_* 缓存口径一致 */
     private fun normalizeDb(database: String?): String = database ?: ""
 
+    /**
+     * schema 清单缓存键:多库方言 database 为空时回落到解析后的目标库(默认库),
+     * 避免 schema 名写进库清单缓存槽位(meta_database 的 db_name='' 同时是数据源级库清单),
+     * 否则库清单被 dbo 等 schema 名污染后,后续请求会把 schema 名当库名切 catalog 报错。
+     * 连接池尚未建立时默认库未解析,返回空串(读路径缓存未命中,写路径须在连接建立后再取键)
+     */
+    private fun schemaCacheDb(dialect: DbDialect, datasourceId: Long, database: String?): String =
+        if (dialect.supportsMultiDatabase() && database.isNullOrBlank()) {
+            dataSourceService.resolveDatabase(datasourceId, null) ?: ""
+        } else {
+            normalizeDb(database)
+        }
+
     // ---------- 结构缓存模型转换 ----------
 
     private fun TableStat.toCached() = MetaCacheRepository.CachedTable(name ?: "", comment, storageInfo, estRows, sizeBytes)
@@ -456,8 +471,9 @@ class MetadataService(
                 stats.add(SchemaStatRepository.CachedStat(schema, counts[schema], sizes[schema]))
             }
         }
-        // schema 清单缓存存全量(白名单在读取路径过滤),与概览缓存同次回源保持一致
-        metaCacheRepo.replaceSchemas(datasourceId, normalizeDb(database), schemasAll)
+        // schema 清单缓存存全量(白名单在读取路径过滤),与概览缓存同次回源保持一致;
+        // 此处连接已建立,多库方言空 database 能解析到默认库,不会写进库清单缓存槽位
+        metaCacheRepo.replaceSchemas(datasourceId, schemaCacheDb(dialect, datasourceId, database), schemasAll)
         schemaStatRepo.replaceAll(datasourceId, database, stats)
         return stats
     }

@@ -73,7 +73,8 @@ class SchemaStatRepository(
         conn.prepareStatement(
             "INSERT INTO schema_stat(datasource_id, db_name, schema_name, table_count, size_bytes) VALUES (?,?,?,?,?)"
         ).use { ps ->
-            ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, s.schemaName)
+            // db_name 空白一律落 NULL,与 dbCond 的读取/删除口径一致;原样写 '' 会产生读不到也删不掉的隐形行
+            ps.setLong(1, datasourceId); ps.setString(2, dbName?.takeIf { it.isNotBlank() }); ps.setString(3, s.schemaName)
             ps.setObject(4, s.tableCount); ps.setObject(5, s.sizeBytes)
             ps.executeUpdate()
         }

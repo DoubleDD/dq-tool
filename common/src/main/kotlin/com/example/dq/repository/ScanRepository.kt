@@ -49,7 +49,8 @@ class ScanRepository(private val jdbc: Jdbc) {
             "INSERT INTO scan_job(datasource_id, db_name, schema_name, status, force_full, null_rules, total_tables, " +
                     "auto_tag, workers, gen_doc, db_version, sample_rows, auto_tag_mode) " +
                     "VALUES (?,?,?,'PENDING',?,?,?,?,?,?,?,?,?)",
-            datasourceId, dbName, schema, forceFull, nullRulesJson, totalTables, autoTag, workers, genDoc, dbVersion,
+            // db_name 空白一律落 NULL(与 latestJobsBySchema 等读取口径一致);原样写 '' 的任务对读取查询隐形
+            datasourceId, dbName?.takeIf { it.isNotBlank() }, schema, forceFull, nullRulesJson, totalTables, autoTag, workers, genDoc, dbVersion,
             sampleRows, autoTagMode.name)
         insertJobEvent(jobId, ScanStatus.PENDING)
         return jobId

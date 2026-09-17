@@ -294,6 +294,9 @@ class MetadataTransferService(
         replaceStructure(dsId, "meta_column_count", item.columnCounts, skipped)
         replaceStructure(dsId, "meta_cache_flag", item.cacheFlags, skipped)
         replaceStructure(dsId, "schema_stat", item.schemaStats, skipped)
+        // 修复前实例的导出文件可能携带「schema 名误写库清单槽位」的污染缓存,按 V61 同判定清理,
+        // 否则导入后库清单变成 schema 名(如 dbo),后续请求把 schema 名当库名切 catalog 报错
+        purgeMultiDbSchemaSlotIfPolluted(dsId)
 
         // 3. 派生数据:按自然键合并(幂等,不覆盖本机已有决策)
         mergeTags(item.tags)
@@ -309,6 +312,34 @@ class MetadataTransferService(
             log.warn("元数据导入:数据源「{}」跳过 {} 行(缺少关键字段或所属目录缺失)", name, skipped[0])
         }
         result.imported.add("$name(${item.tables.size} 表/${item.columns.size} 字段/${item.relations.size} 关系)")
+    }
+
+    /**
+     * 多库方言(SQL Server/Kingbase)库清单槽位污染清理(V61 迁移同判定):
+     * meta_database 的 db_name='' 是数据源级库清单,多库方言的 schema 清单永远按真实库名缓存,
+     * 该槽位存在 SCHEMA 标记即说明行已被 schema 名覆盖,删行与标记后下次访问回源重建;
+     * 单库方言该槽位的 SCHEMA 标记合法(库清单与 schema 清单本就是同一批行),不动
+     */
+    private fun purgeMultiDbSchemaSlotIfPolluted(datasourceId: Long) {
+        val dbType = dataSourceService.get(datasourceId).dbType
+        if (dbType != DbType.SQLSERVER && dbType != DbType.KINGBASE) return
+        writeQueue.submit {
+            jdbc.tx { conn ->
+                conn.prepareStatement(
+                    "DELETE FROM meta_database WHERE datasource_id=? AND db_name='' AND EXISTS (" +
+                            "SELECT 1 FROM meta_cache_flag f WHERE f.datasource_id=? AND f.db_name='' AND f.kind='SCHEMA')"
+                ).use { ps ->
+                    ps.setLong(1, datasourceId); ps.setLong(2, datasourceId)
+                    ps.executeUpdate()
+                }
+                conn.prepareStatement(
+                    "DELETE FROM meta_cache_flag WHERE datasource_id=? AND db_name='' AND kind='SCHEMA'"
+                ).use { ps ->
+                    ps.setLong(1, datasourceId)
+                    ps.executeUpdate()
+                }
+            }
+        }
     }
 
     /** 结构缓存表整粒度替换:先按数据源清空再批量插入;行键与目标表列取交集,datasource_id 强制写目标 id;

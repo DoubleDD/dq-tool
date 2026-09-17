@@ -306,11 +306,13 @@ class DataSourceService(
         hc.idleTimeout = 300_000
         hc.maxLifetime = 1_800_000
         val ds = HikariDataSource(hc)
-        // 连接池归还连接不重置 catalog,记录默认库供 useDatabase 回落,避免串库
+        // 连接池归还连接不重置 catalog,记录默认库供 useDatabase 回落,避免串库。
+        // 只给默认池(database 为空)记录:显式库分池(Kingbase 改写 URL 指向目标库)的 catalog 是目标库,
+        // 记入会让 resolveDatabase 的「默认库」随建池顺序漂移
         try {
             ds.connection.use { conn ->
                 // 部分驱动(如 Oracle)没有 catalog 概念,getCatalog() 返回 null,而 CHM 不允许 null 值
-                val catalog = conn.catalog
+                val catalog = if (database.isNullOrBlank()) conn.catalog else null
                 if (catalog != null) {
                     defaultCatalogs[datasourceId] = catalog
                 }
