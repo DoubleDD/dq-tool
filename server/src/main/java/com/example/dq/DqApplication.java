@@ -4,6 +4,7 @@ import com.example.dq.config.BrowserOpener;
 import com.example.dq.config.ConfigLoader;
 import com.example.dq.config.DesktopSplash;
 import com.example.dq.config.InstanceLock;
+import com.example.dq.config.JvmMemoryConfig;
 import com.example.dq.config.KernelConfigAdapter;
 import com.example.dq.config.LegacyTlsSupport;
 import com.example.dq.config.StartupLog;
@@ -17,7 +18,10 @@ import com.example.dq.web.ErrorCenterHolder;
 import com.example.dq.web.WebServer;
 
 import java.io.IOException;
+import java.lang.management.ManagementFactory;
 import java.net.ServerSocket;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.CompletableFuture;
 
 public class DqApplication {
@@ -66,6 +70,13 @@ public class DqApplication {
             StartupLog.log("配置加载完成: dataDir=" + config.dataDir() + ", serverPort=" + config.serverPort()
                     + ", headless=" + System.getProperty("java.awt.headless"));
             StartupLog.mark("加载配置");
+            // OOM 诊断:堆打满时进程会陷入 GC 空转、接口全挂(2026-09 现场「用着用着卡死、心跳连不上」),
+            // 没有 heap dump 只能凭猜。运行期用 MXBean 开启而不是命令行 -XX:HeapDumpPath ——
+            // 安装版 cwd 不可写且日志目录要等 dq.log-dir 确定后才知道,命令行给不出正确路径。
+            configureHeapDumpOnOom();
+            // 系统设置「最大内存」落数据目录 config.properties,与当前进程堆不一致时按原命令行
+            // 自我重启一次使设置生效;Tauri 形态由 Rust 拉起方直接注入正确 -Xmx,不会走到这里
+            maybeReexecForXmx(config.dataDir(), args);
 
             int configuredPort = resolveConfiguredPort(args, config.serverPort());
             int port = configuredPort;
@@ -216,6 +227,78 @@ public class DqApplication {
     /**
      * 解析用户显式配置的端口,优先级: --server.port 启动参数 > SERVER_PORT 环境变量 > application.yml。
      */
+    /** 开启 OOM heap dump,落盘到日志目录(dq.log-dir);失败只记日志不影响启动 */
+    private static void configureHeapDumpOnOom() {
+        try {
+            String logDir = System.getProperty("dq.log-dir");
+            if (logDir == null) {
+                return;
+            }
+            Path dir = Path.of(logDir);
+            Files.createDirectories(dir);
+            var bean = ManagementFactory.getPlatformMXBean(com.sun.management.HotSpotDiagnosticMXBean.class);
+            bean.setVMOption("HeapDumpOnOutOfMemoryError", "true");
+            // %p 由 JVM 替换为 pid,避免多实例/重跑互相覆盖
+            String path = dir.resolve("oom-%p.hprof").toString();
+            bean.setVMOption("HeapDumpPath", path);
+            StartupLog.log("OOM heap dump 已启用: " + path);
+        } catch (Exception e) {
+            StartupLog.log("配置 OOM heap dump 失败(忽略,不影响启动)", e);
+        }
+    }
+
+    /** 堆参数(-Xmx/-Xms/-XX:MaxRAMPercentage):自我重启时全部剥掉,换成设置值 */
+    private static final java.util.regex.Pattern HEAP_FLAG =
+            java.util.regex.Pattern.compile("^(-Xmx.*|-Xms.*|-XX:MaxRAMPercentage.*)$");
+
+    /**
+     * 系统设置「最大内存」生效检查:设置值(config.properties dq.jvm.xmx-mb)与当前进程堆不一致时,
+     * 用同一 jar、同一 JVM 参数(仅替换 -Xmx)拉起子进程后退出本进程。
+     * 只对本进程是最终 java 进程的形态生效(jpackage / java -jar);Tauri 由 Rust 注入 -Xmx(以
+     * -Ddq.access-token 识别),gradle run 等多 jar classpath 直接跳过(日志说明)。防循环:
+     * 子进程带 DQ_JVM_REEXEC=1 环境变量,不再判定。
+     */
+    private static void maybeReexecForXmx(String dataDir, String[] args) {
+        try {
+            if (System.getProperty("dq.access-token") != null || System.getenv("DQ_JVM_REEXEC") != null) {
+                return;
+            }
+            int desiredMb = JvmMemoryConfig.readMb(java.nio.file.Path.of(dataDir));
+            long currentMb = Runtime.getRuntime().maxMemory() / (1024 * 1024);
+            // maxMemory() 与 -Xmx 存在取整/对齐误差,容差 32MB,避免无谓重启
+            if (Math.abs(currentMb - desiredMb) <= 32) {
+                return;
+            }
+            String classPath = System.getProperty("java.class.path", "");
+            if (classPath.isBlank() || classPath.contains(java.io.File.pathSeparator)) {
+                StartupLog.log("内存设置 " + desiredMb + "MB 与当前堆 " + currentMb
+                        + "MB 不一致,但非单 jar 启动无法自我重启,维持当前堆(gradle run 请改 server/build.gradle.kts)");
+                return;
+            }
+            String javaBin = java.nio.file.Path.of(System.getProperty("java.home"), "bin",
+                    System.getProperty("os.name", "").toLowerCase().contains("win") ? "java.exe" : "java").toString();
+            java.util.List<String> cmd = new java.util.ArrayList<>();
+            cmd.add(javaBin);
+            for (String jvmArg : ManagementFactory.getRuntimeMXBean().getInputArguments()) {
+                if (!HEAP_FLAG.matcher(jvmArg).matches()) {
+                    cmd.add(jvmArg);
+                }
+            }
+            cmd.add("-Xmx" + desiredMb + "m");
+            cmd.add("-jar");
+            cmd.add(classPath);
+            cmd.addAll(java.util.Arrays.asList(args));
+            StartupLog.log("内存设置 " + desiredMb + "MB 与当前堆 " + currentMb + "MB 不一致,按原参数自我重启使设置生效");
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.environment().put("DQ_JVM_REEXEC", "1");
+            pb.inheritIO();
+            pb.start();
+            System.exit(0);
+        } catch (Exception e) {
+            StartupLog.log("按内存设置自我重启失败(忽略,维持当前堆)", e);
+        }
+    }
+
     private static int resolveConfiguredPort(String[] args, int defaultPort) {
         for (String arg : args) {
             if (arg.startsWith("--server.port=")) {

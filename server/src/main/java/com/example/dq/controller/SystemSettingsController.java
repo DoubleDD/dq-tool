@@ -1,6 +1,7 @@
 package com.example.dq.controller;
 
 import com.example.dq.config.BrowserOpener;
+import com.example.dq.config.JvmMemoryConfig;
 import com.example.dq.model.BrowserSettingsRequest;
 import com.example.dq.model.BrowserSettingsView;
 import com.example.dq.model.DetectedBrowser;
@@ -10,15 +11,26 @@ import io.javalin.http.Context;
 
 import java.util.List;
 
-/** 系统全局设置(扫描参数、应用模式浏览器等,页面「系统设置」可视化维护;AI 配置走 AiConfigController) */
+/** 系统全局设置(扫描参数、应用模式浏览器、JVM 最大内存等,页面「系统设置」可视化维护;AI 配置走 AiConfigController) */
 public class SystemSettingsController {
+
+    /** 最大内存设置视图:xmxMb=设置值(重启后生效),appliedMb=当前进程实际堆上限 */
+    public record JvmMemoryView(int xmxMb, int appliedMb, int defaultMb, int minMb, int maxMb) {
+    }
+
+    /** 最大内存保存请求 */
+    public record JvmMemoryRequest(Integer xmxMb) {
+    }
 
     private final SystemSettingsService service;
     private final BrowserOpener browserOpener;
+    private final java.nio.file.Path dataDir;
 
-    public SystemSettingsController(SystemSettingsService service, BrowserOpener browserOpener) {
+    public SystemSettingsController(SystemSettingsService service, BrowserOpener browserOpener,
+            java.nio.file.Path dataDir) {
         this.service = service;
         this.browserOpener = browserOpener;
+        this.dataDir = dataDir;
     }
 
     /** 扫描全局参数:合并配置文件默认值后的有效值 + 是否已自定义 */
@@ -69,5 +81,31 @@ public class SystemSettingsController {
                 .map(b -> new DetectedBrowser(b.id(), b.name()))
                 .toList();
         return new BrowserSettingsView(service.browserApp(), browsers);
+    }
+
+    /** JVM 最大内存:设置值(落 config.properties,重启后生效) + 当前进程实际堆上限 */
+    public void jvmMemoryGet(Context ctx) {
+        ctx.json(jvmMemoryView());
+    }
+
+    /** 保存最大内存(范围收敛由 JvmMemoryConfig 处理),下次启动生效 */
+    public void jvmMemorySave(Context ctx) {
+        Integer mb = ctx.bodyAsClass(JvmMemoryRequest.class).xmxMb();
+        if (mb == null) {
+            throw new IllegalArgumentException("最大内存不能为空");
+        }
+        try {
+            JvmMemoryConfig.writeMb(dataDir, mb);
+        } catch (java.io.IOException e) {
+            throw new IllegalStateException("保存最大内存设置失败: " + e.getMessage(), e);
+        }
+        ctx.json(jvmMemoryView());
+    }
+
+    private JvmMemoryView jvmMemoryView() {
+        return new JvmMemoryView(
+                JvmMemoryConfig.readMb(dataDir),
+                (int) (Runtime.getRuntime().maxMemory() / (1024 * 1024)),
+                JvmMemoryConfig.DEFAULT_MB, JvmMemoryConfig.MIN_MB, JvmMemoryConfig.MAX_MB);
     }
 }

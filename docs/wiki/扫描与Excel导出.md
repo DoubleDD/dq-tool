@@ -76,7 +76,11 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 - **格式**:`ScanExportFile(app="dq-tool-scans", version=1, exportedAt, jobs[], tagDefs[])`;job 含 events/tables,table 含 chunks/columns + `tags`(标记名列表,含 EMPTY 空表/BACKUP 备份表系统标记——只导名字,定义由各实例迁移自建,不入 tagDefs)+ `doc`(表描述);文件级 `tagDefs` 收引用到的 USER 标记定义(name/color/description);不导出任何内部 id,导入时全部重新生成;`null_rules`/`col_stats` CLOB JSON 原文透传;时间字段为 ISO_LOCAL_DATE_TIME 字符串(与 H2 TIMESTAMP 列的 LocalDateTime 读写口径一致),导入后按时间排序不受影响;tagDefs/tags/doc 为 v1 格式内追加字段,旧导出文件按缺省(空)导入;job 级 `dbVersion`(目标数据库版本号,任务创建时快照)、`sampleRows`(任务级采样行数,V53)、`autoTagMode`(AI 打标对已有标记表的处理模式,V54)同为 v1 内追加字段,旧导出文件按 null 导入(=全局默认/SKIP);三种导出文件(数据源/扫描记录/标记描述)的导入解析统一走 `TransferJson`(common/util):UTF-8 优先、失败按 GB18030 兜底(客户可能用记事本把文件另存成 ANSI/GBK,兜底避让记 warn 日志带堆栈便于排查),并忽略未知字段(v1 内追加字段不拦截旧版本软件导入)
 - **数据源对齐**:与标记导入一致走「预检 + 映射」——预检返回文件内各数据源的 job 数、本机同名数据源 id(前端自动预选)、本机全部数据源;导入 mapping 为「文件数据源名 → 本机数据源 id」,0/缺失/指向不存在的数据源 = 跳过该数据源的全部任务(计入 skipped)
-- **去重幂等**:同数据源 + db_name(可空等值,空白一律落 NULL)+ schema_name + created_at 已存在则跳过,重复导入同一文件不产生重复记录
+- **去重幂等**:同数据源 + db_name(可空等值,空白一律落 NULL)+ schema_name + created_at 已存在则跳过,重复导入同一文件不产生重复记录;
+  判重是「先查后写」,故扫描记录/标注/元数据三个导入入口(`ScanTransferService`/`AnnotationTransferService`/`MetadataTransferService`)
+  整体经 `TransferImportLock` 进程内互斥串行——并发导入同一文件(两个页签同时拉取、拉取与手工导入并行)修复前会双双通过判重
+  产生重复任务、并在 tag_def.name 唯一键上撞主键冲突报导入失败;导入与「标记管理页手工新建/改名」之间的并发由
+  `TagRepository.createIfAbsent`(撞唯一键读回既有标记)与 TagService 的唯一键→重名提示映射兜底,两侧都不会再裸报主键冲突
 - **结果明细**:跳过(未映射/映射目标不存在/判重)与失败均逐条记 `warnings`(任务标签 + 原因),导入完成弹窗在汇总行下方逐行展示
 - **导入事务**:单任务在 `ScanRepository.insertImportedCascade` 同一事务内按 job → event → table → chunk/column 顺序插入,任一失败整体回滚;单任务失败计入 failed 并记 warning,不中断整批
 - **标注数据合并**:任务导入成功后随即合并其携带的表标记/表描述——标记定义按 name 合并(不存在则创建、已存在的 USER 标记用文件里的 color/description 覆盖、空表/备份表系统标记定义不动但打标关系照常补,来源记 SYSTEM)、表标记 ensure 幂等插入、表描述 upsert 覆盖(model 记 `import`,同 AnnotationTransferService 口径);标注合并失败只记 warning,不影响已导入的扫描记录

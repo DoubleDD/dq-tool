@@ -84,7 +84,7 @@
             (分页 5000/页循环拉完,上限与后端一致 50 万行),前端按 objectKey 内存合并、过滤与分页。
             典型量级(几百~几万行)下一次性加载比分页逐查更简单可控;超大数据量时加载会慢,以 loading 态兜底。
           -->
-          <el-table :data="pagedRows" v-loading="diffsLoading" border row-key="objectKey">
+          <el-table :data="pagedRows" v-loading="diffsLoading" border :row-key="(row) => row.rowKey">
             <!-- 展开列定宽 48:子表「序号+字段+基准值」三列总宽 = 48 + 对象列宽(360) = 408,
                  两侧业务系统列 flex 规则相同(min-width 140),展开子表与父表的列边界才能对齐 -->
             <el-table-column type="expand" width="48">
@@ -222,7 +222,7 @@ watch(kwInput, (v) => {
 const page = ref(1)
 const size = ref(20)
 
-// 合并后的全部行:[{ objectKey, objectName, byTarget: { targetId: { diffType, diffs } } }]
+// 合并后的全部行:[{ rowKey(对象标识[+目标内同名序号],同目标多条同名不折叠、跨系统仍并一行多列), objectKey, objectName, byTarget: { targetId: { diffType, diffs } } }]
 const mergedRows = ref([])
 
 const doneTargets = computed(() => targets.value.filter((t) => t.status === 'DONE'))
@@ -486,13 +486,20 @@ async function loadAllDiffs() {
   try {
     const perTarget = await Promise.all(doneTargets.value.map((t) => fetchTargetDiffs(t.id)))
     const map = new Map()
+    // 同对象在同目标内可能有多条(如编码全空时多个同名水库各自成行,只按 objectKey 合并会折叠丢行):
+    // 合并键 = 对象标识 + 该目标内同名序号;序号 0 不带后缀,跨系统仍按对象标识并成一行多列
+    const seen = new Map()
     doneTargets.value.forEach((t, i) => {
       for (const r of perTarget[i]) {
         const key = String(r.objectKey ?? '')
-        let row = map.get(key)
+        const seenKey = `${t.id}:${key}`
+        const occ = seen.get(seenKey) || 0
+        seen.set(seenKey, occ + 1)
+        const mapKey = occ === 0 ? key : `${key}#${occ}`
+        let row = map.get(mapKey)
         if (!row) {
-          row = { objectKey: key, objectName: r.objectName || '', byTarget: {} }
-          map.set(key, row)
+          row = { rowKey: mapKey, objectKey: key, objectName: r.objectName || '', byTarget: {} }
+          map.set(mapKey, row)
         }
         if (!row.objectName && r.objectName) row.objectName = r.objectName
         row.byTarget[t.id] = { diffType: r.diffType, diffs: r.diffs || null, matchBy: r.matchBy || null }

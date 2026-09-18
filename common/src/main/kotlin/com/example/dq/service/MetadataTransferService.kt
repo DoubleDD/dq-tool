@@ -212,10 +212,15 @@ class MetadataTransferService(
 
     /**
      * 导入元数据导出文件;格式标识不对抛 IllegalArgumentException(Web 层映射 400);单条失败收集不中断整批。
-     * dsMapping:文件数据源名 → 本机数据源 id——缺失=按连接身份自动匹配,0=强制新建,>0=映射到指定本机数据源
+     * dsMapping:文件数据源名 → 本机数据源 id——缺失=按连接身份自动匹配,0=强制新建,>0=映射到指定本机数据源。
+     * 整体经 [TransferImportLock] 串行:标记按名合并是先查后写,与扫描/标注导入并发会互相撞
+     * tag_def.name 唯一键(锁亦保证结构覆盖与扫描刷新不交错)。
      */
     @JvmOverloads
-    fun importJson(input: InputStream, dsMapping: Map<String, Long> = emptyMap()): ImportResult {
+    fun importJson(input: InputStream, dsMapping: Map<String, Long> = emptyMap()): ImportResult =
+        synchronized(TransferImportLock) { doImportJson(input, dsMapping) }
+
+    private fun doImportJson(input: InputStream, dsMapping: Map<String, Long>): ImportResult {
         val file = parseFile(input)
         if (file.items.isEmpty()) {
             throw IllegalArgumentException("导出文件中没有数据源")
@@ -464,7 +469,8 @@ class MetadataTransferService(
                 ?.takeIf { it != TagType.SYSTEM }
             val existing = tagRepo.findByName(tagName)
             when {
-                existing == null -> tagRepo.create(tagName, color, description, tagType ?: TagType.AI)
+                // 原子按名合并:与手工新建标记并发时不撞唯一键,直接采用对方建成的标记
+                existing == null -> tagRepo.createIfAbsent(tagName, color, description, tagType ?: TagType.AI)
                 existing.kind == TagKind.USER -> tagRepo.update(existing.id, tagName, color, description, tagType)
                 // 与系统空表标记重名:由扫描自动维护,不覆盖
             }

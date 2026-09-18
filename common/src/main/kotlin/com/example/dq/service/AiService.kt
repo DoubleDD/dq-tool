@@ -16,6 +16,7 @@ import java.time.LocalDateTime
  * OpenAI 兼容大模型接口调用(/chat/completions)。
  * 表说明场景只发送表结构元数据,不涉及业务数据;
  * 扫描后自动打标场景在表无任何注释/描述时会发送抽样业务数据(前 20 列、100 行、单元格截断 100 字符)。
+ * 请求统一带 enable_thinking=false 关闭思考模式(省 token、降时延;不支持该参数的兼容接口会忽略未知字段)。
  * 调用成功后解析响应里的 usage 并回调 [usageRecorder](Token/费用统计),解析失败不影响主流程。
  * 每次调用都会打印 info 日志,记录 HTTP 协议原始报文(请求行/状态行 + 头 + 体);
  * Authorization 头脱敏后落日志(保留 Bearer 前缀与密钥首尾各几位,中间 **** 代替),scene 打印中文场景名。
@@ -50,6 +51,7 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
             "model" to config.model,
             "temperature" to 0,
             "max_tokens" to 1,
+            "enable_thinking" to false,
             "messages" to listOf(mapOf("role" to "user", "content" to "ping")),
         )
         val requestJson = objectMapper.writeValueAsString(body)
@@ -83,6 +85,7 @@ class AiService(private val usageRecorder: UsageRecorder? = null) {
         val body = mapOf(
             "model" to config.model,
             "temperature" to 0.3,
+            "enable_thinking" to false,
             "messages" to listOf(
                 mapOf("role" to "system", "content" to systemPrompt),
                 mapOf("role" to "user", "content" to userPrompt),

@@ -23,8 +23,8 @@ const props = defineProps({
   baseLabel: { type: String, default: '' },
   // [{ datasourceId, db, schema, table, label }]
   targets: { type: Array, default: () => [] },
-  // 比对主键(基准表列名):每个对比表都必须连上它,否则无法按主键对齐
-  keyField: { type: String, default: '' },
+  // 任务级默认身份字段(基准表列名数组):每个对比表至少连上一个,连上多个默认组合身份(可在向导第 3 步收缩)
+  keyFields: { type: Array, default: () => [] },
   // [{ name, comment }] 数组(与 targets 同序)
   modelValue: { type: Array, default: () => [] }
 })
@@ -326,16 +326,16 @@ function batchDeleteMapping() {
 
 // ---------- 状态提示与校验 ----------
 
-/** 每个对比表的映射条数与「主键是否已映射」 */
+/** 每个对比表的映射条数与「是否至少连上一个身份字段」 */
 const targetStats = computed(() => props.targets.map((t, ti) => {
-  const map = mappingOf(ti)
-  const keyed = !!Object.keys(map).some((bf) => bf.toLowerCase() === String(props.keyField).toLowerCase())
-  return { count: Object.keys(map).length, keyed }
+  const lower = new Set(Object.keys(mappingOf(ti)).map((bf) => bf.toLowerCase()))
+  const keyed = props.keyFields.some((k) => lower.has(String(k).toLowerCase()))
+  return { count: lower.size, keyed }
 }))
 
 const missingKeyCount = computed(() => targetStats.value.filter((s) => !s.keyed).length)
 
-// 没连主键的对比表清单:工具条警告数字看不出是哪几张表,悬浮 title 点名
+// 没连任何身份字段的对比表清单:工具条警告数字看不出是哪几张表,悬浮 title 点名
 const missingKeyLabels = computed(() => props.targets
   .filter((_, ti) => !targetStats.value[ti]?.keyed)
   .map((t) => t.label || t.table)
@@ -359,9 +359,9 @@ defineExpose({ missingKeyCount })
         映射管理{{ manageRows.length ? `(${manageRows.length})` : '' }}
       </el-button>
       <span class="cm-tip">
-        点一侧字段行、再点另一侧字段行即可连线(整行都可点);点连线本身选中,底部确认后删除。
+        点一侧字段行、再点另一侧字段行即可连线(整行都可点);点连线本身选中,底部确认后删除;加粗线 = 身份字段连线。
       </span>
-      <span v-if="missingKeyCount" class="cm-warn" :title="missingKeyLabels">有 {{ missingKeyCount }} 个对比表还没连「{{ keyField }}」</span>
+      <span v-if="missingKeyCount" class="cm-warn" :title="missingKeyLabels">有 {{ missingKeyCount }} 个对比表还没连任何身份字段</span>
     </div>
     <!-- 复用 ER 关系图画布(mapping 模式):表卡片 + 字段对齐曲线边 + mapping-columns 布局,可缩放/拖动;
          等两侧字段都拉到再挂载:首帧即带完整字段行数,节点高度一次算准 -->
@@ -374,6 +374,7 @@ defineExpose({ missingKeyCount })
       :edges="edges"
       :anchor-table="baseKey"
       :highlight-columns="connectedBaseColumns"
+      :identity-columns="keyFields"
       :selected-edge-id="pendingEdgeId"
       level="all"
       :columns-map="columnsMap"

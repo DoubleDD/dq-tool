@@ -5,6 +5,11 @@ import jakarta.validation.constraints.NotEmpty
 import jakarta.validation.constraints.NotNull
 import java.time.LocalDateTime
 
+/** 目标级身份字段人工覆盖:keys = 参与判同的基准字段(必须是任务级 keyFields 的子集);null = 按映射推导 */
+data class CompareTargetIdentity(
+    val keys: List<String>? = null,
+)
+
 /** 比对目标:数据源 + 库/模式 + 表(库可空,内核归一为空串,与 meta_* 缓存口径一致) */
 data class CompareTargetSpec(
     @field:NotNull val datasourceId: Long?,
@@ -13,10 +18,15 @@ data class CompareTargetSpec(
     @field:NotBlank val table: String?,
     /**
      * 字段映射(新建向导第四步人工连线确定):键 = 基准表字段名,值 = 目标表列名;
-     * 留空/null = 按「字段名忽略大小写」自动匹配(旧行为)。一旦提供必须包含比对主键,
-     * 否则无法按主键对齐行;目标侧取值只认映射,未映射到的基准字段记「列缺失」。
+     * 留空/null = 按「字段名忽略大小写」自动匹配(旧行为)。一旦提供必须包含该目标的有效身份字段,
+     * 否则无法按身份对齐行;目标侧取值只认映射,未映射到的基准字段记「列缺失」。
      */
     val mapping: Map<String, String>? = null,
+    /**
+     * 目标级身份字段人工覆盖(可选):该目标只用其中部分已连线身份字段判同时给出;
+     * 留空/null = 按「任务级 keyFields ∩ 映射键」推导,推导为空提交校验拦下
+     */
+    val identity: CompareTargetIdentity? = null,
 )
 
 /** 提交比对任务请求:基准表 + 比对主键 + 比对字段(含主键) + 多个比对目标 */
@@ -27,6 +37,12 @@ data class CreateCompareJobRequest(
     val baseSchema: String?,
     @field:NotBlank val baseTable: String?,
     @field:NotBlank val keyField: String?,
+    /**
+     * 任务级身份字段(向导第一步多选,基准字段名):语义为「默认身份/身份字段并集」,
+     * 各目标的有效身份 = 人工覆盖 ?? 「keyFields ∩ 该目标映射中已连线的基准字段」。
+     * 留空/null = 仅 [keyField] 单字段(旧行为);给出时全部必须属于 fields
+     */
+    val keyFields: List<String>? = null,
     @field:NotEmpty val fields: List<String>?,
     val targets: List<CompareTargetSpec>?,
     /** 对象名称(显示名)字段:可选,必须属于 fields;留空 = 自动取比对字段中第一个文本型非主键字段 */
@@ -93,6 +109,8 @@ data class CompareJobView(
     val baseSchema: String?,
     val baseTable: String,
     val keyField: String,
+    /** 任务级身份字段(基准表实际列名,有序);老任务(库中 key_fields_json 为空)退化为 [keyField] 单元素 */
+    val keyFields: List<String>,
     /** 对象名称(显示名)字段(基准表实际列名);null = 该任务无可用显示字段,object_name 落空串 */
     val displayField: String?,
     /**
@@ -195,6 +213,8 @@ data class CompareTargetView(
     val error: String?,
     /** 人工字段映射(基准表实际列名 → 目标表实际列名);null = 未指定,按字段名自动匹配 */
     val mapping: Map<String, String>? = null,
+    /** 目标级身份字段人工覆盖(基准表实际列名);null = 按「任务级 keyFields ∩ 映射键」推导 */
+    val identityKeys: List<String>? = null,
 )
 
 /**
@@ -227,6 +247,14 @@ data class CompareDiffRow(
 /** 差异明细分页结果 */
 data class CompareDiffPage(
     val rows: List<CompareDiffRow>,
+    val total: Long,
+    val page: Int,
+    val size: Int,
+)
+
+/** 任务列表分页结果 */
+data class CompareJobPage(
+    val rows: List<CompareJobView>,
     val total: Long,
     val page: Int,
     val size: Int,

@@ -11,6 +11,7 @@ import com.example.dq.model.TagSchemaStat
 import com.example.dq.model.TagStats
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.TagRepository
+import java.sql.SQLIntegrityConstraintViolationException
 
 /**
  * 表标记:CRUD 校验(重名 409 / 操作系统标记 400)+ 两个统计视图组装 + 扫描完成的系统标记联动
@@ -36,7 +37,12 @@ class TagService(
         if (tagRepo.findByName(n) != null) {
             throw IllegalStateException("标记名称已存在:$n")
         }
-        return tagRepo.create(n, c, d, normalizeTagType(tagType))
+        try {
+            return tagRepo.create(n, c, d, normalizeTagType(tagType))
+        } catch (e: SQLIntegrityConstraintViolationException) {
+            // 与并发导入「按名合并」撞 tag_def.name 唯一键:同名标记刚被对方建成,按重名语义报错而非裸主键冲突
+            throw IllegalStateException("标记名称已存在:$n")
+        }
     }
 
     fun update(id: Long, name: String?, color: String?, description: String? = null, tagType: String? = null): Tag {
@@ -50,7 +56,12 @@ class TagService(
             throw IllegalStateException("标记名称已存在:$n")
         }
         // tagType 缺省(null)保持原值,显式传入才变更
-        tagRepo.update(id, n, c, d, tagType?.let { normalizeTagType(it) })
+        try {
+            tagRepo.update(id, n, c, d, tagType?.let { normalizeTagType(it) })
+        } catch (e: SQLIntegrityConstraintViolationException) {
+            // 与并发改名/导入按名合并撞 tag_def.name 唯一键,按重名语义报错而非裸主键冲突
+            throw IllegalStateException("标记名称已存在:$n")
+        }
         return tagRepo.findById(id)!!
     }
 

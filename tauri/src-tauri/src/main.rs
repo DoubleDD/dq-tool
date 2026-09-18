@@ -64,30 +64,25 @@ fn main() {
     let ready = Arc::new(AtomicBool::new(false));
 
     let mut cmd = Command::new(&java);
+    // 数据目录:与 data_dir() 同口径(绿色 <exe>/data、安装 ~/.dq-tool/data、开发 ./data 或 DQ_DATA_DIR),
+    // 显式传给后端(原开发模式不传走后端默认 ./data,等价——cwd 已切到仓库根);
+    // Rust 侧读「最大内存」设置也按同一目录找 config.properties
+    let data_dir = data_dir();
+    if !portable && !packaged {
+        // 开发模式:工作目录固定仓库根(相对路径的资源/日志口径与其他模块一致)
+        cmd.current_dir(repo_root());
+    }
+    cmd.arg(format!("-Ddq.data-dir={}", data_dir.display()));
+    // 堆上限:系统设置页可改,落 <数据目录>/config.properties(dq.jvm.xmx-mb,单位 MB),JVM 启动后
+    // 不可调,故由拉起方在启动前读取注入;读不到/非法回落默认 1024MB(2026-09 由 384MB 上调:
+    // 大表扫描/导出/AI 并发会打满 384MB 进入 GC 空转,表现为接口全挂)
     cmd.arg("-XX:+UseG1GC");
-    cmd.arg("-Xmx384m");
-    cmd.arg("-XX:MaxRAMPercentage=50");
+    cmd.arg(format!("-Xmx{}m", configured_xmx_mb(&data_dir)));
     // JDK 25 AOT 类缓存:jar 同目录存在 dq-tool.aot 才启用,开发模式/未训练环境静默跳过。
     // 打包脚本不生成(2026-08 实测 macOS 收益≈0,启动大头是 H2+Flyway 真实初始化而非类加载,
     // 详见 tauri/AGENTS.md);需要时手动 record→create 训练后放到 jar 同目录即可生效
     if let Some(cache) = find_aot_cache(&jar) {
         cmd.arg(format!("-XX:AOTCache={}", cache.display()));
-    }
-    if portable {
-        // 绿色免安装版:数据目录固定 exe 同目录 data/(解压即用、删除即净,不写用户目录)
-        cmd.arg(format!("-Ddq.data-dir={}", exe_dir().join("data").display()));
-    } else if packaged {
-        // 安装版数据目录固定 ~/.dq-tool/data(与 jpackage 安装版口径一致);
-        // 开发模式不传,走后端默认 ./data(cwd 已切到仓库根)
-        let home = home_dir();
-        cmd.arg(format!("-Ddq.data-dir={}/.dq-tool/data", home.display()));
-    } else {
-        // 开发模式:工作目录固定仓库根,数据目录 ./data 与其他模块口径一致;
-        // DQ_DATA_DIR 环境变量可覆盖(如用临时数据目录冒烟,避免动本地开发库)
-        cmd.current_dir(repo_root());
-        if let Ok(dir) = std::env::var("DQ_DATA_DIR") {
-            cmd.arg(format!("-Ddq.data-dir={dir}"));
-        }
     }
     // 纯 API 后端默认无浏览器管控;注入随机 token 后,浏览器直接打开 Tauri 拉起的后端被门禁拒绝
     cmd.arg(format!("-Ddq.access-token={access_token}"));
@@ -250,6 +245,26 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// 系统设置「最大内存」(MB):读 <数据目录>/config.properties 的 dq.jvm.xmx-mb,
+/// 未设置/解析失败/超出 512~8192 一律回落默认 1024。与服务端 JvmMemoryConfig 口径保持一致,
+/// 改键名/范围/默认值时两边同步。
+fn configured_xmx_mb(data_dir: &std::path::Path) -> u32 {
+    const DEFAULT_MB: u32 = 1024;
+    let Ok(content) = std::fs::read_to_string(data_dir.join("config.properties")) else {
+        return DEFAULT_MB;
+    };
+    for line in content.lines() {
+        if let Some(value) = line.trim().strip_prefix("dq.jvm.xmx-mb=") {
+            if let Ok(mb) = value.trim().parse::<u32>() {
+                if (512..=8192).contains(&mb) {
+                    return mb;
+                }
+            }
+        }
+    }
+    DEFAULT_MB
+}
+
 // ---- 自动更新(tauri-plugin-updater,更新源为 GitHub Releases 的 latest.json)----
 //
 // 流程:安装模式启动时立即检查一次,之后每 UPDATE_CHECK_INTERVAL(30 分钟)轮询;
@@ -400,7 +415,7 @@ fn exe_dir() -> PathBuf {
 }
 
 /// 数据目录(与后端 -Ddq.data-dir 口径一致):绿色版 <exe>/data;安装版 ~/.dq-tool/data;
-/// 开发模式 $DQ_DATA_DIR 或仓库根 ./data
+/// 开发模式 $DQ_DATA_DIR 或仓库根 ./data(相对路径锚到仓库根,保证 main() 与 IPC 各处读到同一目录)
 fn data_dir() -> PathBuf {
     if is_portable() {
         return exe_dir().join("data");
@@ -409,7 +424,8 @@ fn data_dir() -> PathBuf {
         return home_dir().join(".dq-tool").join("data");
     }
     if let Ok(dir) = std::env::var("DQ_DATA_DIR") {
-        return PathBuf::from(dir);
+        let dir = PathBuf::from(dir);
+        return if dir.is_absolute() { dir } else { repo_root().join(dir) };
     }
     repo_root().join("data")
 }

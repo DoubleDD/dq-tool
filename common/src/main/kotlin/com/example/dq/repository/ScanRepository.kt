@@ -174,6 +174,29 @@ class ScanRepository(private val jdbc: Jdbc) {
         return result
     }
 
+    /**
+     * 该 数据源+库+schema 最近一个 DONE 任务(id 最大),供断网降级时从扫描快照还原结构缓存;
+     * dbName 口径与 latestJobsBySchema 一致(空白匹配 db_name IS NULL)。
+     */
+    fun latestDoneJob(datasourceId: Long, dbName: String?, schemaName: String): JobRow? {
+        val dbCond = if (!dbName.isNullOrBlank()) "db_name=?" else "db_name IS NULL"
+        val args = ArrayList<Any?>()
+        args.add(datasourceId)
+        if (!dbName.isNullOrBlank()) args.add(dbName)
+        args.add(schemaName)
+        return jdbc.queryOne(
+            "SELECT * FROM scan_job WHERE datasource_id=? AND " + dbCond +
+                    " AND schema_name=? AND status='DONE' ORDER BY id DESC LIMIT 1",
+            *args.toTypedArray(), mapper = jobMapper)
+    }
+
+    /** 某任务内全部 DONE 表的字段总数(扫描快照还原 meta_column_count 用;失败/未完成的表无字段快照,不计入) */
+    fun countDoneColumnsByJob(jobId: Long): Long =
+        jdbc.queryOne(
+            "SELECT COUNT(*) FROM scan_column c JOIN scan_table t ON c.scan_table_id=t.id " +
+                    "WHERE t.job_id=? AND t.status='DONE'", jobId
+        ) { it.getLong(1) } ?: 0L
+
     fun updateJobStatus(jobId: Long, status: ScanStatus) {
         jdbc.update("UPDATE scan_job SET status=? WHERE id=?", status.name, jobId)
     }

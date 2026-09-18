@@ -470,6 +470,7 @@ public class WebServer {
         // ---- 数据比对任务 ----
         routes.post("/api/compare-jobs", ctx -> compareCtrl.get().submit(ctx));
         routes.post("/api/compare-jobs/mapping-suggest", ctx -> compareCtrl.get().suggestMapping(ctx));
+        routes.post("/api/compare-jobs/batch-delete", ctx -> compareCtrl.get().deleteBatch(ctx));
         routes.get("/api/compare-jobs/active", ctx -> compareCtrl.get().listActive(ctx));
         routes.get("/api/compare-jobs", ctx -> compareCtrl.get().list(ctx));
         routes.get("/api/compare-jobs/{id}", ctx -> compareCtrl.get().detail(ctx));
@@ -574,6 +575,8 @@ public class WebServer {
         routes.delete("/api/system-settings/scan", ctx -> settingsCtrl.get().scanReset(ctx));
         routes.get("/api/system-settings/browser", ctx -> settingsCtrl.get().browserGet(ctx));
         routes.put("/api/system-settings/browser", ctx -> settingsCtrl.get().browserSave(ctx));
+        routes.get("/api/system-settings/jvm-memory", ctx -> settingsCtrl.get().jvmMemoryGet(ctx));
+        routes.put("/api/system-settings/jvm-memory", ctx -> settingsCtrl.get().jvmMemorySave(ctx));
         routes.get("/api/license/status", ctx -> licenseCtrl.get().status(ctx));
         routes.post("/api/license/activate", ctx -> licenseCtrl.get().activate(ctx));
         // 授权码管理(仅配置了签发私钥的管理员实例;在 /api/license 前缀下,不被激活拦截)
@@ -1005,7 +1008,8 @@ public class WebServer {
         objectCatalogCtrl.set(new ObjectCatalogController(env.getObjectCatalogService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));
         aiUsageCtrl.set(new AiUsageController(env.getAiUsageService()));
-        settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener));
+        settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener,
+                env.getConfig().getDataDir()));
         licenseCtrl.set(new LicenseController(env.getLicenseService()));
         previewCtrl.set(new PreviewController(env.getPreviewService()));
         sqlConsoleCtrl.set(new SqlConsoleController(env.getSqlConsoleService(), env.getLocalH2ConsoleService()));

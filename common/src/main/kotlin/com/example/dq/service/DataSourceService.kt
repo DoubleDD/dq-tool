@@ -3,6 +3,7 @@ package com.example.dq.service
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DbDialect
 import com.example.dq.dialect.DialectFactory
+import com.example.dq.dialect.MetaReadContext
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.model.DbType
@@ -264,8 +265,10 @@ class DataSourceService(
         val dialect = dialectFactory.get(get(datasourceId).dbType!!)
         val db = if (dialect.supportsMultiDatabase()) resolveDatabase(datasourceId, database) else null
         val raw = pools.computeIfAbsent("$datasourceId|${db ?: ""}") { createPool(datasourceId, db) }.connection
-        // 出口统一包 SQL 日志代理:业务库全部 execute 打日志(独立 logger com.example.dq.sql)
-        val conn = SqlLogConnection.wrap(raw)
+        // 出口统一包 SQL 日志代理:业务库全部 execute 打日志(独立 logger com.example.dq.sql);
+        // 同时随连接携带元数据读上下文,方言层拦截器(MetaReadCachingDialect)据此把读到的
+        // 库/schema/表/字段/索引等元数据兜底回填 meta_* 缓存(粒度未缓存才写,火忘异步)
+        val conn = SqlLogConnection.wrap(raw, MetaReadContext(datasourceId, db ?: "", metaCacheRepo))
         if (db != null) {
             dialect.useDatabase(conn, db)
         }

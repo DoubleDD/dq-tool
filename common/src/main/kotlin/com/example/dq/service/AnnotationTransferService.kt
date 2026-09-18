@@ -90,9 +90,13 @@ class AnnotationTransferService(
      * 导入导出文件;格式标识不对抛 IllegalArgumentException(Web 层映射 400)。
      * dsMapping:文件数据源名 → 本机数据源 id;值 0 表示该数据源的表级行强制跳过;
      * 未包含的名称回退按数据源名匹配本机数据源(兼容无映射的直接导入)。
+     * 整体经 [TransferImportLock] 串行:标记按名合并是先查后写,并发导入会在 tag_def 唯一键上撞主键冲突。
      */
     @JvmOverloads
-    fun importJson(input: InputStream, dsMapping: Map<String, Long> = emptyMap()): AnnotationImportResult {
+    fun importJson(input: InputStream, dsMapping: Map<String, Long> = emptyMap()): AnnotationImportResult =
+        synchronized(TransferImportLock) { doImportJson(input, dsMapping) }
+
+    private fun doImportJson(input: InputStream, dsMapping: Map<String, Long>): AnnotationImportResult {
         val file = parseFile(input)
 
         val result = AnnotationImportResult()
@@ -110,7 +114,8 @@ class AnnotationTransferService(
             val existing = tagRepo.findByName(name)
             when {
                 existing == null -> {
-                    tagRepo.create(name, color, description, tagType ?: TagType.AI)
+                    // 原子按名合并:与手工新建标记并发时不撞唯一键,直接采用对方建成的标记
+                    tagRepo.createIfAbsent(name, color, description, tagType ?: TagType.AI)
                     result.tagsCreated++
                 }
                 existing.kind == TagKind.USER -> {

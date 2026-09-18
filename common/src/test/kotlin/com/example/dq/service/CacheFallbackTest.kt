@@ -67,4 +67,62 @@ class CacheFallbackTest {
         assertThat(successes).containsExactly(9L)
         assertThat(guard.consumeFallback()).isFalse()
     }
+
+    @Test
+    fun `无缓存时降级到扫描快照并置降级标志`() {
+        val failures = mutableListOf<Mark>()
+        val guard = CacheFallback({ id, m, k -> failures += Mark(id, m, k) }, { })
+
+        val result = guard.fetch(
+            datasourceId = 3,
+            hasCache = { false },
+            readCache = { listOf("cached") },
+            readSnapshot = { listOf("snapshot") },
+            fetch = { throw SQLException("Communications link failure", ConnectException("Connection refused")) },
+        )
+
+        assertThat(result).containsExactly("snapshot")
+        assertThat(guard.consumeFallback()).isTrue()
+        assertThat(failures).hasSize(1)
+    }
+
+    @Test
+    fun `有缓存时优先读缓存不调快照`() {
+        var snapshotCalled = false
+        val guard = CacheFallback({ _, _, _ -> }, { })
+
+        val result = guard.fetch(
+            datasourceId = 4,
+            hasCache = { true },
+            readCache = { listOf("cached") },
+            readSnapshot = { snapshotCalled = true; listOf("snapshot") },
+            fetch = { throw SocketTimeoutException("Read timed out") },
+        )
+
+        assertThat(result).containsExactly("cached")
+        assertThat(snapshotCalled).isFalse()
+    }
+
+    @Test
+    fun `无缓存且快照不存在时原样抛出`() {
+        val guard = CacheFallback({ _, _, _ -> }, { })
+        assertThatThrownBy {
+            guard.fetch<Int>(1, hasCache = { false }, readCache = { 0 }, readSnapshot = { null }) {
+                throw SocketTimeoutException("Read timed out")
+            }
+        }.isInstanceOf(SocketTimeoutException::class.java)
+        assertThat(guard.consumeFallback()).isFalse()
+    }
+
+    @Test
+    fun `快照读取自身异常时不掩盖原始连接错误`() {
+        val guard = CacheFallback({ _, _, _ -> }, { })
+        assertThatThrownBy {
+            guard.fetch<Int>(1, hasCache = { false }, readCache = { 0 },
+                readSnapshot = { throw IllegalStateException("快照损坏") }) {
+                throw SocketTimeoutException("Read timed out")
+            }
+        }.isInstanceOf(SocketTimeoutException::class.java)
+        assertThat(guard.consumeFallback()).isFalse()
+    }
 }

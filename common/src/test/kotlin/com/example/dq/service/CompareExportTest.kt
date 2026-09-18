@@ -18,6 +18,8 @@ import org.apache.poi.ss.usermodel.FillPatternType
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -113,8 +115,8 @@ class CompareExportTest {
                 "id", """["id","name","capacity"]""", 2)
             val targetId = repo.insertTarget(jobId, DS_TARGET, "厂商库", "reservoir_vendor", null, "t_reservoir_info")
             repo.updateTargetStats(targetId, 100, 101, 98, 1, 2, 2, 0.98, 0.99, 1.0, 0.99)
-            // 总览「差异条数」为对象级口径:R001 编码/名称双侧一致(纯字段值不一致)不计,
-            // 差异条数 = 缺失 1(R002)+ 多余 1(R900)= 2
+            // 总览「差异条数」为数量口径:缺失 1(R002)+ 多余 1(R900)= 2;
+            // R001 纯字段值不一致、编码/名称不一致(属性差异)都不计
             // diff_json 为整行快照(diffObjects 落库口径):DIFF 行一致字段 value 为 null,EXTRA/MISSING 单侧齐备
             repo.insertDiffs(jobId, targetId, listOf(
                 CompareRepository.DiffInput("R001", "甲水库", "DIFF",
@@ -189,14 +191,65 @@ class CompareExportTest {
         assertEquals("厂商系统", row.systemName)
         assertEquals(101, row.rowCount)
         assertEquals(1, row.diffFromBase)
+        // 老任务三路未采集(NULL):匹配编码数按旧口径回落 matched_count;匹配对象数 = matched_count
         assertEquals(93, row.matchedCount)
-        assertEquals(4, row.diffCount)
+        assertEquals(93, row.matchedTotal)
+        // 差异条数 = 数量口径(缺失 + 多余):1 + 2 = 3;编码不一致(identity 1)是属性差异,不计
+        assertEquals(3, row.diffCount)
         val reason = row.diffReason!!
         assertTrue(reason.contains("基准有目标无的对象 7 条"), reason)
         assertTrue(reason.contains("目标有基准无的对象 8 条"), reason)
         assertTrue(reason.contains("编码不一致的对象 1 条"), reason)
-        assertTrue(reason.contains("字段不一致单元格 5 处"), reason)
         assertTrue(reason.contains("行数相差 1"), reason)
+        // 总览不含字段级差异统计(客户核对表口径,字段级看「字段级差异汇总」sheet),只保留对象级与行数口径
+        assertFalse(reason.contains("字段不一致单元格"), reason)
+        assertFalse(reason.contains("5 处"), reason)
+    }
+
+    @Test
+    fun `仅字段级不一致时差异原因给定性说明且不附统计数字`() {
+        val env = Env()
+        // 对象级三项全零、无身份列空行,只有字段不一致(条数与基准一致,不触发行数差):不写「与基准完全一致」,给定性说明
+        val fieldOnly = targetRow().copy(missingCount = 0, extraCount = 0, fieldMismatchCount = 5,
+            targetCount = 100)
+        val reason = env.service.buildOverviewRows(jobRow(), listOf(fieldOnly), emptyMap(),
+            CompareService.ExportContext())[1].diffReason!!
+        assertEquals("存在字段级不一致(见字段级差异汇总)", reason)
+    }
+
+    @Test
+    fun `新任务匹配编码数取编码路命中数与匹配对象数分列`() {
+        val env = Env()
+        // 三路已采集:匹配编码数 = 编码路 80,匹配对象数 = 三路之和 93
+        val fresh = targetRow().copy(codeMatchedCount = 80, nameMatchedCount = 11, aiMatchedCount = 2)
+        val row = env.service.buildOverviewRows(jobRow(), listOf(fresh), emptyMap(),
+            CompareService.ExportContext())[1]
+        assertEquals(80, row.matchedCount)
+        assertEquals(93, row.matchedTotal)
+        // 基准行两列留空
+        val base = env.service.buildOverviewRows(jobRow(), listOf(fresh), emptyMap(),
+            CompareService.ExportContext())[0]
+        assertEquals(null, base.matchedCount)
+        assertEquals(null, base.matchedTotal)
+    }
+
+    @Test
+    fun `差异原因透出身份列为空的行数且不误报完全一致`() {
+        val env = Env()
+        // 对象级三项全零(缺失/多余/字段不一致都没有)但有身份列为空的行:不得写「与基准完全一致」
+        val noKey = targetRow().copy(missingCount = 0, extraCount = 0, fieldMismatchCount = 0,
+            matchedCount = 100, targetCount = 106, noKeyRows = 6)
+        val overview = env.service.buildOverviewRows(jobRow(), listOf(noKey), emptyMap(),
+            CompareService.ExportContext())
+        val reason = overview[1].diffReason!!
+        assertTrue(reason.contains("身份列为空 6 行(仅按名称/大模型配对)"), reason)
+        assertNotEquals("与基准完全一致", reason)
+
+        // 无身份列为空行且三项全零:维持「与基准完全一致」
+        val clean = targetRow().copy(missingCount = 0, extraCount = 0, fieldMismatchCount = 0)
+        val cleanReason = env.service.buildOverviewRows(jobRow(), listOf(clean), emptyMap(),
+            CompareService.ExportContext())[1].diffReason
+        assertEquals("与基准完全一致", cleanReason)
     }
 
     @Test
@@ -248,8 +301,8 @@ class CompareExportTest {
 
             val overview = wb.getSheetAt(0)
             assertEquals(listOf("表中文名", "表英文名称", "所属系统", "条数", "数据最新更新时间",
-                "与基准差", "匹配编码数", "差异条数", "差异原因"),
-                (0..8).map { overview.getRow(0).getCell(it)?.stringCellValue ?: "" })
+                "与基准差", "匹配编码数", "匹配对象数", "差异条数", "差异原因"),
+                (0..9).map { overview.getRow(0).getCell(it)?.stringCellValue ?: "" })
             assertEquals("表注释-reservoir_base_info", overview.getRow(1).getCell(0).stringCellValue)
             assertEquals("reservoir_base_info", overview.getRow(1).getCell(1).stringCellValue)
             assertEquals("基准库", overview.getRow(1).getCell(2).stringCellValue)  // 未登记 → 数据源名
@@ -261,23 +314,25 @@ class CompareExportTest {
             assertEquals(101.0, overview.getRow(2).getCell(3).numericCellValue)
             assertEquals(1.0, overview.getRow(2).getCell(5).numericCellValue)   // 与基准差
             assertEquals(98.0, overview.getRow(2).getCell(6).numericCellValue)  // 匹配编码数
-            assertEquals(2.0, overview.getRow(2).getCell(7).numericCellValue)   // 差异条数:缺失 1 + 多余 1(R001 纯字段差异不计)
-            assertTrue(overview.getRow(2).getCell(8).stringCellValue.contains("行数相差 1"))
+            assertEquals(2.0, overview.getRow(2).getCell(8).numericCellValue)   // 差异条数:缺失 1 + 多余 1(属性差异不计)
+            assertTrue(overview.getRow(2).getCell(9).stringCellValue.contains("行数相差 1"))
 
             // 行级对比明细 sheet(固定第二个):首行即表头,一行一个「对象 × 比对目标」;末列差异类型
             val rowLevel = wb.getSheetAt(1)
-            assertEquals(listOf("基准表英文名", "基准表中文名", "基准编码", "基准名称",
-                "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明", "差异类型"),
-                (0..9).map { rowLevel.getRow(0).getCell(it).stringCellValue })
+            assertEquals(listOf("基准表英文名", "基准表中文名", "基准编码字段", "基准编码", "基准名称字段", "基准名称",
+                "业务表英文名", "业务表中文名", "业务表编码字段", "业务表编码", "业务表名称字段", "业务表名称",
+                "差异说明", "差异类型"),
+                (0..13).map { rowLevel.getRow(0).getCell(it).stringCellValue })
             // R001 DIFF 双侧编码/名称一致(身份对齐键无差异)→ 不再列入行级对比明细,
             // 其 name/capacity 字段级不一致仍体现在下方明细 sheet
             // R002 缺失:业务侧编码/名称留空、差异类型「缺失」;R900 多余:基准侧留空、差异类型「多余」
-            assertEquals(listOf("reservoir_base_info", "表注释-reservoir_base_info", "R002", "乙水库",
-                "t_reservoir_info", "表注释-t_reservoir_info", "", "", "基准有目标无", "缺失"),
-                (0..9).map { rowLevel.getRow(1).getCell(it).stringCellValue })
-            assertEquals(listOf("reservoir_base_info", "表注释-reservoir_base_info", "", "",
-                "t_reservoir_info", "表注释-t_reservoir_info", "R900", "厂区水库", "目标有基准无", "多余"),
-                (0..9).map { rowLevel.getRow(2).getCell(it).stringCellValue })
+            // 编码/名称字段列与取值无关恒填:基准侧 = 主键 id / 显示名未配置留空,业务侧无映射按同名回落
+            assertEquals(listOf("reservoir_base_info", "表注释-reservoir_base_info", "id", "R002", "", "乙水库",
+                "t_reservoir_info", "表注释-t_reservoir_info", "id", "", "", "", "基准有目标无", "缺失"),
+                (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
+            assertEquals(listOf("reservoir_base_info", "表注释-reservoir_base_info", "id", "", "", "",
+                "t_reservoir_info", "表注释-t_reservoir_info", "id", "R900", "", "厂区水库", "目标有基准无", "多余"),
+                (0..13).map { rowLevel.getRow(2).getCell(it).stringCellValue })
             assertEquals(2, rowLevel.lastRowNum)
 
             // 字段级差异汇总 sheet(固定第三个):首行即表头,一行一个「比对目标 × 基准字段」
@@ -354,7 +409,7 @@ class CompareExportTest {
     }
 
     @Test
-    fun `行级对比明细只列编码不一致的行且与总览差异条数同口径`() {
+    fun `行级对比明细列对象级差异行且总览差异条数只看数量差异`() {
         val env = Env()
         val jobId = env.repo.insertJob("身份口径", DS_BASE, "reservoir_base", null, "reservoir_base_info",
             "id", """["id","name","capacity"]""", 2, displayField = "name")
@@ -376,14 +431,14 @@ class CompareExportTest {
         val wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
         try {
             val rowLevel = wb.getSheetAt(1)
-            // 只有「编码不同」的对象列入,差异类型「不一致」
-            assertEquals(listOf("reservoir_base_info", "", "R002", "乙",
-                "t_reservoir_info", "", "X002", "乙", "id: 基准「R002」→ 目标「X002」", "不一致"),
-                (0..9).map { rowLevel.getRow(1).getCell(it).stringCellValue })
+            // 只有「编码不同」的对象列入,差异类型「不一致」;编码/名称字段列恒填(基准 id/name,无映射业务侧同名)
+            assertEquals(listOf("reservoir_base_info", "", "id", "R002", "name", "乙",
+                "t_reservoir_info", "", "id", "X002", "name", "乙", "id: 基准「R002」→ 目标「X002」", "不一致"),
+                (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
             assertEquals(1, rowLevel.lastRowNum)  // R001(仅字段差异)与 R003(仅名称不同)都不占行
-            // 总览「差异条数」与行级对比明细同口径:编码不一致 1 条(R002),
-            // R001 字段值不一致、R003 名称不同都不计入对象级差异
-            assertEquals(1.0, wb.getSheetAt(0).getRow(2).getCell(7).numericCellValue)
+            // 总览「差异条数」= 数量差异(缺失 + 多余)= 0:行级 sheet 那 1 行是编码不一致(属性差异),
+            // 只在「行级对比明细」/明细 sheet 体现,不进总览数量口径
+            assertEquals(0.0, wb.getSheetAt(0).getRow(2).getCell(8).numericCellValue)
         } finally {
             wb.close()
         }
@@ -501,9 +556,9 @@ class CompareExportTest {
             assertEquals(listOf("A1", "A2", "A9", "B1", "A9"),
                 (1..5).map { rowLevel.getRow(it).let { r ->
                     // 基准侧编码在 EXTRA 行留空,业务侧编码在 MISSING 行留空,合并取非空侧
-                    r.getCell(2).stringCellValue.ifEmpty { r.getCell(6).stringCellValue } } })
-            assertEquals("t_a", rowLevel.getRow(3).getCell(4).stringCellValue)   // A9 属厂商A
-            assertEquals("t_b", rowLevel.getRow(5).getCell(4).stringCellValue)   // A9 属厂商B
+                    r.getCell(3).stringCellValue.ifEmpty { r.getCell(9).stringCellValue } } })
+            assertEquals("t_a", rowLevel.getRow(3).getCell(6).stringCellValue)   // A9 属厂商A
+            assertEquals("t_b", rowLevel.getRow(5).getCell(6).stringCellValue)   // A9 属厂商B
             assertEquals(5, rowLevel.lastRowNum)
         } finally {
             wb.close()
@@ -558,6 +613,16 @@ class CompareExportTest {
             assertEquals("R002", sheet.getRow(2).getCell(0).stringCellValue)
             assertEquals(listOf(3.0, 2.0, 0.0, 2.0, 3.0, 3.0, 0.0), (2..8).map { num(2, it) })
             assertEquals(2, sheet.lastRowNum)
+
+            // 行级对比明细「编码/名称字段」列:显式映射目标取连线到的目标列(A: aid/aname),无映射按同名回落(B: id/name)
+            val rowLevel = wb.getSheetAt(1)
+            assertEquals(listOf("reservoir_base_info", "", "id", "R002", "name", "乙水库",
+                "t_a", "表注释-t_a", "aid", "", "aname", "", "基准有目标无", "缺失"),
+                (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
+            assertEquals(listOf("reservoir_base_info", "", "id", "", "name", "",
+                "t_b", "表注释-t_b", "id", "R900", "name", "多余水库", "目标有基准无", "多余"),
+                (0..13).map { rowLevel.getRow(2).getCell(it).stringCellValue })
+            assertEquals(2, rowLevel.lastRowNum)
         } finally {
             wb.close()
         }

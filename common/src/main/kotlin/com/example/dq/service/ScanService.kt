@@ -114,12 +114,13 @@ class ScanService(
             }
             if (filtered) {
                 // 过滤清单不是全量:只按表合并缓存,避免把本地表清单冲成部分清单
-                metaCacheRepo.mergeTables(datasourceId, normalizeDb(job.dbName), job.schemaName, cached)
+                metaCacheRepo.mergeTablesAsync(datasourceId, normalizeDb(job.dbName), job.schemaName, cached)
             } else {
                 // 全量清单:顺带刷新库列表缓存与表级结构缓存(聚合计数与体积即可,零额外查询)
-                schemaStatRepo.upsert(datasourceId, job.dbName,
+                // 缓存写一律火忘提交(单写线程 FIFO,先提交先执行),不阻塞扫描线程
+                schemaStatRepo.upsertAsync(datasourceId, job.dbName,
                     SchemaStatRepository.CachedStat(job.schemaName, all.size, sumSize(all)))
-                metaCacheRepo.replaceTables(datasourceId, normalizeDb(job.dbName), job.schemaName, cached)
+                metaCacheRepo.replaceTablesAsync(datasourceId, normalizeDb(job.dbName), job.schemaName, cached)
             }
             var targets = all
             if (!explicit.isNullOrEmpty()) {
@@ -208,8 +209,9 @@ class ScanService(
      * 扫描结构缓存覆盖(只写不读):把刚从原始库读到的字段/索引按最新结果整粒度覆盖进本地 H2。
      *
      * 扫描是结构真源,[cols] 为空(表不存在/无字段)时同样覆盖——字段清空、索引清空、无字段标记置真,
-     * 避免源库删列删表后本地仍残留旧结构。写失败只记日志,不影响扫描本身;
-     * 所有写操作经 [MetaCacheRepository] → [com.example.dq.repository.MetaWriteQueue] 串行落库。
+     * 避免源库删列删表后本地仍残留旧结构。所有写操作经 [MetaCacheRepository] →
+     * [com.example.dq.repository.MetaWriteQueue] **火忘提交**(单写线程串行落库,失败只记日志),
+     * 扫描 worker 不排队等写库;只有索引查询(listIndexes)在扫描连接上同步执行。
      */
     private fun overwriteStructureCache(
         job: ScanRepository.JobRow,
@@ -220,15 +222,15 @@ class ScanService(
     ) {
         val db = normalizeDb(job.dbName)
         try {
-            metaCacheRepo.replaceColumns(job.datasourceId, db, job.schemaName, tableName,
+            metaCacheRepo.replaceColumnsAsync(job.datasourceId, db, job.schemaName, tableName,
                 cols.mapIndexed { i, c -> MetaCacheRepository.CachedColumn(
                     i, c.name, c.typeName, c.displayType, c.jdbcType, c.nullable,
                     c.defaultValue, c.comment, c.primaryKey, c.pkSeq, c.uniqueIndexFirst) })
             // 表有字段则清残留标记;空字段表标记置真(表不存在/无字段,扫描按空表跳过)
-            metaCacheRepo.setNoColumns(job.datasourceId, db, job.schemaName, tableName, cols.isEmpty())
+            metaCacheRepo.setNoColumnsAsync(job.datasourceId, db, job.schemaName, tableName, cols.isEmpty())
             // 空字段表不查索引(IOT 溢出段等查也无意义),直接清空
             val indexes = if (cols.isEmpty()) emptyList() else dialect.listIndexes(conn, job.schemaName, tableName)
-            metaCacheRepo.replaceIndexes(job.datasourceId, db, job.schemaName, tableName,
+            metaCacheRepo.replaceIndexesAsync(job.datasourceId, db, job.schemaName, tableName,
                 indexes.flatMap { ix -> ix.columns.mapIndexed { i, col ->
                     MetaCacheRepository.CachedIndex(ix.name, ix.unique, i, col) } })
         } catch (e: Exception) {

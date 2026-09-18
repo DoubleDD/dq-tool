@@ -94,7 +94,7 @@ class ComparePendingJobTest {
         assertTrue(service.listActive().none { it.id == jobId })
         // 列表含 pendingReason
         assertEquals(PendingReason.MAPPING_REVIEW.value,
-            service.list(false).first { it.id == jobId }.pendingReason)
+            service.list(false).rows.first { it.id == jobId }.pendingReason)
     }
 
     @Test
@@ -107,7 +107,7 @@ class ComparePendingJobTest {
         assertEquals("db", detail.job.baseSchema)
         assertEquals("", detail.targets.single().db)
         assertEquals("db", detail.targets.single().schema)
-        val listed = service.list(false).first { it.id == jobId }
+        val listed = service.list(false).rows.first { it.id == jobId }
         assertEquals("", listed.baseDb)
         assertEquals("db", listed.baseSchema)
         // 落库原值不动(归一只在视图层;执行路径本就有 effectiveSchema 兜底)
@@ -266,6 +266,29 @@ class ComparePendingJobTest {
         assertTrue(repo.getJob(jobId)!!.archived)
         service.delete(jobId)
         assertNull(repo.getJob(jobId))
+    }
+
+    @Test
+    fun `deleteBatch 跳过 RUNNING 与不存在 删除其余`() {
+        val baseId = newDs("b"); val targetId = newDs("v")
+        // insertJob 落库即 RUNNING;finishJob 置 DONE;PENDING 走 createPending
+        val runningId = repo.insertJob("运行中", baseId, "db", null, "reservoir_base",
+            "reservoir_code", """["reservoir_code"]""", 2)
+        val doneId = repo.insertJob("完成任务", baseId, "db", null, "reservoir_base",
+            "reservoir_code", """["reservoir_code"]""", 2)
+        repo.finishJob(doneId)
+        val pendingId = newPendingJob()
+
+        val res = service.deleteBatch(listOf(runningId, doneId, pendingId, 999999L))
+        @Suppress("UNCHECKED_CAST")
+        val deleted = res["deleted"] as List<Long>
+        @Suppress("UNCHECKED_CAST")
+        val skipped = res["skipped"] as List<Long>
+        assertEquals(setOf(doneId, pendingId), deleted.toSet())
+        assertEquals(setOf(runningId, 999999L), skipped.toSet())
+        assertNull(repo.getJob(doneId))
+        assertNull(repo.getJob(pendingId))
+        assertNotNull(repo.getJob(runningId))
     }
 
     @Test

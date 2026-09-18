@@ -62,6 +62,10 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 - **访问令牌**:main 开头用 `getrandom` 生成 16 字节随机数转 32 位 hex,作为 `-Ddq.access-token=<token>`
   注入 java(开发/安装/绿色三态都加);前端经 IPC `api_base()` 取回后请求带 `X-Dq-Token` 头(SSE 走 `?token=`);
   浏览器直接打开同一后端则被门禁 403。token 只存在于进程内存与 java argv,不进任何日志 / URL
+- **JVM 堆上限**:`-Xmx` 由 `configured_xmx_mb()` 读 `<数据目录>/config.properties` 的 `dq.jvm.xmx-mb`
+  (系统设置页「内存」可改,512~8192MB,未设置/非法回落 1024)在启动前注入——JVM 堆运行期不可调,
+  设置只能重启生效;键名/范围/默认值与服务端 `JvmMemoryConfig` 双写同步,改动两边一起改。
+  数据目录统一走 `data_dir()` 并显式传 `-Ddq.data-dir`(开发模式原不传走后端默认,等价但 Rust 侧读配置需要同一目录)
 - **就绪探针**:轮询 `GET /api/license/status` 直到 200(该端点不受授权拦截),超时 60 秒;
   子进程提前退出立即报错。探针用裸 TcpStream 手写 HTTP/1.0(响应小且格式固定,够用;
   流式下载场景不可靠,`save_download_as` 已引 ureq,见「自定义 IPC 命令」)

@@ -19,6 +19,7 @@ import com.example.dq.util.CryptoUtil
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.h2.jdbcx.JdbcDataSource
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.MySQLContainer
@@ -110,6 +111,8 @@ class CompareExportFlowTest {
         try {
             assertEquals("总览", wb.getSheetName(0))
             val overview = wb.getSheetAt(0)
+            assertEquals("匹配编码数", overview.getRow(0).getCell(6).stringCellValue)
+            assertEquals("匹配对象数", overview.getRow(0).getCell(7).stringCellValue)
             // 第 1 行基准表,第 2 行厂商库目标
             assertEquals("reservoir_base_info", overview.getRow(1).getCell(1).stringCellValue)
             assertEquals(100.0, overview.getRow(1).getCell(3).numericCellValue)
@@ -121,8 +124,11 @@ class CompareExportFlowTest {
             assertEquals(101.0, overview.getRow(2).getCell(3).numericCellValue)
             assertEquals("2026-02-02 10:00:00", overview.getRow(2).getCell(4).stringCellValue)
             assertEquals(1.0, overview.getRow(2).getCell(5).numericCellValue)
-            assertTrue(overview.getRow(2).getCell(8).stringCellValue.contains("行数相差 1"),
-                overview.getRow(2).getCell(8).stringCellValue)
+            // EXACT 任务全部按编码命中(100 条基准 − 3 条缺失):匹配编码数 = 匹配对象数 = 97
+            assertEquals(97.0, overview.getRow(2).getCell(6).numericCellValue)
+            assertEquals(97.0, overview.getRow(2).getCell(7).numericCellValue)
+            assertTrue(overview.getRow(2).getCell(9).stringCellValue.contains("行数相差 1"),
+                overview.getRow(2).getCell(9).stringCellValue)
             // 总览 1 条差异数据(1 个目标)对应 1 个明细 sheet + 行级对比明细 + 字段级差异汇总 + 数据级字段对比汇总 + 列级对比明细
             assertEquals(6, wb.numberOfSheets)
             assertEquals("行级对比明细", wb.getSheetName(1))
@@ -133,17 +139,19 @@ class CompareExportFlowTest {
             // 行级对比明细:首行即表头,一行一个「对象 × 比对目标」;只列对象级差异(缺失/多余/编码不一致),
             // 5 条仅名称改动的对象按编码配上,属字段级差异,不在本 sheet(见下方各目标明细 sheet)
             val rowLevel = wb.getSheetAt(1)
-            assertEquals(listOf("基准表英文名", "基准表中文名", "基准编码", "基准名称",
-                "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明", "差异类型"),
-                (0..9).map { rowLevel.getRow(0).getCell(it).stringCellValue })
-            assertEquals(listOf("reservoir_base_info", "水库基础信息表", "R091", "水库91",
-                "t_reservoir_info", "", "", "", "基准有目标无", "缺失"),
-                (0..9).map { rowLevel.getRow(1).getCell(it).stringCellValue })
+            assertEquals(listOf("基准表英文名", "基准表中文名", "基准编码字段", "基准编码", "基准名称字段", "基准名称",
+                "业务表英文名", "业务表中文名", "业务表编码字段", "业务表编码", "业务表名称字段", "业务表名称",
+                "差异说明", "差异类型"),
+                (0..13).map { rowLevel.getRow(0).getCell(it).stringCellValue })
+            // 编码/名称字段列:基准侧 = 主键 reservoir_code / 显示名自动取 reservoir_name,业务侧无映射按同名回落
+            assertEquals(listOf("reservoir_base_info", "水库基础信息表", "reservoir_code", "R091", "reservoir_name", "水库91",
+                "t_reservoir_info", "", "reservoir_code", "", "reservoir_name", "", "基准有目标无", "缺失"),
+                (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
             // 缺失 3 + 多余 4 = 7 行(名称不一致 5 条不计入对象级差异)
             val expectedRows = target.missingCount!! + target.extraCount!!
             assertEquals(expectedRows, rowLevel.lastRowNum)
-            // 总览「差异条数」与行级对比明细同口径:缺失 3 + 多余 4 = 7(编码全部配上,无身份差异)
-            assertEquals(expectedRows.toDouble(), overview.getRow(2).getCell(7).numericCellValue)
+            // 总览「差异条数」= 数量差异:缺失 3 + 多余 4 = 7(编码全部配上,无属性差异)
+            assertEquals(7.0, overview.getRow(2).getCell(8).numericCellValue)
             // 字段级差异汇总:reservoir_code 无不一致(3 缺失 + 4 多余),reservoir_name 不一致 5 次;
             // 表头含「业务表字段中文」列(该表未设字段注释,取值留空)
             val fieldSummary = wb.getSheetAt(2)
@@ -193,6 +201,99 @@ class CompareExportFlowTest {
 
     /** 明细 sheet 最后一行数据行号(首行即表头,数据紧随其后) */
     private fun lastDataRow(detail: org.apache.poi.ss.usermodel.Sheet): Int = detail.lastRowNum
+
+    /**
+     * 身份列为空的行:以行内代理键进比对——编码路对它无命中,名称路按名称精准配对
+     * (「任意一边 code 空就用 name 匹配」);配不上的落多余;no_key_rows 单列计数并透出
+     */
+    @Test
+    fun `目标表身份列为空的行经名称配对且条数按实际读到行数`() {
+        val containerUrl = MYSQL.jdbcUrl.substringBeforeLast("/") + "/"
+        DriverManager.getConnection(containerUrl + "reservoir_base", MYSQL.username, MYSQL.password).use { conn ->
+            conn.createStatement().use { st ->
+                st.execute("DROP TABLE IF EXISTS reservoir_base.reservoir_base_info2")
+                st.execute("DROP TABLE IF EXISTS reservoir_vendor.t_reservoir_nullkey")
+                st.execute("CREATE TABLE reservoir_base.reservoir_base_info2(" +
+                    "reservoir_code VARCHAR(32) PRIMARY KEY, reservoir_name VARCHAR(64)) ENGINE=InnoDB")
+                // 目标表编码列不带主键约束,允许 NULL(身份列全空的脏数据场景)
+                st.execute("CREATE TABLE reservoir_vendor.t_reservoir_nullkey(" +
+                    "reservoir_code VARCHAR(32), reservoir_name VARCHAR(64)) ENGINE=InnoDB")
+                for (i in 1..5) {
+                    st.execute(("INSERT INTO reservoir_base.reservoir_base_info2 VALUES('R%03d','水库%d')")
+                        .format(i, i))
+                }
+                // 7 行:R001~R003 编码对上;编码 NULL 但名称「水库4」与基准 R004 相同 → 名称路应配成同一对象
+                // (DIFF:基准有编码 R004、目标编码空);(NULL,NULL) 名称也为空 → 配不上落多余;
+                // V001/V002 编码多余 → 多余;R005 缺失 → 缺失
+                st.execute("INSERT INTO reservoir_vendor.t_reservoir_nullkey VALUES" +
+                    "('R001','水库1'),('R002','水库2'),('R003','水库3'),(NULL,'水库4')," +
+                    "('V001','厂区水库1'),('V002','厂区水库2'),(NULL,NULL)")
+            }
+        }
+        val baseId = dataSourceService.create(DataSourceRequest(
+            "基准库2", containerUrl + "reservoir_base", MYSQL.username, MYSQL.password, null, null))
+        val vendorId = dataSourceService.create(DataSourceRequest(
+            "厂商库2", MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, null, null))
+        // 先编码后名称:编码空/配不上的一律按对象名称精准配对
+        val jobId = compareService.submit(CreateCompareJobRequest(
+            name = "空身份行-E2E", baseDatasourceId = baseId, baseDb = "", baseSchema = "reservoir_base",
+            baseTable = "reservoir_base_info2", keyField = "reservoir_code",
+            fields = listOf("reservoir_code", "reservoir_name"),
+            displayField = "reservoir_name", matchMode = "CODE_THEN_NAME",
+            targets = listOf(CompareTargetSpec(vendorId, "", "reservoir_vendor", "t_reservoir_nullkey"))))
+        awaitDone(jobId)
+
+        val target = compareRepo.listTargets(jobId).single()
+        assertEquals("DONE", target.status)
+        // 条数 = 实际读到的总行数;身份列空行 2 行单列计数
+        assertEquals(5, target.baseCount)
+        assertEquals(7, target.targetCount)
+        assertEquals(2, target.noKeyRows)
+        // R001~R003 编码配 + 水库4 名称配 = 4 命中(编码 3 / 名称 1);R005 缺失;
+        // 多余 3:V001/V002 + (NULL,NULL);名称配对行编码不一致(基准 R004 vs 目标空)→ 计入对象级差异
+        assertEquals(4, target.matchedCount)
+        assertEquals(3, target.codeMatchedCount)
+        assertEquals(1, target.nameMatchedCount)
+        assertEquals(1, target.missingCount)
+        assertEquals(3, target.extraCount)
+
+        val out = ByteArrayOutputStream()
+        compareService.exportDiff(jobId, out)
+        val wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            val overview = wb.getSheetAt(0)
+            assertEquals(7.0, overview.getRow(2).getCell(3).numericCellValue)
+            assertEquals(2.0, overview.getRow(2).getCell(5).numericCellValue)
+            // 匹配编码数 = 3(R001~R003 编码命中),匹配对象数 = 4(编码 3 + 名称 1)
+            assertEquals(3.0, overview.getRow(2).getCell(6).numericCellValue)
+            assertEquals(4.0, overview.getRow(2).getCell(7).numericCellValue)
+            val reason = overview.getRow(2).getCell(9).stringCellValue
+            assertTrue(reason.contains("身份列为空 2 行(仅按名称/大模型配对)"), reason)
+            assertTrue(reason.contains("行数相差 2(目标 7 / 基准 5)"), reason)
+            // 行级对比明细(对象级):缺失 R005 + 多余 3(V001/V002/(NULL,NULL)) = 4 行;
+            // 名称配上的「水库4」是字段级差异(基准有编码、目标编码空 ≠ 编码不一致),不进本 sheet
+            val rowLevel = wb.getSheetAt(1)
+            val allRows = (1..rowLevel.lastRowNum).map { r ->
+                (0..13).map { c -> rowLevel.getRow(r).getCell(c)?.stringCellValue ?: "" }
+            }
+            assertEquals(1, allRows.count { it[13] == "缺失" })
+            // 多余行里应有 (NULL,NULL) 那行(object_key 回落显示名为空、名称也为空,但行存在)
+            assertEquals(3, allRows.count { it[13] == "多余" })
+            assertEquals(null, allRows.firstOrNull { it[5] == "水库4" && it[11] == "水库4" })
+            // 总览「差异条数」= 数量差异:缺失 1 + 多余 3 = 4(编码不一致 0,一侧为空的配对是属性差异不计)
+            assertEquals(4.0, overview.getRow(2).getCell(8).numericCellValue)
+            // 但字段级明细照常展开:R004(水库4)的 reservoir_code 不一致(基准 R004 → 目标空)
+            val detail = wb.getSheetAt(5)
+            val codeDiff = (1..detail.lastRowNum).map { r ->
+                (0..12).map { c -> detail.getRow(r).getCell(c)?.stringCellValue ?: "" }
+            }.firstOrNull { it[4] == "R004" && it[6] == "reservoir_code" }
+            assertNotNull(codeDiff, "名称配对对象的编码差异应在字段级明细展开")
+            assertEquals("R004", codeDiff!![8])
+            assertEquals("", codeDiff[11])
+        } finally {
+            wb.close()
+        }
+    }
 
     private fun awaitDone(jobId: Long) {
         val deadline = System.currentTimeMillis() + 120_000

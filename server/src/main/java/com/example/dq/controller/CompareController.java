@@ -1,6 +1,7 @@
 package com.example.dq.controller;
 
 import com.example.dq.model.CreateCompareJobRequest;
+import com.example.dq.model.CompareTargetIdentity;
 import com.example.dq.model.MappingSuggestRequest;
 import com.example.dq.repository.CompareRepository;
 import com.example.dq.service.CompareService;
@@ -35,11 +36,13 @@ public class CompareController {
         ctx.json(service.suggestMappings(req));
     }
 
-    /** 任务列表(新的在前);query archived=true 时含已归档;
+    /** 任务列表(新的在前,分页);query archived=true 时含已归档;page/size 缺省 1/20;
      * 筛选参数(可组合):kw 关键字 / status、tagIds 逗号分隔多值 / datasourceId / matchMode(LEGACY=仅编码老任务) / compareMode */
     public void list(Context ctx) {
         boolean includeArchived = "true".equalsIgnoreCase(ctx.queryParam("archived"));
-        ctx.json(service.list(includeArchived, parseFilter(ctx)));
+        Integer page = ctx.queryParamAsClass("page", Integer.class).getOrNull();
+        Integer size = ctx.queryParamAsClass("size", Integer.class).getOrNull();
+        ctx.json(service.list(includeArchived, parseFilter(ctx), page, size));
     }
 
     /** 解析列表筛选 query 参数;空值/非法值一律忽略(不筛),保证老前端不带参数时行为不变 */
@@ -95,7 +98,9 @@ public class CompareController {
     }
 
     /** 「字段审核」确认映射并开始比对(仅 PENDING,否则 409;校验失败 400):
-     * body {"mappings": {"<targetId>": {"基准字段": "目标列"}}},确认后 PENDING→RUNNING 进执行器 */
+     * body {"mappings": {"<targetId>": {"基准字段": "目标列"}},
+     *       "identities": {"<targetId>": {"keys": ["code"]}}(可选,只含人工收缩过身份的目标)},
+     * 确认后 PENDING→RUNNING 进执行器 */
     public void confirmMapping(Context ctx) {
         ConfirmMappingRequest req = ctx.bodyAsClass(ConfirmMappingRequest.class);
         Map<Long, Map<String, String>> mappings = new LinkedHashMap<>();
@@ -108,7 +113,17 @@ public class CompareController {
                 }
             }
         }
-        service.confirmMapping(id(ctx), mappings);
+        Map<Long, CompareTargetIdentity> identities = new LinkedHashMap<>();
+        if (req.identities != null) {
+            for (Map.Entry<String, CompareTargetIdentity> e : req.identities.entrySet()) {
+                try {
+                    identities.put(Long.parseLong(e.getKey()), e.getValue());
+                } catch (NumberFormatException nfe) {
+                    throw new IllegalArgumentException("身份目标 id 非法: " + e.getKey());
+                }
+            }
+        }
+        service.confirmMapping(id(ctx), mappings, identities);
         ctx.json(Map.of("ok", true));
     }
 
@@ -127,9 +142,11 @@ public class CompareController {
         ctx.json(Map.of("ok", true));
     }
 
-    /** confirm-mapping 请求体:mappings 键为目标 id(JSON 对象键只能是字符串,转 Long) */
+    /** confirm-mapping 请求体:mappings/identities 键为目标 id(JSON 对象键只能是字符串,转 Long);
+     * identities 可选,只含人工收缩过身份的目标(无覆盖时前端不传) */
     public static class ConfirmMappingRequest {
         public Map<String, Map<String, String>> mappings;
+        public Map<String, CompareTargetIdentity> identities;
     }
 
     /** 差异明细分页:query targetId/diffType/kw/page(size 缺省 20) 组合过滤 */
@@ -164,6 +181,17 @@ public class CompareController {
     public void delete(Context ctx) {
         service.delete(id(ctx));
         ctx.json(Map.of("ok", true));
+    }
+
+    /** 批量删除任务(body {"ids":[...]}):RUNNING 跳过,返回 {deleted, skipped} */
+    public void deleteBatch(Context ctx) {
+        DeleteBatchRequest req = ctx.bodyAsClass(DeleteBatchRequest.class);
+        ctx.json(service.deleteBatch(req.ids == null ? List.of() : req.ids));
+    }
+
+    /** 批量删除请求体 */
+    public static class DeleteBatchRequest {
+        public List<Long> ids;
     }
 
     /** 比对报告导出 xlsx:首 sheet「总览」一行一系统,其后每个差异行一个 sheet 展开字段级明细;

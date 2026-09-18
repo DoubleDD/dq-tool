@@ -67,12 +67,13 @@
         />
       </div>
       <!-- 字段表:选定基准表即加载。没有勾选列——哪些字段参与比对由第 3 步连线决定(有连线的基准字段即比对字段);
-           这里只选两个身份字段:对象编码(对齐主键,恒参与比对)/对象名称(差异明细「对象」列显示名) -->
+           这里只定两类身份字段:默认身份字段(编码,对齐用,可多选=组合身份,恒参与比对)/对象名称(差异明细「对象」列显示名) -->
       <div v-if="form.table" class="field-table-wrap">
         <el-table :data="columns" v-loading="columnsLoading" border row-key="name" height="100%">
-          <el-table-column label="对象编码" width="90" align="center">
+          <!-- 默认身份字段(编码)多选:勾多个 = 任务级默认组合身份;各对比表可在第 3 步按连线单独收缩 -->
+          <el-table-column label="默认身份字段(编码)" width="130" align="center">
             <template #default="{ row }">
-              <el-radio v-model="keyField" :value="row.name">{{ '' }}</el-radio>
+              <el-checkbox :model-value="keyFields.includes(row.name)" @change="(v) => toggleKeyField(row.name, v)">{{ '' }}</el-checkbox>
             </template>
           </el-table-column>
           <el-table-column label="对象名称" width="90" align="center">
@@ -95,7 +96,8 @@
         </el-table>
       </div>
       <div class="step-tip">
-        基准表为权威数据,其他系统的数据将按比对主键逐字段对齐到该表;对象编码用于逐行对齐、恒参与比对,
+        基准表为权威数据,其他系统的数据将按身份字段逐行对齐到该表;默认身份字段(编码)用于逐行对齐、恒参与比对
+        (勾多个 = 组合身份,全部相等才算同一行;各对比表可在第 3 步按实际连线单独收缩身份字段),
         对象名称决定差异明细「对象」列的名称(默认第一个文本型非主键字段);
         其余字段是否参与比对由第 3 步连线决定——有连线的基准字段即比对字段
       </div>
@@ -117,13 +119,28 @@
     </div>
 
     <!-- 步骤 3:字段映射(左侧基准表固定、右侧各对比表纵向排开单独滚动,人工连线;
-         有连线的基准字段即比对字段,提交时按连线并集 + 身份两字段汇总比对字段) -->
+         有连线的基准字段即比对字段,提交时按连线并集 + 身份字段汇总比对字段);
+         画布上方身份条:逐对比表展示有效身份(推导 = 已连线的默认身份字段;可收缩为子集人工覆盖) -->
     <div v-show="step === 2" class="step-body step-fill">
+      <div v-if="targets.length" class="identity-bar">
+        <span class="identity-bar-label">有效身份</span>
+        <div v-for="(t, i) in targets" :key="i" class="identity-item">
+          <span class="identity-name" :title="targetLabel(t)">{{ t.table }}</span>
+          <template v-if="identityState(i).effective.length">
+            <el-tag v-for="k in identityState(i).effective" :key="k" size="small"
+                    :type="identityState(i).override ? 'warning' : 'info'" effect="plain">{{ k }}</el-tag>
+            <!-- 连上多个身份字段才允许收缩(单个无从收缩);覆盖标记 = 橙 tag + 「已调整」 -->
+            <el-button v-if="identityState(i).derived.length > 1" size="small" link type="primary"
+                       @click="openIdentityDialog(i)">{{ identityState(i).override ? '已调整' : '调整' }}</el-button>
+          </template>
+          <el-tag v-else size="small" type="danger">未连身份字段</el-tag>
+        </div>
+      </div>
       <CompareFieldMapping
         :base="{ datasourceId: form.datasourceId, db: form.db, schema: form.schema, table: form.table }"
         :base-label="baseTableLabel"
         :targets="mappingTargets"
-        :key-field="keyField"
+        :key-fields="keyFields"
         v-model="mappings"
       >
         <!-- 列级对比:大模型预生成字段映射,放工具条最左(基准表全字段产出建议);人工在画布审核后可再手动增删 -->
@@ -136,6 +153,20 @@
           </template>
         </template>
       </CompareFieldMapping>
+      <!-- 目标级身份收缩弹窗:候选 = 该对比表已连线的默认身份字段,勾选的子集作为 targets[].identity.keys 提交;
+           全勾 = 与推导一致,不存覆盖 -->
+      <el-dialog v-model="identityDialog.visible" title="调整该对比表的身份字段" width="420px" append-to-body>
+        <div class="identity-dialog-tip">
+          {{ identityDialog.index >= 0 ? targetLabel(targets[identityDialog.index]) : '' }}:取消勾选的字段不参与判同(至少保留 1 个)
+        </div>
+        <el-checkbox-group v-model="identityDialog.draft">
+          <el-checkbox v-for="k in identityDialogCandidates" :key="k" :value="k" style="display: flex">{{ k }}</el-checkbox>
+        </el-checkbox-group>
+        <template #footer>
+          <el-button @click="identityDialog.visible = false">取消</el-button>
+          <el-button type="primary" :disabled="!identityDialog.draft.length" @click="confirmIdentityDialog">确定</el-button>
+        </template>
+      </el-dialog>
     </div>
 
     <!-- 向导操作按钮 -->
@@ -225,8 +256,17 @@ const baseTableLabel = computed(() => {
 // 基准表字段清单(选定表即加载):本步用来选对象编码/对象名称两个身份字段,提交时也是比对字段排序的依据
 const columns = ref([])
 const columnsLoading = ref(false)
-// 对象编码(比对主键):默认 pkSeq 最小的主键列,无主键取第一列;恒参与比对
-const keyField = ref('')
+// 默认身份字段(编码,基准表列名数组):默认勾 pkSeq 最小的主键列,无主键勾第一列;勾多个 = 组合身份,恒参与比对。
+// 语义是「任务级默认身份/身份字段并集」:各对比表的有效身份 = 第 3 步已连线的 keyFields 子集(可人工收缩,见 identityOverrides)
+const keyFields = ref([])
+
+/** 勾选/取消默认身份字段:保持基准表字段顺序(keyFields 顺序即组合身份字段顺序) */
+function toggleKeyField(name, checked) {
+  const set = new Set(keyFields.value)
+  if (checked) set.add(name)
+  else set.delete(name)
+  keyFields.value = columns.value.map((c) => c.name).filter((n) => set.has(n))
+}
 // 对象名称(显示名)字段:差异明细「对象」列的名称来源,默认第一个文本型非主键字段
 const displayField = ref('')
 
@@ -245,9 +285,9 @@ const matchModeLabel = computed(() => MATCH_MODES.find((m) => m.value === matchM
 // 「先编码后名称+大模型归一化」必须给出对象名称字段(否则无法按名称配对,后端提交时会 400)
 const matchModeRequiresName = computed(() => matchMode.value !== 'EXACT')
 
-/** 「自动」候选 = 第一个文本型非主键字段(按基准表字段顺序);无则空串(提交 null,object_name 落空串) */
+/** 「自动」候选 = 第一个文本型非身份字段(按基准表字段顺序);无则空串(提交 null,object_name 落空串) */
 function autoDisplayField() {
-  const hit = columns.value.find((c) => c.name !== keyField.value && TEXT_JDBC_TYPES.has(c.jdbcType))
+  const hit = columns.value.find((c) => !keyFields.value.includes(c.name) && TEXT_JDBC_TYPES.has(c.jdbcType))
   return hit?.name || ''
 }
 
@@ -256,7 +296,7 @@ async function loadColumns() {
   // 初始化本步数据期间抑制数据链监听,避免被误判成「用户修改第 1 步数据」而清空后续步骤
   suppressInvalidate = true
   columns.value = []
-  keyField.value = ''
+  keyFields.value = []
   displayField.value = ''
   try {
     const q = form.db ? `?db=${encodeURIComponent(form.db)}` : ''
@@ -264,9 +304,9 @@ async function loadColumns() {
       `/datasources/${form.datasourceId}/schemas/${encodeURIComponent(form.schema)}/tables/${encodeURIComponent(form.table)}/columns${q}`
     )
     columns.value = list || []
-    // 默认比对主键:主键列中 pkSeq 最小的;无主键则取第一列
+    // 默认身份字段:主键列中 pkSeq 最小的;无主键则勾第一列
     const pk = [...columns.value].filter((c) => c.primaryKey).sort((a, b) => (a.pkSeq || 0) - (b.pkSeq || 0))
-    keyField.value = (pk[0] || columns.value[0])?.name || ''
+    keyFields.value = [(pk[0] || columns.value[0])?.name].filter(Boolean)
     displayField.value = autoDisplayField()
     // 记录字段已按当前基准表加载:重选同一张表(回看场景)时不再清空重载,保住后两步已填数据
     loadedTableKey.value = baseTableKey()
@@ -322,10 +362,48 @@ const mappingTargets = computed(() => targets.value.map((t) => ({
   dsName: targetDs(t)?.name || ''
 })))
 
-/** 该对比表是否已把比对主键连上(未连则无法按主键对齐行,提交时拦下) */
-function isKeyMapped(map) {
-  if (!keyField.value) return true
-  return Object.keys(map || {}).some((bf) => bf.toLowerCase() === keyField.value.toLowerCase())
+// ---------- 步骤 3:目标级有效身份(推导 + 人工收缩覆盖) ----------
+
+// 目标级身份人工覆盖:数组与 targets 同序,元素为 null(按推导)或 string[](收缩后的 keyFields 子集);
+// 只存「与推导不一致」的人工收缩,随第 3 步数据链一起作废(见 invalidateFrom)
+const identityOverrides = ref([])
+
+/** 该对比表映射中已连线的默认身份字段(推导身份;忽略大小写命中,返回 keyFields 原始大小写与顺序) */
+function connectedKeys(map) {
+  const lower = new Set(Object.keys(map || {}).map((bf) => bf.toLowerCase()))
+  return keyFields.value.filter((k) => lower.has(k.toLowerCase()))
+}
+
+/**
+ * 目标 i 的身份三态:derived = 推导(已连线的默认身份字段);override = 人工收缩(仍连着线的部分,
+ * 与推导一致时归一为 null,不重复落 identity);effective = 实际生效(覆盖优先,否则推导)。
+ * 覆盖里的字段被断线后自动从覆盖中剔除,全断完则退回推导——身份永远跟连线走,不会产生悬空覆盖
+ */
+function identityState(i) {
+  const derived = connectedKeys(mappings.value[i])
+  const ov = (identityOverrides.value[i] || []).filter((k) => derived.some((d) => d.toLowerCase() === k.toLowerCase()))
+  const override = ov.length && ov.length < derived.length ? ov : null
+  return { derived, override, effective: override || derived }
+}
+
+// 「调整身份」弹窗:候选 = 该对比表已连线的默认身份字段,draft = 勾选中的子集
+const identityDialog = reactive({ visible: false, index: -1, draft: [] })
+const identityDialogCandidates = computed(() => (identityDialog.index >= 0 ? identityState(identityDialog.index).derived : []))
+
+function openIdentityDialog(i) {
+  identityDialog.index = i
+  identityDialog.draft = [...identityState(i).effective]
+  identityDialog.visible = true
+}
+
+/** 确定收缩:按 keyFields 顺序归一;勾满(与推导一致)则不存覆盖,至少保留 1 个(按钮已兜底) */
+function confirmIdentityDialog() {
+  const i = identityDialog.index
+  if (i < 0) return
+  const derived = identityState(i).derived
+  const picked = derived.filter((k) => identityDialog.draft.includes(k))
+  identityOverrides.value[i] = picked.length && picked.length < derived.length ? picked : null
+  identityDialog.visible = false
 }
 
 // 目标数据源不再排除基准数据源:同一数据库下不同表互比是常见场景,改为禁用「基准表本身」这一组合
@@ -380,7 +458,7 @@ async function aiSuggestMapping() {
       baseDb: form.db || null,
       baseSchema: form.schema,
       baseTable: form.table,
-      keyField: keyField.value,
+      keyField: keyFields.value[0] || '', // 映射预生成接口仍收单主键:取第一个默认身份字段
       targets: targets.value.map((t) => ({
         datasourceId: Number(t.datasourceId), db: t.db || null, schema: t.schema, table: t.table
       }))
@@ -422,15 +500,16 @@ function invalidateFrom(n) {
     if (n < 1) {
       // 基准表变了:本步随表加载的字段数据与身份字段选择一并失效,第 2 步(选择对比表)清单也作废
       columns.value = []
-      keyField.value = ''
+      keyFields.value = []
       displayField.value = ''
       matchMode.value = 'EXACT'
       loadedTableKey.value = ''
       targets.value = []
     }
     if (n < 2) {
-      // 第 3 步(字段映射)的数据
+      // 第 3 步(字段映射)的数据:连线与目标级身份覆盖一并作废
       mappings.value = []
+      identityOverrides.value = []
     }
     maxStep.value = Math.min(maxStep.value, n)
   } finally {
@@ -462,7 +541,7 @@ function next() {
     if (!form.schema) return ElMessage.warning('请选择库/schema')
     if (!form.table) return ElMessage.warning('请选择基准表')
     if (!columns.value.length) return ElMessage.warning('基准表字段未加载,无法继续')
-    if (!keyField.value) return ElMessage.warning('请选择比对主键(对象编码)')
+    if (!keyFields.value.length) return ElMessage.warning('请至少勾选一个默认身份字段(对象编码)')
     // 「先编码后名称+大模型归一化」靠对象名称配对,没有名称字段就无法执行
     if (matchModeRequiresName.value && !displayField.value) {
       return ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请在「对象名称」列选择`)
@@ -488,23 +567,23 @@ function validateSubmit() {
     ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请回到第 1 步选择`)
     return false
   }
-  const unmapped = targets.value.filter((t, i) => !isKeyMapped(mappings.value[i]))
+  const unmapped = targets.value.filter((t, i) => !identityState(i).effective.length)
   if (unmapped.length) {
-    // 点名是哪几个对比表没连主键(数据源 · 库.模式.表),别让用户在多目标里自己猜
+    // 点名是哪几个对比表没有任何有效身份(数据源 · 库.模式.表),别让用户在多目标里自己猜
     const names = unmapped.map((t) => targetLabel(t) || t.table).join('、')
-    ElMessage.warning(`有 ${unmapped.length} 个对比表还没连上比对主键「${keyField.value}」:${names}。请回到第 3 步连线`)
+    ElMessage.warning(`有 ${unmapped.length} 个对比表还没有有效身份字段:${names}。请回到第 3 步,每张对比表至少连一个默认身份字段(或保留有效的身份覆盖)`)
     return false
   }
   return true
 }
 
 /**
- * 组装提交载荷(新建/编辑共用):比对字段 = 第 3 步连线的基准字段并集(有连线即参与比对)+ 身份两字段
- * (对象编码/对象名称恒参与),保持基准表字段顺序;后端两条约束「映射的基准字段必须在比对字段内」
+ * 组装提交载荷(新建/编辑共用):比对字段 = 第 3 步连线的基准字段并集(有连线即参与比对)+ 身份字段
+ * (默认身份字段/对象名称恒参与),保持基准表字段顺序;后端两条约束「映射的基准字段必须在比对字段内」
  * 「对象名称字段必须在比对字段内」由此一并满足
  */
 function buildPayload() {
-  const picked = new Set([keyField.value])
+  const picked = new Set(keyFields.value)
   if (displayField.value) picked.add(displayField.value)
   for (const m of mappings.value) {
     for (const bf of Object.keys(m || {})) picked.add(bf)
@@ -517,7 +596,9 @@ function buildPayload() {
     baseDb: form.db || null,
     baseSchema: form.schema,
     baseTable: form.table,
-    keyField: keyField.value,
+    // 任务级默认身份字段(基准字段名数组,至少 1 个);keyField 继续带第一项做旧列兼容(后端按 keys[0] 写 key_field)
+    keyFields: [...keyFields.value],
+    keyField: keyFields.value[0] || '',
     fields,
     displayField: displayField.value || null,
     // 对象对齐匹配逻辑(第 1 步选择):EXACT / CODE_NAME_LLM;编辑模式同样允许改(不做限制)
@@ -530,7 +611,9 @@ function buildPayload() {
       schema: t.schema,
       table: t.table,
       // 第 3 步人工连线的字段映射;空对象 = 不指定,后端按字段名自动匹配
-      mapping: Object.keys(mappings.value[i] || {}).length ? mappings.value[i] : null
+      mapping: Object.keys(mappings.value[i] || {}).length ? mappings.value[i] : null,
+      // 目标级身份人工覆盖:仅收缩过(与推导不一致)时带 { keys };null = 按推导(已连线的默认身份字段)
+      identity: identityState(i).override ? { keys: identityState(i).override } : null
     }))
   }
 }
@@ -580,6 +663,30 @@ async function submitAndStart() {
   }
 }
 
+/** 解析后端返回的 JSON 数组(兼容「JSON 字符串」与「已解析数组」两种形态);解析不出非空数组返回 null */
+function parseJsonArray(v) {
+  if (v == null) return null
+  let a = v
+  if (typeof v === 'string') {
+    if (!v.trim()) return null
+    try { a = JSON.parse(v) } catch { return null }
+  }
+  if (!Array.isArray(a)) return null
+  const out = a.filter((x) => typeof x === 'string' && x)
+  return out.length ? out : null
+}
+
+/** 解析目标级 identityJson({keys:[...]} 的 JSON 字符串或已解析对象)为 keys 数组;无覆盖返回 null */
+function parseIdentityKeys(v) {
+  if (v == null) return null
+  let o = v
+  if (typeof v === 'string') {
+    if (!v.trim()) return null
+    try { o = JSON.parse(v) } catch { return null }
+  }
+  return parseJsonArray(Array.isArray(o) ? o : o?.keys)
+}
+
 /**
  * 编辑预填(?edit=<jobId>):拉任务详情反填三步全部数据——任务名、基准四元组、身份字段、
  * 对比表清单与既有连线。可编辑状态:PENDING(待处理,保存后仍待处理)与终态 DONE/FAILED/CANCELED
@@ -619,14 +726,19 @@ async function prefillEdit(jobId) {
       datasourceId: t.datasourceId, db: t.db || '', schema: t.schema || '', table: t.table
     }))
     mappings.value = (d.targets || []).map((t) => ({ ...(t.mapping || {}) }))
+    // 目标级身份覆盖:identityJson 解析反填(null = 按推导);人工收缩的勾选在身份条上还原
+    identityOverrides.value = (d.targets || []).map((t) => parseIdentityKeys(t.identityJson))
   } finally {
     // 等本轮 watch 冲刷完再解除抑制:反填触发的数据链监听(基准四元组/对比表清单变化)全部被跳过
     await nextTick()
     suppressInvalidate = false
   }
   await loadColumns()
-  // 身份字段改回任务值;基准表读不出(IMPORT_ERROR)时按任务原值兜底,便于修正后重选
-  if (job.keyField) keyField.value = job.keyField
+  // 默认身份字段改回任务值:keyFieldsJson(JSON 数组)优先,老任务(null)退化为 [keyField] 单列;
+  // 基准表读不出(IMPORT_ERROR)时按任务原值兜底,便于修正后重选
+  const kf = parseJsonArray(job.keyFieldsJson)
+  if (kf?.length) keyFields.value = kf
+  else if (job.keyField) keyFields.value = [job.keyField]
   if (job.displayField) displayField.value = job.displayField
 }
 
@@ -759,6 +871,45 @@ onMounted(async () => {
 
 .step-tip {
   margin-top: 12px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+/* 第 3 步身份条:逐对比表展示有效身份(推导灰 tag / 人工覆盖橙 tag),横向滚动不换行 */
+.identity-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-light);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.identity-bar-label {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+}
+.identity-item {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.identity-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--el-text-color-secondary);
+}
+.identity-dialog-tip {
+  margin-bottom: 10px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }

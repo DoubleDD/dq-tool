@@ -161,9 +161,10 @@ class AiUsageServiceTest {
 
     @Test
     fun `record后stats汇总与按日序列正确且缺日补零`() {
-        // 用相对当前的时间,避免测试依赖具体日期/星期
-        val t1 = LocalDateTime.now().minusMinutes(5)
-        val t2 = LocalDateTime.now()
+        // 两条记录都固定落在「今天」的同一时段:now()/now()-5min 在跨零点跑测试时会被拆到两天,
+        // 按日序列断言(当天 2 次)随即失败;固定当天时刻与具体日期/星期解耦
+        val t1 = LocalDateTime.now().withHour(12).withMinute(0).withSecond(0).withNano(0)
+        val t2 = t1.plusMinutes(5)
         service.record(AiScene.TABLE_DOC, "deepseek-chat", 1000, 200, 1200, t1)
         service.record(AiScene.AUTO_TAG, "deepseek-chat", 500, 100, 600, t2)
 

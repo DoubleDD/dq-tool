@@ -116,6 +116,9 @@ const props = defineProps({
   // mapping 模式:锚点表(基准表)里**参与比对的基准字段**——文字常亮高亮(主题色+加粗,不改背景),
   // 不管有没有连线都亮;对比表字段不受此参数影响(连了线才亮)
   highlightColumns: { type: Array, default: () => [] },
+  // mapping 模式:锚点表(基准表)里的**默认身份字段**——字段行加「身份」小标记,其连线加粗(线色仍按目标表),
+  // 一眼区分「判同用的身份列」与普通比对列;纯视觉标识,不影响连线交互
+  identityColumns: { type: Array, default: () => [] },
   // mapping 模式:选中态连线 id(父级在删除确认期间传入,该线加粗变红;空串 = 无选中)
   selectedEdgeId: { type: String, default: '' }
 })
@@ -233,6 +236,7 @@ function themeColors() {
   return {
     primary: get('--el-color-primary', '#409eff'),
     danger: get('--el-color-danger', '#f56c6c'),
+    warning: get('--el-color-warning', '#e6a23c'),
     border: get('--el-border-color', '#dcdfe6'),
     borderDarker: get('--el-border-color-darker', '#cdd0d6'),
     borderLighter: get('--el-border-color-lighter', '#ebeef5'),
@@ -338,6 +342,10 @@ function renderNodeHtml(d) {
     // 字段高亮一律走文字(主题色+加粗)、不改背景:基准表里参与比对的字段(highlightColumns)不管有没有
     // 连线都常亮;对比表只有连了线的字段才亮,没连线的保持次要灰——一眼区分「要比的」与「已映射的」
     const isBaseField = mapping && isAnchor && props.highlightColumns.includes(f.name)
+    // 身份字段小标记(仅基准表):不管连没连线都带,提示「该列参与判同」;徽章 flex:none 不挤压字段名截断
+    const identityBadge = mapping && isAnchor && props.identityColumns.includes(f.name)
+      ? `<span style="flex:none;margin-left:4px;padding:0 3px;font-size:10px;line-height:12px;border:1px solid ${c.warning};color:${c.warning};border-radius:3px;font-weight:400">身份</span>`
+      : ''
     const style = isActive
       ? `color:${c.primary};font-weight:600;background:${c.primary}26;border-radius:3px`
       : (f.related || isBaseField) ? `color:${c.primary};font-weight:600` : `color:${c.textSecondary}`
@@ -362,7 +370,7 @@ function renderNodeHtml(d) {
     const sepBg = mapping
       ? `background-image:linear-gradient(to bottom, ${c.border}, ${c.border} 0.5px, rgba(0,0,0,0) 0.5px), linear-gradient(to top, ${c.border}, ${c.border} 0.5px, rgba(0,0,0,0) 0.5px);background-size:100% 0.5px, 100% 0.5px;background-position:0 0, 0 100%;background-repeat:no-repeat;`
       : ''
-    return `<div${tip}${colAttr} style="display:flex;align-items:center;height:18px;line-height:18px;padding:0 8px;font-size:11px;overflow:hidden;${style};${sepBg}${cursor}"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(main.replace(/\s+/g, ' '))}${tailHtml}</span>${type}</div>`
+    return `<div${tip}${colAttr} style="display:flex;align-items:center;height:18px;line-height:18px;padding:0 8px;font-size:11px;overflow:hidden;${style};${sepBg}${cursor}"><span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(main.replace(/\s+/g, ' '))}${tailHtml}</span>${identityBadge}${type}</div>`
   }).join('')
   const more = hasFoldRow(table)
     ? `<div class="rg-more-row" data-rg-table="${esc(table)}" title="${expanded ? '收起字段' : '点击展开全部字段'}" style="height:16px;line-height:16px;padding:0 8px;font-size:11px;color:${c.primary};cursor:pointer;white-space:nowrap">${expanded ? '收起字段' : `+${fields.length - props.maxFieldRows} 个字段`}</div>` : ''
@@ -802,8 +810,8 @@ function buildData() {
       source: r.oneTable,
       target: r.manyTable,
       data: { oneColumn: r.oneColumn, manyColumn: r.manyColumn },
-      // mapping 模式走普通实线(不表达 ER 基数语义,按目标表着色);ER 关系图保持候选/确认/疑似三态样式
-      style: props.mode === 'mapping' ? mappingEdgeStyle(r.manyTable) : edgeStyle(r)
+      // mapping 模式走普通实线(不表达 ER 基数语义,按目标表着色;身份连线加粗);ER 关系图保持候选/确认/疑似三态样式
+      style: props.mode === 'mapping' ? mappingEdgeStyle(r) : edgeStyle(r)
     }
   })
   return { nodes, edges }
@@ -830,23 +838,30 @@ function targetEdgeColor(manyTable) {
   return targetEdgeColorMap.get(manyTable)
 }
 
+/** 该连线是否身份连线(mapping 模式:基准端字段在 identityColumns 内)——线宽加粗一档 */
+function isIdentityEdge(rel) {
+  return props.mode === 'mapping' && !!rel && props.identityColumns.includes(rel.oneColumn)
+}
+
 /** 映射边样式(create-edge 新建边与状态重建边共用同一套):普通实线——字段映射只表达
  *  「左边基准字段 → 右边对比字段」的指向,不带 ER 基数语义,故不要两端竖杠/鸦脚与 1:1 标签;
  *  两端画实心小圆点(G6 内置 circle 箭头,填充色随线色)——线从其他表身上跨过还是真正连到该表,
  *  看端点有没有圆点一眼可辨;
- *  stroke 按目标表着色(manyTable 为空时取主题色);cursor:pointer 透传到边 key 形状,悬停连线鼠标变手指;
+ *  stroke 按目标表着色(manyTable 为空时取主题色);身份连线(基准端为 identityColumns)线宽加粗;
+ *  cursor:pointer 透传到边 key 形状,悬停连线鼠标变手指;
  *  increasedLineWidthForHitTesting:1.8px 细线 hover/点击容差太小(偏离 2~3px 就拾不到),
  *  命中宽度放宽到 10px——光标与「点线删除」都好中,视觉线宽不受影响;
  *  聚焦表存在时,不属于该表的连线压暗(strokeOpacity/fillOpacity 双写——小圆点的填充透明度随线一起暗),
  *  凸显 聚焦表 ↔ 基准表 之间的连线 */
-function mappingEdgeStyle(manyTable) {
+function mappingEdgeStyle(rel) {
+  const manyTable = rel?.manyTable
   const c = themeColors()
   const focused = focusTables.value.has(manyTable)
   const dimmed = !!focusTables.value.size && manyTable && !focused
   const opacity = dimmed ? 0.15 : 1
   return {
     stroke: manyTable ? targetEdgeColor(manyTable) : c.primary,
-    lineWidth: 1.8,
+    lineWidth: isIdentityEdge(rel) ? 2.6 : 1.8,
     strokeOpacity: opacity,
     fillOpacity: opacity,
     // 聚焦表的连线置顶(zIndex 2),压暗线(zIndex 1)垫在下面,交叉处不再混淆
@@ -960,7 +975,8 @@ function applyEdgeHover(rel) {
     // 选中态(删除确认中)的线保持选中样式,悬停不覆盖
     if (String(rel.id) !== props.selectedEdgeId) {
       const key = g.context.element.getElement(String(rel.id))?.getShape('key')
-      if (key) key.style.lineWidth = 2.8
+      // 悬停加粗:身份连线基础线宽更粗(2.6),悬停同步抬一档,保持可感知
+      if (key) key.style.lineWidth = isIdentityEdge(rel) ? 3.2 : 2.8
     }
   } catch {
     // 边刚被删除/重建,忽略
@@ -983,7 +999,8 @@ function clearEdgeHover() {
       // 选中态(删除确认中)的线不还原成普通线宽
       if (String(hoverEdgeRel.id) !== props.selectedEdgeId) {
         const key = g.context.element.getElement(String(hoverEdgeRel.id))?.getShape('key')
-        if (key) key.style.lineWidth = 1.8
+        // 还原到该线自身线宽:身份连线 2.6、普通连线 1.8(与 mappingEdgeStyle 同口径)
+        if (key) key.style.lineWidth = isIdentityEdge(hoverEdgeRel) ? 2.6 : 1.8
       }
     } catch {
       // 边已不存在
@@ -1033,7 +1050,7 @@ async function clearEdgeSelected() {
   const rel = relById.get(id)
   if (!rel) return
   try {
-    g.updateEdgeData([{ id, style: mappingEdgeStyle(rel.manyTable) }])
+    g.updateEdgeData([{ id, style: mappingEdgeStyle(rel) }])
     await drawNow(g)
   } catch {
     // 边已删除/重建,无需还原

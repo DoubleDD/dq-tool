@@ -61,6 +61,62 @@ class TagRepositoryTest {
     }
 
     @Test
+    fun `按名原子创建已存在则读回 并发重名只得一个标记`() {
+        // 已存在:不报错,读回既有标记(值不被覆盖)
+        val first = repo.create("并发原子表", "#111111", "先建")
+        val adopted = repo.createIfAbsent("并发原子表", "#222222", "后到")
+        assertEquals(first.id, adopted.id)
+        assertEquals("#111111", adopted.color)
+        assertEquals("先建", adopted.description)
+
+        // 并发:两个线程同时原子创建同名标记,唯一键只放行一个,另一个读回,全局只有一个标记
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val tags = arrayOfNulls<com.example.dq.model.Tag>(2)
+        val threads = (0 until 2).map { i ->
+            Thread {
+                latch.await()
+                tags[i] = repo.createIfAbsent("并发竞态表", "#409EFF")
+            }
+        }
+        threads.forEach { it.start() }
+        latch.countDown()
+        threads.forEach { it.join() }
+        assertEquals(tags[0]!!.id, tags[1]!!.id)
+        assertEquals(1, repo.listAll().count { it.name == "并发竞态表" })
+    }
+
+    @Test
+    fun `原子创建与裸创建并发 原子侧永不炸`() {
+        // 模拟导入(原子创建)与手工新建(裸创建,TagService 会把唯一键异常映射为重名提示)并发:
+        // 双方同时 INSERT 同名标记,原子侧要么建成要么读回,绝不抛异常;全局只有一个标记
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var atomicError: Exception? = null
+        val atomic = Thread {
+            try {
+                latch.await()
+                repo.createIfAbsent("手工导入互撞表", "#409EFF")
+            } catch (e: Exception) {
+                atomicError = e
+            }
+        }
+        var plainError: Exception? = null
+        val plain = Thread {
+            try {
+                latch.await()
+                repo.create("手工导入互撞表", "#409EFF")
+            } catch (e: Exception) {
+                plainError = e
+            }
+        }
+        atomic.start(); plain.start()
+        latch.countDown()
+        atomic.join(); plain.join()
+
+        assertEquals(null, atomicError, "原子创建侧(importAnnotations)不得抛异常")
+        assertEquals(1, repo.listAll().count { it.name == "手工导入互撞表" })
+    }
+
+    @Test
     fun `删除标记级联解除打标关系`() {
         val tag = repo.create("水资源业务表", "#409EFF")
         repo.ensureTableTag(tag.id, 1L, "", "s1", "t1")

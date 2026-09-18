@@ -107,9 +107,14 @@ class ScanTransferService(
      * 导入导出文件;格式标识不对抛 IllegalArgumentException(Web 层映射 400)。
      * mapping:文件数据源名 → 本机数据源 id;值 0 或缺失表示跳过该数据源的全部任务(计入 skipped);
      * 映射到本机不存在的数据源同样跳过;所有跳过/失败均逐条记 warning,供前端展示明细原因。
+     * 整体经 [TransferImportLock] 串行:判重与标记按名合都是先查后写,并发导入会重复建任务、
+     * 并在 tag_def 唯一键上撞主键冲突(见锁注释)。
      */
     @JvmOverloads
-    fun importJson(input: InputStream, mapping: Map<String, Long> = emptyMap()): ScanImportResult {
+    fun importJson(input: InputStream, mapping: Map<String, Long> = emptyMap()): ScanImportResult =
+        synchronized(TransferImportLock) { doImportJson(input, mapping) }
+
+    private fun doImportJson(input: InputStream, mapping: Map<String, Long>): ScanImportResult {
         val file = parseFile(input)
         val result = ScanImportResult()
         val localIds = dataSourceRepo.findAll().mapNotNull { it.id }.toSet()
@@ -165,8 +170,9 @@ class ScanTransferService(
                     val tag = when {
                         // 系统标记(空表/备份表):定义由本机迁移自建、不覆盖,但打标关系要补上(导入的历史记录不一定再扫,不补就丢系统标记)
                         existing != null && existing.kind != TagKind.USER -> existing
-                        // 文件里没有定义(系统标记不入 tagDefs)且本机不存在同名标记时无法对齐,跳过
-                        existing == null -> if (def == null) null else tagRepo.create(tagName,
+                        // 文件里没有定义(系统标记不入 tagDefs)且本机不存在同名标记时无法对齐,跳过;
+                        // 创建走原子按名合并:与手工新建标记并发时不撞唯一键,直接采用对方建成的标记
+                        existing == null -> if (def == null) null else tagRepo.createIfAbsent(tagName,
                             normalizeColor(def.color), def.description?.trim()?.takeIf { it.isNotEmpty() },
                             parseTagType(def.tagType) ?: TagType.AI)
                         def != null -> {

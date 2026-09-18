@@ -4,7 +4,9 @@
       <h3 style="margin: 0">比对任务</h3>
       <!-- 按钮组统一右侧、gap 统一间距(与抽样导出页同写法) -->
       <div class="toolbar-actions">
-        <el-checkbox v-model="showArchived" @change="load">显示已归档</el-checkbox>
+        <el-checkbox v-model="showArchived" @change="search">显示已归档</el-checkbox>
+        <!-- 批量删除勾选任务(运行中不可勾选);与抽样导出页同一写法 -->
+        <el-button type="danger" plain :disabled="!selection.length" @click="confirmBatchDelete">批量删除</el-button>
         <el-button :loading="loading" @click="load">刷新</el-button>
         <!-- 批量导入:一 sheet 一任务(本页整体已在 compare 授权门禁内,不再单独判) -->
         <el-button @click="openImport">导入表格</el-button>
@@ -18,29 +20,29 @@
         placeholder="搜索任务名/基准表/来源文件"
         clearable
         style="width: 220px"
-        @keyup.enter="load"
-        @clear="load"
+        @keyup.enter="search"
+        @clear="search"
       />
       <el-select v-model="filters.status" multiple collapse-tags collapse-tags-tooltip clearable
-        placeholder="状态" style="width: 180px" @change="load">
+        placeholder="状态" style="width: 180px" @change="search">
         <el-option v-for="s in STATUS_OPTIONS" :key="s.value" :label="s.label" :value="s.value" />
       </el-select>
       <el-select v-model="filters.tagIds" multiple collapse-tags collapse-tags-tooltip clearable
-        placeholder="表的标记(基准/目标任一命中)" style="width: 220px" @change="load">
+        placeholder="表的标记(基准/目标任一命中)" style="width: 220px" @change="search">
         <el-option v-for="tag in availableTags" :key="tag.id" :label="tag.name" :value="tag.id">
           <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle" :style="{ background: tag.color }" />
           {{ tag.name }}
         </el-option>
       </el-select>
       <el-select v-model="filters.datasourceId" clearable filterable placeholder="基准数据源"
-        style="width: 200px" @change="load">
+        style="width: 200px" @change="search">
         <el-option v-for="ds in datasourceList" :key="ds.id" :label="ds.name" :value="ds.id" />
       </el-select>
-      <el-select v-model="filters.compareMode" clearable placeholder="比对模式" style="width: 130px" @change="load">
+      <el-select v-model="filters.compareMode" clearable placeholder="比对模式" style="width: 130px" @change="search">
         <el-option label="行级" value="ROW" />
         <el-option label="行级+列级" value="COLUMN" />
       </el-select>
-      <el-select v-model="filters.matchMode" clearable placeholder="匹配逻辑" style="width: 170px" @change="load">
+      <el-select v-model="filters.matchMode" clearable placeholder="匹配逻辑" style="width: 170px" @change="search">
         <el-option label="仅编码" value="LEGACY" />
         <el-option label="编码+名称" value="EXACT" />
         <el-option label="先编码后名称" value="CODE_THEN_NAME" />
@@ -53,7 +55,9 @@
         比对为长时任务:创建后按「连接数据源 → 读取基准表 → 逐字段比对 → 生成报告」执行,运行中可留在本页观察进度
       </template>
     </el-alert>
-    <el-table :data="tasks" v-loading="loading" border>
+    <el-table :data="tasks" v-loading="loading" border row-key="id" @selection-change="onSelectionChange">
+      <!-- 运行中任务不可勾选(与单删同口径:RUNNING 禁删;PENDING 是静止状态可勾);row-key 让轮询重拉时勾选不丢 -->
+      <el-table-column type="selection" width="45" :selectable="(row) => row.status !== 'RUNNING'" />
       <el-table-column label="任务" min-width="180" show-overflow-tooltip>
         <template #default="{ row }">
           <div>
@@ -133,24 +137,33 @@
           <span v-else>{{ formatDuration(row.startedAt, row.finishedAt) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="270" fixed="right" class-name="nowrap-cell">
+      <el-table-column label="操作" width="350" fixed="right" class-name="nowrap-cell">
         <template #default="{ row }">
-          <!-- 待处理任务:字段审核(弹画布确认映射后开始比对)/ 编辑(进向导逐步改);映射推导中(MAPPING_RUNNING)不显示(映射还没出来,没得审);删除照常可用 -->
+          <!-- 待处理任务:字段审核(弹画布确认映射后开始比对)/ 编辑(进向导逐步改);映射推导中(MAPPING_RUNNING)不显示(映射还没出来,没得审) -->
           <template v-if="row.status === 'PENDING' && row.pendingReason !== 'MAPPING_RUNNING'">
             <el-button link type="primary" @click="openMappingReview(row)">字段审核</el-button>
             <el-button link type="primary" @click="router.push(`/compare/new?edit=${row.id}`)">编辑</el-button>
           </template>
           <el-button v-if="row.status === 'DONE'" link type="primary" @click="router.push(`/compare/${row.id}/diff`)">查看详情</el-button>
+          <!-- 导出比对报告:总览 sheet + 每差异行一 sheet,与详情页「导出比对报告」同一接口 -->
+          <el-button v-if="row.status === 'DONE'" link type="primary" @click="exportReport(row)">导出比对报告</el-button>
           <!-- 已完成任务可再次编辑:进向导改配置,保存后直接按新配置重新比对(旧差异明细覆盖) -->
           <el-button v-if="row.status === 'DONE'" link type="primary" @click="router.push(`/compare/new?edit=${row.id}`)">编辑</el-button>
           <el-button v-if="row.status === 'DONE' || row.status === 'FAILED'" link type="primary" @click="confirmRerun(row)">重新比对</el-button>
-          <el-button link type="danger" @click="confirmDelete(row)">删除</el-button>
+          <!-- 删除不在操作列提供,统一走首列勾选 + 工具栏「批量删除」(单条=只勾一行) -->
         </template>
       </el-table-column>
       <template #empty>
         <el-empty description="还没有比对任务,点击「+ 新建比对任务」发起" :image-size="60" />
       </template>
     </el-table>
+
+    <!-- 分页(与错误中心同写法):筛选/改页大小时回第 1 页,翻页沿用当前筛选态;轮询也按当前页静默重拉 -->
+    <div class="pager-row">
+      <el-pagination v-model:current-page="page" v-model:page-size="size" :total="total"
+        :page-sizes="[10, 20, 50, 100]" layout="total, sizes, prev, pager, next, jumper"
+        @current-change="load" @size-change="search" />
+    </div>
 
     <!-- 字段审核弹窗:待处理任务核对/改线字段映射,确认后开始比对 -->
     <CompareMappingReview v-model="reviewVisible" :job-id="reviewJobId" @confirmed="load" />
@@ -258,7 +271,7 @@ import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
 import { Document, Loading, UploadFilled } from '@element-plus/icons-vue'
 import request, {
-  listCompareJobs, getCompareJob, rerunCompareJob, deleteCompareJob,
+  listCompareJobs, getCompareJob, rerunCompareJob, batchDeleteCompareJobs,
   submitCompareImport, getCompareImport, confirmCompareImport
 } from '../api'
 import { downloadFile } from '../utils/download'
@@ -271,6 +284,12 @@ const router = useRouter()
 const tasks = ref([])
 const loading = ref(false)
 const showArchived = ref(false)
+// 分页(服务端分页,与错误中心同模式):total 由列表接口返回
+const page = ref(1)
+const size = ref(20)
+const total = ref(0)
+// 表格勾选行(批量删除用;轮询重拉后由 row-key 维持勾选态)
+const selection = ref([])
 // 筛选条件(服务端筛选;各 select change 即触发 load,轮询沿用同一条件)
 const filters = reactive({ kw: '', status: [], tagIds: [], datasourceId: null, compareMode: null, matchMode: null })
 // 标记下选项(全量标记含系统「空表/备份表」;GET /api/tags)
@@ -338,13 +357,21 @@ function ackTerminal() {
 async function load() {
   loading.value = true
   try {
-    tasks.value = await listCompareJobs(showArchived.value, filters) || []
+    const res = await listCompareJobs(showArchived.value, filters, page.value, size.value)
+    tasks.value = res.rows || []
+    total.value = res.total || 0
     ackTerminal()
     fillTargetCounts()
   } finally {
     loading.value = false
     if (needPolling() && !timer) startPolling()
   }
+}
+
+/** 筛选条件或页大小变化:回第 1 页再拉(翻页本身不改条件,直接 load) */
+function search() {
+  page.value = 1
+  load()
 }
 
 /** 重置筛选并重新加载(显示已归档开关不动) */
@@ -355,7 +382,7 @@ function resetFilters() {
   filters.datasourceId = null
   filters.compareMode = null
   filters.matchMode = null
-  load()
+  search()
 }
 
 /** 筛选条下选项:全量标记 + 数据源清单(静默,失败则对应下拉为空) */
@@ -377,7 +404,12 @@ function fillTargetCounts() {
 function startPolling() {
   stopPolling()
   timer = setInterval(async () => {
-    tasks.value = await listCompareJobs(showArchived.value, filters).catch(() => tasks.value)
+    // 轮询按当前页静默重拉(失败保旧数据,下轮再试);翻页/改筛选由 load/search 自然带走
+    const res = await listCompareJobs(showArchived.value, filters, page.value, size.value).catch(() => null)
+    if (res) {
+      tasks.value = res.rows || []
+      total.value = res.total || 0
+    }
     ackTerminal()
     if (!needPolling()) stopPolling()
   }, 1000)
@@ -388,6 +420,11 @@ function stopPolling() {
     clearInterval(timer)
     timer = null
   }
+}
+
+/** 导出比对报告(与详情页同一接口;走统一 downloadFile,Tauri 原生保存框/浏览器 Blob 下载) */
+function exportReport(row) {
+  downloadFile(`/api/compare-jobs/${row.id}/export`)
 }
 
 /** 重新比对:确认后按原目标清单重跑(RUNNING 时后端 409,拦截器统一提示) */
@@ -404,16 +441,30 @@ async function confirmRerun(row) {
   await load()
 }
 
-async function confirmDelete(row) {
+function onSelectionChange(rows) {
+  selection.value = rows
+}
+
+/** 批量删除勾选的任务:运行中不可勾选;勾选后开跑的由服务端跳过并在结果里提示 */
+async function confirmBatchDelete() {
+  const ids = selection.value.map((t) => t.id)
+  if (!ids.length) return
   try {
     await ElMessageBox.confirm(
-      `将删除任务「${row.name}」及其差异明细与报告,删除后不可恢复。`,
-      '删除比对任务',
+      `将删除 ${ids.length} 个任务及其差异明细与报告,删除后不可恢复。`,
+      '批量删除',
       { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
     )
   } catch { /* 用户取消 */ return }
-  await deleteCompareJob(row.id)
-  ElMessage.success(`任务 T-${row.id} 已删除`)
+  const res = await batchDeleteCompareJobs(ids)
+  const skipped = res.skipped || []
+  if (skipped.length) {
+    ElMessage.warning(`已删除 ${res.deleted.length} 个,跳过运行中的任务:${skipped.map((id) => `T-${id}`).join('、')}`)
+  } else {
+    ElMessage.success(`已删除 ${res.deleted.length} 个任务`)
+  }
+  // 当前页被删空且非首页时回退一页,避免停在越界空页
+  if (tasks.value.length === (res.deleted?.length || 0) && page.value > 1) page.value -= 1
   await load()
 }
 
@@ -598,6 +649,13 @@ onUnmounted(() => { stopPolling(); stopImportPolling() })
 /* 发起时间/耗时/操作列不换行 */
 :deep(.nowrap-cell) {
   white-space: nowrap;
+}
+
+/* 分页条右对齐(与错误中心 .pager-row 同写法) */
+.pager-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 /* 任务名下方来源文件名(批量导入):小字灰字 + Excel 图标,点击下载原件 */

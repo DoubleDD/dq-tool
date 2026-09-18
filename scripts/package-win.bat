@@ -73,8 +73,7 @@ jpackage ^
   --java-options "-Ddq.web.static-dir=${APPDIR}/static" ^
   --java-options "-Djava.awt.headless=false" ^
   --java-options "-XX:+UseG1GC" ^
-  --java-options "-Xmx384m" ^
-  --java-options "-XX:MaxRAMPercentage=50" ^
+  --java-options "-Xmx1g" ^
   --java-options "-splash:${APPDIR}/splash.png" ^
   --dest "%DIST%" || exit /b 1
 

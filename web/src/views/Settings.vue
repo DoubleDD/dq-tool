@@ -69,6 +69,28 @@
       </el-form>
     </el-card>
 
+    <!-- 内存:JVM 最大堆内存 -->
+    <el-card class="settings-card" shadow="never">
+      <template #header>
+        <span>内存</span>
+      </template>
+      <div class="settings-desc">
+        后端进程的最大堆内存。数据量大(大表扫描、批量导出、AI 生成)时内存不足会导致程序卡死、接口连不上,可适当调大;
+        设置写入数据目录 config.properties,<b>重启应用后生效</b>(运行中的进程堆内存不可调)。
+      </div>
+      <el-form label-width="200px" v-loading="memoryLoading">
+        <el-form-item label="最大内存(MB)">
+          <el-input-number v-model="memoryForm.xmxMb" :min="memoryForm.minMb" :max="memoryForm.maxMb" :step="256"
+                           controls-position="right" style="width: 200px" />
+          <span class="field-hint">{{ memoryForm.minMb }}~{{ memoryForm.maxMb }},当前进程生效约 {{ memoryForm.appliedMb }} MB</span>
+        </el-form-item>
+      </el-form>
+      <div class="card-actions">
+        <el-button type="primary" :loading="memorySaving" @click="saveMemory">保存</el-button>
+        <el-button @click="memoryForm.xmxMb = memoryForm.defaultMb">恢复默认({{ memoryForm.defaultMb }} MB)</el-button>
+      </div>
+    </el-card>
+
     <!-- AI 配置:大模型接口 -->
     <el-card class="settings-card" shadow="never">
       <template #header>
@@ -250,6 +272,41 @@ async function saveBrowser(id) {
   }
 }
 
+// ---------- 内存设置 ----------
+// JVM 最大堆内存,落数据目录 config.properties(dq.jvm.xmx-mb),重启应用后生效;
+// Tauri 由拉起方启动前读取注入,jpackage/直接 java -jar 由后端自我重启应用设置
+const memoryLoading = ref(false)
+const memorySaving = ref(false)
+const memoryForm = reactive({ xmxMb: 1024, appliedMb: 1024, defaultMb: 1024, minMb: 512, maxMb: 8192 })
+
+async function loadMemory() {
+  memoryLoading.value = true
+  try {
+    const v = await request.get('/system-settings/jvm-memory')
+    Object.assign(memoryForm, {
+      xmxMb: v.xmxMb, appliedMb: v.appliedMb, defaultMb: v.defaultMb, minMb: v.minMb, maxMb: v.maxMb
+    })
+  } finally {
+    memoryLoading.value = false
+  }
+}
+
+async function saveMemory() {
+  memorySaving.value = true
+  try {
+    const v = await request.put('/system-settings/jvm-memory', { xmxMb: memoryForm.xmxMb })
+    Object.assign(memoryForm, { xmxMb: v.xmxMb, appliedMb: v.appliedMb })
+    // maxMemory 与 -Xmx 存在取整/对齐误差,容差 32MB 内视为一致(与后端自我重启判定同口径)
+    if (Math.abs(v.xmxMb - v.appliedMb) <= 32) {
+      ElMessage.success('最大内存已保存,与当前进程一致,无需重启')
+    } else {
+      ElMessage.success('最大内存已保存,重启应用后生效')
+    }
+  } finally {
+    memorySaving.value = false
+  }
+}
+
 // ---------- AI 配置 ----------
 const aiFormRef = ref(null)
 
@@ -340,6 +397,7 @@ const themeMode = computed({
 onActivated(() => {
   loadScanSettings()
   loadBrowserSettings()
+  loadMemory()
   aiFormRef.value?.load()
 })
 </script>

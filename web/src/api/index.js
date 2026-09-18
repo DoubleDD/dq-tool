@@ -225,7 +225,10 @@ export function cancelMetadataSync(id) {
 // ---------- 数据比对 ----------
 // 视图结构:任务 CompareJobView / 目标指标 CompareTargetView / 差异行 CompareDiffRow,字段见后端 CompareModels.kt
 
-/** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fields[], targets[{datasourceId, db, schema, table}], displayField?, matchMode?, compareMode?};返回 {jobId} */
+/** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable,
+ *  keyFields[](任务级默认身份字段,基准字段名数组,至少 1 个), keyField(旧列兼容,恒 = keyFields[0]),
+ *  fields[], targets[{datasourceId, db, schema, table, mapping?, identity?: {keys[]}|null(仅人工收缩身份时带,null=按推导)}],
+ *  displayField?, matchMode?, compareMode?};返回 {jobId} */
 export function createCompareJob(payload) {
   return request.post('/compare-jobs', payload)
 }
@@ -237,10 +240,11 @@ export function suggestCompareMapping(payload, timeoutMs = 130000) {
   return request.post('/compare-jobs/mapping-suggest', payload, { timeout: timeoutMs })
 }
 
-/** 任务列表;archived=true 时含已归档(默认不含);
- *  filters 服务端筛选(空项自动忽略):kw 关键字 / status、tagIds 数组 / datasourceId / matchMode(LEGACY=仅编码) / compareMode */
-export function listCompareJobs(archived = false, filters = null) {
-  const params = {}
+/** 任务列表(分页);archived=true 时含已归档(默认不含);
+ *  filters 服务端筛选(空项自动忽略):kw 关键字 / status、tagIds 数组 / datasourceId / matchMode(LEGACY=仅编码) / compareMode
+ *  返回 {rows, total, page, size} */
+export function listCompareJobs(archived = false, filters = null, page = 1, size = 20) {
+  const params = { page, size }
   if (archived) params.archived = true
   if (filters) {
     if (filters.kw && filters.kw.trim()) params.kw = filters.kw.trim()
@@ -258,7 +262,8 @@ export function listActiveCompareJobs() {
   return request.get('/compare-jobs/active', { _silent: true })
 }
 
-/** 任务详情 { job, targets };silent=true 用于轮询(失败不弹全局提示) */
+/** 任务详情 { job, targets };job.keyFieldsJson = 任务级默认身份字段(JSON 数组字符串,老任务为 null → 用 keyField 单列兜底),
+ *  targets[].identityJson = 目标级身份人工覆盖({keys:[...]} 或 null=按推导);silent=true 用于轮询(失败不弹全局提示) */
 export function getCompareJob(id, silent = false) {
   return request.get(`/compare-jobs/${id}`, silent ? { _silent: true } : {})
 }
@@ -283,9 +288,9 @@ export function setCompareArchived(id, archived) {
   return request.post(`/compare-jobs/${id}/archive`, null, { params: { archived } })
 }
 
-/** 删除任务(RUNNING 时后端 409;PENDING 待处理任务放行) */
-export function deleteCompareJob(id) {
-  return request.delete(`/compare-jobs/${id}`)
+/** 批量删除任务(body {ids});返回 {deleted, skipped},RUNNING 跳过 */
+export function batchDeleteCompareJobs(ids) {
+  return request.post('/compare-jobs/batch-delete', { ids })
 }
 
 // ---------- 比对任务批量导入 ----------
@@ -313,9 +318,10 @@ export function confirmCompareImport(id, mapping) {
 }
 
 /** 「字段审核」确认映射并开始比对(仅 PENDING,否则 409;校验口径同新建提交);
- *  mappings: { <targetId>: { 基准字段: 目标列 } },确认后 PENDING→RUNNING 进执行器 */
-export function confirmCompareMapping(id, mappings) {
-  return request.post(`/compare-jobs/${id}/confirm-mapping`, { mappings })
+ *  payload: { mappings: { <targetId>: { 基准字段: 目标列 } }, identities?: { <targetId>: { keys: [基准身份字段] } } }
+ *  (identities 仅人工收缩过身份的目标才带,缺省 = 全部按推导),确认后 PENDING→RUNNING 进执行器 */
+export function confirmCompareMapping(id, payload) {
+  return request.post(`/compare-jobs/${id}/confirm-mapping`, payload)
 }
 
 /** 「待处理」任务向导编辑提交(仅 PENDING,否则 409;payload 同 createCompareJob);

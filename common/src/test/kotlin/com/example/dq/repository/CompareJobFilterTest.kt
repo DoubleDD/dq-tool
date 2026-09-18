@@ -110,4 +110,21 @@ class CompareJobFilterTest {
         assertTrue(repo.listJobs(false).none { it.id == j1 })
         assertEquals(listOf(j1), repo.listJobs(true, CompareRepository.JobFilter(kw = "任务A")).map { it.id })
     }
+
+    @Test
+    fun `分页 新的在前 总数与当前页同口径`() {
+        // 25 个任务:同毫秒落库 created_at 可能并列,排序有 id DESC 兜底 = 建序倒序
+        val ids = (1..25).map { newJob("任务$it", 1L, "t$it") }
+
+        val page1 = repo.listJobs(true, page = 1, size = 10)
+        assertEquals(10, page1.size)
+        assertEquals(ids.takeLast(10).reversed(), page1.map { it.id })
+        val page3 = repo.listJobs(true, page = 3, size = 10)
+        assertEquals(ids.take(5).reversed(), page3.map { it.id })
+        assertTrue(repo.listJobs(true, page = 4, size = 10).isEmpty())
+        // 总数与筛选同口径:不带筛选 25,带状态筛选只数命中的
+        assertEquals(25L, repo.countJobs(true))
+        jdbc.update("UPDATE compare_job SET status='DONE' WHERE id=?", ids[0])
+        assertEquals(1L, repo.countJobs(true, CompareRepository.JobFilter(status = listOf("DONE"))))
+    }
 }

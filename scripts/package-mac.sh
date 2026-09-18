@@ -48,8 +48,7 @@ jpackage \
   --java-options '-Ddq.data-dir=${user.home}/.dq-tool/data' \
   --java-options '-Ddq.web.static-dir=${APPDIR}/static' \
   --java-options '-XX:+UseG1GC' \
-  --java-options '-Xmx384m' \
-  --java-options '-XX:MaxRAMPercentage=50' \
+  --java-options '-Xmx1g' \
   --java-options '-Djava.awt.headless=false' \
   --java-options '-Dapple.awt.UIElement=true' \
   --java-options '-splash:${APPDIR}/splash.png' \

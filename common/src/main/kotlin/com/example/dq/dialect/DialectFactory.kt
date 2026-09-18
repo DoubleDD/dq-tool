@@ -21,7 +21,8 @@ object DialectFactory {
     }
 
     private fun register(dialect: DbDialect) {
-        dialects[dialect.type()] = dialect
+        // 统一包元数据读拦截器:读到元数据且本地 meta_* 未缓存时兜底回填(无上下文连接纯透传)
+        dialects[dialect.type()] = MetaReadCachingDialect(dialect)
     }
 
     fun get(type: DbType): DbDialect {

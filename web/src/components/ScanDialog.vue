@@ -124,7 +124,7 @@ const props = defineProps({
   scopeTables: { type: Array, default: null },
   /** 自定义范围文案(库列表整库批量扫描) */
   scopeLabel: { type: String, default: '' },
-  /** 整库多目标(库列表页批量扫描):[{ schema, database }],逐库提交、不跳转 */
+  /** 整库多目标(库列表页批量扫描):[{ name|schema, database }],逐库提交、不跳转(库列表行用 name) */
   targets: { type: Array, default: null },
 })
 const emit = defineEmits(['update:modelValue', 'submitted'])
@@ -230,11 +230,22 @@ async function submit() {
   }
 }
 
+/**
+ * 取库/架构名:props.schema 与库列表页行对象的 name 是同一语义的两种来源;
+ * 缺失直接报错,避免把 undefined 序列化成 null 提交后被后端「schema 不得为 null」拦下。
+ */
+function schemaName(source) {
+  const name = source.schema || source.name
+  if (!name) throw new Error('扫描目标缺少库/架构名')
+  return name
+}
+
 /** 单目标提交:成功后跳扫描详情页(带库名标签,供页签标题展示) */
 async function submitSingle() {
+  const schema = schemaName(props)
   const res = await request.post('/scans', {
     datasourceId: normalizedDsId(),
-    schema: props.schema,
+    schema,
     database: props.database || null,
     tables: targetTables.value,
     ...buildPayload()
@@ -242,7 +253,7 @@ async function submitSingle() {
   ElMessage.success('扫描任务已提交')
   emit('update:modelValue', false)
   emit('submitted', res.jobId)
-  const schemaLabel = props.database ? `${props.database}.${props.schema}` : props.schema
+  const schemaLabel = props.database ? `${props.database}.${schema}` : schema
   router.push(`/scans/${res.jobId}?schema=${encodeURIComponent(schemaLabel)}`)
 }
 
@@ -251,7 +262,7 @@ async function submitMulti() {
   const results = await Promise.allSettled(props.targets.map((row) =>
     request.post('/scans', {
       datasourceId: normalizedDsId(),
-      schema: row.schema,
+      schema: schemaName(row),
       database: row.database || null,
       tables: null,
       ...buildPayload()

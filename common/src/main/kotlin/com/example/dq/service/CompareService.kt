@@ -9,9 +9,11 @@ import com.example.dq.model.CompareDiffRow
 import com.example.dq.model.CompareExportOverviewRow
 import com.example.dq.model.CompareJobActiveView
 import com.example.dq.model.CompareJobDetailView
+import com.example.dq.model.CompareJobPage
 import com.example.dq.model.CompareJobView
 import com.example.dq.model.CompareMode
 import com.example.dq.model.CompareReportView
+import com.example.dq.model.CompareTargetIdentity
 import com.example.dq.model.CompareTargetSpec
 import com.example.dq.model.CompareTargetView
 import com.example.dq.model.CreateCompareJobRequest
@@ -54,6 +56,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * - CODE_THEN_NAME:先用编码配,编码没配上的再用对象名称配;
  * - CODE_NAME_LLM:在 1、2 的残余之上再交大模型归一化配对(见 [CompareMatchPrompts]);
  * - 老任务(match_mode 为空)= 只按编码对齐,与历史口径完全一致。
+ * 对象身份字段(V62)下沉到目标级:任务级 keyFields 为「默认身份/并集」,各目标有效身份 =
+ * identity_json 人工覆盖 ?? 「任务级 keyFields ∩ 该目标映射键」推导(纯函数 [resolveIdentity],
+ * 无映射 = keyFields 全体走自动匹配老路径);行 map 键为身份列值 trim 后以「\u0001」拼接,单列即现状。
  * 比对核心 [diffObjects](逐字段)与对象对齐 [matchObjects] 均为纯函数(companion),便于单测。
  */
 class CompareService(
@@ -102,17 +107,17 @@ class CompareService(
     // ---------- 提交 / 重跑 ----------
 
     /**
-     * 提交比对任务:同步校验(基准数据源存在、目标非空、fields 含 keyField、各表字段映射,
-     * 忽略大小写;目标缺主键列直接报错,缺其他比对列记「列缺失」按不一致计)→ 落任务与目标
+     * 提交比对任务:同步校验(基准数据源存在、目标非空、fields 含全部身份字段、各表字段映射,
+     * 忽略大小写;目标缺身份列直接报错,缺其他比对列记「列缺失」按不一致计)→ 落任务与目标
      * (RUNNING,total=1+目标数)→ 后台执行。返回任务 id
      */
     fun submit(req: CreateCompareJobRequest): Long {
         val r = resolveRequest(req)
         val jobId = repo.insertJob(r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
             r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size, r.displayField,
-            r.matchMode.value, r.compareMode.value)
+            r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields))
         for (t in r.targets) {
-            repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson)
+            repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson, t.identityJson)
         }
         executor.execute { run(jobId) }
         log.info("比对任务已提交: id={}, 名称={}, 基准={}.{}, 目标数={}, 匹配逻辑={}, 对比模式={}",
@@ -123,12 +128,12 @@ class CompareService(
     /** submit 的校验 + 归一结果(双侧字段都已归一为实际列名) */
     private data class ResolvedRequest(
         val name: String, val baseDatasourceId: Long, val baseDb: String, val baseTable: String,
-        val keyField: String, val fields: List<String>, val displayField: String?,
+        val keyField: String, val keyFields: List<String>, val fields: List<String>, val displayField: String?,
         val matchMode: MatchMode, val compareMode: CompareMode, val targets: List<ResolvedTarget>)
 
     /**
-     * submit / updatePending 共用的同步校验与归一:基准数据源存在、目标非空、fields 含 keyField、
-     * 各表字段映射忽略大小写归一为实际列名(目标缺主键列直接报错,缺其他比对列记「列缺失」按不一致计)
+     * submit / updatePending 共用的同步校验与归一:基准数据源存在、目标非空、fields 含全部身份字段、
+     * 各表字段映射忽略大小写归一为实际列名(目标缺身份列直接报错,缺其他比对列记「列缺失」按不一致计)
      */
     private fun resolveRequest(req: CreateCompareJobRequest): ResolvedRequest {
         val name = req.name?.trim().takeUnless { it.isNullOrEmpty() }
@@ -138,11 +143,21 @@ class CompareService(
             ?: throw IllegalArgumentException("基准表不能为空")
         val keyField = req.keyField?.trim().takeUnless { it.isNullOrEmpty() }
             ?: throw IllegalArgumentException("请选择比对主键")
+        // 任务级身份字段(多选):留空 = 仅 keyField 单字段(旧行为);给出时去空白去重
+        val rawKeyFields = req.keyFields?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct()
+            ?.takeIf { it.isNotEmpty() }
         val rawFields = req.fields?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct()
             ?: throw IllegalArgumentException("请选择比对字段")
         if (rawFields.isEmpty()) throw IllegalArgumentException("请选择比对字段")
         if (rawFields.none { it.equals(keyField, ignoreCase = true) }) {
             throw IllegalArgumentException("比对字段必须包含主键字段: $keyField")
+        }
+        // 多身份字段时同样必须全部参与比对(身份字段恒入比对字段,与 keyField 口径一致)
+        if (rawKeyFields != null) {
+            val missing = rawKeyFields.filter { k -> rawFields.none { it.equals(k, ignoreCase = true) } }
+            if (missing.isNotEmpty()) {
+                throw IllegalArgumentException("比对字段必须包含全部身份字段: ${missing.joinToString("、")}")
+            }
         }
         val specs = req.targets?.filter { it.datasourceId != null && !it.table.isNullOrBlank() }
         if (specs.isNullOrEmpty()) throw IllegalArgumentException("请至少添加一个比对目标")
@@ -160,8 +175,12 @@ class CompareService(
             baseByName[f.lowercase()]?.name ?: throw IllegalArgumentException("基准表不存在字段: $f")
         }
         val actualKey = baseByName.getValue(keyField.lowercase()).name
+        // 任务级身份字段归一为基准表实际列名(忽略大小写);未给出 = [keyField] 单字段(旧行为)
+        val actualKeyFields = rawKeyFields?.map { f ->
+            baseByName[f.lowercase()]?.name ?: throw IllegalArgumentException("基准表不存在身份字段: $f")
+        } ?: listOf(actualKey)
         // 对象名称(显示名)字段:用户指定优先(必须属于比对字段),未指定回退第一个文本型非主键字段;此处即解析成实际列名
-        val displayField = resolveDisplayField(req.displayField, fields, baseByName, actualKey)
+        val displayField = resolveDisplayField(req.displayField, fields, baseByName, actualKeyFields.first())
         // 对象对齐匹配逻辑:一任务一套;匹配逻辑 2/3 的第二路按「对象名称」字段配对,故必须显式指定该字段
         val matchMode = normalizeMatchMode(req.matchMode)
         // 对比模式:空 = 行级(与既有行为一致);只影响向导默认字段与映射来源,执行引擎同一套
@@ -171,8 +190,8 @@ class CompareService(
                 "${matchMode.label}需要按对象名称配对,请在「选择基准表」里指定对象名称字段")
         }
 
-        // 目标侧:数据源存在 + 表存在 + 主键列必须存在(缺其他比对列允许,比对时记「列缺失」);
-        // 字段映射(第三步人工连线)可选:给出时键值都归一为双侧实际列名,且必须映射到比对主键
+        // 目标侧:数据源存在 + 表存在 + 有效身份列必须存在(缺其他比对列允许,比对时记「列缺失」);
+        // 字段映射(第三步人工连线)可选:给出时键值都归一为双侧实际列名,且必须覆盖该目标有效身份字段全部
         val resolved = specs.map { spec ->
             val dsId = spec.datasourceId!!
             val ds = dataSourceService.get(dsId)
@@ -181,31 +200,82 @@ class CompareService(
             val cols = columnsLister(dsId, db, effectiveSchema(spec.schema, db), table)
             if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段: ${ds.name}.$table")
             val colsByName = cols.associateBy { it.name.lowercase() }
-            val mapping = normalizeMapping(spec.mapping, fields, baseByName, colsByName, actualKey)
-            val targetKey = mapping?.get(actualKey) ?: actualKey
-            if (colsByName[targetKey.lowercase()] == null) {
-                throw IllegalArgumentException("目标表缺少比对主键列: ${ds.name}.$table 无 $targetKey")
-            }
+            val mapping = normalizeMapping(spec.mapping, fields, baseByName, colsByName)
+            // 该目标有效身份:人工覆盖(须 ⊆ 任务级身份字段)优先,否则按「任务级身份 ∩ 映射键」推导;推导为空拦下
+            val identityKeys = normalizeIdentityOverride(spec.identity?.keys, actualKeyFields, baseByName)
+            val identity = resolveIdentity(actualKeyFields, mapping ?: emptyMap(), identityKeys)
+            ensureIdentityMapped(mapping, identity, ds.name, table)
+            ensureIdentityColumns(mapping, identity, colsByName, ds.name, table)
             ResolvedTarget(dsId, ds.name, db, spec.schema, table,
-                mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
+                mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) },
+                identityKeys?.let { objectMapper.writeValueAsString(mapOf("keys" to it)) })
         }
-        return ResolvedRequest(name, baseDsId, baseDb, baseTable, actualKey, fields, displayField,
+        return ResolvedRequest(name, baseDsId, baseDb, baseTable, actualKey, actualKeyFields, fields, displayField,
             matchMode, compareMode, resolved)
     }
 
     private data class ResolvedTarget(val datasourceId: Long, val dsName: String?,
                                       val db: String, val schema: String?, val table: String,
-                                      val mappingJson: String? = null)
+                                      val mappingJson: String? = null, val identityJson: String? = null)
+
+    /** 目标级身份覆盖归一:keys 必须在基准表存在且 ⊆ 任务级身份字段,归一为基准表实际列名;空 = 未覆盖 */
+    private fun normalizeIdentityOverride(raw: List<String>?, jobKeyFields: List<String>,
+                                          baseByName: Map<String, ColumnMeta>): List<String>? {
+        val keys = raw?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct()?.takeIf { it.isNotEmpty() }
+            ?: return null
+        return keys.map { k ->
+            val col = baseByName[k.lowercase()]
+                ?: throw IllegalArgumentException("目标身份字段在基准表不存在: $k")
+            if (jobKeyFields.none { it.equals(col.name, ignoreCase = true) }) {
+                throw IllegalArgumentException("目标身份字段不在任务身份字段内: $k")
+            }
+            col.name
+        }
+    }
+
+    /** 硬约束:显式映射必须覆盖该目标有效身份字段的全部(缺一个都无法按身份对齐行;旧口径为必须含比对主键) */
+    private fun ensureIdentityMapped(mapping: Map<String, String>?, identity: List<String>,
+                                     dsName: String?, table: String) {
+        if (mapping == null) return
+        val missing = identity.filter { k -> mapping.keys.none { it.equals(k, ignoreCase = true) } }
+        if (missing.isNotEmpty()) {
+            throw IllegalArgumentException(
+                "字段映射必须包含该目标的全部身份字段: ${missing.joinToString("、")}($dsName.$table)")
+        }
+    }
+
+    /** 硬约束:目标侧身份列必须存在(经映射换名或按同名);错误消息点名列名 */
+    private fun ensureIdentityColumns(mapping: Map<String, String>?, identity: List<String>,
+                                      targetByName: Map<String, ColumnMeta>, dsName: String?, table: String) {
+        val missing = identity.mapNotNull { k ->
+            val targetCol = mapping?.entries?.firstOrNull { it.key.equals(k, ignoreCase = true) }?.value ?: k
+            if (targetByName[targetCol.lowercase()] == null) targetCol else null
+        }
+        if (missing.isEmpty()) return
+        if (identity.size == 1) {
+            // 单身份与旧口径同文案(老任务/老前端可读性一致)
+            throw IllegalArgumentException("目标表缺少比对主键列: $dsName.$table 无 ${missing.single()}")
+        }
+        throw IllegalArgumentException("目标表缺少身份列: $dsName.$table 无 ${missing.joinToString("、")}")
+    }
+
+    /** 任务级身份字段:key_fields_json 为空(老任务/批量导入)退化为 [JobRow.keyField] 单元素,口径不变 */
+    private fun jobKeyFields(job: CompareRepository.JobRow): List<String> =
+        parseFields(job.keyFieldsJson).ifEmpty { listOf(job.keyField) }
+
+    /** 导出 sheet 的「对象编码」列头:任务级身份字段中文名按「+」组合(老任务单字段与旧口径一致) */
+    private fun identityHeader(job: CompareRepository.JobRow, ctx: ExportContext): String =
+        jobKeyFields(job).joinToString("+") { ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, it) }
 
     /**
      * 字段映射归一:null/空 = 不指定(执行时按字段名忽略大小写自动匹配,旧行为);
      * 给出时逐条校验(基准字段必须存在且在比对字段内、目标列必须存在),返回
-     * `基准表实际列名 → 目标表实际列名`;缺比对主键直接报错(否则无法按主键对齐行)。
+     * `基准表实际列名 → 目标表实际列名`;「映射必须覆盖有效身份字段」由调用方按该目标有效身份逐一校验
+     * ([ensureIdentityMapped],身份可能因目标级覆盖/推导而变化)。
      */
     private fun normalizeMapping(raw: Map<String, String>?, fields: List<String>,
                                  baseByName: Map<String, ColumnMeta>,
-                                 targetByName: Map<String, ColumnMeta>,
-                                 actualKey: String): Map<String, String>? {
+                                 targetByName: Map<String, ColumnMeta>): Map<String, String>? {
         if (raw.isNullOrEmpty()) return null
         val out = LinkedHashMap<String, String>()
         for ((baseField, targetCol) in raw) {
@@ -222,9 +292,6 @@ class CompareService(
             out[baseCol.name] = targetColumn.name
         }
         if (out.isEmpty()) return null
-        if (out.keys.none { it.equals(actualKey, ignoreCase = true) }) {
-            throw IllegalArgumentException("字段映射必须包含比对主键: $actualKey")
-        }
         return out
     }
 
@@ -254,7 +321,8 @@ class CompareService(
             } catch (e: Exception) {
                 t.dsName
             }
-            repo.insertTarget(jobId, t.datasourceId, dsName, t.dbName, t.schemaName, t.tableName, t.fieldMappingJson)
+            repo.insertTarget(jobId, t.datasourceId, dsName, t.dbName, t.schemaName, t.tableName,
+                t.fieldMappingJson, t.identityJson)
         }
         executor.execute { run(jobId) }
         log.info("比对任务重跑: id={}, 目标数={}", jobId, oldTargets.size)
@@ -336,34 +404,56 @@ class CompareService(
 
     /**
      * 「字段审核」确认映射并开始比对(审核弹窗「确认并开始比对」= confirm + start 合并):仅 PENDING;
-     * 校验口径同 [submit](基准字段必须在比对字段内、目标列必须存在、映射必须含比对主键、目标缺主键列报错),
-     * 全量替换各目标 mapping 后 PENDING→RUNNING 进执行器。也是 DS_ERROR 任务的复活出口(先修数据源再确认)
+     * 校验口径同 [submit](基准字段必须在比对字段内、目标列必须存在、映射必须覆盖该目标有效身份字段全部、
+     * 目标缺身份列报错),全量替换各目标 mapping 后 PENDING→RUNNING 进执行器。也是 DS_ERROR 任务的复活出口(先修数据源再确认)
+     *
+     * [identities] 为目标级身份人工覆盖(targetId → keys,可选):按与 [resolveRequest] 相同口径校验
+     * (⊆ 任务级 keyFields、非空)后落 `compare_target.identity_json`;只在 [identities] 里出现的 targetId
+     * 沿用库中既有 mapping 做一致性校验、只更新身份
      */
-    fun confirmMapping(jobId: Long, mappings: Map<Long, Map<String, String>>) {
+    fun confirmMapping(jobId: Long, mappings: Map<Long, Map<String, String>>,
+                       identities: Map<Long, CompareTargetIdentity?> = emptyMap()) {
         val job = repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
         if (job.status != "PENDING") throw IllegalStateException("仅「待处理」任务可以确认字段映射")
         ensureMappingReady(job)
         val fields = parseFields(job.fieldsJson)
+        val jobKeyFields = jobKeyFields(job)
         val baseColumns = columnsLister(job.baseDatasourceId, job.baseDb,
             effectiveSchema(job.baseSchema, job.baseDb), job.baseTable)
         if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: ${job.baseTable}")
         val baseByName = baseColumns.associateBy { it.name.lowercase() }
         val targets = repo.listTargets(jobId)
         val targetsById = targets.associateBy { it.id }
-        for ((targetId, raw) in mappings) {
+        // 并集遍历:mappings 更新映射、identities 更新身份;同一目标两者都有时按新映射 + 新身份一起校验
+        for (targetId in (mappings.keys + identities.keys)) {
             val t = targetsById[targetId]
                 ?: throw IllegalArgumentException("目标不属于该任务: $targetId")
             val ds = dataSourceService.get(t.datasourceId)
             val cols = columnsLister(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName)
             if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段: ${ds.name}.${t.tableName}")
             val colsByName = cols.associateBy { it.name.lowercase() }
-            val mapping = normalizeMapping(raw, fields, baseByName, colsByName, job.keyField)
-            val targetKey = mapping?.get(job.keyField) ?: job.keyField
-            if (colsByName[targetKey.lowercase()] == null) {
-                throw IllegalArgumentException("目标表缺少比对主键列: ${ds.name}.${t.tableName} 无 $targetKey")
+            // 未提交新映射时沿用库中既有映射做校验(只更新身份的场景)
+            val mapping = if (targetId in mappings) normalizeMapping(mappings[targetId], fields, baseByName, colsByName)
+            else parseMapping(t.fieldMappingJson).takeIf { it.isNotEmpty() }
+            // 该目标有效身份:本次携带的人工覆盖(须 ⊆ 任务级身份字段且非空)> 库中已有覆盖 > 按映射键推导;
+            // 推导为空(一个身份字段都没连)在此拦下,口径同 submit
+            val identityKeys = if (targetId in identities) {
+                normalizeIdentityOverride(identities[targetId]?.keys, jobKeyFields, baseByName)
+                    ?: throw IllegalArgumentException("目标身份字段不能为空: 目标 $targetId")
+            } else {
+                parseIdentityKeys(t.identityJson)
             }
-            repo.updateTargetMapping(targetId,
-                mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
+            val identity = resolveIdentity(jobKeyFields, mapping ?: emptyMap(), identityKeys)
+            ensureIdentityMapped(mapping, identity, ds.name, t.tableName)
+            ensureIdentityColumns(mapping, identity, colsByName, ds.name, t.tableName)
+            if (targetId in mappings) {
+                repo.updateTargetMapping(targetId,
+                    mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
+            }
+            if (targetId in identities) {
+                repo.updateTargetIdentity(targetId,
+                    objectMapper.writeValueAsString(mapOf("keys" to identityKeys)))
+            }
         }
         if (repo.markPendingRunning(jobId, 1 + targets.size) == 0) {
             throw IllegalStateException("任务状态已变化,请刷新后重试")
@@ -384,8 +474,9 @@ class CompareService(
         val r = resolveRequest(req)
         repo.replacePendingJob(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
             r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size, r.displayField,
-            r.matchMode.value, r.compareMode.value,
-            r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table, it.mappingJson) })
+            r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields),
+            r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table,
+                it.mappingJson, it.identityJson) })
         log.info("待处理比对任务已更新: id={}, 名称={}, 目标数={}", jobId, r.name, r.targets.size)
     }
 
@@ -405,8 +496,9 @@ class CompareService(
         val r = resolveRequest(req)
         val updated = repo.replaceAndRestart(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema,
             r.baseTable, r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size,
-            r.displayField, r.matchMode.value, r.compareMode.value,
-            r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table, it.mappingJson) })
+            r.displayField, r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields),
+            r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table,
+                it.mappingJson, it.identityJson) })
         if (updated == 0) throw IllegalStateException("任务状态已变化,请刷新后重试")
         executor.execute { run(jobId) }
         log.info("比对任务已编辑并重跑: id={}, 名称={}, 目标数={}", jobId, r.name, r.targets.size)
@@ -522,13 +614,17 @@ class CompareService(
             val baseColumns = columnsLister(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable)
             val baseByName = baseColumns.associateBy { it.name.lowercase() }
             val fields = parseFields(job.fieldsJson)
-            val keyColumn = baseByName[job.keyField.lowercase()]
-                ?: throw IllegalStateException("基准表不存在主键字段: ${job.keyField}")
+            // 任务级身份字段(老任务 key_fields_json 空退化 [keyField]);基准侧身份列必须全部存在
+            val jobKeyFields = jobKeyFields(job)
+            val keyColumns = jobKeyFields.map { f ->
+                baseByName[f.lowercase()] ?: throw IllegalStateException(
+                    if (jobKeyFields.size == 1) "基准表不存在主键字段: $f" else "基准表不存在身份字段: $f")
+            }
             val numericFields = fields.mapNotNull { baseByName[it.lowercase()] }
                 .filter { it.isNumeric() }.map { it.name }.toSet()
             // 对象名称(显示名)字段:提交时已解析入库;老任务(列为空)按同一规则回退,保证重跑口径一致
             val displayField = job.displayField?.takeIf { it.isNotBlank() }
-                ?: resolveDisplayField(null, fields, baseByName, keyColumn.name)
+                ?: resolveDisplayField(null, fields, baseByName, keyColumns.first().name)
             // 对象对齐匹配逻辑:老任务(match_mode 空)按「只按编码」解读,与历史结果口径一致
             val mode = MatchMode.fromValue(job.matchMode)
             if (mode.requiresName && displayField == null) {
@@ -537,9 +633,15 @@ class CompareService(
             // 基准表「数据最新更新时间」快照:探测时间字段取 MAX,失败/无字段留 NULL(导出留空)
             repo.updateBaseDataUpdatedAt(jobId, detectLatestDataTime(
                 job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseColumns, baseDialect))
-            val baseMap = loadRows(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseDialect,
-                fields.map { SelectedCol(it, baseByName.getValue(it.lowercase()).name) }, keyColumn.name)
-            repo.updateProgress(jobId, 1, "基准表读取完成(共 ${baseMap.size} 行)")
+            val baseLoaded = loadRows(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseDialect,
+                fields.map { SelectedCol(it, baseByName.getValue(it.lowercase()).name) },
+                keyColumns.map { it.name })
+            val baseMap = baseLoaded.rows
+            if (baseLoaded.noKeyRows > 0) {
+                log.warn("基准表 {} 读到 {} 行,其中 {} 行身份列为空(编码路不参与,仅名称/大模型可配对)",
+                    job.baseTable, baseLoaded.totalRead, baseLoaded.noKeyRows)
+            }
+            repo.updateProgress(jobId, 1, "基准表读取完成(共 ${baseLoaded.totalRead} 行)")
 
             val targets = repo.listTargets(jobId)
             var done = 1
@@ -548,7 +650,7 @@ class CompareService(
                 repo.updateStage(jobId, "比对 $label…")
                 repo.markTargetRunning(t.id)
                 try {
-                    compareOneTarget(job, t, fields, numericFields, displayField, mode, baseMap)
+                    compareOneTarget(job, t, fields, numericFields, displayField, mode, baseMap, baseLoaded.totalRead)
                 } catch (e: Exception) {
                     log.warn("比对目标失败: jobId={}, 目标={}.{}: {}", jobId, t.dbName, t.tableName, e.message)
                     repo.failTarget(t.id, (e.message ?: "比对失败").take(2000))
@@ -569,13 +671,15 @@ class CompareService(
      * → 算指标落 compare_target。
      * 字段解析两种口径:任务带字段映射(第三步人工连线)时只认映射(`基准列名 → 目标列名`),
      * 未映射到的基准字段不进 select、由 diffObjects 记「列缺失」;无映射时按字段名忽略大小写自动匹配(旧行为)。
+     * 对象身份按该目标有效身份字段组合判同:identity_json 人工覆盖优先,否则按「任务级身份 ∩ 映射键」
+     * 推导(见 [resolveIdentity]);行 map 键为身份列值 trim 后以「\u0001」拼接(单字段即现状,老任务口径不变)。
      * 对齐口径按 [mode]:编码/名称两路纯对齐由 [matchObjects] 完成,匹配逻辑 3 的残余再由大模型补配;
      * 两侧实际列名都归一成基准字段名,故配对后的逐字段比较与旧口径完全一致。
      */
     private fun compareOneTarget(job: CompareRepository.JobRow, t: CompareRepository.TargetRow,
                                  fields: List<String>, numericFields: Set<String>, displayField: String?,
                                  mode: MatchMode,
-                                 baseMap: LinkedHashMap<String, Map<String, String?>>) {
+                                 baseMap: LinkedHashMap<String, Map<String, String?>>, baseTotalRead: Int) {
         val ds = dataSourceService.get(t.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
         val schema = effectiveSchema(t.schemaName, t.dbName)
@@ -583,14 +687,20 @@ class CompareService(
         if (cols.isEmpty()) throw IllegalStateException("目标表不存在或没有字段: ${t.tableName}")
         val byName = cols.associateBy { it.name.lowercase() }
         val mapping = parseMapping(t.fieldMappingJson).mapKeys { it.key.lowercase() }
-        val keyColumn = if (mapping.isEmpty()) {
-            byName[job.keyField.lowercase()]
-                ?: throw IllegalStateException("目标表缺少比对主键列: ${job.keyField}")
-        } else {
-            val mapped = mapping[job.keyField.lowercase()]
-                ?: throw IllegalStateException("字段映射缺少比对主键: ${job.keyField}")
-            byName[mapped.lowercase()]
-                ?: throw IllegalStateException("目标表缺少映射的比对主键列: $mapped")
+        // 该目标的有效身份字段:人工覆盖(identity_json)优先,否则按「任务级身份 ∩ 映射键」推导
+        // (纯函数 [resolveIdentity],与提交/审核校验同一口径;推导为空抛错,该目标判 FAILED 并点名列出)
+        val identity = resolveIdentity(jobKeyFields(job), mapping, parseIdentityKeys(t.identityJson))
+        // 目标侧身份列:显式映射只认映射(缺身份字段报错),无映射按字段名忽略大小写自动匹配(旧行为)
+        val keyColumns = identity.map { baseField ->
+            if (mapping.isEmpty()) {
+                byName[baseField.lowercase()]
+                    ?: throw IllegalStateException("目标表缺少身份列: $baseField")
+            } else {
+                val mapped = mapping[baseField.lowercase()]
+                    ?: throw IllegalStateException("字段映射缺少身份字段: $baseField")
+                byName[mapped.lowercase()]
+                    ?: throw IllegalStateException("目标表缺少映射的身份列: $mapped")
+            }
         }
         // 只选目标侧存在的列;缺失列不进 map,diffObjects 按「列缺失」全部计不一致
         val select = if (mapping.isEmpty()) {
@@ -603,19 +713,43 @@ class CompareService(
         // 目标表「数据最新更新时间」快照:口径同基准表(探测时间字段取 MAX,失败/无字段留 NULL)
         repo.updateTargetDataUpdatedAt(t.id, detectLatestDataTime(
             t.datasourceId, t.dbName, schema, t.tableName, cols, dialect))
-        val targetMap = loadRows(t.datasourceId, t.dbName, schema, t.tableName, dialect, select, keyColumn.name)
+        val targetLoaded = loadRows(t.datasourceId, t.dbName, schema, t.tableName, dialect, select,
+            keyColumns.map { it.name })
+        val targetMap = targetLoaded.rows
+        if (targetLoaded.noKeyRows > 0) {
+            // 身份列为空的行只走了名称/大模型两路(编码路对它无命中),透出避免「为什么编码没配上」的困惑
+            log.warn("比对目标 {}.{} 读到 {} 行,其中 {} 行身份列为空(编码路不参与,仅名称/大模型可配对): jobId={}, targetId={}",
+                t.dbName, t.tableName, targetLoaded.totalRead, targetLoaded.noKeyRows, job.id, t.id)
+            repo.appendTargetNote(t.id, "身份列为空 ${targetLoaded.noKeyRows} 行(编码路不参与,按名称/大模型配对)")
+        }
 
         // 对象对齐:编码/名称两路(纯函数),匹配逻辑 3 再对残余调用大模型归一化补配
         val nameField = displayField?.takeIf { mode.requiresName }
-        var match = matchObjects(baseMap, targetMap, job.keyField, nameField, mode)
+        var match = matchObjects(baseMap, targetMap, identity, nameField, mode)
         if (mode == MatchMode.CODE_NAME_LLM) {
-            val ai = aiMatchResidues(match, baseMap, targetMap, job.keyField, nameField)
+            val ai = aiMatchResidues(match, baseMap, targetMap, identity, nameField)
             if (ai.pairs.isNotEmpty() || ai.note != null) {
                 match = match.copy(pairs = match.pairs + ai.pairs, aiMatched = ai.pairs.size,
                     llmNote = ai.note, llmFailed = ai.failed)
             }
+            // 同名二轮消歧:同名歧义组带全部比对字段取值再交大模型重判,避免名称首配张冠李戴
+            // (如编码全空的多个同名水库,按经纬度/位置区分后重新配对;首轮 LLM 配对的同名行同样参与——
+            // 它只见过编码+名称,并不比名称配对多知道什么)
+            val refine = aiRefineSameNameGroups(match, baseMap, targetMap, identity, nameField, fields)
+            if (refine.pairs !== match.pairs) {
+                // 三路计数按配对来源重算(LLM 配对可能被重画为名称配对,原计数会失真)
+                match = match.copy(pairs = refine.pairs,
+                    codeMatched = refine.pairs.count { it.by == "CODE" },
+                    nameMatched = refine.pairs.count { it.by == "NAME" },
+                    aiMatched = refine.pairs.count { it.by == "LLM" },
+                    llmNote = refine.note ?: match.llmNote,
+                    llmFailed = match.llmFailed || refine.failed)
+            } else if (refine.note != null) {
+                match = match.copy(llmNote = match.llmNote ?: refine.note,
+                    llmFailed = match.llmFailed || refine.failed)
+            }
         }
-        val result = diffObjects(baseMap, targetMap, fields, job.keyField, numericFields, displayField,
+        val result = diffObjects(baseMap, targetMap, fields, identity, numericFields, displayField,
             match.pairs)
 
         val all = result.same + result.diff + result.missing + result.extra
@@ -626,7 +760,9 @@ class CompareService(
             })
         }
 
-        val baseCount = baseMap.size
+        // base_count = 基准表实际读到的总行数(含身份列为空被跳过的行;跳过行有 warn 日志可见),
+        // 与 target_count 同为物理行数口径,导出总览「条数/与基准差」两侧可比
+        val baseCount = baseTotalRead
         val coverage = if (baseCount == 0) 0.0 else result.matchedCount.toDouble() / baseCount
         val consistencyDenominator = result.matchedCount.toLong() * fields.size
         val fieldConsistency = if (consistencyDenominator == 0L) 1.0
@@ -634,9 +770,11 @@ class CompareService(
         val completeness = if (result.comparedCells == 0) 1.0
         else result.nonNullCells.toDouble() / result.comparedCells
         val score = coverage * 0.4 + fieldConsistency * 0.4 + completeness * 0.2
-        repo.updateTargetStats(t.id, baseCount, result.targetCount, result.matchedCount, result.missing.size,
+        // target_count = 目标侧实际读到的总行数(noKeyRows 行经代理键也进了比对,单列计数见 V63)
+        repo.updateTargetStats(t.id, baseCount, targetLoaded.totalRead, result.matchedCount, result.missing.size,
             result.extra.size, result.fieldMismatchCount, coverage, fieldConsistency, completeness, score,
-            match.codeMatched, match.nameMatched, match.aiMatched)
+            match.codeMatched, match.nameMatched, match.aiMatched,
+            noKeyRows = targetLoaded.noKeyRows)
         if (match.llmNote != null) {
             log.info("比对目标大模型补配: jobId={}, 目标={}.{}, {}", job.id, t.dbName, t.tableName, match.llmNote)
         }
@@ -647,33 +785,59 @@ class CompareService(
     }
 
     /**
-     * 分页拉全量进内存(pageRowsSql 按主键列 orderBy,pageSize 5000),key=主键值 trim 后的字符串,
-     * 行值 rs.getObject()?.toString();主键为空的行跳过;单侧超过 [MAX_SIDE_ROWS] 抛 IllegalStateException
+     * 单侧取数结果:行 map(键=身份列组合值;身份列为空的行以 [NO_KEY_ROW_PREFIX]+序号 的行内代理键进 map,
+     * 不丢弃——编码路自然跳过它,名称/大模型两路可把它配对)与实际读到的总行数、身份列为空的行数
+     */
+    internal data class LoadedRows(
+        val rows: LinkedHashMap<String, Map<String, String?>>,
+        /** 实际从库中读到的总行数 = 导出总览「条数」口径(代理键行进 map 后恒等于 rows.size) */
+        val totalRead: Int,
+        /** 其中身份列任一为空的行数:无组合身份值,编码路不参与,仅名称/大模型两路可配对(透出到目标说明/导出差异原因) */
+        val noKeyRows: Int,
+    )
+
+    /**
+     * 分页拉全量进内存(pageRowsSql 按首个身份列 orderBy,pageSize 5000),key=身份列组合值
+     * (各身份列值 trim 后以「\u0001」拼接,单列即现状),行值 rs.getObject()?.toString();
+     * 身份列任一为空的行**不丢弃**:以行内代理键([NO_KEY_ROW_PREFIX]+序号)进 map——
+     * 「任意一边 code 空就用 name 匹配」的口径要求它们进名称/大模型配对,编码路对代理键自然无命中;
+     * 单侧超过 [MAX_SIDE_ROWS] 抛 IllegalStateException
      */
     private fun loadRows(datasourceId: Long, database: String, schema: String, table: String,
-                         dialect: DbDialect, select: List<SelectedCol>, keyColumn: String)
-            : LinkedHashMap<String, Map<String, String?>> {
+                         dialect: DbDialect, select: List<SelectedCol>, keyColumns: List<String>): LoadedRows {
+        // 身份列对应的行 map 键(基准字段名):身份字段恒入比对字段,select 必然包含全部身份列
+        val keyFields = keyColumns.map { kc ->
+            select.firstOrNull { it.column == kc }?.field
+                ?: throw IllegalStateException("比对字段缺少身份列: $kc")
+        }
         val map = LinkedHashMap<String, Map<String, String?>>()
+        var totalRead = 0
+        var noKeyRows = 0
         dataSourceService.getConnection(datasourceId, database.ifBlank { null }).use { conn ->
             conn.createStatement().use { stmt ->
                 // 与分段扫描同口径的单条 SQL 超时(系统设置可改)
                 stmt.queryTimeout = systemSettingsService.scanSettings().statementTimeoutSeconds
-                val keyIndex = select.indexOfFirst { it.column == keyColumn } + 1
                 var offset = 0L
                 while (true) {
                     var pageRows = 0
                     stmt.executeQuery(dialect.pageRowsSql(conn, schema, table, select.map { it.column },
-                        null, dialect.quote(keyColumn), offset, PAGE_SIZE)).use { rs ->
+                        null, dialect.quote(keyColumns.first()), offset, PAGE_SIZE)).use { rs ->
                         while (rs.next()) {
                             pageRows++
+                            totalRead++
                             if (map.size >= MAX_SIDE_ROWS) {
                                 throw IllegalStateException("单侧行数超过上限 ${MAX_SIDE_ROWS / 10000} 万,请缩小比对范围")
                             }
-                            val key = rs.getObject(keyIndex)?.toString()?.trim()
-                            if (key.isNullOrEmpty()) continue // 主键为空无法对齐,跳过
                             val row = LinkedHashMap<String, String?>(select.size)
                             select.forEachIndexed { i, c -> row[c.field] = rs.getObject(i + 1)?.toString() }
-                            map[key] = row
+                            val key = compositeKey(row, keyFields)
+                            if (key == null) {
+                                // 身份列为空:行内代理键进 map(编码路跳过、名称/大模型路可配对),不静默丢行
+                                noKeyRows++
+                                map[NO_KEY_ROW_PREFIX + noKeyRows] = row
+                            } else {
+                                map[key] = row
+                            }
                         }
                     }
                     if (pageRows < PAGE_SIZE) break
@@ -681,7 +845,7 @@ class CompareService(
                 }
             }
         }
-        return map
+        return LoadedRows(map, totalRead, noKeyRows)
     }
 
     // ---------- 数据最新更新时间(导出总览) ----------
@@ -744,9 +908,14 @@ class CompareService(
 
     // ---------- 查询 / 归档 / 删除 ----------
 
-    /** 任务列表(新的在前);includeArchived=true 时含已归档;filter 各维度下推 SQL AND 组合 */
-    fun list(includeArchived: Boolean, filter: CompareRepository.JobFilter = CompareRepository.JobFilter()): List<CompareJobView> =
-        repo.listJobs(includeArchived, filter).map { toJobView(it) }
+    /** 任务列表(新的在前,分页);includeArchived=true 时含已归档;filter 各维度下推 SQL AND 组合 */
+    fun list(includeArchived: Boolean, filter: CompareRepository.JobFilter = CompareRepository.JobFilter(),
+             page: Int? = null, size: Int? = null): CompareJobPage {
+        val p = (page ?: 1).coerceAtLeast(1)
+        val s = (size ?: 20).coerceIn(1, 500)
+        val rows = repo.listJobs(includeArchived, filter, p, s).map { toJobView(it) }
+        return CompareJobPage(rows, repo.countJobs(includeArchived, filter), p, s)
+    }
 
     /** 后台任务中心轮询:RUNNING 任务瘦出行(跨全部库,1s 一轮;不解析比对字段 JSON/不解析数据源名) */
     fun listActive(): List<CompareJobActiveView> {
@@ -797,6 +966,26 @@ class CompareService(
     }
 
     /**
+     * 批量删除(列表勾选删除):逐任务复用 [delete] 的级联删除口径;RUNNING 跳过(勾选后开跑的兜底,
+     * 前端勾选时已不可选运行中任务),不存在的 id 也计入 skipped。返回 {deleted, skipped}
+     */
+    fun deleteBatch(ids: List<Long>): Map<String, Any> {
+        val deleted = ArrayList<Long>()
+        val skipped = ArrayList<Long>()
+        for (id in ids.distinct()) {
+            val job = repo.getJob(id)
+            if (job == null || job.status == "RUNNING") {
+                skipped.add(id)
+                continue
+            }
+            repo.deleteJob(id)
+            deleted.add(id)
+            log.info("比对任务已删除: id={}, 名称={}", id, job.name)
+        }
+        return mapOf("deleted" to deleted, "skipped" to skipped)
+    }
+
+    /**
      * 差异导出文件名:跟随任务名(`\/:*?"<>|` 清洗为 `_`),任务名为空回退旧格式「比对总览-{id}.xlsx」。
      * 导入任务的任务名本身带 文件名-sheet 名,导出件可直接对上来源
      */
@@ -811,7 +1000,8 @@ class CompareService(
     /**
      * 差异导出(按客户既有核对表格式):
      * - sheet 1「总览」:一行一个系统(首行基准表),列口径见 [EXPORT_OVERVIEW_HEADERS]
-     * - sheet 2「行级对比明细」:一行一个「对象 × 比对目标」,基准/业务两侧各带 表英文名/表中文名/编码/名称,
+     * - sheet 2「行级对比明细」:一行一个「对象 × 比对目标」,基准/业务两侧各带 表英文名/表中文名 +
+     *   编码字段/编码 + 名称字段/名称(字段列取任务主键/显示名字段及其在目标表的映射列,无映射按同名),
      *   其后差异说明与末列差异类型(不一致/缺失/多余,见 [writeRowLevelSheet])
      * - sheet 3「字段级差异汇总」:一行一个「比对目标 × 基准字段」,只列与该业务表有连线的字段
      *   (无映射按名称自动匹配时列全部比对字段),统计差异数量并按 缺失/多余/不一致
@@ -837,8 +1027,21 @@ class CompareService(
         // 每目标差异明细只读一次:总览「差异条数」、行级/字段级汇总与逐目标明细 sheet 复用同一份
         val diffsByTarget = LinkedHashMap<Long, List<CompareRepository.DiffRow>>()
         for (t in targets) diffsByTarget[t.id] = repo.listDiffsForExport(jobId, t.id)
+        // 任务级身份字段(老任务 key_fields_json 空退化 [keyField])与各目标有效身份;
+        // 推导失败(脏数据)按任务级身份兜底,导出必须能出文件
+        val jobKeyFields = jobKeyFields(job)
+        val identityByTarget = targets.associate { t ->
+            t.id to try {
+                resolveIdentity(jobKeyFields, parseMapping(t.fieldMappingJson), parseIdentityKeys(t.identityJson))
+            } catch (e: Exception) {
+                log.debug("目标有效身份字段推导失败,按任务级身份导出(忽略): targetId={}: {}", t.id, e.message)
+                jobKeyFields
+            }
+        }
         val overview = buildOverviewRows(job, targets,
-            diffsByTarget.mapValues { (_, rows) -> objectLevelDiffs(job, rows) }, context)
+            targets.associate { t ->
+                t.id to objectLevelDiffs(identityByTarget.getValue(t.id), diffsByTarget.getValue(t.id))
+            }, context)
 
         SXSSFWorkbook(SXSSF_ROW_WINDOW).use { wb ->
             // 差异高亮样式(与前端差异明细页问题格同一底色 #ffebee):一眼定位不一致单元格
@@ -849,7 +1052,7 @@ class CompareService(
             }
             writeOverviewSheet(wb, overview)
             // 行级对比明细(固定第二个 sheet):一行一个「对象 × 比对目标」
-            writeRowLevelSheet(wb, job, targets, diffsByTarget, context)
+            writeRowLevelSheet(wb, job, targets, diffsByTarget, context, identityByTarget)
             // 字段级差异汇总(固定第三个 sheet):一行一个「比对目标 × 基准字段」
             writeFieldSummarySheet(wb, job, targets, diffsByTarget, context)
             // 数据级字段对比差异总览(固定第四个 sheet):一行一条数据,按系统给字段数统计
@@ -888,6 +1091,7 @@ class CompareService(
             dataUpdatedAt = job.baseDataUpdatedAt.orEmpty(),
             diffFromBase = null,
             matchedCount = null,
+            matchedTotal = null,
             diffCount = null,
             diffReason = BASELINE_REASON,
             targetId = null,
@@ -904,10 +1108,14 @@ class CompareService(
                 // 口径同基准行:该目标表探测到的时间字段 MAX 快照,没有则留空
                 dataUpdatedAt = t.dataUpdatedAt.orEmpty(),
                 diffFromBase = if (targetCount != null && perTargetBase != null) targetCount - perTargetBase else null,
-                matchedCount = t.matchedCount,
-                // 差异条数 = 对象级差异(缺失 + 多余 + 编码不一致的对象),
-                // 纯字段值不一致不计(名称等字段差异由字段级汇总/明细 sheet 展开),与「行级对比明细」同口径
-                diffCount = objectDiffs[t.id]?.total ?: 0,
+                // 匹配编码数 = 编码路命中数;老任务三路未采集(NULL)按旧口径回落 matched_count
+                matchedCount = t.codeMatchedCount ?: t.matchedCount,
+                // 匹配对象数 = 双侧都存在的对象总数(编码/名称/大模型三路之和)
+                matchedTotal = t.matchedCount,
+                // 差异条数 = 数量差异:缺失(基准有目标无)+ 多余(目标有基准无);
+                // 总览只做行级数量对比,属性差异(编码不一致/字段值不一致)不计,
+                // 由「行级对比明细」与各目标明细 sheet 体现
+                diffCount = objectDiffs[t.id]?.let { it.missing + it.extra } ?: 0,
                 diffReason = t.diffReason(baseCount = perTargetBase, targetCount = targetCount,
                     identityDiff = objectDiffs[t.id]?.identity ?: 0),
                 targetId = t.id,
@@ -916,14 +1124,14 @@ class CompareService(
         return rows
     }
 
-    /** 总览「差异条数」用的对象级差异计数:缺失 + 多余 + 身份(对象编码)不一致,纯字段值不一致不计 */
+    /** 对象级差异三项计数:missing/extra 合计为总览「差异条数」(数量差异),identity(属性差异)只用于差异原因与行级对比明细 */
     internal data class ObjectLevelDiffs(val missing: Int, val extra: Int, val identity: Int) {
+        /** 三项之和 = 「行级对比明细」sheet 行数(该 sheet 恰好列这三类对象) */
         val total: Int get() = missing + extra + identity
     }
 
-    /** 按目标统计对象级差异(与行级对比明细同口径):MISSING/EXTRA 恒为对象级差异,DIFF 看两侧对象编码取值 */
-    private fun objectLevelDiffs(job: CompareRepository.JobRow,
-                                 rows: List<CompareRepository.DiffRow>): ObjectLevelDiffs {
+    /** 按目标统计对象级差异:MISSING/EXTRA 为数量差异(总览差异条数),DIFF 看两侧身份取值(属性差异,行级对比明细) */
+    private fun objectLevelDiffs(identityFields: List<String>, rows: List<CompareRepository.DiffRow>): ObjectLevelDiffs {
         var missing = 0
         var extra = 0
         var identity = 0
@@ -931,29 +1139,52 @@ class CompareService(
             when (row.diffType) {
                 "MISSING" -> missing++
                 "EXTRA" -> extra++
-                else -> if (hasIdentityDiff(job, row, parseValueMap(row.diffJson))) identity++
+                else -> if (hasIdentityDiff(identityFields, row, parseValueMap(row.diffJson))) identity++
             }
         }
         return ObjectLevelDiffs(missing, extra, identity)
     }
 
-    /** DIFF 行目标侧身份取值(编码 to 名称):diff_json 快照优先,缺快照/字段缺失标记时回落 object_key/object_name */
-    private fun targetIdentity(job: CompareRepository.JobRow, row: CompareRepository.DiffRow,
-                               rowMap: Map<String, FieldDiff>): Pair<String?, String?> =
-        (rowMap[job.keyField]?.value?.takeIf { it != MISSING_COLUMN_MARK } ?: row.objectKey) to
-            (job.displayField?.let { rowMap[it]?.value?.takeIf { v -> v != MISSING_COLUMN_MARK } }
-                ?: row.objectName)
+    /** DIFF 行目标侧身份取值(身份组合 to 名称):diff_json 快照优先——字段条目缺失(老快照)回落
+     *  object_key/object_name;新契约(带 matched)值为空按「目标侧确为空」展示空串,
+     *  老快照(无 matched)值为空沿用旧口径回落 object_key */
+    private fun targetIdentity(identity: List<String>, displayField: String?, row: CompareRepository.DiffRow,
+                               rowMap: Map<String, FieldDiff>): Pair<String?, String?> {
+        val diffs = identity.map { f -> rowMap[f] }
+        val hasAll = diffs.all { it != null && it.value != MISSING_COLUMN_MARK }
+        val code = when {
+            !hasAll -> row.objectKey
+            diffs.any { d -> d?.matched == null } && diffs.any { d -> d?.value == null } -> row.objectKey
+            else -> identity.joinToString("\u0001") { f -> rowMap[f]?.value ?: "" }
+        }
+        return code to (displayField?.let { rowMap[it]?.value?.takeIf { v -> v != MISSING_COLUMN_MARK } }
+            ?: row.objectName)
+    }
 
     /**
-     * 是否对象身份层面的差异:身份字段取任务的**比对主键(对象编码)**——编码相同即同一个对象,
+     * 是否对象身份层面的差异:身份取该目标的**有效身份字段**——组合身份相同即同一个对象,
      * 名称只是显示/兜底对齐字段,取值不同属普通字段差异(由字段级汇总与各目标明细 sheet 展开),
-     * **不计入对象级差异**;按名称/大模型兜底配上的对象两侧编码不同,仍算身份差异。
-     * 总览「差异条数」与「行级对比明细」共用本口径(与任务匹配逻辑的身份字段一致)。
+     * **不计入对象级差异**。
+     * 计入口径:**两侧编码都非空且不同**才算「编码不一致的对象」(如按名称/大模型兜底配上、但双方编码对不上);
+     * 一侧编码为空是「编码缺失」,属字段级差异(明细照常展开),不计对象级——否则整表无码的目标
+     * 会把所有配对计成编码不一致,数量会超过对象总数。
+     * 本判定只影响「行级对比明细」sheet 与总览「差异原因」的编码不一致分量;
+     * 总览「差异条数」是数量口径(缺失+多余),不含编码不一致。
+     * 判定用 [FieldDiff.matched] 显式标志;身份字段条目缺失或目标缺列的老快照
+     * 回落「编码值非空且 ≠ object_key」的旧口径(不回归老数据)。
      */
-    private fun hasIdentityDiff(job: CompareRepository.JobRow, row: CompareRepository.DiffRow,
+    private fun hasIdentityDiff(identity: List<String>, row: CompareRepository.DiffRow,
                                 rowMap: Map<String, FieldDiff>): Boolean {
-        val targetCode = rowMap[job.keyField]?.value?.takeIf { it != MISSING_COLUMN_MARK } ?: row.objectKey
-        return row.objectKey.orEmpty() != targetCode.orEmpty()
+        val diffs = identity.map { f -> rowMap[f] ?: return false }
+        if (diffs.any { it.value == MISSING_COLUMN_MARK }) return false
+        return if (diffs.any { it.matched != null }) {
+            // 新契约:身份字段不一致、且基准/目标两侧取值都非空,才计对象级身份差异
+            diffs.any { it.matched == false && !it.base.isNullOrEmpty() && !it.value.isNullOrEmpty() }
+        } else {
+            // 老快照(无 matched):按旧口径——编码值非空且 ≠ 基准侧 object_key 才判身份差异,值为空视为无差异
+            val targetValues = diffs.map { it.value ?: return false }
+            row.objectKey.orEmpty() != targetValues.joinToString("\u0001")
+        }
     }
 
     /**
@@ -1063,16 +1294,21 @@ class CompareService(
             excelRow.createCell(4).setCellValue(row.dataUpdatedAt ?: "")
             ExcelCells.cell(excelRow.createCell(5), row.diffFromBase)
             ExcelCells.cell(excelRow.createCell(6), row.matchedCount)
-            ExcelCells.cell(excelRow.createCell(7), row.diffCount)
-            excelRow.createCell(8).setCellValue(row.diffReason ?: UNFINISHED_REASON)
+            ExcelCells.cell(excelRow.createCell(7), row.matchedTotal)
+            ExcelCells.cell(excelRow.createCell(8), row.diffCount)
+            excelRow.createCell(9).setCellValue(row.diffReason ?: UNFINISHED_REASON)
         }
         sheet.flushRows()
     }
 
     /**
      * 行级对比明细 sheet(固定第二个 sheet,始终生成):一行一个「对象 × 比对目标」的行级差异。
-     * - 首行即表头:基准表英文名/基准表中文名/基准编码/基准名称 + 对比业务表英文名/对比业务表中文名/
-     *   业务表编码/业务表名称 + 「差异说明」+ 末列「差异类型」;表中文名取表注释,取不到留空
+     * - 首行即表头:基准表英文名/基准表中文名/基准编码字段/基准编码/基准名称字段/基准名称 +
+     *   对比业务表英文名/对比业务表中文名/业务表编码字段/业务表编码/业务表名称字段/业务表名称 +
+     *   「差异说明」+ 末列「差异类型」;表中文名取表注释,取不到留空
+     * - 编码/名称字段列:基准侧 = 任务比对主键/显示名字段;业务侧 = 字段映射(人工连线)里该基准字段
+     *   连到的目标列,无映射(按名称自动匹配,老任务)按基准字段同名——与字段级差异汇总「业务表字段」同口径;
+     *   显示名未配置(老任务)时基准/业务两侧名称字段列都留空
      * - 编码/名称取双侧各自取值:DIFF 行业务侧优先取 diff_json 里目标侧真实值(靠名称/大模型配上的对象
      *   两侧编码不同,差异照常体现;老紧凑格式没有该字段快照时回落基准侧);MISSING 行业务侧留空、
      *   EXTRA 行基准侧留空(object_key/object_name 此时即目标侧取值)
@@ -1089,7 +1325,8 @@ class CompareService(
     private fun writeRowLevelSheet(wb: SXSSFWorkbook, job: CompareRepository.JobRow,
                                    targets: List<CompareRepository.TargetRow>,
                                    diffsByTarget: Map<Long, List<CompareRepository.DiffRow>>,
-                                   ctx: ExportContext) {
+                                   ctx: ExportContext,
+                                   identityByTarget: Map<Long, List<String>>) {
         val sheet = wb.createSheet(ROW_LEVEL_SHEET_NAME)
         var r = 0
         val head = sheet.createRow(r++)
@@ -1100,6 +1337,13 @@ class CompareService(
         var truncated = false
         loop@ for (t in targets) {
             val targetComment = ctx.comment(t.datasourceId, t.dbName, t.tableName).orEmpty()
+            // 该目标的有效身份字段(人工覆盖 ?? 推导;基准侧字段名)
+            val identity = identityByTarget[t.id] ?: listOf(job.keyField)
+            // 业务侧身份/名称字段:显式映射(人工连线)里基准字段连到的目标列;
+            // 无映射(按名称自动匹配,老任务)回落基准字段同名,与字段级差异汇总「业务表字段」同口径
+            val mappingLower = parseMapping(t.fieldMappingJson).mapKeys { it.key.lowercase() }
+            val targetKeyField = identity.map { f -> mappingLower[f.lowercase()] ?: f }.joinToString("+")
+            val targetNameField = job.displayField?.let { mappingLower[it.lowercase()] ?: it }.orEmpty()
             for (row in diffsByTarget[t.id].orEmpty()) {
                 if (written >= MAX_ROWS_PER_SHEET) {
                     truncated = true
@@ -1107,31 +1351,36 @@ class CompareService(
                 }
                 val rowMap = parseValueMap(row.diffJson)
                 val extra = row.diffType == "EXTRA"
-                // 业务侧编码/名称:DIFF 从 diff_json 取目标侧真实值(缺快照/缺列时回落基准侧),MISSING 留空
+                // 业务侧身份/名称:DIFF 从 diff_json 取目标侧真实值(缺快照/缺列时回落基准侧),MISSING 留空
                 val (targetCode, targetName) =
-                    if (row.diffType == "DIFF") targetIdentity(job, row, rowMap) else (null to null)
+                    if (row.diffType == "DIFF") targetIdentity(identity, job.displayField, row, rowMap)
+                    else (null to null)
 
-                // 行级 sheet 只呈现对象身份(对象编码)层面的差异:编码是「选择基准表」里指定的对齐键,
-                // DIFF 行两侧编码一致时,差异纯属字段级(名称等,各目标明细 sheet 已展开),此处不再占位
-                if (row.diffType == "DIFF" && !hasIdentityDiff(job, row, rowMap)) continue
+                // 行级 sheet 只呈现对象身份层面的差异:身份是「选择基准表」里指定(或被目标级覆盖)的对齐键,
+                // DIFF 行两侧身份一致时,差异纯属字段级(名称等,各目标明细 sheet 已展开),此处不再占位
+                if (row.diffType == "DIFF" && !hasIdentityDiff(identity, row, rowMap)) continue
 
                 val excelRow = sheet.createRow(r++)
                 excelRow.createCell(0).setCellValue(job.baseTable)
                 excelRow.createCell(1).setCellValue(baseComment)
-                excelRow.createCell(2).setCellValue(if (extra) "" else row.objectKey.orEmpty())
-                excelRow.createCell(3).setCellValue(if (extra) "" else row.objectName.orEmpty())
-                excelRow.createCell(4).setCellValue(t.tableName)
-                excelRow.createCell(5).setCellValue(targetComment)
-                excelRow.createCell(6).setCellValue(if (extra) row.objectKey.orEmpty() else targetCode.orEmpty())
-                excelRow.createCell(7).setCellValue(if (extra) row.objectName.orEmpty() else targetName.orEmpty())
+                excelRow.createCell(2).setCellValue(identity.joinToString("+"))
+                excelRow.createCell(3).setCellValue(if (extra) "" else row.objectKey.orEmpty())
+                excelRow.createCell(4).setCellValue(job.displayField.orEmpty())
+                excelRow.createCell(5).setCellValue(if (extra) "" else row.objectName.orEmpty())
+                excelRow.createCell(6).setCellValue(t.tableName)
+                excelRow.createCell(7).setCellValue(targetComment)
+                excelRow.createCell(8).setCellValue(targetKeyField)
+                excelRow.createCell(9).setCellValue(if (extra) row.objectKey.orEmpty() else targetCode.orEmpty())
+                excelRow.createCell(10).setCellValue(targetNameField)
+                excelRow.createCell(11).setCellValue(if (extra) row.objectName.orEmpty() else targetName.orEmpty())
                 // 差异说明只写身份字段(编码/名称)的差异:其余字段的不一致属列级口径,
                 // 由字段级差异汇总与各目标明细 sheet 展开,行级 sheet 不重复
-                val identityMap = rowMap.filterKeys { it == job.keyField || it == job.displayField }
-                excelRow.createCell(8).setCellValue(describeDiff(row.diffType, identityMap) { f ->
+                val identityMap = rowMap.filterKeys { it in identity || it == job.displayField }
+                excelRow.createCell(12).setCellValue(describeDiff(row.diffType, identityMap) { f ->
                     ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, f)
                 })
                 // 末列差异类型:不一致(DIFF)/ 缺失(MISSING)/ 多余(EXTRA),供核对表直接按类型筛选取值
-                excelRow.createCell(9).setCellValue(rowLevelTypeLabel(row.diffType))
+                excelRow.createCell(13).setCellValue(rowLevelTypeLabel(row.diffType))
                 written++
             }
         }
@@ -1241,7 +1490,7 @@ class CompareService(
 
         var r = 0
         val head = sheet.createRow(r++)
-        head.createCell(0).setCellValue(ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, job.keyField))
+        head.createCell(0).setCellValue(identityHeader(job, ctx))
         head.createCell(1).setCellValue(job.displayField?.takeIf { it.isNotBlank() }
             ?.let { ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, it) } ?: OBJECT_NAME_HEADER)
         head.createCell(2).setCellValue("基准表字段数")
@@ -1340,7 +1589,7 @@ class CompareService(
 
         var r = 0
         val head = sheet.createRow(r++)
-        head.createCell(0).setCellValue(ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, job.keyField))
+        head.createCell(0).setCellValue(identityHeader(job, ctx))
         head.createCell(1).setCellValue(job.displayField?.takeIf { it.isNotBlank() }
             ?.let { ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, it) } ?: OBJECT_NAME_HEADER)
         head.createCell(2).setCellValue("基准字段名")
@@ -1519,7 +1768,7 @@ class CompareService(
         if (showSchema) head.createCell(2).setCellValue("模式")
         head.createCell(prefix - 2).setCellValue("表名")
         head.createCell(prefix - 1).setCellValue("表中文名")
-        head.createCell(prefix).setCellValue(ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, job.keyField))
+        head.createCell(prefix).setCellValue(identityHeader(job, ctx))
         head.createCell(prefix + 1).setCellValue(job.displayField?.takeIf { it.isNotBlank() }
             ?.let { ctx.fieldHeader(job.baseDatasourceId, job.baseDb, job.baseTable, it) } ?: OBJECT_NAME_HEADER)
         DETAIL_BLOCK_HEADERS.forEachIndexed { i, h -> head.createCell(prefix + 2 + i).setCellValue(h) }
@@ -1656,22 +1905,31 @@ class CompareService(
     /** 目标行未落 target_count 时的展示用条数 */
     private fun CompareRepository.TargetRow.targetCountOrFallback(): Int? = targetCount ?: fallbackTargetCount(this)
 
-    /** 差异原因:自动按差异构成拼写(可导出后人工补充);目标未完成时给出明确说明 */
+    /**
+     * 差异原因:自动按差异构成拼写(可导出后人工补充);目标未完成时给出明确说明。
+     * 只写**对象级与行数口径**:字段级不一致的统计数字不在总览展示(客户核对表口径,
+     * 字段级差异看「字段级差异汇总」与各目标明细 sheet);但字段不一致仍阻止「与基准完全一致」,
+     * 且仅存在字段级不一致时给出定性说明(不附统计数字)。
+     */
     private fun CompareRepository.TargetRow.diffReason(baseCount: Int?, targetCount: Int?,
                                                        identityDiff: Int = 0): String? {
         if (status != "DONE") return "比对未完成($status)" + (error?.let { ":$it" } ?: "")
         val extra = extraCount ?: 0
         val missing = missingCount ?: 0
         val mismatch = fieldMismatchCount ?: 0
-        if (extra == 0 && missing == 0 && mismatch == 0) return "与基准完全一致"
+        // 有身份列为空的行即不算「完全一致」:其编码未经过编码路校验,静默宣称一致会误导
+        val noKey = noKeyRows ?: 0
+        if (extra == 0 && missing == 0 && mismatch == 0 && noKey == 0) return "与基准完全一致"
         val parts = ArrayList<String>(5)
         if (missing > 0) parts.add("基准有目标无的对象 $missing 条")
         if (extra > 0) parts.add("目标有基准无的对象 $extra 条")
         if (identityDiff > 0) parts.add("编码不一致的对象 $identityDiff 条")
-        if (mismatch > 0) parts.add("字段不一致单元格 $mismatch 处")
         if (baseCount != null && targetCount != null && baseCount != targetCount) {
             parts.add("行数相差 ${targetCount - baseCount}(目标 $targetCount / 基准 $baseCount)")
         }
+        if (noKey > 0) parts.add("身份列为空 $noKey 行(仅按名称/大模型配对)")
+        // 仅存在字段级不一致(无对象级差异)时给定性说明,不附统计数字
+        if (mismatch > 0 && parts.isEmpty()) parts.add("存在字段级不一致(见字段级差异汇总)")
         return parts.joinToString(";")
     }
 
@@ -1758,6 +2016,7 @@ class CompareService(
         val (db, schema) = normalizeLocation(r.baseDatasourceId, r.baseDb, r.baseSchema)
         return CompareJobView(
             r.id, r.name, r.baseDatasourceId, dsName, db, schema, r.baseTable, r.keyField,
+            jobKeyFields(r),
             r.displayField, r.matchMode, r.compareMode ?: CompareMode.ROW.value, parseFields(r.fieldsJson),
             r.status, r.stage, r.totalUnits, r.doneUnits,
             if (r.totalUnits > 0) r.doneUnits * 100 / r.totalUnits else 0,
@@ -1775,7 +2034,8 @@ class CompareService(
             t.codeMatchedCount ?: t.matchedCount, t.nameMatchedCount ?: 0, t.aiMatchedCount ?: 0,
             t.missingCount, t.extraCount, t.fieldMismatchCount,
             t.coverage, t.fieldConsistency, t.completeness, t.score, t.error,
-            parseMapping(t.fieldMappingJson).takeIf { it.isNotEmpty() })
+            parseMapping(t.fieldMappingJson).takeIf { it.isNotEmpty() },
+            parseIdentityKeys(t.identityJson))
     }
 
     private fun parseFields(json: String?): List<String> =
@@ -1820,8 +2080,8 @@ class CompareService(
     internal fun aiMatchResiduesForTest(match: MatchResult,
                                         baseMap: LinkedHashMap<String, Map<String, String?>>,
                                         targetMap: Map<String, Map<String, String?>>,
-                                        keyField: String, nameField: String?): AiMatchView {
-        val outcome = aiMatchResidues(match, baseMap, targetMap, keyField, nameField)
+                                        keyFields: List<String>, nameField: String?): AiMatchView {
+        val outcome = aiMatchResidues(match, baseMap, targetMap, keyFields, nameField)
         return AiMatchView(outcome.pairs, outcome.note, outcome.failed)
     }
 
@@ -1833,7 +2093,7 @@ class CompareService(
      * - 单个批次失败只跳过该批(记说明并置 failed)继续下一批,**绝不因为模型返工而炸任务**。
      */
     private fun aiMatchResidues(match: MatchResult, baseMap: LinkedHashMap<String, Map<String, String?>>,
-                                targetMap: Map<String, Map<String, String?>>, keyField: String,
+                                targetMap: Map<String, Map<String, String?>>, keyFields: List<String>,
                                 nameField: String?): AiMatchOutcome {
         val (baseResidueKeys, targetResidueKeys) = match.residues(baseMap, targetMap)
         if (baseResidueKeys.isEmpty() || targetResidueKeys.isEmpty()) return AiMatchOutcome(emptyList(), null, false)
@@ -1852,11 +2112,11 @@ class CompareService(
         val baseSeqKeys = baseResidueKeys.withIndex().associate { (i, k) -> (i + 1) to k }
         val targetSeqKeys = targetResidueKeys.withIndex().associate { (i, k) -> (i + 1) to k }
         val baseItems = baseResidueKeys.mapIndexed { i, k ->
-            CompareMatchPrompts.MatchItem(i + 1, idValue(baseMap.getValue(k), keyField),
+            CompareMatchPrompts.MatchItem(i + 1, compositeKey(baseMap.getValue(k), keyFields),
                 nameField?.let { idValue(baseMap.getValue(k), it) })
         }
         val targetItems = targetResidueKeys.mapIndexed { i, k ->
-            CompareMatchPrompts.MatchItem(i + 1, idValue(targetMap.getValue(k), keyField),
+            CompareMatchPrompts.MatchItem(i + 1, compositeKey(targetMap.getValue(k), keyFields),
                 nameField?.let { idValue(targetMap.getValue(k), it) })
         }
         // 单批基准侧条数:保证「批内基准 × 目标全量」不超过单请求配对数上限,且不少于下限(避免批次过碎漏配)
@@ -1867,8 +2127,9 @@ class CompareService(
         val usedBaseKeys = HashSet<String>()
         val usedTargetKeys = HashSet<String>()
         for (batch in baseItems.chunked(batchSize)) {
-            val prompt = CompareMatchPrompts.buildMatchPrompt(keyField, nameField ?: "名称",
-                keyField, nameField ?: "名称", batch, targetItems)
+            val codeLabel = keyFields.joinToString("+")
+            val prompt = CompareMatchPrompts.buildMatchPrompt(codeLabel, nameField ?: "名称",
+                codeLabel, nameField ?: "名称", batch, targetItems)
             val answer = try {
                 aiChat.call(config, CompareMatchPrompts.SYSTEM_PROMPT, prompt)
             } catch (e: Exception) {
@@ -1890,6 +2151,78 @@ class CompareService(
             "大模型归一化补配部分批次失败(${errors.joinToString(";")}),失败批次的对象按未匹配处理", true)
     }
 
+    /** 单测入口:直接对给定配对结果跑同名二轮消歧(生产路径由 compareOneTarget 在匹配逻辑 3 下调用) */
+    internal fun aiRefineSameNameGroupsForTest(match: MatchResult,
+                                               baseMap: LinkedHashMap<String, Map<String, String?>>,
+                                               targetMap: Map<String, Map<String, String?>>,
+                                               keyFields: List<String>, nameField: String?,
+                                               fields: List<String>): AiMatchView {
+        val outcome = aiRefineSameNameGroups(match, baseMap, targetMap, keyFields, nameField, fields)
+        return AiMatchView(outcome.pairs, outcome.note, outcome.failed)
+    }
+
+    /**
+     * 同名二轮消歧(匹配逻辑 3 的第二段):首轮(编码/名称/大模型)配对后,同名歧义组
+     * (某名称双侧都有、至少一侧 ≥2 条,见 [sameNameAmbiguousGroups])带**全部比对字段取值**
+     * 再交大模型判定哪些是同一名下的同一对象、哪些只是重名——解决「多个同名水库靠名称首配
+     * 会张冠李戴」的问题(如 4 个编码全空的「石门」按经纬度/位置区分)。
+     * - [AiMatchOutcome.pairs] 语义与 [aiMatchResidues] 不同:返回**替换后的完整配对列表**,无变化时原列表引用返回;
+     * - 无歧义组 / 未配置大模型 / 参与对象超 [LLM_RESIDUE_LIMIT] → 不调用模型,返回原列表(后者附说明);
+     * - 单组调用失败只跳过该组(记说明并置 failed),该组保持首轮配对,绝不炸任务。
+     */
+    private fun aiRefineSameNameGroups(match: MatchResult,
+                                       baseMap: LinkedHashMap<String, Map<String, String?>>,
+                                       targetMap: Map<String, Map<String, String?>>,
+                                       keyFields: List<String>, nameField: String?,
+                                       fields: List<String>): AiMatchOutcome {
+        val groups = sameNameAmbiguousGroups(match.pairs, baseMap, targetMap, nameField)
+        if (groups.isEmpty()) return AiMatchOutcome(match.pairs, null, false)
+        val total = groups.values.sumOf { it.baseKeys.size + it.targetKeys.size }
+        val config = aiConfigService?.findConfig()
+            ?: return AiMatchOutcome(match.pairs,
+                "同名对象二轮消歧未执行(未配置大模型,歧义组 ${groups.size} 个/共 $total 条)", false)
+        if (total > LLM_RESIDUE_LIMIT) {
+            return AiMatchOutcome(match.pairs,
+                "同名对象二轮消歧未执行(参与对象 $total 超过上限 $LLM_RESIDUE_LIMIT)", false)
+        }
+        val decisions = HashMap<String, List<Pair<String, String>>>()
+        val errors = ArrayList<String>()
+        for (g in groups.values) {
+            val baseSeqKeys = g.baseKeys.withIndex().associate { (i, k) -> (i + 1) to k }
+            val targetSeqKeys = g.targetKeys.withIndex().associate { (i, k) -> (i + 1) to k }
+            fun itemOf(seq: Int, k: String, m: Map<String, Map<String, String?>>): CompareMatchPrompts.SameNameItem {
+                val row = m.getValue(k)
+                return CompareMatchPrompts.SameNameItem(seq, compositeKey(row, keyFields),
+                    nameField?.let { idValue(row, it) },
+                    fields.filter { it != nameField }.map { f -> f to row[f] })
+            }
+            val prompt = CompareMatchPrompts.buildSameNameRefinePrompt(g.name, fields,
+                g.baseKeys.mapIndexed { i, k -> itemOf(i + 1, k, baseMap) },
+                g.targetKeys.mapIndexed { i, k -> itemOf(i + 1, k, targetMap) })
+            val answer = try {
+                aiChat.call(config, CompareMatchPrompts.SAME_NAME_SYSTEM_PROMPT, prompt)
+            } catch (e: Exception) {
+                log.warn("同名二轮消歧调用失败(跳过该组): name={}, {}", g.name, e.message)
+                if (errors.size < LLM_ERROR_KEEP) errors.add(abbreviate(e.message))
+                continue
+            }
+            val parsed = CompareMatchPrompts.parsePairs(answer, baseSeqKeys.keys, targetSeqKeys.keys)
+            if (parsed.isNotEmpty()) {
+                decisions[g.name] = parsed.mapNotNull { p ->
+                    val b = baseSeqKeys[p.baseSeq]
+                    val t = targetSeqKeys[p.targetSeq]
+                    if (b != null && t != null) b to t else null
+                }
+            }
+        }
+        val newPairs = applySameNameRefine(match.pairs, groups, decisions)
+        val refined = decisions.values.sumOf { it.size }
+        if (refined > 0) log.info("同名二轮消歧重配 {} 对(歧义组 {} 个)", refined, groups.size)
+        val note = if (errors.isEmpty()) null
+        else "同名二轮消歧部分组失败(${errors.joinToString(";")}),失败组保持首轮配对"
+        return AiMatchOutcome(newPairs, note, errors.isNotEmpty())
+    }
+
     /** 错误信息缩写:进目标备注/日志前限长 */
     private fun abbreviate(message: String?): String =
         (message ?: "未知错误").let { if (it.length <= 200) it else it.take(200) + "…" }
@@ -1903,6 +2236,17 @@ class CompareService(
 
         /** 单侧行数上限:超出抛 IllegalStateException,任务判 FAILED */
         const val MAX_SIDE_ROWS = 500_000
+
+        /**
+         * 身份列为空的行的行内代理键前缀:这类行没有可对齐的组合身份值,loadRows 不给它 continue 丢弃,
+         * 而是以「\u0002+序号」进行 map(真实组合键不会出现该前缀,与既有 \u0001 拼接键同一假设),
+         * 编码路自然跳过它、名称/大模型两路可把它配对(「任意一边 code 空就用 name 匹配」口径);
+         * 明细/导出落 object_key 时经 [isNoKeyRow] 识别,回落用显示名展示
+         */
+        const val NO_KEY_ROW_PREFIX = "\u0002"
+
+        /** 行 map 的键是否为身份列为空行的行内代理键(见 [NO_KEY_ROW_PREFIX]) */
+        fun isNoKeyRow(key: String): Boolean = key.startsWith(NO_KEY_ROW_PREFIX)
 
         /** 差异明细批量落库的每批行数 */
         private const val DIFF_BATCH_SIZE = 500
@@ -1959,10 +2303,11 @@ class CompareService(
             "业务表英文名", "业务表中文名", "基准表字段", "字段中文", "业务表字段", "业务表字段中文",
             "差异数量", "缺失", "多余", "不一致")
 
-        /** 行级对比明细表头:基准/业务两侧各 表英文名/表中文名/编码/名称 + 差异说明 + 末列差异类型 */
+        /** 行级对比明细表头:基准/业务两侧各 表英文名/表中文名 + 编码字段/编码 + 名称字段/名称 + 差异说明 + 末列差异类型 */
         private val ROW_LEVEL_HEADERS = listOf(
-            "基准表英文名", "基准表中文名", "基准编码", "基准名称",
-            "业务表英文名", "业务表中文名", "业务表编码", "业务表名称", "差异说明", "差异类型")
+            "基准表英文名", "基准表中文名", "基准编码字段", "基准编码", "基准名称字段", "基准名称",
+            "业务表英文名", "业务表中文名", "业务表编码字段", "业务表编码", "业务表名称字段", "业务表名称",
+            "差异说明", "差异类型")
 
         /** 行级对比明细「差异类型」文案:不一致 / 缺失 / 多余(与字段级差异汇总的三分类同口径,均相对基准而言) */
         private const val ROW_TYPE_DIFF = "不一致"
@@ -1976,10 +2321,10 @@ class CompareService(
             else -> ROW_TYPE_DIFF
         }
 
-        /** 总览 sheet 表头(与客户既有核对表列口径一致) */
+        /** 总览 sheet 表头(与客户既有核对表列口径一致;「匹配对象数」为本工具追加列——核对表原本只有编码一路匹配) */
         private val EXPORT_OVERVIEW_HEADERS = listOf(
             "表中文名", "表英文名称", "所属系统", "条数", "数据最新更新时间", "与基准差", "匹配编码数",
-            "差异条数", "差异原因")
+            "匹配对象数", "差异条数", "差异原因")
 
         /** 差异格红底色(与前端差异明细页问题格同一底色 #ffebee) */
         private val DIFF_FILL_RGB = byteArrayOf(0xFF.toByte(), 0xEB.toByte(), 0xEE.toByte())
@@ -2078,8 +2423,6 @@ class CompareService(
             val extra: List<ObjectDiff>,
             /** 双侧都存在的对象数(SAME+DIFF) */
             val matchedCount: Int,
-            /** 目标侧实际行数(含多余行),总览表「条数」与「与基准差」用 */
-            val targetCount: Int,
             /** 不一致字段单元格总数(含「列缺失」) */
             val fieldMismatchCount: Int,
             /** 目标侧已比对单元格数(matched × fields.size) */
@@ -2099,7 +2442,7 @@ class CompareService(
          * 行 map 的键为基准字段名(目标侧列名在取数时已归一成基准字段名);目标行只含目标侧存在的列,
          * 缺列(key 不在行 map)记「列缺失」按不一致计。
          * 比较规则:字符串 trim;NULL 与空串视为一致;numericFields 中的字段去千分位逗号后转
-         * BigDecimal 用 compareTo==0 判定(解析失败回落字符串比较);主键字段对命中行恒一致。
+         * BigDecimal 用 compareTo==0 判定(解析失败回落字符串比较);身份字段(组合)值相等的行才自动配对。
          *
          * 对象对齐(appliedPairs,见 [matchObjects] 与实例侧大模型补配):为空时退化为「两侧行键相等」的
          * 旧口径(老测试与直接调用方);给出时按配对逐对比较,两侧键不等的对象(靠名称/大模型配上的)也算命中,
@@ -2114,7 +2457,7 @@ class CompareService(
          */
         fun diffObjects(baseMap: LinkedHashMap<String, Map<String, String?>>,
                         targetMap: Map<String, Map<String, String?>>,
-                        fields: List<String>, keyField: String,
+                        fields: List<String>, keyFields: List<String>,
                         numericFields: Set<String> = emptySet(),
                         displayField: String? = null,
                         appliedPairs: List<MatchedPair> = emptyList()): CompareDiffResult {
@@ -2131,10 +2474,10 @@ class CompareService(
             // 已配上的目标侧键:未出现在配对里的目标行才是「多余」
             val pairedTargetKeys = HashSet<String>()
 
-            // 配对建立:显式配对优先(名称/大模型配对两侧键不等),其余按「主键值相等」自动配对(旧口径)
+            // 配对建立:显式配对优先(名称/大模型配对两侧键不等),其余按「身份(组合)值相等」自动配对(旧口径)
             val keyedTarget = LinkedHashMap<String, String>(targetMap.size)
             for ((targetKey, row) in targetMap) {
-                idValue(row, keyField)?.let { keyedTarget.putIfAbsent(it, targetKey) }
+                compositeKey(row, keyFields)?.let { keyedTarget.putIfAbsent(it, targetKey) }
             }
             val pairs = ArrayList<MatchedPair>(minOf(baseMap.size, targetMap.size) + appliedPairs.size)
             val pairedBaseKeys = HashSet<String>()
@@ -2145,7 +2488,7 @@ class CompareService(
             }
             for ((baseKey, baseRow) in baseMap) {
                 if (baseKey in pairedBaseKeys) continue
-                val targetKey = idValue(baseRow, keyField)?.let { keyedTarget[it] } ?: continue
+                val targetKey = compositeKey(baseRow, keyFields)?.let { keyedTarget[it] } ?: continue
                 if (targetKey in pairedTargetKeys) continue
                 pairs.add(MatchedPair(baseKey, targetKey, "CODE"))
                 pairedBaseKeys.add(baseKey)
@@ -2160,8 +2503,9 @@ class CompareService(
                     "NAME" -> nameMatched++
                     else -> aiMatched++
                 }
-                // 配对的双侧对象以「基准侧键」为该对象的标识(缺失/多余行才用自己一侧的键)
-                val objectKey = pair.baseKey
+                // 配对的双侧对象以「基准侧键」为该对象的标识(缺失/多余行才用自己一侧的键);
+                // 身份列为空行的行内代理键不落库/展示,回落用显示名(编码差异本身由字段级体现)
+                val objectKey = if (isNoKeyRow(pair.baseKey)) displayName(baseRow, displayField) else pair.baseKey
                 val name = displayName(baseRow, displayField)
                 val rowDiffs = ArrayList<FieldDiff>(fields.size)
                 var allEqual = true
@@ -2194,24 +2538,35 @@ class CompareService(
             }
             for ((baseKey, baseRow) in baseMap) {
                 if (baseKey in pairedBaseKeys) continue
-                // 整行快照:基准值齐备、目标缺行(matched=false 表示该字段「目标侧缺失」)
-                missing.add(ObjectDiff(baseKey, displayName(baseRow, displayField), "MISSING",
+                // 整行快照:基准值齐备、目标缺行(matched=false 表示该字段「目标侧缺失」);
+                // 身份列为空行的代理键回落显示名展示
+                missing.add(ObjectDiff(objectKeyOf(baseKey, baseRow, displayField),
+                    displayName(baseRow, displayField), "MISSING",
                     fields.map { FieldDiff(it, baseRow[it]?.trim(), null, matched = false) }))
             }
             for ((targetKey, targetRow) in targetMap) {
                 if (targetKey in pairedTargetKeys) continue
-                // 整行快照:目标值齐备、基准缺行(base 全 null,matched=false 表示「基准侧缺失」)
-                extra.add(ObjectDiff(targetKey, displayName(targetRow, displayField), "EXTRA",
+                // 整行快照:目标值齐备、基准缺行(base 全 null,matched=false 表示「基准侧缺失」);
+                // 身份列为空行的代理键回落显示名展示
+                extra.add(ObjectDiff(objectKeyOf(targetKey, targetRow, displayField),
+                    displayName(targetRow, displayField), "EXTRA",
                     fields.map { FieldDiff(it, null, targetRow[it]?.trim(), matched = false) }))
             }
             val matchedCount = same.size + diff.size
-            return CompareDiffResult(same, diff, missing, extra, matchedCount, targetMap.size,
+            return CompareDiffResult(same, diff, missing, extra, matchedCount,
                 fieldMismatchCount, comparedCells, nonNullCells, codeMatched, nameMatched, aiMatched)
         }
 
         /** 显示名:显示字段值的 trim,无显示字段或值为空则空串 */
         private fun displayName(row: Map<String, String?>, displayField: String?): String =
             displayField?.let { row[it]?.trim() } ?: ""
+
+        /**
+         * 差异明细的对象标识:身份列为空行的行内代理键不落库(界面上会显示成乱码前缀),
+         * 回落用该行的显示名;真实组合键原样返回
+         */
+        private fun objectKeyOf(key: String, row: Map<String, String?>, displayField: String?): String =
+            if (isNoKeyRow(key)) displayName(row, displayField) else key
 
         /** 字段值比较:先按「空」归一(NULL/空白=空),数值字段走 BigDecimal 归一,其余 trim 后字符串相等 */
         internal fun valuesEqual(field: String, baseValue: String?, targetValue: String?,
@@ -2297,23 +2652,27 @@ data class MatchResult(
 
 /**
  * 对象对齐纯函数:把基准/目标全量行按身份标识配对,产出「哪两条是同一个对象」。
- * - [MatchMode.LEGACY](老任务,数据库无值):只按对象编码([keyField] 的值)配对;
+ * - [MatchMode.LEGACY](老任务,数据库无值):只按对象编码([keyFields] 组合值)配对;
  * - [MatchMode.EXACT]:编码与对象名称都相等才配对;
  * - [MatchMode.CODE_THEN_NAME] / [MatchMode.CODE_NAME_LLM]:先按编码配,残余再按对象名称配
  *   ([MatchMode.CODE_NAME_LLM] 的大模型归一化补配在实例侧 [CompareService] 里继续做);
  * - 编码按 trim 后**区分大小写**比较(历史口径不变),名称按 trim 后忽略大小写比较;空值不参与配对;
  *   重复键保留先出现的行;
+ * - 身份列为空的行(行 map 里是 loadRows 给的行内代理键,[CompareService.isNoKeyRow] 可识别):
+ *   编码路对它无命中,留在残余里交给名称路/大模型路——即「任意一边 code 空就用 name 匹配」的口径;
  * - 名称字段缺失(未提供)时等效只按编码配对。
+ * [keyFields] 为该目标的有效身份字段(见 [resolveIdentity]),组合值即行 map 键口径;
+ * 单字段时与旧的单 keyField 行为完全一致。
  * 配对结果按「编码命中在前、名称命中在后」的顺序返回,便于调用方按来源计数。
  */
 internal fun matchObjects(baseMap: LinkedHashMap<String, Map<String, String?>>,
                           targetMap: Map<String, Map<String, String?>>,
-                          keyField: String, nameField: String?, mode: MatchMode): MatchResult {
+                          keyFields: List<String>, nameField: String?, mode: MatchMode): MatchResult {
     val pairs = ArrayList<MatchedPair>(minOf(baseMap.size, targetMap.size))
     val matchedBase = HashSet<String>()
     val matchedTarget = HashSet<String>()
     // 第一路:按编码配对(老任务与规则 1 都靠它)
-    appendCodePairs(baseMap, targetMap, keyField, pairs, matchedBase, matchedTarget)
+    appendCodePairs(baseMap, targetMap, keyFields, pairs, matchedBase, matchedTarget)
     val codeMatched = pairs.size
     // 第二路:编码没配上的残余再按对象名称配对(规则 1 要求名称也相等,不额外补配)
     var nameMatched = 0
@@ -2325,20 +2684,26 @@ internal fun matchObjects(baseMap: LinkedHashMap<String, Map<String, String?>>,
 }
 
 /**
- * 按编码配对:两侧该字段都非空才参与,命中一对记一对。
+ * 按编码(组合身份值)配对:两侧各身份字段都非空才参与,命中一对记一对。
  * 编码比较**区分大小写**(与历史口径一致:老实现直接拿 trim 后的编码值当行 map 的键做相等判定),
  * 保证老任务与新任务在规则 1/2 第一路上的结果完全相同;大小写/格式不统一的脏数据交给匹配逻辑 3 处理。
+ * 目标侧先按组合身份值建 HashMap 索引(putIfAbsent 保留先出现行;loadRows 的行 map 键即组合身份值,
+ * 重复行已塌缩,与旧逐行扫描口径一致,O(n+m) 替掉原 O(n·m) 扫描),基准侧逐行查表。
  */
 private fun appendCodePairs(baseMap: Map<String, Map<String, String?>>,
                             targetMap: Map<String, Map<String, String?>>,
-                            keyField: String, pairs: MutableList<MatchedPair>,
+                            keyFields: List<String>, pairs: MutableList<MatchedPair>,
                             matchedBase: MutableSet<String>, matchedTarget: MutableSet<String>) {
+    val targetByCode = HashMap<String, String>(targetMap.size)
+    for ((targetKey, row) in targetMap) {
+        val code = compositeKey(row, keyFields) ?: continue
+        targetByCode.putIfAbsent(code, targetKey)
+    }
     for ((baseKey, baseRow) in baseMap) {
         if (baseKey in matchedBase) continue
-        val code = idValue(baseRow, keyField) ?: continue
-        val targetKey = targetMap.entries
-            .firstOrNull { it.key !in matchedTarget && code == idValue(it.value, keyField) }
-            ?.key ?: continue
+        val code = compositeKey(baseRow, keyFields) ?: continue
+        val targetKey = targetByCode[code] ?: continue
+        if (targetKey in matchedTarget) continue
         pairs.add(MatchedPair(baseKey, targetKey, "CODE"))
         matchedBase.add(baseKey)
         matchedTarget.add(targetKey)
@@ -2372,10 +2737,132 @@ private fun appendNamePairs(baseMap: Map<String, Map<String, String?>>,
 internal fun idValue(row: Map<String, String?>, field: String): String? =
     row[field]?.trim()?.takeIf { it.isNotEmpty() }
 
+/**
+ * 组合身份键:各身份字段值 trim 后以「\u0001」拼接(单字段即该字段 trim 值,与旧口径一致);
+ * 任一身份字段值为空返回 null(该行不参与配对,落缺失/多余)
+ */
+internal fun compositeKey(row: Map<String, String?>, fields: List<String>): String? =
+    fields.map { idValue(row, it) ?: return null }.joinToString("\u0001")
+
+/**
+ * 目标级有效身份字段推导(确定性纯函数,提交校验/审核/执行/导出共用同一口径,与 mapping 永不双写):
+ * - [identityKeys] 非空(人工覆盖,compare_target.identity_json 的 keys):用其 keys,
+ *   必须是任务级身份字段 [jobKeyFields] 的子集(忽略大小写校验,按传入原样返回);
+ * - 无映射([mapping] 为空,按字段名自动匹配老路径):任务级身份字段全体;
+ * - 否则取 [jobKeyFields] ∩ 映射键(该目标已连线的基准字段),保持任务级顺序——
+ *   只连上一个自动认它,连上多个默认组合身份(全部相等才算同一行);
+ * - 推导结果为空抛 [IllegalArgumentException](目标一个身份字段都没连,提交/审核拦下,错误点名列出)。
+ */
+internal fun resolveIdentity(jobKeyFields: List<String>, mapping: Map<String, String>,
+                             identityKeys: List<String>?): List<String> {
+    if (!identityKeys.isNullOrEmpty()) {
+        val invalid = identityKeys.filter { k -> jobKeyFields.none { it.equals(k, ignoreCase = true) } }
+        if (invalid.isNotEmpty()) {
+            throw IllegalArgumentException("目标身份字段不在任务身份字段内: ${invalid.joinToString("、")}")
+        }
+        return identityKeys
+    }
+    if (mapping.isEmpty()) return jobKeyFields
+    val derived = jobKeyFields.filter { k -> mapping.keys.any { it.equals(k, ignoreCase = true) } }
+    if (derived.isEmpty()) {
+        throw IllegalArgumentException(
+            "目标表未连线任何身份字段(${jobKeyFields.joinToString("、")}),无法确定该目标的对象身份")
+    }
+    return derived
+}
+
+/** 解析 compare_target.identity_json({"keys":[...]});空/解析失败按「未人工覆盖」处理(回落推导) */
+internal fun parseIdentityKeys(json: String?): List<String>? =
+    json?.takeIf { it.isNotBlank() }?.let {
+        try {
+            identityJsonMapper.readTree(it)?.get("keys")
+                ?.takeIf { k -> k.isArray }
+                ?.mapNotNull { n -> n.asText(null)?.trim()?.takeIf(String::isNotEmpty) }
+                ?.takeIf { k -> k.isNotEmpty() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+/** [parseIdentityKeys] 自用 mapper(文件级纯函数,不依赖实例) */
+private val identityJsonMapper = jacksonObjectMapper()
+
 /** 对象对齐结果里没配上的双侧残余(baseKey 列表, targetKey 列表) */
 internal fun MatchResult.residues(baseMap: LinkedHashMap<String, Map<String, String?>>,
                                   targetMap: Map<String, Map<String, String?>>): Pair<List<String>, List<String>> {
     val matchedBase = pairs.mapTo(HashSet()) { it.baseKey }
     val matchedTarget = pairs.mapTo(HashSet()) { it.targetKey }
     return baseMap.keys.filter { it !in matchedBase } to targetMap.keys.filter { it !in matchedTarget }
+}
+
+
+/** 同名歧义组:某名称(忽略大小写)双侧都存在、且至少一侧有 ≥2 条同名对象——只按名称首配会张冠李戴,需二轮消歧 */
+internal data class SameNameGroup(val name: String, val baseKeys: List<String>, val targetKeys: List<String>)
+
+/**
+ * 识别同名歧义组(纯函数,供同名二轮消歧使用):
+ * - 组内参与对象 = 该名称下「未配对、按名称(NAME)或按大模型(LLM)配对」的行——首轮大模型补配
+ *   的 prompt 只带编码+名称,对同名组并不比对名称配对多知道什么,同样要进二轮;
+ *   按编码(CODE)配对的行身份已定(编码相等),不重配;
+ * - 只有双侧各有 ≥1 条参与对象才成组(一侧为空无歧义可消);无名称字段返回空表。
+ */
+internal fun sameNameAmbiguousGroups(pairs: List<MatchedPair>,
+                                     baseMap: Map<String, Map<String, String?>>,
+                                     targetMap: Map<String, Map<String, String?>>,
+                                     nameField: String?): Map<String, SameNameGroup> {
+    if (nameField.isNullOrBlank()) return emptyMap()
+    val pairByBase = pairs.associateBy { it.baseKey }
+    val pairByTarget = pairs.associateBy { it.targetKey }
+    fun free(pair: MatchedPair?) = pair == null || pair.by != "CODE"
+    fun indexOf(m: Map<String, Map<String, String?>>): Map<String, List<String>> =
+        m.entries.groupBy({ e -> idValue(e.value, nameField)?.lowercase() }, { e -> e.key })
+            .mapNotNull { (n, ks) -> n?.let { low -> low to ks } }.toMap()
+    val baseIdx = indexOf(baseMap)
+    val targetIdx = indexOf(targetMap)
+    val groups = LinkedHashMap<String, SameNameGroup>()
+    for ((name, baseKeys) in baseIdx) {
+        val targetKeys = targetIdx[name] ?: continue
+        if (baseKeys.size < 2 && targetKeys.size < 2) continue
+        val bFree = baseKeys.filter { free(pairByBase[it]) }
+        val tFree = targetKeys.filter { free(pairByTarget[it]) }
+        if (bFree.isNotEmpty() && tFree.isNotEmpty()) groups[name] = SameNameGroup(name, bFree, tFree)
+    }
+    return groups
+}
+
+/**
+ * 应用同名二轮消歧结果(纯函数):[decisions] 为「组名 → (基准键 to 目标键)配对」,
+ * 仅 [sameNameAmbiguousGroups] 给出的组与参与键生效(其余丢弃,防模型跨组乱配),同组内一对一只取先出现的。
+ * 某组存在有效新配对时,该组**整体重画**:先摘除组内原 NAME 配对再落新配对——首轮名称首配
+ * 在组内不再可信,未获新配对的参与对象回落缺失/多余;配对来源仍记 NAME(配对键仍是名称,二轮只消歧同名实例)。
+ * decisions 为空或全部无效时返回原列表。
+ */
+internal fun applySameNameRefine(pairs: List<MatchedPair>, groups: Map<String, SameNameGroup>,
+                                 decisions: Map<String, List<Pair<String, String>>>): List<MatchedPair> {
+    if (decisions.isEmpty()) return pairs
+    // 只重画「有有效新配对」的组;过滤无效的组保持首轮配对
+    val redraw = HashMap<String, SameNameGroup>()
+    val newPairs = ArrayList<MatchedPair>()
+    for ((name, ds) in decisions) {
+        val g = groups[name] ?: continue
+        val seenB = HashSet<String>()
+        val seenT = HashSet<String>()
+        var added = 0
+        for ((b, t) in ds) {
+            if (b !in g.baseKeys || t !in g.targetKeys) continue
+            if (!seenB.add(b) || !seenT.add(t)) continue
+            newPairs.add(MatchedPair(b, t, "NAME"))
+            added++
+        }
+        if (added > 0) redraw[name] = g
+    }
+    if (redraw.isEmpty()) return pairs
+    // 摘除范围 = 重画组的全部参与行涉及的**非编码**配对(含首轮大模型补配:它只见过编码+名称,
+    // 对同名组同样不可信;编码配对身份已定不动)——否则参与行会被新旧两条配对同时占住
+    val participantsB = redraw.values.flatMapTo(HashSet()) { it.baseKeys }
+    val participantsT = redraw.values.flatMapTo(HashSet()) { it.targetKeys }
+    val kept = pairs.filterNot { p ->
+        p.by != "CODE" && (p.baseKey in participantsB || p.targetKey in participantsT)
+    }
+    return kept + newPairs
 }

@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory
  *
  * - 回源成功 → 回调 `onSuccess` 让数据源连接状态自愈(此前被标记 ERROR 则恢复 OK)
  * - 回源抛连接级异常 → 回调 `onFailure` 写数据源标记;本地有缓存则降级返回缓存并置降级标志,
- *   无缓存可兜则原样抛出(前端仍看到错误)
+ *   无缓存时调用方可再挂一级「最新扫描快照」降级(fetch 的 readSnapshot 参数),都兜不住才原样抛出
  * - 非连接级异常(SQL 语法/对象不存在等)原样抛出,不降级,避免掩盖真实错误
  *
  * 数据源状态标记是辅助观测,写失败只记 warn 日志、不改变主流程结果(否则标记失败会把一次成功的
@@ -27,11 +27,15 @@ class CacheFallback(
     /**
      * 回源并在连接失败时降级读缓存。
      * `hasCache`/`readCache` 只在失败路径调用,正常情况下没有额外开销。
+     *
+     * 降级链:回源连接失败 → 本地缓存(有则返回)→ [readSnapshot] 最新扫描快照(传入且快照存在时返回,
+     * 由调用方顺带把快照回填进缓存)→ 都兜不住则原样抛出。快照降级同样置降级标志。
      */
     fun <R> fetch(
         datasourceId: Long,
         hasCache: () -> Boolean,
         readCache: () -> R,
+        readSnapshot: (() -> R?)? = null,
         fetch: () -> R,
     ): R {
         fellBack.set(false)
@@ -40,9 +44,21 @@ class CacheFallback(
         } catch (e: Exception) {
             if (!ConnectionFailureClassifier.isConnectionFailure(e)) throw e
             record(datasourceId, e)
-            if (!hasCache()) throw e
-            fellBack.set(true)
-            readCache()
+            if (hasCache()) {
+                fellBack.set(true)
+                return readCache()
+            }
+            // 无缓存可兜:再试最新扫描快照(断网但本机扫过该库,快照还原结构后由调用方回填缓存)
+            if (readSnapshot != null) {
+                val snap = runCatching { readSnapshot() }
+                    .onFailure { log.warn("数据源 {} 读扫描快照降级失败(忽略): {}", datasourceId, it.message) }
+                    .getOrNull()
+                if (snap != null) {
+                    fellBack.set(true)
+                    return snap
+                }
+            }
+            throw e
         }
     }
 

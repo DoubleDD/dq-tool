@@ -3,7 +3,7 @@ package com.example.dq.model
 /**
  * 数据比对导出(总览表)行:一个比对目标(首个系统为基准表)对应总览 sheet 的一行。
  * 字段与截图口径一致:表中文名 / 表英文名称 / 所属系统 / 条数 / 数据最新更新时间 /
- * 与基准差 / 匹配编码数 / 差异条数 / 差异原因。
+ * 与基准差 / 匹配编码数 / 匹配对象数 / 差异条数 / 差异原因。
  */
 data class CompareExportOverviewRow(
     /** 表英文名称:基准/目标表名 */
@@ -18,9 +18,12 @@ data class CompareExportOverviewRow(
     val dataUpdatedAt: String?,
     /** 与基准差:目标行数 − 基准行数(基准行本身留空) */
     val diffFromBase: Int?,
-    /** 匹配编码数:双侧都存在的对象数(SAME+DIFF) */
+    /** 匹配编码数:编码路(第一路)命中的对象数;老任务三路未采集(NULL)时按 matchedCount 解读(旧口径兼容) */
     val matchedCount: Int?,
-    /** 差异条数:对象级差异——缺失 + 多余 + 编码不一致的对象数(名称等字段差异不计,与行级对比明细同口径) */
+    /** 匹配对象数:双侧都存在的对象总数(SAME+DIFF,编码/名称/大模型三路之和) */
+    val matchedTotal: Int?,
+    /** 差异条数:数量差异 = 缺失(基准有目标无)+ 多余(目标有基准无)的对象数;
+     * 总览只看行级数量对比,属性差异(编码/名称/字段值不一致)不计,在各明细 sheet 体现 */
     val diffCount: Int?,
     /** 差异原因:按差异构成自动生成,可导出后人工补充 */
     val diffReason: String?,

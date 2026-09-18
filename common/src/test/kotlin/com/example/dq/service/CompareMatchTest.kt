@@ -42,7 +42,7 @@ class CompareMatchTest {
         val target = mapOf(
             "R001" to rowOf("code" to "R001", "name" to "甲水库(改)"),
             "R002" to rowOf("code" to "R002", "name" to "乙水库"))
-        val result = matchObjects(base, target, "code", null, MatchMode.LEGACY)
+        val result = matchObjects(base, target, listOf("code"), null, MatchMode.LEGACY)
         assertEquals(2, result.codeMatched)
         assertEquals(0, result.nameMatched)
         assertTrue(result.pairs.all { it.by == "CODE" })
@@ -52,12 +52,12 @@ class CompareMatchTest {
     fun `编码首尾空白归一 但区分大小写(历史口径)`() {
         val base = mapOf("r001" to rowOf("code" to " r001 ", "name" to "甲"))
         val result = matchObjects(base, mapOf("r001" to rowOf("code" to "r001", "name" to "甲")),
-            "code", null, MatchMode.LEGACY)
+            listOf("code"), null, MatchMode.LEGACY)
         assertEquals(1, result.codeMatched)
         assertEquals("r001", result.pairs[0].targetKey)
         // 大小写不同视为不同对象(与老实现「拿编码值当行 map 的键」完全一致,历史结果不回归)
         val upper = matchObjects(base, mapOf("R001" to rowOf("code" to "R001", "name" to "甲")),
-            "code", null, MatchMode.LEGACY)
+            listOf("code"), null, MatchMode.LEGACY)
         assertEquals(0, upper.codeMatched)
     }
 
@@ -69,7 +69,7 @@ class CompareMatchTest {
         val target = mapOf(
             "9" to rowOf("code" to "C1", "name" to "甲水库"),
             "8" to rowOf("code" to "C2", "name" to "乙水库(改)"))
-        val result = matchObjects(base, target, "code", "name", MatchMode.EXACT)
+        val result = matchObjects(base, target, listOf("code"), "name", MatchMode.EXACT)
         // 编码都对上;第二条名称不同仍算命中,名称差异在字段比较里体现为 DIFF
         assertEquals(2, result.codeMatched)
         assertEquals(0, result.nameMatched)
@@ -83,7 +83,7 @@ class CompareMatchTest {
         val target = mapOf(
             "T-A" to rowOf("code" to "V-9001", "name" to "甲水库"),
             "T-B" to rowOf("code" to "B-002", "name" to "乙水库"))
-        val result = matchObjects(base, target, "code", "name", MatchMode.CODE_THEN_NAME)
+        val result = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
         assertEquals(1, result.codeMatched)
         assertEquals(1, result.nameMatched)
         assertEquals(listOf("CODE", "NAME"), result.pairs.map { it.by })
@@ -94,7 +94,7 @@ class CompareMatchTest {
     fun `名称忽略大小写与首尾空白`() {
         val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
         val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "  甲水库 "))
-        val result = matchObjects(base, target, "code", "name", MatchMode.CODE_THEN_NAME)
+        val result = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
         assertEquals(1, result.nameMatched)
     }
 
@@ -107,11 +107,44 @@ class CompareMatchTest {
         val target = mapOf(
             "T-1" to rowOf("code" to "V-1", "name" to null),
             "T-2" to rowOf("code" to "V-2", "name" to "乙水库"))
-        val result = matchObjects(base, target, "code", "name", MatchMode.CODE_THEN_NAME)
+        val result = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
         // 只有基准 2 靠名称配上目标 T-2;名称为空的行不参与配对
         assertEquals(0, result.codeMatched)
         assertEquals(1, result.nameMatched)
         assertEquals("2", result.pairs[0].baseKey)
+    }
+
+    @Test
+    fun `身份列为空的代理键行进名称配对 任意一边code空就用name`() {
+        // 行 map 的键模拟 loadRows 给身份列为空行的行内代理键(NO_KEY_ROW_PREFIX+序号)
+        val surrogateA = CompareService.NO_KEY_ROW_PREFIX + "1"
+        val surrogateB = CompareService.NO_KEY_ROW_PREFIX + "2"
+        val base = mapOf(
+            "B-001" to rowOf("code" to "B-001", "name" to "甲水库"),
+            surrogateB to rowOf("code" to null, "name" to "乙水库"))
+        val target = mapOf(
+            surrogateA to rowOf("code" to null, "name" to "甲水库"),
+            "V-002" to rowOf("code" to "V-002", "name" to "乙水库"))
+        val result = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
+        // 基准有码目标无码、目标有码基准无码,名称相同都配上(编码路对代理键无命中)
+        assertEquals(0, result.codeMatched)
+        assertEquals(2, result.nameMatched)
+        assertEquals(listOf("NAME", "NAME"), result.pairs.map { it.by })
+        assertEquals(surrogateA, result.pairs[0].targetKey)
+        assertEquals(surrogateB, result.pairs[1].baseKey)
+    }
+
+    @Test
+    fun `身份列为空的代理键行在仅编码口径下不成对`() {
+        val surrogate = CompareService.NO_KEY_ROW_PREFIX + "1"
+        val base = mapOf("B-001" to rowOf("code" to "B-001", "name" to "甲水库"))
+        val target = mapOf(surrogate to rowOf("code" to null, "name" to "甲水库"))
+        // EXACT/LEGACY 不做名称补配:代理键行留在残余(目标侧落多余),而不是静默消失
+        val exact = matchObjects(base, target, listOf("code"), "name", MatchMode.EXACT)
+        assertEquals(0, exact.pairs.size)
+        val (baseResidue, targetResidue) = exact.residues(base, target)
+        assertEquals(listOf("B-001"), baseResidue)
+        assertEquals(listOf(surrogate), targetResidue)
     }
 
     @Test
@@ -120,7 +153,7 @@ class CompareMatchTest {
             "1" to rowOf("code" to "B-1", "name" to "同名"),
             "2" to rowOf("code" to "B-2", "name" to "同名"))
         val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "同名"))
-        val result = matchObjects(base, target, "code", "name", MatchMode.CODE_THEN_NAME)
+        val result = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
         assertEquals(1, result.nameMatched)
         assertEquals("1", result.pairs[0].baseKey)
     }
@@ -129,7 +162,7 @@ class CompareMatchTest {
     fun `匹配逻辑2 但没有名称字段时退化为仅编码`() {
         val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
         val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "甲水库"))
-        val result = matchObjects(base, target, "code", null, MatchMode.CODE_THEN_NAME)
+        val result = matchObjects(base, target, listOf("code"), null, MatchMode.CODE_THEN_NAME)
         assertEquals(0, result.codeMatched + result.nameMatched)
     }
 
@@ -141,7 +174,7 @@ class CompareMatchTest {
         val target = mapOf(
             "T-1" to rowOf("code" to "B-1", "name" to "甲水库"),
             "T-9" to rowOf("code" to "V-9", "name" to "丙水库"))
-        val match = matchObjects(base, target, "code", "name", MatchMode.CODE_THEN_NAME)
+        val match = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
         val (baseResidue, targetResidue) = match.residues(base, target)
         assertEquals(listOf("2"), baseResidue)
         assertEquals(listOf("T-9"), targetResidue)
@@ -175,9 +208,9 @@ class CompareMatchTest {
     fun `显式配对两侧键不等也算命中 且 objectKey 取基准侧`() {
         val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
         val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "甲水库"))
-        val match = matchObjects(base, target, "code", "name", MatchMode.CODE_THEN_NAME)
+        val match = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
         assertEquals(1, match.pairs.size)
-        val result = CompareService.diffObjects(base, target, listOf("code", "name"), "code",
+        val result = CompareService.diffObjects(base, target, listOf("code", "name"), listOf("code"),
             displayField = "name", appliedPairs = match.pairs)
         // 名称一致、编码不同 → 同一个对象(命中)但字段不一致(编码 DIFF)
         assertEquals(1, result.matchedCount)
@@ -198,8 +231,8 @@ class CompareMatchTest {
         val target = mapOf(
             "T-1" to rowOf("code" to "B-1", "name" to "甲水库"),
             "T-9" to rowOf("code" to "V-9", "name" to "丙水库"))
-        val match = matchObjects(base, target, "code", "name", MatchMode.CODE_THEN_NAME)
-        val result = CompareService.diffObjects(base, target, listOf("code", "name"), "code",
+        val match = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
+        val result = CompareService.diffObjects(base, target, listOf("code", "name"), listOf("code"),
             displayField = "name", appliedPairs = match.pairs)
         assertEquals(1, result.same.size)
         assertEquals(1, result.missing.size)
@@ -210,10 +243,181 @@ class CompareMatchTest {
     }
 
     @Test
+    fun `身份列为空的代理键行 objectKey 回落显示名 且编码差异体现为不一致`() {
+        val surrogateT = CompareService.NO_KEY_ROW_PREFIX + "1"
+        val surrogateB = CompareService.NO_KEY_ROW_PREFIX + "1"
+        // 目标侧编码空的行靠名称配上基准行:DIFF(objectKey=基准侧行键),目标编码空 → 编码字段不一致
+        val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
+        val target = mapOf(surrogateT to rowOf("code" to null, "name" to "甲水库"))
+        val matched = CompareService.diffObjects(base, target, listOf("code", "name"), listOf("code"),
+            displayField = "name",
+            appliedPairs = listOf(MatchedPair("1", surrogateT, "NAME")))
+        assertEquals("1", matched.diff[0].objectKey)
+        assertEquals("NAME", matched.diff[0].matchBy)
+        assertEquals(1, matched.fieldMismatchCount) // 只有编码字段不一致
+
+        // 目标侧编码空且配不上(名称不同)→ 多余,objectKey 回落显示名而不是代理键
+        val base2 = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
+        val target2 = mapOf(surrogateT to rowOf("code" to null, "name" to "孤儿水库"))
+        val extra = CompareService.diffObjects(base2, target2, listOf("code", "name"), listOf("code"),
+            displayField = "name")
+        assertEquals(1, extra.extra.size)
+        assertEquals("孤儿水库", extra.extra[0].objectKey)
+
+        // 基准侧编码空且配不上 → 缺失,objectKey 同样回落显示名
+        val extra2 = CompareService.diffObjects(mapOf(surrogateB to rowOf("code" to null, "name" to "孤儿水库")),
+            mapOf("T-1" to rowOf("code" to "V-1", "name" to "乙水库")),
+            listOf("code", "name"), listOf("code"), displayField = "name")
+        assertEquals(1, extra2.missing.size)
+        assertEquals("孤儿水库", extra2.missing[0].objectKey)
+    }
+
+    @Test
+    fun `同名歧义组识别 仅至少一侧多条同名才成组且编码已配行不参与`() {
+        // 基准 2 个石门、目标 1 个(无码):名称首配 B1-T1,B2 缺失——一侧多条同名 → 歧义组
+        val base = mapOf(
+            "B1" to rowOf("code" to "B1", "name" to "石门", "loc" to "葫芦岛"),
+            "B2" to rowOf("code" to "B2", "name" to "石门", "loc" to "朝阳"))
+        val target = mapOf("T1" to rowOf("code" to null, "name" to "石门", "loc" to "葫芦岛"))
+        val m = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
+        val groups = sameNameAmbiguousGroups(m.pairs, base, target, "name")
+        assertEquals(setOf("石门"), groups.keys)
+        assertEquals(listOf("B1", "B2"), groups.getValue("石门").baseKeys)
+        assertEquals(listOf("T1"), groups.getValue("石门").targetKeys)
+
+        // 双侧各 1 条同名:无歧义,不成组
+        val base1 = mapOf("B1" to rowOf("code" to "B1", "name" to "石门"))
+        val target1 = mapOf("T9" to rowOf("code" to null, "name" to "石门"))
+        val m2 = matchObjects(base1, target1, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
+        assertTrue(sameNameAmbiguousGroups(m2.pairs, base1, target1, "name").isEmpty())
+
+        // 目标侧同码行已按编码配上(不参与二轮):只剩基准侧 1 条游离 → 不成组
+        val base3 = mapOf(
+            "B1" to rowOf("code" to "B1", "name" to "石门"),
+            "B2" to rowOf("code" to "B2", "name" to "石门"))
+        val target3 = mapOf("T1" to rowOf("code" to "B1", "name" to "石门"))
+        val m3 = matchObjects(base3, target3, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
+        assertTrue(sameNameAmbiguousGroups(m3.pairs, base3, target3, "name").isEmpty())
+
+        // 首轮大模型补配(只见过编码+名称)配错(朝阳↔葫芦岛)的同名行也进二轮:组内四行全参与
+        val base4 = mapOf(
+            "B1" to rowOf("code" to "B1", "name" to "石门", "loc" to "朝阳"),
+            "B2" to rowOf("code" to "B2", "name" to "石门", "loc" to "葫芦岛"))
+        val target4 = mapOf(
+            "T1" to rowOf("code" to null, "name" to "石门", "loc" to "葫芦岛"),
+            "T2" to rowOf("code" to null, "name" to "石门", "loc" to "朝阳"))
+        val llmMispaired = MatchResult(listOf(MatchedPair("B1", "T1", "LLM")), 0, 0, 1)
+        val groups4 = sameNameAmbiguousGroups(llmMispaired.pairs, base4, target4, "name")
+        assertEquals(listOf("B1", "B2"), groups4.getValue("石门").baseKeys)
+        assertEquals(listOf("T1", "T2"), groups4.getValue("石门").targetKeys)
+        // 二轮按 loc 重画:错配的 LLM 对被摘除,B1 改配 T2;计数口径由 pairs 重算(LLM→NAME)
+        val redrawn = applySameNameRefine(llmMispaired.pairs, groups4,
+            mapOf("石门" to listOf("B1" to "T2", "B2" to "T1")))
+        assertEquals(listOf("B1" to "T2", "B2" to "T1"),
+            redrawn.filter { it.by == "NAME" }.map { it.baseKey to it.targetKey })
+        assertTrue(redrawn.none { it.by == "LLM" })
+    }
+
+    @Test
+    fun `二轮消歧按其余字段重配 摘除首轮名称首配`() {
+        // 首轮名称首配是顺序配对(B1-T1),但按 loc 看正确配对是 B1-T2、B2-T1
+        val base = mapOf(
+            "B1" to rowOf("code" to "B1", "name" to "石门", "loc" to "葫芦岛"),
+            "B2" to rowOf("code" to "B2", "name" to "石门", "loc" to "朝阳"))
+        val target = mapOf(
+            "T1" to rowOf("code" to null, "name" to "石门", "loc" to "朝阳"),
+            "T2" to rowOf("code" to null, "name" to "石门", "loc" to "葫芦岛"))
+        val m = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_THEN_NAME)
+        assertEquals(listOf("B1" to "T1"), m.pairs.map { it.baseKey to it.targetKey })
+        val groups = sameNameAmbiguousGroups(m.pairs, base, target, "name")
+        val refined = applySameNameRefine(m.pairs, groups,
+            mapOf("石门" to listOf("B1" to "T2", "B2" to "T1")))
+        assertEquals(setOf("B1" to "T2", "B2" to "T1"),
+            refined.filter { it.by == "NAME" }.map { it.baseKey to it.targetKey }.toSet())
+        // 跨组乱配/重复配对被丢弃
+        val bad = applySameNameRefine(m.pairs, groups,
+            mapOf("石门" to listOf("B1" to "T2", "B1" to "T1", "B2" to "XX")))
+        assertEquals(setOf("B1" to "T2"), bad.filter { it.by == "NAME" }.map { it.baseKey to it.targetKey }.toSet())
+    }
+
+    @Test
+    fun `同名二轮消歧带全字段调用大模型并按结果重配`() {
+        val base = linkedMapOf(
+            "B1" to rowOf("code" to "B1", "name" to "石门", "loc" to "葫芦岛"),
+            "B2" to rowOf("code" to "B2", "name" to "石门", "loc" to "朝阳"))
+        val target = linkedMapOf(
+            "T1" to rowOf("code" to null, "name" to "石门", "loc" to "朝阳"),
+            "T2" to rowOf("code" to null, "name" to "石门", "loc" to "葫芦岛"))
+        val prompts = ArrayList<String>()
+        val env = env(aiConfigured = true) { _, _, u ->
+            prompts.add(u)
+            // 按 loc 交叉配对:B1(葫芦岛)→T2、B2(朝阳)→T1
+            if (u.contains("石门")) "[{\"b\":1,\"t\":2},{\"b\":2,\"t\":1}]" else "[]"
+        }
+        val m = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
+        val view = env.service.aiRefineSameNameGroupsForTest(m, base, target,
+            listOf("code"), "name", listOf("code", "name", "loc"))
+        assertEquals(setOf("B1" to "T2", "B2" to "T1"), view.pairs.map { it.baseKey to it.targetKey }.toSet())
+        assertEquals(null, view.note)
+        // prompt 带全字段取值(同名 + loc),供模型区分同名不同对象
+        assertEquals(1, prompts.size)
+        assertTrue(prompts[0].contains("均为「石门」"), prompts[0])
+        assertTrue(prompts[0].contains("loc=「葫芦岛」"), prompts[0])
+        assertTrue(prompts[0].contains("loc=「朝阳」"), prompts[0])
+    }
+
+    @Test
+    fun `同名二轮消歧大模型失败保持首轮配对并记说明`() {
+        val base = linkedMapOf(
+            "B1" to rowOf("code" to "B1", "name" to "石门", "loc" to "葫芦岛"),
+            "B2" to rowOf("code" to "B2", "name" to "石门", "loc" to "朝阳"))
+        val target = linkedMapOf(
+            "T1" to rowOf("code" to null, "name" to "石门", "loc" to "朝阳"),
+            "T2" to rowOf("code" to null, "name" to "石门", "loc" to "葫芦岛"))
+        val env = env(aiConfigured = true) { _, _, u -> if (u.contains("石门")) throw RuntimeException("超时") else "[]" }
+        val m = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
+        val view = env.service.aiRefineSameNameGroupsForTest(m, base, target,
+            listOf("code"), "name", listOf("code", "name", "loc"))
+        assertEquals(m.pairs, view.pairs)   // 首轮配对原样保留(引用相等)
+        assertTrue(view.failed)
+        assertTrue(view.note!!.contains("同名二轮消歧部分组失败"), view.note)
+    }
+
+    @Test
+    fun `同名二轮消歧未配置大模型时不调用并给说明`() {
+        val base = linkedMapOf(
+            "B1" to rowOf("code" to "B1", "name" to "石门"),
+            "B2" to rowOf("code" to "B2", "name" to "石门"))
+        val target = linkedMapOf("T1" to rowOf("code" to null, "name" to "石门"))
+        var called = 0
+        val env = env(aiConfigured = false) { _, _, _ -> called++; "[]" }
+        val m = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
+        val view = env.service.aiRefineSameNameGroupsForTest(m, base, target,
+            listOf("code"), "name", listOf("code", "name"))
+        assertEquals(0, called)
+        assertEquals(m.pairs, view.pairs)
+        assertTrue(view.note!!.contains("未配置大模型"), view.note)
+    }
+
+    @Test
+    fun `同名消歧prompt带全字段取值与空值占位`() {
+        val prompt = CompareMatchPrompts.buildSameNameRefinePrompt("石门", listOf("code", "name", "loc"),
+            listOf(CompareMatchPrompts.SameNameItem(1, "B1", "石门",
+                listOf("loc" to "葫芦岛", "grade" to null))),
+            listOf(CompareMatchPrompts.SameNameItem(1, null, "石门",
+                listOf("loc" to "朝阳", "grade" to "V"))))
+        assertTrue(prompt.contains("均为「石门」"))
+        assertTrue(prompt.contains("code=B1"))
+        assertTrue(prompt.contains("loc=「葫芦岛」"))
+        assertTrue(prompt.contains("grade=「(空)」"))
+        assertTrue(prompt.contains("code=B1") && prompt.contains("输出同一个对象的配对数组"))
+    }
+
+    @Test
     fun `不传配对时退化为旧口径 两侧键相等才算命中`() {
         val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
         val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "甲水库"))
-        val result = CompareService.diffObjects(base, target, listOf("code", "name"), "code",
+        val result = CompareService.diffObjects(base, target, listOf("code", "name"), listOf("code"),
             displayField = "name")
         assertEquals(0, result.matchedCount)
         assertEquals(1, result.missing.size)
@@ -228,7 +432,7 @@ class CompareMatchTest {
         val bogus = listOf(
             MatchedPair("404", "T-1", "LLM"),
             MatchedPair("1", "404", "LLM"))
-        val result = CompareService.diffObjects(base, target, listOf("code"), "code", appliedPairs = bogus)
+        val result = CompareService.diffObjects(base, target, listOf("code"), listOf("code"), appliedPairs = bogus)
         assertEquals(0, result.matchedCount)
         assertEquals(1, result.missing.size)
         assertEquals(1, result.extra.size)
@@ -312,10 +516,10 @@ class CompareMatchTest {
     fun `一对都没有时不做任何调用`() {
         val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
         val target = mapOf("T-1" to rowOf("code" to "B-1", "name" to "甲水库"))
-        val match = matchObjects(base, target, "code", "name", MatchMode.CODE_NAME_LLM)
+        val match = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
         var called = false
         val service = env(aiConfigured = true) { _, _, _ -> called = true; "[]" }
-        val result = service.service.aiMatchResiduesForTest(match, base, target, "code", "name")
+        val result = service.service.aiMatchResiduesForTest(match, base, target, listOf("code"), "name")
         assertTrue(result.pairs.isEmpty())
         assertFalse(called)
     }
@@ -327,8 +531,8 @@ class CompareMatchTest {
         var called = false
         val service = env(aiConfigured = false) { _, _, _ -> called = true; "[]" }
         val result = service.service.aiMatchResiduesForTest(
-            matchObjects(base, target, "code", "name", MatchMode.CODE_NAME_LLM),
-            base, target, "code", "name")
+            matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM),
+            base, target, listOf("code"), "name")
         assertFalse(called)
         assertTrue(result.note!!.contains("未配置大模型"))
     }
@@ -342,13 +546,13 @@ class CompareMatchTest {
         val target = mapOf(
             "T-1" to rowOf("code" to "V-1", "name" to "甲水库(改)"),
             "T-2" to rowOf("code" to "V-2", "name" to "乙水库(改)"))
-        val base0 = matchObjects(base, target, "code", "name", MatchMode.CODE_NAME_LLM)
+        val base0 = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
         assertEquals(0, base0.codeMatched + base0.nameMatched)
         val service = env(aiConfigured = true) { _, _, prompt ->
             assertTrue(prompt.contains("甲水库"))
             """[{"b":1,"t":1},{"b":2,"t":2}]"""
         }
-        val result = service.service.aiMatchResiduesForTest(base0, base, target, "code", "name")
+        val result = service.service.aiMatchResiduesForTest(base0, base, target, listOf("code"), "name")
         assertEquals(2, result.pairs.size)
         assertTrue(result.pairs.all { it.by == "LLM" })
         assertEquals(listOf("1", "2"), result.pairs.map { it.baseKey })
@@ -359,9 +563,9 @@ class CompareMatchTest {
     fun `调用失败只跳过该批 不抛异常`() {
         val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
         val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "甲水库(改)"))
-        val base0 = matchObjects(base, target, "code", "name", MatchMode.CODE_NAME_LLM)
+        val base0 = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
         val service = env(aiConfigured = true) { _, _, _ -> throw IllegalStateException("HTTP 500") }
-        val result = service.service.aiMatchResiduesForTest(base0, base, target, "code", "name")
+        val result = service.service.aiMatchResiduesForTest(base0, base, target, listOf("code"), "name")
         assertTrue(result.pairs.isEmpty())
         assertTrue(result.failed)
         assertTrue(result.note!!.contains("部分批次失败"))
@@ -378,8 +582,8 @@ class CompareMatchTest {
         var called = false
         val service = env(aiConfigured = true) { _, _, _ -> called = true; "[]" }
         val result = service.service.aiMatchResiduesForTest(
-            matchObjects(base, target, "code", "name", MatchMode.CODE_NAME_LLM),
-            base, target, "code", "name")
+            matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM),
+            base, target, listOf("code"), "name")
         assertTrue(result.pairs.isEmpty())
         assertTrue(result.note!!.contains("残余对象过多"))
         assertFalse(called)
@@ -395,8 +599,8 @@ class CompareMatchTest {
         var calls = 0
         val service = env(aiConfigured = true) { _, _, _ -> calls++; "[]" }
         service.service.aiMatchResiduesForTest(
-            matchObjects(base, target, "code", "name", MatchMode.CODE_NAME_LLM),
-            base, target, "code", "name")
+            matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM),
+            base, target, listOf("code"), "name")
         assertEquals(2, calls)
     }
 

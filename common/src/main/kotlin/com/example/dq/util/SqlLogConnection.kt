@@ -45,12 +45,26 @@ object SqlLogConnection {
         "executeBatch", "executeLargeBatch"
     )
 
-    fun wrap(conn: Connection): Connection {
+    fun wrap(conn: Connection): Connection = wrap(conn, null)
+
+    /**
+     * [metaContext] 随连接携带的元数据读上下文(数据源 id/库名/缓存仓储,类型由使用方自定,
+     * 本类只透传不依赖):方言层缓存拦截器据此把元数据读取结果回填 meta_* 缓存,见
+     * dialect/MetaReadCachingDialect。无上下文的连接(预览/测试连接等)拦截器直接跳过。
+     */
+    fun wrap(conn: Connection, metaContext: Any?): Connection {
         val cl = conn.javaClass.classLoader ?: SqlLogConnection::class.java.classLoader
-        return Proxy.newProxyInstance(cl, arrayOf(Connection::class.java), ConnectionHandler(conn)) as Connection
+        return Proxy.newProxyInstance(cl, arrayOf(Connection::class.java), ConnectionHandler(conn, metaContext)) as Connection
     }
 
-    private class ConnectionHandler(private val target: Connection) : InvocationHandler {
+    /** 取 wrap 时携带的元数据上下文;非本类代理或未携带返回 null */
+    fun metaContextOf(conn: Connection): Any? {
+        if (!Proxy.isProxyClass(conn.javaClass)) return null
+        val handler = runCatching { Proxy.getInvocationHandler(conn) }.getOrNull()
+        return (handler as? ConnectionHandler)?.metaContext
+    }
+
+    private class ConnectionHandler(private val target: Connection, val metaContext: Any?) : InvocationHandler {
         override fun invoke(proxy: Any, method: Method, args: Array<out Any>?): Any? {
             val name = method.name
             val result = invokeUnwrapped(method, target, args)

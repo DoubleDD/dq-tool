@@ -22,7 +22,7 @@
 | 实体 | 关键字段 | 业务含义 |
 |------|---------|---------|
 | `compare_job` | key_field, fields_json, **display_field**(对象名称字段,可空), **match_mode**(对象匹配逻辑,可空=V49 之前的老任务), status, total_units/done_units, archived | 任务;进度单元总数 = 1(基准读取) + 目标数 |
-| `compare_target` | ds_name(**名称快照**), base/target/matched/**code/name/ai_matched**/missing/extra/field_mismatch 计数, 四比率 | 每目标一行的指标;`target_count`=目标侧实际读到的总行数(老任务 NULL);`code/name/ai_matched_count`=三路对齐各自命中数(V49,老任务 NULL);快照保证数据源改名/删除后仍可展示 |
+| `compare_target` | ds_name(**名称快照**), base/target/matched/**code/name/ai_matched**/missing/extra/field_mismatch 计数, 四比率 | 每目标一行的指标;`target_count`=目标侧实际读到的总行数(身份列为空的代理键行也进比对,老任务 NULL);`no_key_rows`=身份列为空的行数(编码路不参与、名称/大模型可配对,V63,老任务 NULL);`code/name/ai_matched_count`=三路对齐各自命中数(V49,老任务 NULL);快照保证数据源改名/删除后仍可展示 |
 | `compare_diff` | object_key, object_name, diff_type, diff_json, **match_by** | 差异明细;**diff_json 为整行快照**,见 3.6;`match_by`=该行对象对齐来源 CODE/NAME/LLM(V49,老数据 NULL)|
 
 - 三表**无外键**,删除任务由 service 层 tx 级联删(同 object_dir 惯例)。
@@ -64,7 +64,7 @@
 
 - 复用方言 `pageRowsSql`,按**主键列 orderBy** 分页,pageSize **5000**;
 - 单条 SQL 超时 = 系统设置的 statementTimeoutSeconds(与分段扫描同口径);
-- key = 主键值 `toString().trim()`;**主键为空的行跳过**(无法对齐);
+- key = 主键值 `toString().trim()`;**主键为空的行不丢弃**:以行内代理键(`\u0002`+序号)进 map,编码路无命中、名称/大模型路可配对(「任意一边 code 空就用 name 匹配」),行数随结果透出(warn 日志 + 目标说明 + 导出差异原因);
 - 行值一律 `rs.getObject()?.toString()`;
 - **单侧超过 50 万行抛 IllegalStateException**(「请缩小比对范围」)→ 该侧任务/目标 FAILED。
 
@@ -84,7 +84,7 @@
   - 字段一致率 = 1 − field_mismatch / (matched × 比对字段数),分母 0 记 **1.0**
   - 完整率 = 目标侧已比对单元格中非空占比(列缺失按空计),分母 0 记 1.0
   - 综合评分 = 覆盖率×0.4 + 一致率×0.4 + 完整率×0.2
-  - `target_count` = targetMap.size(目标侧实际行数,含多余行),总览表「条数/与基准差」用;老任务无此列时按 matched+extra 兜底;
+  - `target_count` = 实际读到的总行数(LoadedRows.totalRead,含多余行与身份列为空的代理键行),`base_count` 同为基准表实际读到的总行数,总览表「条数/与基准差」用;老任务无此列时按 matched+extra 兜底;
   - `code/name/ai_matched_count` = 三路各自命中的对象数(三者之和 = matched),展示层老任务按「编码 = matched、名称/AI = 0」解读。
 
 ### 3.5 matchObjects — 对象对齐纯函数(匹配逻辑 1/2)
@@ -93,7 +93,7 @@
 
 - 输入:基准/目标全量行 map(键 = 各自编码值)、`keyField`(编码字段)、`nameField`(名称字段,可空)、`mode`;
 - 第一路按编码配:两侧该字段 trim 后**区分大小写**比较(与老实现「拿编码值当行 map 的键」一致,历史结果不回归),
-  空值不参与,命中一对记一对(老任务 `LEGACY` 与 `EXACT` 都靠它);
+  空值不参与(身份列为空的代理键行自然无命中,留给第二路/大模型),命中一对记一对(老任务 `LEGACY` 与 `EXACT` 都靠它);
 - 第二路按名称配(仅 `CODE_THEN_NAME`/`CODE_NAME_LLM` 且 nameField 非空):只处理编码路没配上的残余,
   目标侧残余按名称建索引(重名只留先出现的一条)、基准侧残余逐个查;
 - **一个键只配一次**,不串行;配对顺序固定「编码在前、名称在后」,便于按来源计数;
@@ -148,11 +148,13 @@
 
 文件: `CompareService.kt:324`
 
-- **sheet 1「总览」**:一行一个系统,首行基准表;列口径(表中文名/表英文名称/所属系统/条数/数据最新更新时间/与基准差/匹配编码数/差异条数/差异原因);
+- **sheet 1「总览」**:一行一个系统,首行基准表;列口径(表中文名/表英文名称/所属系统/条数/数据最新更新时间/与基准差/匹配编码数/匹配对象数/差异条数/差异原因);
   表中文名取表注释,所属系统取 `table_system` 登记(回落数据源名),数据最新更新时间 = 比对执行时探测时间字段
   (update 类优先,其次 create 类;未命中交大模型语义挑,AiScene.COMPARE_TIME)取 `MAX(值)` 落库的快照(V60,
   老任务/无可用字段/取数失败/大模型未配置一律留空),
-  差异条数 = 对象级差异数(缺失 + 多余 + 编码不一致的对象;编码相同即同一个对象,名称等字段取值不同属字段级差异不计,与「行级对比明细」同口径),差异原因按差异构成自动拼写(与基准完全一致 / 缺失多余与编码不一致明细 / 行数相差);
+  差异条数 = 数量差异(缺失 + 多余的对象数;总览只做行级数量对比,属性差异——编码不一致、字段值不一致——不计,
+  在「行级对比明细」与各目标明细 sheet 体现;行级 sheet 行数 = 差异条数 + 编码不一致对象数),
+  差异原因按差异构成自动拼写(与基准完全一致 / 缺失多余与编码不一致明细 / 行数相差);
 - **之后每个有差异的目标一个明细 sheet**(名「序号_表名_数据源名」,序号与总览行一一对应,表名靠前防 31 字符截断):
   - 第 1 行单行上下文:`系统 · 目标表 ← 基准表 · 主键 · 目标 N 行/基准 M 行 · 差异构成`;
   - 第 3 行表头 = diff_json 出现过的字段(**字段注释做中文列名**,无注释回落字段名)+ 末列「说明」;

@@ -5,6 +5,7 @@ import com.example.dq.model.TagKind
 import com.example.dq.model.TagSource
 import com.example.dq.model.TagType
 import java.sql.ResultSet
+import java.sql.SQLIntegrityConstraintViolationException
 
 /** 表标记:全局标记定义 CRUD + 表级打标关系维护 + 标记统计查询(只读本地 H2,不连业务库) */
 class TagRepository(private val jdbc: Jdbc) {
@@ -44,6 +45,19 @@ class TagRepository(private val jdbc: Jdbc) {
             name, color, description, tagType.code)
         return Tag(id, name, color, TagKind.USER, description, tagType)
     }
+
+    /**
+     * 按名原子创建(重名不报错,读回既有标记):「先查后建」在并发下会撞 tag_def.name 唯一键——
+     * 手工新建标记与导入按名合并并发时,唯一键只放行一个,另一个撞键后直接采用对方建成的标记,
+     * 保证导入不失败。需要重名报错的场景用 [create]。
+     */
+    fun createIfAbsent(name: String, color: String, description: String? = null, tagType: TagType = TagType.AI): Tag =
+        try {
+            create(name, color, description, tagType)
+        } catch (e: SQLIntegrityConstraintViolationException) {
+            // 撞唯一键说明同名标记已被并发事务提交,读回即可;读不到(非 name 约束)原样上抛
+            findByName(name) ?: throw e
+        }
 
     /** tagType 为 null 表示不改动(导入老格式文件缺该字段时保留原值) */
     fun update(id: Long, name: String, color: String, description: String? = null, tagType: TagType? = null) {

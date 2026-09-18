@@ -46,19 +46,24 @@ class SchemaStatRepository(
     }
 
     /** 单 schema 刷新(扫描创建时调用);缓存未初始化时也直接写入 */
-    fun upsert(datasourceId: Long, dbName: String?, stat: CachedStat) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                conn.prepareStatement(
-                    "DELETE FROM schema_stat WHERE datasource_id=? AND " + dbCond(dbName) + " AND schema_name=?"
-                ).use { ps ->
-                    ps.setLong(1, datasourceId)
-                    if (!dbName.isNullOrBlank()) ps.setString(2, dbName)
-                    ps.setString(if (dbName.isNullOrBlank()) 2 else 3, stat.schemaName)
-                    ps.executeUpdate()
-                }
-                insert(conn, datasourceId, dbName, stat)
+    fun upsert(datasourceId: Long, dbName: String?, stat: CachedStat) =
+        writeQueue.submit { upsertTx(datasourceId, dbName, stat) }
+
+    /** 扫描路径火忘写:不阻塞扫描线程,失败由队列记日志(语义同 [upsert]) */
+    fun upsertAsync(datasourceId: Long, dbName: String?, stat: CachedStat) =
+        writeQueue.submitAsync { upsertTx(datasourceId, dbName, stat) }
+
+    private fun upsertTx(datasourceId: Long, dbName: String?, stat: CachedStat) {
+        jdbc.tx { conn ->
+            conn.prepareStatement(
+                "DELETE FROM schema_stat WHERE datasource_id=? AND " + dbCond(dbName) + " AND schema_name=?"
+            ).use { ps ->
+                ps.setLong(1, datasourceId)
+                if (!dbName.isNullOrBlank()) ps.setString(2, dbName)
+                ps.setString(if (dbName.isNullOrBlank()) 2 else 3, stat.schemaName)
+                ps.executeUpdate()
             }
+            insert(conn, datasourceId, dbName, stat)
         }
     }
 

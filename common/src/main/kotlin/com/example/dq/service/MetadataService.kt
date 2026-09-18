@@ -5,6 +5,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.ColumnMeta
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.IndexMeta
+import com.example.dq.model.ScanStatus
 import com.example.dq.model.SchemaColumn
 import com.example.dq.model.SchemaStat
 import com.example.dq.model.TableStat
@@ -12,7 +13,9 @@ import com.example.dq.repository.MetaCacheRepository
 import com.example.dq.repository.ScanRepository
 import com.example.dq.repository.SchemaDocRepository
 import com.example.dq.repository.SchemaStatRepository
+import org.slf4j.LoggerFactory
 import java.sql.SQLException
+import java.sql.Types
 import java.time.LocalDateTime
 
 /** 库/表元数据查询(同步、快速路径) */
@@ -33,6 +36,8 @@ class MetadataService(
         onFailure = { id, message, kind -> dataSourceService.markConnFailure(id, message, kind) },
         onSuccess = { id -> dataSourceService.markConnRecovered(id) },
     )
+
+    private val log = LoggerFactory.getLogger(MetadataService::class.java)
 
     /** 本次调用是否因数据源连接失败降级读了本地缓存(壳层写响应头用) */
     fun consumeCacheFallback(): Boolean = cacheFallback.consumeFallback()
@@ -141,11 +146,13 @@ class MetadataService(
         if (!refresh && cacheReady) {
             return metaCacheRepo.listTables(datasourceId, db, schema).map { it.toTableStat() }
         }
-        // 缓存未就绪或强制刷新:从业务库拉最新结构并覆盖本地缓存;回源失败且有缓存则降级返回缓存
+        // 缓存未就绪或强制刷新:从业务库拉最新结构并覆盖本地缓存;回源失败且有缓存则降级返回缓存,
+        // 无缓存时再降级到最新扫描快照(还原后回填 meta_table)
         return cacheFallback.fetch(
             datasourceId,
             hasCache = { cacheReady },
             readCache = { metaCacheRepo.listTables(datasourceId, db, schema).map { it.toTableStat() } },
+            readSnapshot = { tablesFromScanSnapshot(datasourceId, database, schema) },
         ) {
             val fresh = fetchTables(datasourceId, database, schema)
             metaCacheRepo.replaceTables(datasourceId, db, schema, fresh.map { it.toCached() })
@@ -173,6 +180,7 @@ class MetadataService(
             datasourceId,
             hasCache = { cached != null },
             readCache = { cached ?: 0L },
+            readSnapshot = { columnCountFromScanSnapshot(datasourceId, database, schema) },
         ) {
             val ds = dataSourceService.get(datasourceId)
             val dialect = dialectOf(ds)
@@ -260,6 +268,7 @@ class MetadataService(
             datasourceId,
             hasCache = { cacheReady },
             readCache = { metaCacheRepo.listColumns(datasourceId, db, schema, table).map { it.toColumnMeta() } },
+            readSnapshot = { columnsFromScanSnapshot(datasourceId, database, schema, table) },
         ) {
             val fresh = fetchColumns(datasourceId, database, schema, table)
             metaCacheRepo.replaceColumns(datasourceId, db, schema, table, fresh.mapIndexed { i, c -> c.toCached(i) })
@@ -425,6 +434,60 @@ class MetadataService(
         } else {
             normalizeDb(database)
         }
+
+    // ---------- 扫描快照降级(断网且本地无缓存时,从最近一次 DONE 扫描还原结构并回填缓存) ----------
+
+    /**
+     * 表清单快照还原:最近 DONE 任务的 scan_table → 整粒度覆盖 meta_table 后返回。
+     * 任务内全部表都纳入(快照时存在的表);行数优先用非采样表的精确值,采样表的 total_rows 只是采样行数,
+     * 不能当估算值(与 latestDoneJobsByTable 的口径一致)。无 DONE 任务或任务无表返回 null(不降级)。
+     */
+    private fun tablesFromScanSnapshot(datasourceId: Long, database: String?, schema: String): List<TableStat>? {
+        val job = scanRepository.latestDoneJob(datasourceId, database, schema) ?: return null
+        val tables = scanRepository.listScanTables(job.id)
+        if (tables.isEmpty()) return null
+        val cached = tables.map { t ->
+            MetaCacheRepository.CachedTable(
+                t.tableName, t.comment, t.storageInfo,
+                if (t.sampled) t.estRows else (t.totalRows ?: t.estRows), t.sizeBytes)
+        }
+        metaCacheRepo.replaceTables(datasourceId, normalizeDb(database), schema, cached)
+        log.info("数据源 {} 库[{}/{}] 断网且无结构缓存,已从扫描任务 {} 快照还原 {} 张表",
+            datasourceId, database ?: "", schema, job.id, cached.size)
+        return cached.map { it.toTableStat() }
+    }
+
+    /**
+     * 单表字段快照还原:最近 DONE 任务里该表(须 DONE)的 scan_column → 整粒度覆盖 meta_column 后返回。
+     * 快照不含原始 typeName/jdbcType/索引:typeName 以展示类型兜底、jdbcType 记 OTHER(仅断网展示用,
+     * 回源恢复后首次刷新即被真实结构覆盖);表不在快照中或未扫描成功返回 null(由调用方抛出原始连接错误)。
+     */
+    private fun columnsFromScanSnapshot(datasourceId: Long, database: String?, schema: String, table: String): List<ColumnMeta>? {
+        val job = scanRepository.latestDoneJob(datasourceId, database, schema) ?: return null
+        val scanTable = scanRepository.findScanTableByName(job.id, table) ?: return null
+        // 只看扫描成功的表:失败/未完成的表没有字段快照,空字段无从区分「无字段」与「没扫到」
+        if (scanTable.status != ScanStatus.DONE) return null
+        var pkSeq = 0
+        val cached = scanRepository.listScanColumns(scanTable.id).mapIndexed { i, c ->
+            val pk = c.keyLabel == "PK"
+            MetaCacheRepository.CachedColumn(
+                i, c.columnName ?: "", c.columnType ?: "", c.columnType ?: "", Types.OTHER,
+                c.nullable ?: true, c.defaultValue, c.columnComment,
+                pk, if (pk) ++pkSeq else 0, c.keyLabel == "UNI")
+        }
+        metaCacheRepo.replaceColumns(datasourceId, normalizeDb(database), schema, table, cached)
+        log.info("数据源 {} 库[{}/{}] 表 {} 断网且无字段缓存,已从扫描任务 {} 快照还原 {} 个字段",
+            datasourceId, database ?: "", schema, table, job.id, cached.size)
+        return cached.map { it.toColumnMeta() }
+    }
+
+    /** schema 字段总数快照还原:最近 DONE 任务内 DONE 表的字段数求和 → 覆盖 meta_column_count 后返回 */
+    private fun columnCountFromScanSnapshot(datasourceId: Long, database: String?, schema: String): Long? {
+        val job = scanRepository.latestDoneJob(datasourceId, database, schema) ?: return null
+        val count = scanRepository.countDoneColumnsByJob(job.id)
+        metaCacheRepo.replaceColumnCount(datasourceId, normalizeDb(database), schema, count)
+        return count
+    }
 
     // ---------- 结构缓存模型转换 ----------
 

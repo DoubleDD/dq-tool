@@ -580,7 +580,8 @@ const scanScopeLabel = computed(() =>
 )
 
 function openScanDialog(rows) {
-  scanTargets.value = rows
+  // ScanDialog 的多目标契约是 [{ schema, database }],而本页行对象的库/架构名字段是 name,这里显式映射
+  scanTargets.value = rows.map((row) => ({ schema: row.name, database: row.database || '' }))
   scanDialogVisible.value = true
 }
 

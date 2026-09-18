@@ -151,24 +151,34 @@ class MetaCacheRepository(
         ) { it.getString(1) }
 
     /** 整粒度覆盖数据源级库清单缓存 */
-    fun replaceDatabases(datasourceId: Long, names: List<String>) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                deleteNames(conn, datasourceId, "")
-                insertNames(conn, datasourceId, "", names)
-                writeFlag(conn, datasourceId, "", "", "", KIND_DATABASE)
-            }
+    fun replaceDatabases(datasourceId: Long, names: List<String>) =
+        writeQueue.submit { replaceDatabasesTx(datasourceId, names) }
+
+    /** 火忘写(方言层拦截器回填用):不阻塞读取线程,失败由队列记日志(语义同 [replaceDatabases]) */
+    fun replaceDatabasesAsync(datasourceId: Long, names: List<String>) =
+        writeQueue.submitAsync { replaceDatabasesTx(datasourceId, names) }
+
+    private fun replaceDatabasesTx(datasourceId: Long, names: List<String>) {
+        jdbc.tx { conn ->
+            deleteNames(conn, datasourceId, "")
+            insertNames(conn, datasourceId, "", names)
+            writeFlag(conn, datasourceId, "", "", "", KIND_DATABASE)
         }
     }
 
     /** 整粒度覆盖某库的 schema 清单缓存(单库方言 dbName 空串) */
-    fun replaceSchemas(datasourceId: Long, dbName: String, names: List<String>) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                deleteNames(conn, datasourceId, dbName)
-                insertNames(conn, datasourceId, dbName, names)
-                writeFlag(conn, datasourceId, dbName, "", "", KIND_SCHEMA)
-            }
+    fun replaceSchemas(datasourceId: Long, dbName: String, names: List<String>) =
+        writeQueue.submit { replaceSchemasTx(datasourceId, dbName, names) }
+
+    /** 火忘写(方言层拦截器回填用):不阻塞读取线程,失败由队列记日志(语义同 [replaceSchemas]) */
+    fun replaceSchemasAsync(datasourceId: Long, dbName: String, names: List<String>) =
+        writeQueue.submitAsync { replaceSchemasTx(datasourceId, dbName, names) }
+
+    private fun replaceSchemasTx(datasourceId: Long, dbName: String, names: List<String>) {
+        jdbc.tx { conn ->
+            deleteNames(conn, datasourceId, dbName)
+            insertNames(conn, datasourceId, dbName, names)
+            writeFlag(conn, datasourceId, dbName, "", "", KIND_SCHEMA)
         }
     }
 
@@ -209,13 +219,18 @@ class MetaCacheRepository(
         }
 
     /** 无字段标记:表不存在或没有字段时置 TRUE,扫描/续扫按空表跳过;表不存在于缓存时无操作 */
-    fun setNoColumns(datasourceId: Long, dbName: String, schema: String, table: String, noColumns: Boolean) {
-        writeQueue.submit {
-            jdbc.update(
-                "UPDATE meta_table SET no_columns=? WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?",
-                noColumns, datasourceId, dbName, schema, table
-            )
-        }
+    fun setNoColumns(datasourceId: Long, dbName: String, schema: String, table: String, noColumns: Boolean) =
+        writeQueue.submit { setNoColumnsTx(datasourceId, dbName, schema, table, noColumns) }
+
+    /** 扫描路径火忘写:不阻塞扫描 worker,失败由队列记日志(语义同 [setNoColumns]) */
+    fun setNoColumnsAsync(datasourceId: Long, dbName: String, schema: String, table: String, noColumns: Boolean) =
+        writeQueue.submitAsync { setNoColumnsTx(datasourceId, dbName, schema, table, noColumns) }
+
+    private fun setNoColumnsTx(datasourceId: Long, dbName: String, schema: String, table: String, noColumns: Boolean) {
+        jdbc.update(
+            "UPDATE meta_table SET no_columns=? WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?",
+            noColumns, datasourceId, dbName, schema, table
+        )
     }
 
     /** 表是否带无字段标记(缓存里没有该表时视为 false) */
@@ -226,34 +241,39 @@ class MetaCacheRepository(
         ) { it.getBoolean(1) } ?: false
 
     /** 整粒度覆盖某 schema 的表缓存(首次拉取或手动/扫描刷新);覆盖后无字段标记随旧行清除(重新同步后字段有无未知) */
-    fun replaceTables(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                conn.prepareStatement("DELETE FROM meta_table WHERE datasource_id=? AND db_name=? AND schema_name=?")
-                    .use { ps ->
-                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                        ps.executeUpdate()
-                    }
-                conn.prepareStatement(
-                    "INSERT INTO meta_table(datasource_id, db_name, schema_name, table_name, comment, storage_info, est_rows, size_bytes) " +
-                            "VALUES (?,?,?,?,?,?,?,?)"
-                ).use { ps ->
-                    for (t in tables) {
-                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                        ps.setString(4, t.tableName); ps.setString(5, t.comment); ps.setString(6, t.storageInfo)
-                        ps.setObject(7, t.estRows); ps.setObject(8, t.sizeBytes)
-                        ps.addBatch()
-                    }
-                    ps.executeBatch()
+    fun replaceTables(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) =
+        writeQueue.submit { replaceTablesTx(datasourceId, dbName, schema, tables) }
+
+    /** 扫描路径火忘写:不阻塞扫描 worker,失败由队列记日志(语义同 [replaceTables]) */
+    fun replaceTablesAsync(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) =
+        writeQueue.submitAsync { replaceTablesTx(datasourceId, dbName, schema, tables) }
+
+    private fun replaceTablesTx(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) {
+        jdbc.tx { conn ->
+            conn.prepareStatement("DELETE FROM meta_table WHERE datasource_id=? AND db_name=? AND schema_name=?")
+                .use { ps ->
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                    ps.executeUpdate()
                 }
-                writeFlag(conn, datasourceId, dbName, schema, "", KIND_TABLE)
-                // 表集合变化 → 已不存在表的子级缓存(字段/索引/整库字段清单/就绪标记)随覆盖清掉,
-                // 避免离线浏览或智能提示读到已删表的陈旧结构
-                deleteStaleTableChildren(conn, datasourceId, dbName, schema)
-                // 表集合变化 → 该 schema 的字段总数与全部单表 DDL 可能过时,按粒度失效
-                deleteColumnCount(conn, datasourceId, dbName, schema)
-                deleteDdl(conn, datasourceId, dbName, schema, null)
+            conn.prepareStatement(
+                "INSERT INTO meta_table(datasource_id, db_name, schema_name, table_name, comment, storage_info, est_rows, size_bytes) " +
+                        "VALUES (?,?,?,?,?,?,?,?)"
+            ).use { ps ->
+                for (t in tables) {
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                    ps.setString(4, t.tableName); ps.setString(5, t.comment); ps.setString(6, t.storageInfo)
+                    ps.setObject(7, t.estRows); ps.setObject(8, t.sizeBytes)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
             }
+            writeFlag(conn, datasourceId, dbName, schema, "", KIND_TABLE)
+            // 表集合变化 → 已不存在表的子级缓存(字段/索引/整库字段清单/就绪标记)随覆盖清掉,
+            // 避免离线浏览或智能提示读到已删表的陈旧结构
+            deleteStaleTableChildren(conn, datasourceId, dbName, schema)
+            // 表集合变化 → 该 schema 的字段总数与全部单表 DDL 可能过时,按粒度失效
+            deleteColumnCount(conn, datasourceId, dbName, schema)
+            deleteDdl(conn, datasourceId, dbName, schema, null)
         }
     }
 
@@ -289,22 +309,27 @@ class MetaCacheRepository(
      * 用于「只扫若干张表」的扫描:此时拿到的不是全量表清单,不能走 [replaceTables] 的整粒度覆盖
      * (会把本地缓存冲成部分清单);MERGE 只更新列出的列,no_columns 等既有标记保留。
      */
-    fun mergeTables(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) {
+    fun mergeTables(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) =
+        writeQueue.submit { mergeTablesTx(datasourceId, dbName, schema, tables) }
+
+    /** 扫描路径火忘写:不阻塞扫描 worker,失败由队列记日志(语义同 [mergeTables]) */
+    fun mergeTablesAsync(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) =
+        writeQueue.submitAsync { mergeTablesTx(datasourceId, dbName, schema, tables) }
+
+    private fun mergeTablesTx(datasourceId: Long, dbName: String, schema: String, tables: List<CachedTable>) {
         if (tables.isEmpty()) return
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                conn.prepareStatement(
-                    "MERGE INTO meta_table(datasource_id, db_name, schema_name, table_name, comment, storage_info, est_rows, size_bytes) " +
-                            "KEY(datasource_id, db_name, schema_name, table_name) VALUES (?,?,?,?,?,?,?,?)"
-                ).use { ps ->
-                    for (t in tables) {
-                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                        ps.setString(4, t.tableName); ps.setString(5, t.comment); ps.setString(6, t.storageInfo)
-                        ps.setObject(7, t.estRows); ps.setObject(8, t.sizeBytes)
-                        ps.addBatch()
-                    }
-                    ps.executeBatch()
+        jdbc.tx { conn ->
+            conn.prepareStatement(
+                "MERGE INTO meta_table(datasource_id, db_name, schema_name, table_name, comment, storage_info, est_rows, size_bytes) " +
+                        "KEY(datasource_id, db_name, schema_name, table_name) VALUES (?,?,?,?,?,?,?,?)"
+            ).use { ps ->
+                for (t in tables) {
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                    ps.setString(4, t.tableName); ps.setString(5, t.comment); ps.setString(6, t.storageInfo)
+                    ps.setObject(7, t.estRows); ps.setObject(8, t.sizeBytes)
+                    ps.addBatch()
                 }
+                ps.executeBatch()
             }
         }
     }
@@ -326,35 +351,40 @@ class MetaCacheRepository(
         }
 
     /** 整粒度覆盖单表字段缓存 */
-    fun replaceColumns(datasourceId: Long, dbName: String, schema: String, table: String, columns: List<CachedColumn>) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                conn.prepareStatement(
-                    "DELETE FROM meta_column WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
-                ).use { ps ->
-                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                    ps.executeUpdate()
-                }
-                conn.prepareStatement(
-                    "INSERT INTO meta_column(datasource_id, db_name, schema_name, table_name, ordinal, column_name, " +
-                            "type_name, display_type, jdbc_type, nullable, default_value, comment, primary_key, pk_seq, unique_index_first) " +
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
-                ).use { ps ->
-                    for (c in columns) {
-                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                        ps.setInt(5, c.ordinal); ps.setString(6, c.columnName)
-                        ps.setString(7, c.typeName); ps.setString(8, c.displayType); ps.setInt(9, c.jdbcType)
-                        ps.setBoolean(10, c.nullable); ps.setString(11, c.defaultValue); ps.setString(12, c.comment)
-                        ps.setBoolean(13, c.primaryKey); ps.setInt(14, c.pkSeq); ps.setBoolean(15, c.uniqueIndexFirst)
-                        ps.addBatch()
-                    }
-                    ps.executeBatch()
-                }
-                writeFlag(conn, datasourceId, dbName, schema, table, KIND_COLUMN)
-                // 字段变化 → 该表 DDL 与该 schema 字段总数过时
-                deleteDdl(conn, datasourceId, dbName, schema, table)
-                deleteColumnCount(conn, datasourceId, dbName, schema)
+    fun replaceColumns(datasourceId: Long, dbName: String, schema: String, table: String, columns: List<CachedColumn>) =
+        writeQueue.submit { replaceColumnsTx(datasourceId, dbName, schema, table, columns) }
+
+    /** 扫描路径火忘写:不阻塞扫描 worker,失败由队列记日志(语义同 [replaceColumns]) */
+    fun replaceColumnsAsync(datasourceId: Long, dbName: String, schema: String, table: String, columns: List<CachedColumn>) =
+        writeQueue.submitAsync { replaceColumnsTx(datasourceId, dbName, schema, table, columns) }
+
+    private fun replaceColumnsTx(datasourceId: Long, dbName: String, schema: String, table: String, columns: List<CachedColumn>) {
+        jdbc.tx { conn ->
+            conn.prepareStatement(
+                "DELETE FROM meta_column WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
+            ).use { ps ->
+                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                ps.executeUpdate()
             }
+            conn.prepareStatement(
+                "INSERT INTO meta_column(datasource_id, db_name, schema_name, table_name, ordinal, column_name, " +
+                        "type_name, display_type, jdbc_type, nullable, default_value, comment, primary_key, pk_seq, unique_index_first) " +
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            ).use { ps ->
+                for (c in columns) {
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                    ps.setInt(5, c.ordinal); ps.setString(6, c.columnName)
+                    ps.setString(7, c.typeName); ps.setString(8, c.displayType); ps.setInt(9, c.jdbcType)
+                    ps.setBoolean(10, c.nullable); ps.setString(11, c.defaultValue); ps.setString(12, c.comment)
+                    ps.setBoolean(13, c.primaryKey); ps.setInt(14, c.pkSeq); ps.setBoolean(15, c.uniqueIndexFirst)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+            }
+            writeFlag(conn, datasourceId, dbName, schema, table, KIND_COLUMN)
+            // 字段变化 → 该表 DDL 与该 schema 字段总数过时
+            deleteDdl(conn, datasourceId, dbName, schema, table)
+            deleteColumnCount(conn, datasourceId, dbName, schema)
         }
     }
 
@@ -370,31 +400,36 @@ class MetaCacheRepository(
         }
 
     /** 整粒度覆盖单表索引缓存 */
-    fun replaceIndexes(datasourceId: Long, dbName: String, schema: String, table: String, indexes: List<CachedIndex>) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                conn.prepareStatement(
-                    "DELETE FROM meta_index WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
-                ).use { ps ->
-                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                    ps.executeUpdate()
-                }
-                conn.prepareStatement(
-                    "INSERT INTO meta_index(datasource_id, db_name, schema_name, table_name, index_name, is_unique, ordinal, column_name) " +
-                            "VALUES (?,?,?,?,?,?,?,?)"
-                ).use { ps ->
-                    for (i in indexes) {
-                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                        ps.setString(5, i.indexName); ps.setBoolean(6, i.unique); ps.setInt(7, i.ordinal)
-                        ps.setString(8, i.columnName)
-                        ps.addBatch()
-                    }
-                    ps.executeBatch()
-                }
-                writeFlag(conn, datasourceId, dbName, schema, table, KIND_INDEX)
-                // 索引变化 → 该表 DDL(含索引)过时
-                deleteDdl(conn, datasourceId, dbName, schema, table)
+    fun replaceIndexes(datasourceId: Long, dbName: String, schema: String, table: String, indexes: List<CachedIndex>) =
+        writeQueue.submit { replaceIndexesTx(datasourceId, dbName, schema, table, indexes) }
+
+    /** 扫描路径火忘写:不阻塞扫描 worker,失败由队列记日志(语义同 [replaceIndexes]) */
+    fun replaceIndexesAsync(datasourceId: Long, dbName: String, schema: String, table: String, indexes: List<CachedIndex>) =
+        writeQueue.submitAsync { replaceIndexesTx(datasourceId, dbName, schema, table, indexes) }
+
+    private fun replaceIndexesTx(datasourceId: Long, dbName: String, schema: String, table: String, indexes: List<CachedIndex>) {
+        jdbc.tx { conn ->
+            conn.prepareStatement(
+                "DELETE FROM meta_index WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
+            ).use { ps ->
+                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                ps.executeUpdate()
             }
+            conn.prepareStatement(
+                "INSERT INTO meta_index(datasource_id, db_name, schema_name, table_name, index_name, is_unique, ordinal, column_name) " +
+                        "VALUES (?,?,?,?,?,?,?,?)"
+            ).use { ps ->
+                for (i in indexes) {
+                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                    ps.setString(5, i.indexName); ps.setBoolean(6, i.unique); ps.setInt(7, i.ordinal)
+                    ps.setString(8, i.columnName)
+                    ps.addBatch()
+                }
+                ps.executeBatch()
+            }
+            writeFlag(conn, datasourceId, dbName, schema, table, KIND_INDEX)
+            // 索引变化 → 该表 DDL(含索引)过时
+            deleteDdl(conn, datasourceId, dbName, schema, table)
         }
     }
 
@@ -421,43 +456,53 @@ class MetaCacheRepository(
     }
 
     /** 整粒度覆盖某 schema 的字段清单缓存;同时清掉 per-table SCOLUMN 标记(schema 级就绪后不再需要) */
-    fun replaceSchemaColumns(datasourceId: Long, dbName: String, schema: String, rows: List<CachedSchemaColumn>) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                conn.prepareStatement("DELETE FROM meta_schema_column WHERE datasource_id=? AND db_name=? AND schema_name=?")
-                    .use { ps ->
-                        ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                        ps.executeUpdate()
-                    }
-                conn.prepareStatement(
-                    "DELETE FROM meta_cache_flag " +
-                            "WHERE datasource_id=? AND db_name=? AND schema_name=? AND kind=? AND table_name<>''"
-                ).use { ps ->
+    fun replaceSchemaColumns(datasourceId: Long, dbName: String, schema: String, rows: List<CachedSchemaColumn>) =
+        writeQueue.submit { replaceSchemaColumnsTx(datasourceId, dbName, schema, rows) }
+
+    /** 火忘写(方言层拦截器回填用):不阻塞读取线程,失败由队列记日志(语义同 [replaceSchemaColumns]) */
+    fun replaceSchemaColumnsAsync(datasourceId: Long, dbName: String, schema: String, rows: List<CachedSchemaColumn>) =
+        writeQueue.submitAsync { replaceSchemaColumnsTx(datasourceId, dbName, schema, rows) }
+
+    private fun replaceSchemaColumnsTx(datasourceId: Long, dbName: String, schema: String, rows: List<CachedSchemaColumn>) {
+        jdbc.tx { conn ->
+            conn.prepareStatement("DELETE FROM meta_schema_column WHERE datasource_id=? AND db_name=? AND schema_name=?")
+                .use { ps ->
                     ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                    ps.setString(4, KIND_SCOLUMN)
                     ps.executeUpdate()
                 }
-                insertSchemaColumns(conn, datasourceId, dbName, schema, rows)
-                writeFlag(conn, datasourceId, dbName, schema, "", KIND_SCOLUMN)
-                // 整库字段清单覆盖 → schema 字段总数可能过时
-                deleteColumnCount(conn, datasourceId, dbName, schema)
+            conn.prepareStatement(
+                "DELETE FROM meta_cache_flag " +
+                        "WHERE datasource_id=? AND db_name=? AND schema_name=? AND kind=? AND table_name<>''"
+            ).use { ps ->
+                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                ps.setString(4, KIND_SCOLUMN)
+                ps.executeUpdate()
             }
+            insertSchemaColumns(conn, datasourceId, dbName, schema, rows)
+            writeFlag(conn, datasourceId, dbName, schema, "", KIND_SCOLUMN)
+            // 整库字段清单覆盖 → schema 字段总数可能过时
+            deleteColumnCount(conn, datasourceId, dbName, schema)
         }
     }
 
     /** 单表粒度覆盖字段清单缓存(分批拉取时每批落库) */
-    fun replaceSchemaTableColumns(datasourceId: Long, dbName: String, schema: String, table: String, rows: List<CachedSchemaColumn>) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                conn.prepareStatement(
-                    "DELETE FROM meta_schema_column WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
-                ).use { ps ->
-                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
-                    ps.executeUpdate()
-                }
-                insertSchemaColumns(conn, datasourceId, dbName, schema, rows)
-                writeFlag(conn, datasourceId, dbName, schema, table, KIND_SCOLUMN)
+    fun replaceSchemaTableColumns(datasourceId: Long, dbName: String, schema: String, table: String, rows: List<CachedSchemaColumn>) =
+        writeQueue.submit { replaceSchemaTableColumnsTx(datasourceId, dbName, schema, table, rows) }
+
+    /** 火忘写(方言层拦截器回填用):不阻塞读取线程,失败由队列记日志(语义同 [replaceSchemaTableColumns]) */
+    fun replaceSchemaTableColumnsAsync(datasourceId: Long, dbName: String, schema: String, table: String, rows: List<CachedSchemaColumn>) =
+        writeQueue.submitAsync { replaceSchemaTableColumnsTx(datasourceId, dbName, schema, table, rows) }
+
+    private fun replaceSchemaTableColumnsTx(datasourceId: Long, dbName: String, schema: String, table: String, rows: List<CachedSchemaColumn>) {
+        jdbc.tx { conn ->
+            conn.prepareStatement(
+                "DELETE FROM meta_schema_column WHERE datasource_id=? AND db_name=? AND schema_name=? AND table_name=?"
+            ).use { ps ->
+                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema); ps.setString(4, table)
+                ps.executeUpdate()
             }
+            insertSchemaColumns(conn, datasourceId, dbName, schema, rows)
+            writeFlag(conn, datasourceId, dbName, schema, table, KIND_SCOLUMN)
         }
     }
 
@@ -487,17 +532,22 @@ class MetaCacheRepository(
         ) { it.getString(1) }
 
     /** 整粒度覆盖单表 DDL 缓存 */
-    fun replaceDdl(datasourceId: Long, dbName: String, schema: String, table: String, ddl: String) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                deleteDdl(conn, datasourceId, dbName, schema, table)
-                conn.prepareStatement(
-                    "INSERT INTO meta_ddl(datasource_id, db_name, schema_name, table_name, ddl) VALUES (?,?,?,?,?)"
-                ).use { ps ->
-                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                    ps.setString(4, table); ps.setString(5, ddl)
-                    ps.executeUpdate()
-                }
+    fun replaceDdl(datasourceId: Long, dbName: String, schema: String, table: String, ddl: String) =
+        writeQueue.submit { replaceDdlTx(datasourceId, dbName, schema, table, ddl) }
+
+    /** 火忘写(方言层拦截器回填用):不阻塞读取线程,失败由队列记日志(语义同 [replaceDdl]) */
+    fun replaceDdlAsync(datasourceId: Long, dbName: String, schema: String, table: String, ddl: String) =
+        writeQueue.submitAsync { replaceDdlTx(datasourceId, dbName, schema, table, ddl) }
+
+    private fun replaceDdlTx(datasourceId: Long, dbName: String, schema: String, table: String, ddl: String) {
+        jdbc.tx { conn ->
+            deleteDdl(conn, datasourceId, dbName, schema, table)
+            conn.prepareStatement(
+                "INSERT INTO meta_ddl(datasource_id, db_name, schema_name, table_name, ddl) VALUES (?,?,?,?,?)"
+            ).use { ps ->
+                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                ps.setString(4, table); ps.setString(5, ddl)
+                ps.executeUpdate()
             }
         }
     }
@@ -510,17 +560,22 @@ class MetaCacheRepository(
         ) { rs -> val v = rs.getLong(1); if (rs.wasNull()) null else v }
 
     /** 整粒度覆盖 schema 字段总数缓存 */
-    fun replaceColumnCount(datasourceId: Long, dbName: String, schema: String, count: Long) {
-        writeQueue.submit {
-            jdbc.tx { conn ->
-                deleteColumnCount(conn, datasourceId, dbName, schema)
-                conn.prepareStatement(
-                    "INSERT INTO meta_column_count(datasource_id, db_name, schema_name, column_count) VALUES (?,?,?,?)"
-                ).use { ps ->
-                    ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
-                    ps.setLong(4, count)
-                    ps.executeUpdate()
-                }
+    fun replaceColumnCount(datasourceId: Long, dbName: String, schema: String, count: Long) =
+        writeQueue.submit { replaceColumnCountTx(datasourceId, dbName, schema, count) }
+
+    /** 火忘写(方言层拦截器回填用):不阻塞读取线程,失败由队列记日志(语义同 [replaceColumnCount]) */
+    fun replaceColumnCountAsync(datasourceId: Long, dbName: String, schema: String, count: Long) =
+        writeQueue.submitAsync { replaceColumnCountTx(datasourceId, dbName, schema, count) }
+
+    private fun replaceColumnCountTx(datasourceId: Long, dbName: String, schema: String, count: Long) {
+        jdbc.tx { conn ->
+            deleteColumnCount(conn, datasourceId, dbName, schema)
+            conn.prepareStatement(
+                "INSERT INTO meta_column_count(datasource_id, db_name, schema_name, column_count) VALUES (?,?,?,?)"
+            ).use { ps ->
+                ps.setLong(1, datasourceId); ps.setString(2, dbName); ps.setString(3, schema)
+                ps.setLong(4, count)
+                ps.executeUpdate()
             }
         }
     }
