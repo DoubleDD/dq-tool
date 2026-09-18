@@ -21,6 +21,8 @@ dq-tool 是一个轻量级单体应用:交付的 fat jar 是**纯 API 服务**(�
 - Tauri 交付形态:webview 从本地 `frontendDist` 直载,跨域访问 `127.0.0.1:<动态端口>`;后端 `dq.access-token` 由 Rust 每次启动随机生成并经 `-Ddq.access-token` 注入,前端从 IPC `api_base()` 取 `{base,token}` 后走 `X-Dq-Token` 头(SSE 走 `?token=`);CORS 用 `anyHost()` 只对 `/api/*` 开放,门禁豁免清单固定为 `/api/health`、`/api/license/status`、`/api/lan/share/**`,不得扩大
 - **所有下载/导出入口必须走 `web/src/utils/download.js`**(`downloadFile`/`downloadText`/`downloadDataUrl`),兼容浏览器·jpackage `--app`(同源 + Cookie)与 Tauri 套壳(tauri:// 源 + token,原生保存框)两种形态;禁止裸 `<a href="/api/...">`/裸 `window.open`——相对 `/api` 在 Tauri 下会把整个 webview 导航走(细则见 前端页面与按钮逻辑 贯穿性机制 10)
 - `data/`(H2 数据文件)不应提交或外发;功能性 `.bat` 注释一律用英文且必须保持 CRLF 行尾
+- **测试分层铁律**:日常改动只跑相关测试(`--tests` 过滤到测试类,或模块级 `./gradlew :common:test` / `:server:test`;Gradle up-to-date 自动跳过未受影响部分);**发版(走发布流程打 tag)前必须全量 `make test` 通过**(细则见 构建运行与测试)
+- **发版流程禁止清理 worktree**:发布(合并 feature 分支/打 tag)不得删除任何 worktree 目录或分支;worktree 仅在「feature 完全完成且代码已合并入 main」后由完成该 feature 的一方自动清理,其余情况一律保留、由用户手动清理
 
 ## 快速命令
 

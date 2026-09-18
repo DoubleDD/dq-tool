@@ -685,6 +685,10 @@ class RelationInferFlowTest {
             MetaCacheRepository.CachedTable("basin", "流域表", null, null, null),
             MetaCacheRepository.CachedTable("no_overlap", null, null, null, null),
             MetaCacheRepository.CachedTable("orphan_tbl", "孤儿表", null, null, null),
+            // empty_tbl 必须出现在整粒度表清单里:replaceTables 自 2.0.9 起会清理「不在 meta_table 的表」
+            // 的子级缓存(meta_column/meta_index/meta_schema_column),漏掉它会把 seedBase 回填的字段清单一并删掉,
+            // 名字匹配便命中不到空表,「空表样本为空不剔除」的那条候选也就不再产生
+            MetaCacheRepository.CachedTable("empty_tbl", "空表", null, null, null),
         ))
         submitAndAwait()
         val relations = relationService.list(DS_ID, null, SCHEMA, null, null)
@@ -701,7 +705,8 @@ class RelationInferFlowTest {
 
         // 候选显隐开关:打开后含 CANDIDATE 边
         val fullWithCandidate = relationService.graph(DS_ID, null, SCHEMA, null, true)
-        assertEquals(4, fullWithCandidate.edges.size)
+        assertEquals(4, fullWithCandidate.edges.size,
+            fullWithCandidate.edges.joinToString { "${it.oneTable}.${it.oneColumn}->${it.manyTable}.${it.manyColumn}:${it.status}" })
 
         // 星型图:该表参与的 CONFIRMED+CANDIDATE 边;节点只含锚点与边两端表(孤儿表不出现)
         val star = relationService.graph(DS_ID, null, SCHEMA, "reservoir", false)

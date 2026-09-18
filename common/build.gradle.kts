@@ -75,6 +75,10 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 tasks.test {
     useJUnitPlatform()
+    // 显式指定测试 worker 堆:Gradle Test 任务默认仅 512m,全量套件(600+ 用例,含 Testcontainers
+    // 端到端与大量 DB_CLOSE_DELAY=-1 的 H2 内存库)会以「Gradle Test Executor N > Java heap space」
+    // 失败——不是用例错,是 worker 堆不够。发版铁律要求全量 make test 通过,故必须给足。
+    maxHeapSize = "2g"
     testLogging {
         events("passed", "failed", "skipped")
     }

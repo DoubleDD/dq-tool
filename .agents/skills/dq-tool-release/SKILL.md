@@ -21,7 +21,7 @@ metadata:
 - 仓库:dq-tool,路径 `/Volumes/code/com.codeup.aliyun/tools`;默认分支 `main`
 - **版本号唯一源头是根目录 `VERSION` 文件**(如 `0.1.8`)。发布 tag 命名 = `v` + 去掉开头 `0.` 的版本号(`0.1.8` → `v1.8`,与 package-win.bat 的 PKG_VERSION、wiki 发版步骤口径一致);升版本号用 `scripts/bump-version.sh`,不要手改散落各处
 - 提交规范(复用 git-commit skill):中文 message,格式 `<类型>(<scope>): <一句话>` + 变更内容/影响范围;类型 feat/fix/refactor/chore/docs/style/test
-- 红线:只提交自己改的文件;**严禁 `git add -A` / `git add .`**
+- 红线:只提交自己改的文件;**严禁 `git add -A` / `git add .`**;**发版流程禁止清理 worktree**——合并 feature 分支进 main 后不删 worktree 目录、不删分支,原样保留(清理时机见 Pitfalls)
 - 推 main 或推 `v*` tag 会触发 `.github/workflows/release.yml`(当前启用 Windows 免安装 zip;前端依赖用 pnpm,lock 唯一来源 `web/pnpm-lock.yaml`)
 - 发布细节见 `docs/wiki/打包与发布.md`(版本号变更流程、已踩过的坑)
 
@@ -41,6 +41,7 @@ grep -E "^## $(sed 's/^0\.//;s/\./\\./g' VERSION)([[:space:]]|$)" CHANGELOG.md  
 - 改动较多时用 `git diff HEAD -- <file>` 抽查,警惕 IDE 格式化污染
 - 若用户只给了版本号没给 tag:按 `v` + 去 `0.` 前缀推导并先与用户确认
 - **changelog 检查**:`CHANGELOG.md` 必须有当前版本(去 `0.` 前缀的展示版)的 `## ` 段落且内容已填写(不是 bump 脚本插入的「待填写」占位);缺失/未填写时提醒用户先补——构建有 verifyChangelog 硬校验,缺段落打包直接失败(格式约定见 `docs/wiki/更新日志.md`)
+- **全量测试铁律**:发版前必须 `make test`(全量)并全部通过;有失败项先修复,不得带红发版。日常改动只跑相关测试即可(`--tests` 过滤/模块级),但发版不允许跳过全量(铁律,见 `docs/wiki/构建运行与测试.md`)
 
 ### 2. 提交代码到 main
 
@@ -100,3 +101,4 @@ git ls-remote origin refs/tags/<tag>
 - 提交信息禁用英文单行、禁用 emoji;注释/文档保持中文
 - 版本号只改 `VERSION`(经 bump-version.sh),tag 名与 VERSION 必须对应,禁止拍脑袋命名
 - 发布前确认工作区没有未提交的"本次发布之外"的改动;tag 应指向 main 最新提交
+- **worktree 清理时机**:仅在「feature 完全完成且代码已合并入 main」后,由完成该 feature 的一方自动清理;其余情况(含发版合并 feature 分支后)一律保留 worktree 目录与分支,由用户手动清理——发版 skill 绝不清理

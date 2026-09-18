@@ -144,7 +144,9 @@ class MetadataService(
         val db = normalizeDb(database)
         val cacheReady = metaCacheRepo.isTableCacheReady(datasourceId, db, schema)
         if (!refresh && cacheReady) {
-            return metaCacheRepo.listTables(datasourceId, db, schema).map { it.toTableStat() }
+            val cached = metaCacheRepo.listTables(datasourceId, db, schema).map { it.toTableStat() }
+            // 缓存就绪仅代表「整粒度拉取过」,不保证行完好(可能被局部删除):缺表时从扫描快照补回
+            return fillMissingTablesFromScanSnapshot(datasourceId, database, schema, db, cached)
         }
         // 缓存未就绪或强制刷新:从业务库拉最新结构并覆盖本地缓存;回源失败且有缓存则降级返回缓存,
         // 无缓存时再降级到最新扫描快照(还原后回填 meta_table)
@@ -436,6 +438,37 @@ class MetadataService(
         }
 
     // ---------- 扫描快照降级(断网且本地无缓存时,从最近一次 DONE 扫描还原结构并回填缓存) ----------
+
+    /**
+     * 表缓存缺表自愈:缓存就绪(整粒度拉取过)但行局部缺失(如 meta_table 里某行被删)时,
+     * 取该 数据源+库+schema 最近一次 DONE 扫描的快照,把快照里有而缓存里没有的表按
+     * [tablesFromScanSnapshot] 同口径 merge 回 meta_table(只补缺失、不覆盖已有行、不动就绪标记),
+     * 并并入本次返回结果(按表名排序,保持缓存路径原有的有序口径)。
+     *
+     * 快照数据可能滞后(源库删表后仍会补回);`refresh=true` 回源成功后的整粒度覆盖会清掉滞后行,
+     * 与断网快照降级的「仅兜底展示、回源即覆盖」语义一致。不设降级标志:返回的是缓存+快照的并集,
+     * 不是「拿旧缓存顶替回源」。
+     */
+    private fun fillMissingTablesFromScanSnapshot(
+        datasourceId: Long, database: String?, schema: String, db: String, cached: List<TableStat>
+    ): List<TableStat> {
+        val job = scanRepository.latestDoneJob(datasourceId, database, schema) ?: return cached
+        val snapshotTables = scanRepository.listScanTables(job.id)
+        if (snapshotTables.isEmpty()) return cached
+        val existing = cached.mapNotNullTo(HashSet()) { it.name }
+        val missing = snapshotTables.filter { it.tableName !in existing }
+        if (missing.isEmpty()) return cached
+        val restored = missing.map { t ->
+            MetaCacheRepository.CachedTable(
+                t.tableName, t.comment, t.storageInfo,
+                if (t.sampled) t.estRows else (t.totalRows ?: t.estRows), t.sizeBytes
+            )
+        }
+        metaCacheRepo.mergeTables(datasourceId, db, schema, restored)
+        log.info("数据源 {} 库[{}/{}] 表缓存缺失 {} 张表,已从扫描任务 {} 快照补回",
+            datasourceId, database ?: "", schema, restored.size, job.id)
+        return (cached + restored.map { it.toTableStat() }).sortedBy { it.name ?: "" }
+    }
 
     /**
      * 表清单快照还原:最近 DONE 任务的 scan_table → 整粒度覆盖 meta_table 后返回。

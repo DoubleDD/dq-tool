@@ -21,6 +21,7 @@
 - **长时间使用后程序卡死、前端心跳接口报网络错误**:JVM 堆上限 384MB 在大表分段扫描、Excel/Word 导出与 AI 调用并发叠加时会被打满,进程陷入 GC 空转,所有接口超时,前端表现为「连不上接口」。堆上限统一上调至 1GB(gradle run、Makefile、jpackage/tauri 安装包所有启动入口),移除与 `-Xmx` 并存时本不生效的 `-XX:MaxRAMPercentage=50`;同时新增 OOM 兜底诊断——堆耗尽时自动把 heap dump 落到日志目录 `logs/oom-<pid>.hprof`,再发生可直接拿到现场分析
 - **并发导入重复建任务 / 撞标记唯一键报主键冲突**:扫描记录导入的任务判重(同数据源+db+schema+创建时间)与标记按名合并都是「先查后写」,两个页签同时拉取局域网共享、或拉取与手工导入并行时,会双双通过判重产生重复扫描任务,并在 `tag_def.name` 唯一键上撞主键冲突导致整批导入失败。现在三个导入入口(`ScanTransferService`/`AnnotationTransferService`/`MetadataTransferService`)整体经进程内互斥锁 `TransferImportLock` 串行;导入与「标记管理页手工新建/改名」之间的并发由 `TagRepository.createIfAbsent`(撞唯一键读回既有标记)兜底,两侧都不会再裸报主键冲突
 - **库列表页「批量扫描」提交的 schema 为 null 被后端拦下**:`ScanDialog` 的多目标契约是 `[{schema, database}]`,而库列表页行对象的库/架构名字段是 `name`,直接透传会把 `undefined` 序列化成 null 提交,后端按「schema 不得为 null」拒绝。现在库页显式映射 `rows.map(row => ({ schema: row.name, ... }))` 后再传,对话框内统一取 `schema ?? name` 并在缺失时提交前显式报错,不再发出无效请求
+- **表清单缓存「就绪」但表行局部缺失时不再漏表**:表清单的就绪判断走 `meta_cache_flag` 标记,只代表「整粒度拉取过」,不代表行完好——`meta_table` 某行被删(或整粒度覆盖只落了部分表)时,浏览表列表会一直少这几张表。现在缓存命中路径会取该 数据源+库+schema 最近一次 DONE 扫描的快照,把**快照里有而缓存里没有的表** merge 补回 `meta_table`(只补缺失、不覆盖已有行、不动就绪标记)并并入返回结果(按表名排序),记 info 日志;这是缓存+快照的并集而非「拿旧缓存顶替回源」,故**不置 `X-Dq-Cache-Fallback` 降级标志**。快照数据可能滞后(源库已删的表仍会补回),`refresh=true` 回源成功后的整粒度覆盖会清掉滞后行
 
 ## 2.0.13 (2026-09-17)
 

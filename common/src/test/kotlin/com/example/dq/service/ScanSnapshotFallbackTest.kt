@@ -139,6 +139,42 @@ class ScanSnapshotFallbackTest {
     }
 
     @Test
+    fun `缓存就绪但缺表时从扫描快照补回缺失表`() {
+        val dsId = dsService.create(
+            DataSourceRequest("缓存缺表库", "jdbc:mysql://127.0.0.1:1/nodb", "root", "pw", null, null)
+        )
+        prepareSnapshot(dsId)
+        // 模拟缓存局部丢失:整粒度覆盖只写入 t1(t2 相当于从 meta_table 被删),就绪标记仍在
+        metaCacheRepo.replaceTables(
+            dsId, "", "db1",
+            listOf(MetaCacheRepository.CachedTable("t1", "用户表", "InnoDB", 100L, 2048L))
+        )
+        assertThat(metaCacheRepo.isTableCacheReady(dsId, "", "db1")).isTrue()
+
+        val tables = metadata.listTables(dsId, null, "db1")
+
+        assertThat(tables).extracting<String> { it.name }.containsExactly("t1", "t2")
+        // 缺失表已 merge 回缓存:再次访问照常返回,且不置降级标志(这不是缓存顶替回源)
+        assertThat(metaCacheRepo.listTables(dsId, "", "db1").map { it.tableName }).containsExactly("t1", "t2")
+        assertThat(metadata.consumeCacheFallback()).isFalse()
+    }
+
+    @Test
+    fun `缓存就绪但无DONE扫描时缺表不补原样返回`() {
+        val dsId = dsService.create(
+            DataSourceRequest("无快照库", "jdbc:mysql://127.0.0.1:1/nodb", "root", "pw", null, null)
+        )
+        metaCacheRepo.replaceTables(
+            dsId, "", "db1",
+            listOf(MetaCacheRepository.CachedTable("t1", "用户表", "InnoDB", 100L, 2048L))
+        )
+
+        val tables = metadata.listTables(dsId, null, "db1")
+
+        assertThat(tables).extracting<String> { it.name }.containsExactly("t1")
+    }
+
+    @Test
     fun `快照还原取最近一个DONE任务`() {
         val dsId = dsService.create(
             DataSourceRequest("快照版本库", "jdbc:mysql://127.0.0.1:1/nodb", "root", "pw", null, null)
