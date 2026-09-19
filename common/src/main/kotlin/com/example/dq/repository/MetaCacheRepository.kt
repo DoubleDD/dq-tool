@@ -150,6 +150,13 @@ class MetaCacheRepository(
             datasourceId, dbName
         ) { it.getString(1) }
 
+    /** 表结构缓存里出现过的库名(多库方言断网推导库清单用);空串槽位(默认库/单库方言)不算库名 */
+    fun listDistinctTableDbNames(datasourceId: Long): List<String> =
+        jdbc.query(
+            "SELECT DISTINCT db_name FROM meta_table WHERE datasource_id=? AND db_name<>'' ORDER BY db_name",
+            datasourceId
+        ) { it.getString(1) }
+
     /** 整粒度覆盖数据源级库清单缓存 */
     fun replaceDatabases(datasourceId: Long, names: List<String>) =
         writeQueue.submit { replaceDatabasesTx(datasourceId, names) }

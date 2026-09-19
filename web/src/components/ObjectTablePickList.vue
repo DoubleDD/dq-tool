@@ -9,7 +9,7 @@
   </el-form-item>
   <el-form-item label="schema">
     <el-select v-model="schema" filterable placeholder="选择库/schema" style="width: 100%"
-               :loading="schemaLoading" :disabled="fixed || (isMultiDb && !db)" @change="onSchemaChange">
+               :loading="schemaLoading" :disabled="fixed || (isMultiDb && !db && !dbFallback)" @change="onSchemaChange">
       <el-option v-for="s in schemas" :key="s" :value="s" :label="s" />
     </el-select>
   </el-form-item>
@@ -68,6 +68,9 @@ const props = defineProps({
 const fixed = computed(() => !!props.fixedSchema)
 
 const isMultiDb = computed(() => ['SQLSERVER', 'KINGBASE'].includes(props.datasource?.dbType))
+// 库清单不可用(断网且无缓存)时的降级:多库方言退回 db='' 直拉 schema 清单(后端本地缓存兜底),
+// 对齐 TableCascadePicker/库列表页 Schemas.vue 的 db='' 兜底;reset 时复位
+const dbFallback = ref(false)
 
 const tableRef = ref(null)
 const db = ref('')
@@ -104,6 +107,9 @@ async function loadDatabases() {
   dbLoading.value = true
   try {
     databases.value = await request.get(`/datasources/${props.datasource.id}/databases`).catch(() => [])
+    // 库清单为空(断网无缓存/白名单滤空):退回 db='' 直拉 schema 清单
+    dbFallback.value = !databases.value.length
+    if (dbFallback.value) await loadSchemas()
   } finally {
     dbLoading.value = false
   }
@@ -116,7 +122,7 @@ async function loadSchemas() {
   selected.value = []
   // reserve-selection 下内部选中需经 tableRef 清空,直接改 selected 不会取消勾选
   tableRef.value?.clearSelection()
-  if (isMultiDb.value && !db.value) return
+  if (isMultiDb.value && !db.value && !dbFallback.value) return
   schemaLoading.value = true
   try {
     const q = db.value ? `?db=${encodeURIComponent(db.value)}` : ''
@@ -167,6 +173,7 @@ function reset() {
   tables.value = []
   selected.value = []
   relKinds.value = {}
+  dbFallback.value = false
   tableRef.value?.clearSelection()
   if (fixed.value) {
     db.value = props.fixedDb

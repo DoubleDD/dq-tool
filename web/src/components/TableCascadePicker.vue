@@ -4,6 +4,8 @@
  *
  * 栏位:数据源 → 数据库 → 模式(按数据库类型动态显示)→ 表(选项带注释)。
  * - 多库方言(SQL Server / Kingbase):`/databases` 出库清单,再 `/schemas?db=` 出模式清单,四栏齐全;
+ *   库清单为空(断网且无缓存/白名单滤空)时降级为单库链——db='' 直拉 `/schemas` 由后端本地缓存兜底,
+ *   按三栏形态展示(effMultiDb),对齐库列表页 Schemas.vue 的 db='' 兜底;
  * - 其余方言(SQL Server/Kingbase 之外)没有独立的模式层,库/schema 合并落在第二栏,第三栏隐藏——即「三栏级联」。
  * 每一栏都可输入关键字过滤(表栏匹配表名或注释);只有唯一选项的库/模式层自动选中,减少点击。
  * `level='schema'` 时终态粒度升到库/schema:表栏隐藏,终态栏(单库方言第二栏/多库方言第三栏)
@@ -60,13 +62,18 @@ const tableLoading = ref(false)
 const currentDs = computed(() => props.datasources.find((d) => String(d.id) === String(props.datasourceId)))
 // 多库方言(SQL Server/Kingbase)先选库再选模式;与对象管理选表组件同一判定
 const multiDb = computed(() => ['SQLSERVER', 'KINGBASE'].includes(currentDs.value?.dbType))
+// 库清单不可用(断网且无缓存/白名单滤空)时的降级:多库方言退回单库链(db='' 直拉 schema 清单,
+// 后端走本地缓存兜底),对齐库列表页 Schemas.vue 的 db='' 兜底;换数据源时复位
+const dbFallback = ref(false)
+// 渲染与联动统一走「有效多库」:降级时按单库方言形态展示(第二栏直接是库/schema 清单,模式栏隐藏)
+const effMultiDb = computed(() => multiDb.value && !dbFallback.value)
 // schema 终态粒度:终态栏 +/− 逐条切换,表栏隐藏
 const schemaLevel = computed(() => props.level === 'schema')
-// 第二栏是否为终态 schema 栏(单库方言:库/schema 合并落在第二栏)
-const lane2Toggle = computed(() => schemaLevel.value && !multiDb.value)
+// 第二栏是否为终态 schema 栏(单库方言或库清单降级时:库/schema 合并落在第二栏)
+const lane2Toggle = computed(() => schemaLevel.value && !effMultiDb.value)
 
-/** 第二栏数据:多库方言是库清单,其余方言直接是库/schema 清单 */
-const lane2Options = computed(() => (multiDb.value ? databases.value : schemas.value))
+/** 第二栏数据:有效多库方言是库清单,其余(含库清单降级)直接是库/schema 清单 */
+const lane2Options = computed(() => (effMultiDb.value ? databases.value : schemas.value))
 
 function includesText(value, keyword) {
   return String(value ?? '').toLowerCase().includes(keyword)
@@ -105,6 +112,7 @@ const selectedLabel = computed(() => {
 
 async function loadDatabases() {
   databases.value = []
+  dbFallback.value = false
   if (!props.datasourceId || !multiDb.value) return
   const id = props.datasourceId
   dbLoading.value = true
@@ -113,6 +121,11 @@ async function loadDatabases() {
     // 快速连点数据源时丢弃过期响应
     if (id !== props.datasourceId) return
     databases.value = list
+    // 库清单为空(断网无缓存/白名单滤空):退回 db='' 单库链直拉 schema 清单,后端本地缓存兜底
+    if (!list.length) {
+      dbFallback.value = true
+      await loadSchemas()
+    }
   } finally {
     dbLoading.value = false
   }
@@ -121,7 +134,7 @@ async function loadDatabases() {
 async function loadSchemas() {
   schemas.value = []
   if (!props.datasourceId) return
-  if (multiDb.value && !props.db) return
+  if (effMultiDb.value && !props.db) return
   const id = props.datasourceId
   const db = props.db
   schemaLoading.value = true
@@ -173,7 +186,7 @@ function pickDatasource(ds) {
 }
 
 function pickLane2(name) {
-  if (multiDb.value) {
+  if (effMultiDb.value) {
     if (name === props.db) return
     emit('update:db', name)
     emit('update:schema', '')
@@ -226,8 +239,8 @@ function onSchemaRowClick(name) {
 
 /** 库/模式层只有一个候选时自动选中,省一次点击(schema 终态粒度下终态栏不自动选,避免误加入) */
 function autoPickOne() {
-  if (!schemaLevel.value && multiDb.value && props.db && !props.schema && schemas.value.length === 1) pickSchema(schemas.value[0])
-  if (!props.db && !props.schema && lane2Options.value.length === 1 && (multiDb.value || !schemaLevel.value)) {
+  if (!schemaLevel.value && effMultiDb.value && props.db && !props.schema && schemas.value.length === 1) pickSchema(schemas.value[0])
+  if (!props.db && !props.schema && lane2Options.value.length === 1 && (effMultiDb.value || !schemaLevel.value)) {
     pickLane2(lane2Options.value[0])
   }
 }
@@ -237,6 +250,7 @@ watch(() => props.datasourceId, async (id) => {
   databases.value = []
   schemas.value = []
   tables.value = []
+  dbFallback.value = false
   dbKeyword.value = ''
   schemaKeyword.value = ''
   tableKeyword.value = ''
@@ -284,7 +298,7 @@ const MIN_TABLE_PX = 180
 
 /** 当前可见栏的 key 顺序(与模板中的栏位一致;schema 终态粒度没有表栏) */
 const visibleKeys = computed(() => {
-  if (multiDb.value) return schemaLevel.value ? ['ds', 'db', 'schema'] : ['ds', 'db', 'schema', 'table']
+  if (effMultiDb.value) return schemaLevel.value ? ['ds', 'db', 'schema'] : ['ds', 'db', 'schema', 'table']
   return schemaLevel.value ? ['ds', 'db'] : ['ds', 'db', 'table']
 })
 
@@ -366,12 +380,12 @@ function resetWidths() {
       <div class="cascade-col col-db" :class="{ 'col-last': isLastLane('db') }" :style="colStyle('db')">
         <div class="cascade-head">数据库<span class="cascade-count">{{ dbOptions.length }}</span></div>
         <div class="cascade-search">
-          <el-input v-model="dbKeyword" size="small" clearable :placeholder="multiDb ? '过滤数据库' : '过滤库/schema'"
+          <el-input v-model="dbKeyword" size="small" clearable :placeholder="effMultiDb ? '过滤数据库' : '过滤库/schema'"
                     :disabled="!datasourceId" :prefix-icon="Search" />
         </div>
-        <div v-loading="dbLoading || (!multiDb && schemaLoading)" class="cascade-list">
+        <div v-loading="dbLoading || (!effMultiDb && schemaLoading)" class="cascade-list">
           <div v-for="d in dbOptions" :key="d" class="cascade-item"
-               :class="{ active: !lane2Toggle && (multiDb ? d === db : d === schema),
+               :class="{ active: !lane2Toggle && (effMultiDb ? d === db : d === schema),
                          disabled: lane2Toggle && isTableDisabled(d),
                          added: lane2Toggle && isTableAdded(d) }"
                @click="lane2Toggle ? onSchemaRowClick(d) : pickLane2(d)">
@@ -384,15 +398,15 @@ function resetWidths() {
             </el-tooltip>
           </div>
           <div v-if="!dbOptions.length" class="cascade-empty">
-            {{ !datasourceId ? '请先选择数据源' : (multiDb ? '该数据源下没有库' : '该数据源下没有库/schema') }}
+            {{ !datasourceId ? '请先选择数据源' : (effMultiDb ? '该数据源下没有库' : '该数据源下没有库/schema') }}
           </div>
         </div>
       </div>
       <!-- 第二栏后的分隔条:schema 终态粒度的单库方言下第二栏已是最右栏,不再需要 -->
-      <div v-if="multiDb || !schemaLevel" class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('db', $event)" @dblclick="resetWidths" />
+      <div v-if="effMultiDb || !schemaLevel" class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('db', $event)" @dblclick="resetWidths" />
 
-      <!-- 第三栏:模式(仅多库方言动态显示;schema 终态粒度下此栏为终态栏,行尾 +/− 逐条加入/移出) -->
-      <div v-if="multiDb" class="cascade-col col-schema" :class="{ 'col-last': isLastLane('schema') }" :style="colStyle('schema')">
+      <!-- 第三栏:模式(仅有效多库方言动态显示;schema 终态粒度下此栏为终态栏,行尾 +/− 逐条加入/移出) -->
+      <div v-if="effMultiDb" class="cascade-col col-schema" :class="{ 'col-last': isLastLane('schema') }" :style="colStyle('schema')">
         <div class="cascade-head">模式<span class="cascade-count">{{ schemaOptions.length }}</span></div>
         <div class="cascade-search">
           <el-input v-model="schemaKeyword" size="small" clearable placeholder="过滤模式" :disabled="!db" :prefix-icon="Search" />
@@ -414,7 +428,7 @@ function resetWidths() {
           <div v-if="!schemaOptions.length" class="cascade-empty">{{ db ? '该库下没有模式' : '请先选择数据库' }}</div>
         </div>
       </div>
-      <div v-if="multiDb && !schemaLevel" class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('schema', $event)" @dblclick="resetWidths" />
+      <div v-if="effMultiDb && !schemaLevel" class="cascade-resizer" title="拖动调整栏宽(双击恢复默认)" @mousedown="startResize('schema', $event)" @dblclick="resetWidths" />
 
       <!-- 第四栏:表(选项带注释,schema 终态粒度隐藏);toggleable 时每行右侧给 +/− 做「加入/移出目标」 -->
       <div v-if="!schemaLevel" class="cascade-col col-table" :style="colStyle('table')">
@@ -442,7 +456,7 @@ function resetWidths() {
     <div v-if="showSelected" class="cascade-selected">
       <template v-if="selectedLabel">已选{{ label }}:{{ selectedLabel }}</template>
       <template v-else>
-        请按「数据源 → 数据库 → 模式 → 表」逐栏选择{{ label }}{{ datasourceId && !multiDb ? '(该数据源无独立模式层,第三栏隐藏)' : '' }}
+        请按「数据源 → 数据库 → 模式 → 表」逐栏选择{{ label }}{{ datasourceId && !effMultiDb ? '(该数据源无独立模式层,第三栏隐藏)' : '' }}
       </template>
     </div>
   </div>

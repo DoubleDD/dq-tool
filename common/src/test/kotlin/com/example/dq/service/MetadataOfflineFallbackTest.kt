@@ -30,6 +30,7 @@ class MetadataOfflineFallbackTest {
     private lateinit var dsRepo: DataSourceRepository
     private lateinit var dsService: DataSourceService
     private lateinit var metaCacheRepo: MetaCacheRepository
+    private lateinit var statRepo: SchemaStatRepository
     private lateinit var metadata: MetadataService
 
     @BeforeEach
@@ -40,6 +41,7 @@ class MetadataOfflineFallbackTest {
         val jdbc = Jdbc(ds)
         dsRepo = DataSourceRepository(jdbc)
         metaCacheRepo = MetaCacheRepository(jdbc)
+        statRepo = SchemaStatRepository(jdbc)
         val config = AppConfig(dataDir = Files.createTempDirectory("metadata-offline"))
         dsService = DataSourceService(
             dsRepo, CryptoUtil(config), DialectFactory, config,
@@ -102,6 +104,83 @@ class MetadataOfflineFallbackTest {
             .isEqualTo("CREATE TABLE t1 (id INT)")
         assertThat(metadata.consumeCacheFallback()).isTrue()
         assertThat(dsRepo.findById(dsId)!!.connKind).isEqualTo("UNREACHABLE")
+    }
+
+    @Test
+    fun `多库方言库清单缓存未建立且不可达时从本地沉淀推导库清单`() {
+        val dsId = dsService.create(
+            DataSourceRequest("离线多库", "jdbc:sqlserver://127.0.0.1:1;encrypt=false", "sa", "pw", null, null)
+        )
+        // 预置本地沉淀:表结构缓存(meta_table)见过 HNFA,库概览缓存(schema_stat)见过 BASIC
+        metaCacheRepo.replaceTables(
+            dsId, "HNFA", "dbo",
+            listOf(MetaCacheRepository.CachedTable("t1", "表1", null, null, null))
+        )
+        statRepo.upsert(dsId, "BASIC", SchemaStatRepository.CachedStat("dbo", 2, 100L))
+
+        // 库清单缓存从未建立 + 回源不可达 → 从本地沉淀推导库清单
+        val dbs = metadata.listDatabases(dsId)
+
+        assertThat(dbs).containsExactlyInAnyOrder("HNFA", "BASIC")
+        assertThat(metadata.consumeCacheFallback()).isTrue()
+    }
+
+    @Test
+    fun `schema清单缓存未建立且不可达时从库概览缓存推导`() {
+        val dsId = dsService.create(
+            DataSourceRequest("离线schema库", "jdbc:mysql://127.0.0.1:1/nodb", "root", "pw", null, null)
+        )
+        // 预置库概览缓存:模拟库列表页此前联网时沉淀过
+        statRepo.upsert(dsId, null, SchemaStatRepository.CachedStat("db1", 3, 1024L))
+        statRepo.upsert(dsId, null, SchemaStatRepository.CachedStat("db2", 1, 512L))
+
+        val schemas = metadata.listSchemas(dsId, null)
+
+        assertThat(schemas).containsExactlyInAnyOrder("db1", "db2")
+        assertThat(metadata.consumeCacheFallback()).isTrue()
+    }
+
+    @Test
+    fun `单库方言库清单缓存未建立且不可达时从库概览缓存推导`() {
+        val dsId = dsService.create(
+            DataSourceRequest("离线单库", "jdbc:mysql://127.0.0.1:1/nodb", "root", "pw", null, null)
+        )
+        statRepo.upsert(dsId, null, SchemaStatRepository.CachedStat("db1", 3, 1024L))
+
+        // 单库方言的「库」就是 schema:库清单同样能从库概览缓存推导
+        val dbs = metadata.listDatabases(dsId)
+
+        assertThat(dbs).containsExactly("db1")
+        assertThat(metadata.consumeCacheFallback()).isTrue()
+    }
+
+    @Test
+    fun `本地无任何沉淀时库清单回源失败原样抛出`() {
+        val dsId = dsService.create(
+            DataSourceRequest("无沉淀库", "jdbc:mysql://127.0.0.1:1/nodb", "root", "pw", null, null)
+        )
+        val thrown = runCatching { metadata.listDatabases(dsId) }.exceptionOrNull()
+
+        assertThat(thrown).isNotNull()
+        assertThat(metadata.consumeCacheFallback()).isFalse()
+        assertThat(dsRepo.findById(dsId)!!.connStatus).isEqualTo("ERROR")
+    }
+
+    @Test
+    fun `多库方言按默认库名访问时兜底读空串槽位缓存`() {
+        // JDBC URL 配置的默认库是 master;扫描/db='' 浏览沉淀的表缓存落在空串槽位
+        val dsId = dsService.create(
+            DataSourceRequest("默认库槽位", "jdbc:sqlserver://127.0.0.1:1;databaseName=master;encrypt=false", "sa", "pw", null, null)
+        )
+        metaCacheRepo.replaceTables(
+            dsId, "", "dbo",
+            listOf(MetaCacheRepository.CachedTable("t1", "表1", null, 10L, 100L))
+        )
+
+        // 比对选表器按库名 master 访问默认库:应兜底命中空串槽位缓存(无需回源)
+        val tables = metadata.listTables(dsId, "master", "dbo")
+
+        assertThat(tables).extracting<String> { it.name }.containsExactly("t1")
     }
 
     @Test

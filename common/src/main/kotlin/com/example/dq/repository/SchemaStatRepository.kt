@@ -29,6 +29,13 @@ class SchemaStatRepository(
         }
     }
 
+    /** 概览缓存里出现过的库名(多库方言断网推导库清单用);NULL 槽位(默认库/单库方言)不算库名 */
+    fun listDistinctDbNames(datasourceId: Long): List<String> =
+        jdbc.query(
+            "SELECT DISTINCT db_name FROM schema_stat WHERE datasource_id=? AND db_name IS NOT NULL ORDER BY db_name",
+            datasourceId
+        ) { it.getString(1) }
+
     /** 全量替换某数据源某库的缓存(首次从业务库拉取后整体写入);单事务保证「清空 + 重写」原子 */
     fun replaceAll(datasourceId: Long, dbName: String?, stats: List<CachedStat>) {
         writeQueue.submit {

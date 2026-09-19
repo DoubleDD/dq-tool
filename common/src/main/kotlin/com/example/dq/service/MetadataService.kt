@@ -48,7 +48,8 @@ class MetadataService(
     /**
      * 数据源级库清单(多库方言的 database 列表;单库方言恒为空列表):本地缓存优先。
      * 缓存存全量,白名单在读取路径过滤(与 schema_stat 一致);refresh=true 从业务库拉最新并覆盖缓存。
-     * 回源遇网络不可达且本地有缓存时降级返回缓存(见 [cacheFallback])
+     * 回源遇网络不可达且本地有缓存时降级返回缓存(见 [cacheFallback]);
+     * 缓存从未建立时再降级到本地沉淀推导(meta_table/schema_stat 见过的库名,见 [databasesFromLocalStats])
      */
     @Throws(SQLException::class)
     fun listDatabases(datasourceId: Long, unfiltered: Boolean = false, refresh: Boolean = false): List<String> {
@@ -62,6 +63,7 @@ class MetadataService(
                 datasourceId,
                 hasCache = { cacheReady },
                 readCache = { metaCacheRepo.listNames(datasourceId, "") },
+                readSnapshot = { databasesFromLocalStats(datasourceId, dialect) },
             ) {
                 val fresh = fetchDatabases(datasourceId)
                 metaCacheRepo.replaceDatabases(datasourceId, fresh)
@@ -102,7 +104,8 @@ class MetadataService(
     /**
      * 某库的 schema 清单(单库方言 schema 即用户眼中的库):本地缓存优先,断网时有缓存即可正常浏览。
      * 缓存存全量,白名单在读取路径过滤;refresh=true 从业务库拉最新并覆盖缓存;
-     * 回源遇网络不可达且本地有缓存时降级返回缓存(见 [cacheFallback])
+     * 回源遇网络不可达且本地有缓存时降级返回缓存(见 [cacheFallback]);
+     * 缓存从未建立时再降级到库概览缓存推导(schema_stat,见 [schemasFromLocalStats])
      */
     @Throws(SQLException::class)
     fun listSchemas(datasourceId: Long, database: String?, unfiltered: Boolean = false, refresh: Boolean = false): List<String> {
@@ -117,6 +120,7 @@ class MetadataService(
                 datasourceId,
                 hasCache = { cacheReady },
                 readCache = { metaCacheRepo.listNames(datasourceId, db) },
+                readSnapshot = { schemasFromLocalStats(datasourceId, ds, dialect, database) },
             ) {
                 val fresh = fetchSchemas(datasourceId, database)
                 // 连接已建立、默认库已解析,重取缓存键避免连接池未建时落空写进库清单槽位
@@ -141,20 +145,24 @@ class MetadataService(
 
     @Throws(SQLException::class)
     fun listTables(datasourceId: Long, database: String?, schema: String, refresh: Boolean = false): List<TableStat> {
-        val db = normalizeDb(database)
-        val cacheReady = metaCacheRepo.isTableCacheReady(datasourceId, db, schema)
+        val ds = dataSourceService.get(datasourceId)
+        val dbKeys = cacheDbKeys(ds, dialectOf(ds), database)
+        val db = dbKeys.first()
+        // 读键:优先请求库槽位,默认库额外看空串槽位(见 cacheDbKeys)
+        val cacheKey = dbKeys.firstOrNull { metaCacheRepo.isTableCacheReady(datasourceId, it, schema) } ?: db
+        val cacheReady = metaCacheRepo.isTableCacheReady(datasourceId, cacheKey, schema)
         if (!refresh && cacheReady) {
-            val cached = metaCacheRepo.listTables(datasourceId, db, schema).map { it.toTableStat() }
+            val cached = metaCacheRepo.listTables(datasourceId, cacheKey, schema).map { it.toTableStat() }
             // 缓存就绪仅代表「整粒度拉取过」,不保证行完好(可能被局部删除):缺表时从扫描快照补回
-            return fillMissingTablesFromScanSnapshot(datasourceId, database, schema, db, cached)
+            return fillMissingTablesFromScanSnapshot(datasourceId, dbKeys, schema, cacheKey, cached)
         }
         // 缓存未就绪或强制刷新:从业务库拉最新结构并覆盖本地缓存;回源失败且有缓存则降级返回缓存,
         // 无缓存时再降级到最新扫描快照(还原后回填 meta_table)
         return cacheFallback.fetch(
             datasourceId,
             hasCache = { cacheReady },
-            readCache = { metaCacheRepo.listTables(datasourceId, db, schema).map { it.toTableStat() } },
-            readSnapshot = { tablesFromScanSnapshot(datasourceId, database, schema) },
+            readCache = { metaCacheRepo.listTables(datasourceId, cacheKey, schema).map { it.toTableStat() } },
+            readSnapshot = { tablesFromScanSnapshot(datasourceId, dbKeys, schema) },
         ) {
             val fresh = fetchTables(datasourceId, database, schema)
             metaCacheRepo.replaceTables(datasourceId, db, schema, fresh.map { it.toCached() })
@@ -261,16 +269,20 @@ class MetadataService(
     /** 单表字段元数据(结构明细:字段名/类型/注释/约束),未扫描的表也可查看;不含扫描统计;回源失败且有缓存则降级 */
     @Throws(SQLException::class)
     fun listTableColumns(datasourceId: Long, database: String?, schema: String, table: String, refresh: Boolean = false): List<ColumnMeta> {
-        val db = normalizeDb(database)
-        val cacheReady = metaCacheRepo.isColumnCacheReady(datasourceId, db, schema, table)
+        val ds = dataSourceService.get(datasourceId)
+        val dbKeys = cacheDbKeys(ds, dialectOf(ds), database)
+        val db = dbKeys.first()
+        // 读键:优先请求库槽位,默认库额外看空串槽位(见 cacheDbKeys)
+        val cacheKey = dbKeys.firstOrNull { metaCacheRepo.isColumnCacheReady(datasourceId, it, schema, table) } ?: db
+        val cacheReady = metaCacheRepo.isColumnCacheReady(datasourceId, cacheKey, schema, table)
         if (!refresh && cacheReady) {
-            return metaCacheRepo.listColumns(datasourceId, db, schema, table).map { it.toColumnMeta() }
+            return metaCacheRepo.listColumns(datasourceId, cacheKey, schema, table).map { it.toColumnMeta() }
         }
         return cacheFallback.fetch(
             datasourceId,
             hasCache = { cacheReady },
-            readCache = { metaCacheRepo.listColumns(datasourceId, db, schema, table).map { it.toColumnMeta() } },
-            readSnapshot = { columnsFromScanSnapshot(datasourceId, database, schema, table) },
+            readCache = { metaCacheRepo.listColumns(datasourceId, cacheKey, schema, table).map { it.toColumnMeta() } },
+            readSnapshot = { columnsFromScanSnapshot(datasourceId, dbKeys, schema, table) },
         ) {
             val fresh = fetchColumns(datasourceId, database, schema, table)
             metaCacheRepo.replaceColumns(datasourceId, db, schema, table, fresh.mapIndexed { i, c -> c.toCached(i) })
@@ -425,6 +437,19 @@ class MetadataService(
     private fun normalizeDb(database: String?): String = database ?: ""
 
     /**
+     * 缓存/快照读取键(按优先级递减):多库方言请求库是 JDBC URL 里配置的默认库时,追加空串槽位兜底——
+     * 扫描与库列表页 db='' 兜底沉淀的缓存/快照都落在空串槽位,与按库名访问默认库是同一目录
+     * (断网推导降级出真实库名后,比对选表器按库名取默认库的表/字段也能命中)。
+     * 只用于读与降级路径;写路径仍按请求库名归一,空串槽位照旧由 db='' 入口写入。
+     */
+    private fun cacheDbKeys(ds: DataSourceConfig, dialect: DbDialect, database: String?): List<String> {
+        val db = normalizeDb(database)
+        if (!dialect.supportsMultiDatabase() || db.isEmpty()) return listOf(db)
+        val urlDefault = DatasourceKeyMatcher.parseJdbcUrl(ds.jdbcUrl)?.database
+        return if (!urlDefault.isNullOrBlank() && db == urlDefault) listOf(db, "") else listOf(db)
+    }
+
+    /**
      * schema 清单缓存键:多库方言 database 为空时回落到解析后的目标库(默认库),
      * 避免 schema 名写进库清单缓存槽位(meta_database 的 db_name='' 同时是数据源级库清单),
      * 否则库清单被 dbo 等 schema 名污染后,后续请求会把 schema 名当库名切 catalog 报错。
@@ -436,6 +461,46 @@ class MetadataService(
         } else {
             normalizeDb(database)
         }
+
+    // ---------- 本地沉淀推导降级(断网且清单缓存从未建立时,从已有本地元数据推导清单) ----------
+
+    /**
+     * 库清单本地推导降级:回源不可达且库清单缓存从未建立(未成功浏览/同步过库清单)时,
+     * 从本地沉淀的元数据推导——多库方言取 meta_table/schema_stat 里出现过的库名(扫描/浏览沉淀),
+     * 单库方言的「库」就是 schema,取库概览缓存(schema_stat)的 schema 清单。
+     * 推导结果不回写 meta_database:它只是「本地见过哪些库」的并集、未必是全量,
+     * 写回会被后续读取当成权威缓存;数据源恢复可达后 refresh 一次即重建真缓存。
+     * 本地无任何沉淀时返回 null(不降级,由调用方抛出原始连接错误)。
+     */
+    private fun databasesFromLocalStats(datasourceId: Long, dialect: DbDialect): List<String>? {
+        val names = if (dialect.supportsMultiDatabase()) {
+            (metaCacheRepo.listDistinctTableDbNames(datasourceId) + schemaStatRepo.listDistinctDbNames(datasourceId)).distinct()
+        } else {
+            schemaStatRepo.findAll(datasourceId, null).map { it.schemaName }
+        }
+        if (names.isEmpty()) return null
+        log.info("数据源 {} 库清单缓存未建立且回源不可达,已从本地元数据推导 {} 个库", datasourceId, names.size)
+        return names
+    }
+
+    /**
+     * schema 清单本地推导降级:清单缓存未建立且回源不可达时,用库列表页沉淀的库概览缓存
+     * (schema_stat,行存在即就绪、本就存全量 schema)顶上;按读取键顺序尝试(请求库是 URL 默认库时
+     * 额外看空串槽位,见 [cacheDbKeys])。不回写 meta_database:多库方言空 db 时默认库未解析,
+     * 写回会把 schema 名灌进 db_name='' 库清单槽位(即 V61 迁移清理的污染形态)。
+     * 本地无概览缓存时返回 null(不降级,由调用方抛出原始连接错误)。
+     */
+    private fun schemasFromLocalStats(datasourceId: Long, ds: DataSourceConfig, dialect: DbDialect, database: String?): List<String>? {
+        for (db in cacheDbKeys(ds, dialect, database)) {
+            val names = schemaStatRepo.findAll(datasourceId, db).map { it.schemaName }
+            if (names.isNotEmpty()) {
+                log.info("数据源 {} 库[{}] schema 清单缓存未建立且回源不可达,已从库概览缓存推导 {} 个 schema",
+                    datasourceId, db, names.size)
+                return names
+            }
+        }
+        return null
+    }
 
     // ---------- 扫描快照降级(断网且本地无缓存时,从最近一次 DONE 扫描还原结构并回填缓存) ----------
 
@@ -450,9 +515,9 @@ class MetadataService(
      * 不是「拿旧缓存顶替回源」。
      */
     private fun fillMissingTablesFromScanSnapshot(
-        datasourceId: Long, database: String?, schema: String, db: String, cached: List<TableStat>
+        datasourceId: Long, dbKeys: List<String>, schema: String, db: String, cached: List<TableStat>
     ): List<TableStat> {
-        val job = scanRepository.latestDoneJob(datasourceId, database, schema) ?: return cached
+        val job = dbKeys.firstNotNullOfOrNull { scanRepository.latestDoneJob(datasourceId, it, schema) } ?: return cached
         val snapshotTables = scanRepository.listScanTables(job.id)
         if (snapshotTables.isEmpty()) return cached
         val existing = cached.mapNotNullTo(HashSet()) { it.name }
@@ -466,17 +531,17 @@ class MetadataService(
         }
         metaCacheRepo.mergeTables(datasourceId, db, schema, restored)
         log.info("数据源 {} 库[{}/{}] 表缓存缺失 {} 张表,已从扫描任务 {} 快照补回",
-            datasourceId, database ?: "", schema, restored.size, job.id)
+            datasourceId, db, schema, restored.size, job.id)
         return (cached + restored.map { it.toTableStat() }).sortedBy { it.name ?: "" }
     }
 
     /**
-     * 表清单快照还原:最近 DONE 任务的 scan_table → 整粒度覆盖 meta_table 后返回。
+     * 表清单快照还原:按读取键顺序取第一个有 DONE 任务的任务,其 scan_table → 整粒度覆盖 meta_table 后返回。
      * 任务内全部表都纳入(快照时存在的表);行数优先用非采样表的精确值,采样表的 total_rows 只是采样行数,
      * 不能当估算值(与 latestDoneJobsByTable 的口径一致)。无 DONE 任务或任务无表返回 null(不降级)。
      */
-    private fun tablesFromScanSnapshot(datasourceId: Long, database: String?, schema: String): List<TableStat>? {
-        val job = scanRepository.latestDoneJob(datasourceId, database, schema) ?: return null
+    private fun tablesFromScanSnapshot(datasourceId: Long, dbKeys: List<String>, schema: String): List<TableStat>? {
+        val job = dbKeys.firstNotNullOfOrNull { scanRepository.latestDoneJob(datasourceId, it, schema) } ?: return null
         val tables = scanRepository.listScanTables(job.id)
         if (tables.isEmpty()) return null
         val cached = tables.map { t ->
@@ -484,9 +549,10 @@ class MetadataService(
                 t.tableName, t.comment, t.storageInfo,
                 if (t.sampled) t.estRows else (t.totalRows ?: t.estRows), t.sizeBytes)
         }
-        metaCacheRepo.replaceTables(datasourceId, normalizeDb(database), schema, cached)
+        // 回填到快照所属槽位(任务的 db_name 归一口径)
+        metaCacheRepo.replaceTables(datasourceId, normalizeDb(job.dbName), schema, cached)
         log.info("数据源 {} 库[{}/{}] 断网且无结构缓存,已从扫描任务 {} 快照还原 {} 张表",
-            datasourceId, database ?: "", schema, job.id, cached.size)
+            datasourceId, job.dbName ?: "", schema, job.id, cached.size)
         return cached.map { it.toTableStat() }
     }
 
@@ -495,8 +561,8 @@ class MetadataService(
      * 快照不含原始 typeName/jdbcType/索引:typeName 以展示类型兜底、jdbcType 记 OTHER(仅断网展示用,
      * 回源恢复后首次刷新即被真实结构覆盖);表不在快照中或未扫描成功返回 null(由调用方抛出原始连接错误)。
      */
-    private fun columnsFromScanSnapshot(datasourceId: Long, database: String?, schema: String, table: String): List<ColumnMeta>? {
-        val job = scanRepository.latestDoneJob(datasourceId, database, schema) ?: return null
+    private fun columnsFromScanSnapshot(datasourceId: Long, dbKeys: List<String>, schema: String, table: String): List<ColumnMeta>? {
+        val job = dbKeys.firstNotNullOfOrNull { scanRepository.latestDoneJob(datasourceId, it, schema) } ?: return null
         val scanTable = scanRepository.findScanTableByName(job.id, table) ?: return null
         // 只看扫描成功的表:失败/未完成的表没有字段快照,空字段无从区分「无字段」与「没扫到」
         if (scanTable.status != ScanStatus.DONE) return null
@@ -508,9 +574,9 @@ class MetadataService(
                 c.nullable ?: true, c.defaultValue, c.columnComment,
                 pk, if (pk) ++pkSeq else 0, c.keyLabel == "UNI")
         }
-        metaCacheRepo.replaceColumns(datasourceId, normalizeDb(database), schema, table, cached)
+        metaCacheRepo.replaceColumns(datasourceId, normalizeDb(job.dbName), schema, table, cached)
         log.info("数据源 {} 库[{}/{}] 表 {} 断网且无字段缓存,已从扫描任务 {} 快照还原 {} 个字段",
-            datasourceId, database ?: "", schema, table, job.id, cached.size)
+            datasourceId, job.dbName ?: "", schema, table, job.id, cached.size)
         return cached.map { it.toColumnMeta() }
     }
 
