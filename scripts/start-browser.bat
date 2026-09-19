@@ -1,7 +1,7 @@
 @echo off
 rem Browser-mode launcher for a dq-tool package folder (Windows).
 rem Works with both shipped layouts, detected by probing (no config needed):
-rem   Tauri portable : resources\backend\dq-tool.jar + resources\jre + PORTABLE.txt
+rem   Tauri portable : resources\versions\<current>\dq-tool.jar + resources\jre + PORTABLE.txt
 rem   jpackage image : app\dq-tool-<version>.jar + runtime\ + app\static
 rem Double-click to start the fat jar next to the shipped exe and use the UI in a
 rem browser. Mirrors the matching edition: headless=false, so the app opens the
@@ -11,7 +11,8 @@ rem Data dir follows the detected edition's convention, same as its exe:
 rem   PORTABLE.txt next to this file -> <folder>\data   (portable edition)
 rem   anything else                   -> %USERPROFILE%\.dq-tool\data (installed)
 rem The delivered fat jar is pure API and serves no pages by itself: the web
-rem build ships on disk (resources\static for portable, app\static for jpackage).
+rem build ships on disk (static\ inside the version dir for portable, app\static
+rem for jpackage).
 rem All paths are absolute off %~dp0 on purpose: no cd/pushd, so this also works
 rem when double-clicked off a UNC share or a mapped Mac home folder.
 rem Written with plain sequential commands and goto labels only - no
@@ -39,12 +40,18 @@ set "JAVA=java.exe"
 :JAVA_DONE
 call :log java=%JAVA%
 
-rem Fat jar (+ layout detection): portable path, DQ_SERVER_JAR override,
-rem then the jpackage app-image with its versioned jar under app\
-set "JAR=%BASE%resources\backend\dq-tool.jar"
+rem Fat jar (+ layout detection): portable versioned dir first (the versions\current
+rem pointer names the active version; fall back to the alphabetically last version
+rem dir), then DQ_SERVER_JAR override, then the jpackage app-image under app\
+set "JAR="
+set "CURVER="
+if exist "%BASE%resources\versions\current" for /f "delims=" %%v in (%BASE%resources\versions\current) do set "CURVER=%%v"
+if defined CURVER if exist "%BASE%resources\versions\%CURVER%\dq-tool.jar" set "JAR=%BASE%resources\versions\%CURVER%\dq-tool.jar"
+if not defined JAR for /d %%d in ("%BASE%resources\versions\*") do if exist "%%d\dq-tool.jar" set "JAR=%%d\dq-tool.jar"
 set "LAYOUT=portable"
 if defined DQ_SERVER_JAR set "JAR=%DQ_SERVER_JAR%"
 if defined DQ_SERVER_JAR set "LAYOUT=override"
+if not defined JAR goto TRY_JPACKAGE_JAR
 if not exist "%JAR%" goto TRY_JPACKAGE_JAR
 goto JAR_DONE
 :TRY_JPACKAGE_JAR
@@ -56,9 +63,12 @@ if not exist "%JAR%" goto NO_JAR
 :JAR_DONE
 call :log layout=%LAYOUT% jar=%JAR%
 
-rem Frontend assets on disk (index.html marks a usable web build)
+rem Frontend assets on disk (index.html marks a usable web build): static\ next to
+rem the resolved jar covers both the portable version dir and the jpackage app\
+rem layout; the older fixed locations stay as fallbacks
 set "STATIC="
-if exist "%BASE%static\index.html" set "STATIC=%BASE%static"
+for %%j in ("%JAR%") do if exist "%%~dpjstatic\index.html" set "STATIC=%%~dpjstatic"
+if not defined STATIC if exist "%BASE%static\index.html" set "STATIC=%BASE%static"
 if not defined STATIC if exist "%BASE%resources\static\index.html" set "STATIC=%BASE%resources\static"
 if not defined STATIC if exist "%BASE%app\static\index.html" set "STATIC=%BASE%app\static"
 if not defined STATIC goto NO_STATIC
@@ -96,14 +106,14 @@ pause
 exit /b 1
 
 :NO_JAR
-echo [dq-tool] dq-tool.jar not found (looked in resources\backend and app\).
+echo [dq-tool] dq-tool.jar not found (looked in resources\versions and app\).
 call :log error: jar not found
 pause
 exit /b 1
 
 :NO_STATIC
-echo [dq-tool] Frontend assets not found: no static\index.html next to this file.
-echo [dq-tool] The package should ship them (resources\static or app\static).
+echo [dq-tool] Frontend assets not found: no static\index.html next to the jar.
+echo [dq-tool] The package should ship them (static\ inside the version dir or app\static).
 call :log error: frontend assets not found
 pause
 exit /b 1

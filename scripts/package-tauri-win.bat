@@ -1,8 +1,10 @@
 @echo off
 rem Packaging script for the tauri module (Tauri 2 desktop shell) on Windows:
-rem builds the frontend + server fat jar, embeds a full JRE together with the jar
-rem as Tauri bundle resources, and produces an NSIS installer (at runtime the Rust
-rem sidecar launches the embedded jre\bin\java.exe -jar, see tauri/src-tauri/src/main.rs).
+rem builds the frontend + server fat jar, embeds a full JRE (runtime layer, rarely
+rem changes) and the business layer (jar + web build) as a versioned directory
+rem resources\versions\<v>\ with a versions\current pointer file, and produces an
+rem NSIS installer (at runtime the Rust sidecar launches the embedded
+rem jre\bin\java.exe -jar from the current version dir, see tauri/src-tauri/src/).
 rem Prerequisites: JDK 25+, Node 24+, pnpm 11+, Rust (cargo).
 rem
 rem NOTE: keep every comment in this .bat ASCII-only. cmd parses .bat files as GBK on
@@ -36,13 +38,34 @@ if not defined JAR (
   exit /b 1
 )
 
+rem Package version for the versions\<v> layout, read from the VERSION file (single
+rem source of truth; strip the leading "0." prefix: 0.2.0.14 -> 2.0.14).
+rem NOTE: never use %VAR:0.=% to strip the prefix - that syntax replaces EVERY
+rem "0." substring (0.2.0.3 -> 2.3, hit in v2.0.3 CI); use the ~0,2/~2 substring form
+set RAW_VERSION=
+for /f "delims=" %%a in (VERSION) do set RAW_VERSION=%%a
+if not defined RAW_VERSION (
+  echo ERROR: VERSION file missing or empty
+  exit /b 1
+)
+set APP_VERSION=%RAW_VERSION%
+if "%RAW_VERSION:~0,2%"=="0." set APP_VERSION=%RAW_VERSION:~2%
+
 set RES=tauri\src-tauri\resources
 rem Keep PLACEHOLDER.txt: the bundle.resources glob in tauri.conf.json requires at
 rem least one non-hidden file under resources\
 if exist "%RES%\backend" rmdir /s /q "%RES%\backend"
+if exist "%RES%\versions" rmdir /s /q "%RES%\versions"
 if exist "%RES%\jre" rmdir /s /q "%RES%\jre"
-mkdir "%RES%\backend"
-copy "%JAR%" "%RES%\backend\dq-tool.jar" >nul
+rem Business layer ships as a versioned directory: versions\<v>\dq-tool.jar +
+rem versions\<v>\static\ (web build) + versions\current pointer file. The Rust shell
+rem launches the jar and serves the frontend from the dir the pointer names, keeps
+rem the previous version for rollback, and applies business updates in place
+mkdir "%RES%\versions\%APP_VERSION%"
+copy "%JAR%" "%RES%\versions\%APP_VERSION%\dq-tool.jar" >nul
+xcopy "web\dist" "%RES%\versions\%APP_VERSION%\static\" /E /I /Q >nul || exit /b 1
+> "%RES%\versions\current" echo %APP_VERSION%
+> "%RES%\versions\%APP_VERSION%\manifest.json" echo {"version": "%APP_VERSION%"}
 
 rem Embed a full JRE instead of a jlink-trimmed one (same reason as scripts\package-win.bat:
 rem JDBC drivers load classes reflectively and jdeps cannot cover them; the DM driver

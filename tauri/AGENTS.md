@@ -7,7 +7,10 @@
 
 tauri 用 Tauri 2(系统 WebView:macOS WKWebView / Windows WebView2 / Linux WebKitGTK)把
 server 模块的纯 API 后端套壳成桌面应用。tauri 进程本身不含 Java:**Rust 侧拉起 `java -jar` server fat jar
-作为子进程**;前端页面由 webview 从 Tauri 的 `frontendDist`(即 `web/dist`)本地直载(秒开,不再 navigate),
+作为子进程**。**三层分发(2026-09 改造)**:系统层(Rust 壳,极少变)+ runtime 层(内嵌完整 JRE)+
+业务层(jar + 前端,一天几个版本);业务层按版本落盘 `resources/versions/<x.x.x>/`(dq-tool.jar +
+static/ + manifest.json)与 `versions/current` 指针,webview 经自定义协议 `dq://` 从当前版本的
+`static/` 磁盘直载(秒开,不再 navigate,**前端不再内嵌 exe**),
 API 经 CORS + 每次启动随机 token 走 `http://127.0.0.1:<port>/api`。
 
 **常驻 + 托盘模型(2026-08,极速启动方案)**:窗口关闭只隐藏不退出,Java 后端常驻,
@@ -52,9 +55,9 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 - 开发模式数据目录 `./data`(cwd 切到仓库根,可用 `DQ_DATA_DIR` 环境变量覆盖);安装版 `~/.dq-tool/data`(由 Rust 侧传 `-Ddq.data-dir`);**绿色免安装版 `<exe>/data`**(exe 同目录存在 `PORTABLE.txt` 标记即绿色模式,见 `is_portable()`;解压即用、删除即净)
 - **改了前端/后端代码要重新调试时,先彻底退出旧实例再 `make tauri`**:常驻+单实例模型下,重跑只会唤起已有窗口,旧 java 后端不重启,看到的还是旧 jar 内容 —— 退出走托盘菜单「退出」或 Cmd+Q(直接关窗只是隐藏,不算退出)
 
-## 侧车协议(src-tauri/src/main.rs)
+## 侧车协议(src-tauri/src/:main.rs 装配 + backend/protocol/versions/bizupdate 分模块)
 
-- **jar 定位**:`DQ_SERVER_JAR` 环境变量 > 开发默认 `server/build/libs/dq-tool-*.jar`(按修改时间取最新,**debug 构建优先于内嵌资源**)> 安装版内嵌资源 `backend/dq-tool.jar`(macOS 在 `<exe>/../Resources/`;Windows/Linux 在 `<exe>/resources/` —— Tauri 2 的 bundle.resources glob 会保留 `resources/` 前缀落盘,NSIS 装到 `$INSTDIR\resources\`,`bundled_resources_dir` 另兼容"与 exe 同目录"的旧布局)。debug 优先的原因:打包脚本残留的 `src-tauri/resources` 会被 tauri-build 复制到 `target/debug/resources`,若先命中内嵌资源,`tauri dev` 会一直跑旧打包 jar,新构建的前端/后端不生效(2026-08 踩过);同理 `is_packaged()` 仅 release 构建才可能为真,避免 dev 被误判安装版(数据目录错走 `~/.dq-tool/data`、误启用自动更新)
+- **业务层定位(versions.rs)**:`DQ_SERVER_JAR` 环境变量 > 开发默认 `server/build/libs/dq-tool-*.jar`(按修改时间取最新,**debug 构建优先于内嵌资源**)> release 内嵌资源 `versions/`:`resolve_current` 读 `versions/current` 指针并校验 `<v>/dq-tool.jar` + `<v>/static/index.html` 完整,指针损坏回落磁盘最高版本号,启动时 `gc_versions` 只留 current + 次新两版。`bundled_resources_dir` 判据为 `versions/` 目录存在(macOS 在 `<exe>/../Resources/`;Windows/Linux 在 `<exe>/resources/` —— Tauri 2 的 bundle.resources glob 会保留 `resources/` 前缀落盘,NSIS 装到 `$INSTDIR\resources\`,`bundled_resources_dir` 另兼容"与 exe 同目录"的旧布局)。debug 优先 dev jar 的原因:打包脚本残留的 `src-tauri/resources` 会被 tauri-build 复制到 `target/debug/resources`,若先命中内嵌资源,`tauri dev` 会一直跑旧打包 jar,新构建的前端/后端不生效(2026-08 踩过);同理 `is_packaged()` 仅 release 构建才可能为真,避免 dev 被误判安装版(数据目录错走 `~/.dq-tool/data`、误启用自动更新)
 - **java 定位**:`DQ_JAVA` 环境变量 > 安装版内嵌 `jre/bin/java`(Windows 为 `java.exe`,完整 JRE)> PATH 的 `java`
 - **端口**:`TcpListener::bind(127.0.0.1:0)` 取空闲端口后释放传给 `--server.port=`;
   竞态被抢注时 DqApplication 向后避让,Rust 读线程解析 stdout 的「端口 N 被占用,避让到 M」回填实际端口
@@ -69,10 +72,12 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 - **就绪探针**:轮询 `GET /api/license/status` 直到 200(该端点不受授权拦截),超时 60 秒;
   子进程提前退出立即报错。探针用裸 TcpStream 手写 HTTP/1.0(响应小且格式固定,够用;
   流式下载场景不可靠,`save_download` 已引 ureq,见「自定义 IPC 命令」)
-- **窗口**:后端子进程拉起后立即创建 webview,从 `WebviewUrl::App("index.html")` 加载 `frontendDist`
-  即 `web/dist/index.html`(原 `tauri/ui/` 启动占位页已作废删除);后台线程就绪轮询通过后**不再 navigate**,
+- **窗口**:后端子进程拉起后立即创建 webview,`WebviewUrl::External("dq://localhost/index.html")` 经
+  自定义协议 `dq` 从「当前业务版本 static 根」磁盘直载(release:`versions/<current>/static`;
+  开发:仓库 `web/dist`;前端不再内嵌 exe——分层分发的前提,protocol.rs 按请求读盘,`/` 与无扩展名
+  路径回退 index.html,有扩展名的缺失文件 404);后台线程就绪轮询通过后**不再 navigate**,
   只把 `AtomicBool` ready 置位,由前端轮询 IPC `api_base()` 拿动态端口/token —— 页面全程来自本地资源,
-  停掉后端也能出壳;就绪失败仍 fatal 退出
+  停掉后端也能出壳;就绪失败 release 形态回滚次新业务版本一次(backend.rs `rollback_once`),再失败 fatal 退出
 - **常驻与退出**:关窗 `CloseRequested` → `prevent_close` + 隐藏(后端继续跑);托盘
   (TrayIconBuilder,菜单「打开窗口/退出」)承载真正的退出 —— 「退出」显式杀子进程后
   `app.exit(0)`;Cmd+Q 等系统退出走 `RunEvent::ExitRequested|Exit` 杀子进程;macOS 窗口隐藏后
@@ -128,12 +133,13 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   (不为此引 `windows-sys`;dev 构建保留控制台、不弹框,故该分支仅 release 编译)。原因:release exe 无控制台,
   只 eprintln 等于「双击没反应、无日志可查」。**新增任何启动期直接退出的分支都必须走 `fatal()`,不要自己 `eprintln! + exit`**
 
-## 自动更新(tauri-plugin-updater)
+## 自动更新(双通道:业务层 bizupdate + 全量 tauri-plugin-updater)
 
-- 覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式与绿色免安装版不检查 —— 更新包是 NSIS 安装包,会装进 Programs 目录,破坏绿色形态);`setup()` 窗口创建后 spawn 后台线程,全程阻塞式 API,不引 async runtime;**启动时立即检查一次,之后每 `UPDATE_CHECK_INTERVAL`(30 分钟)轮询一次**(loop + `std::thread::sleep`,失败后间隔照常、下一轮继续;下载完成后的确认对话框阻塞期间该线程停住,下一轮检查顺延)
+- **业务层通道(bizupdate.rs,2026-09 分层分发新增,日常更新走这里)**:清单 `business-latest.json`(GitHub Releases 固定资产,`DQ_BUSINESS_MANIFEST` 环境变量可覆盖,测试用)→ 版本号大于当前业务版本且未被跳过 → 预下载业务 zip(jar + static + manifest.json,跨平台通用,几十 MB)→ **minisign 验签**(与全量通道同一把密钥对,公钥常量写在 bizupdate.rs)→ 解压校验后落位 `versions/<v>/` → 原生对话框「立即更新/暂不更新」→ 立即 = 切 `current` 指针 → GC 留新旧两版 → 重启 java → 就绪后 `location.reload()` 刷新页面(static 根在就绪成功后才切换,旧页面全程由旧 static 服务,不混版);**就绪失败自动回滚次新版**(与启动监督共用 `rollback_once`,更新路径回滚失败不 fatal,用户重启即恢复)。启用条件:安装版 + **绿色版**(原地换 `resources/versions` 文件,不再有 NSIS 破坏绿色形态的问题);**macOS 不启用**(.app 是签名整体,自修改 resources 会破坏 Gatekeeper 校验,mac 业务层仍由全量通道覆盖);开发模式不建线程。清单的 `minShell` 高于壳版本(取 tauri.conf.json 的 `version`,**不是** `CARGO_PKG_VERSION`——后者恒为 0.1.0)时该轮交回全量通道
+- **全量通道(tauri-plugin-updater,兜底)**:覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式不检查;绿色免安装版不检查 —— 更新包是 NSIS 安装包,会装进 Programs 目录,破坏绿色形态);与业务通道同一后台线程串联(每轮先业务后全量,`UPDATE_CHECK_INTERVAL` 30 分钟),全程阻塞式 API,不引 async runtime;**启动时立即检查一次,之后按间隔轮询**(loop + `std::thread::sleep`,失败后间隔照常、下一轮继续;下载完成后的确认对话框阻塞期间该线程停住,下一轮检查顺延)
 - 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,更新 UI 用原生对话框不与页面耦合)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
 
-- 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 与本地统一由 package-tauri-win.bat / package-tauri-mac.sh 未配置环境变量时自动读该文件(tauri CLI 只认内容、不认 `_PATH` 变体——但会把变量值当路径探测,指向文件路径亦可);**密码变量 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 存在(私钥无密码即为空值)时 CLI 直接使用;缺失时走 `--ci`/`CI` 环境变量兜底按空密码处理,都没有则交互式询问密码、无终端环境签名失败**——mac 脚本直接 export 空值;win bat 因 cmd 无法定义空值环境变量(且空值经 npm 多层子进程传递不可靠),未配置密码变量时改置 `CI=true` 让 CLI 按空密码签名(行为见 tauri-cli `bundle.rs` sign_updaters);**丢私钥 = 更新链断裂,需换密钥对并发全量包**。注意:tauri CLI 对「配了 pubkey 但无私钥」直接报错失败(sign_updaters 的 "A public key has been found, but no private key"),win bat 仍在密钥读不到时提前 exit 1 给出更明确的报错;另:tauri CLI 2.11+ 的 v2 updater 模式对 NSIS **不再产出 .nsis.zip**(自包含安装包,直接签 `setup.exe` 得 `setup.exe.sig`,tauri-plugin-updater 2.x 支持裸 exe 下载安装),bat 构建后以 `*-setup.exe.sig` 存在作为签名成功的快速失败判据(2026-08 v1.6 曾误按 .nsis.zip 判,CI 必挂)
+- 签名:minisign 密钥对,**私钥直接入库 `scripts/updater-private.key`**(单行 base64、无密码;分发方多机打包需要,2026-08 起从"私钥仅存本地"改为入库——仓库公开,验签退化为形式约束,实际防护靠 Release 写权限,介意者请知悉),公钥在 `tauri.conf.json` 的 `plugins.updater.pubkey`;CI 与本地统一由 package-tauri-win.bat / package-tauri-mac.sh 未配置环境变量时自动读该文件(tauri CLI 只认内容、不认 `_PATH` 变体——但会把变量值当路径探测,指向文件路径亦可);**密码变量 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 存在(私钥无密码即为空值)时 CLI 直接使用;缺失时走 `--ci`/`CI` 环境变量兜底按空密码处理,都没有则交互式询问密码、无终端环境签名失败**——mac 脚本直接 export 空值;win bat 因 cmd 无法定义空值环境变量(且空值经 npm 多层子进程传递不可靠),未配置密码变量时改置 `CI=true` 让 CLI 按空密码签名(行为见 tauri-cli `bundle.rs` sign_updaters);**丢私钥 = 更新链断裂,需换密钥对并发全量包**。注意:tauri CLI 对「配了 pubkey 但无私钥」直接报错失败(sign_updaters 的 "A public key has been found, but no private key"),win bat 仍在密钥读不到时提前 exit 1 给出更明确的报错;另:tauri CLI 2.11+ 的 v2 updater 模式对 NSIS **不再产出 .nsis.zip**(自包含安装包,直接签 `setup.exe` 得 `setup.exe.sig`,tauri-plugin-updater 2.x 支持裸 exe 下载安装),bat 构建后以 `*-setup.exe.sig` 存在作为签名成功的快速失败判据(2026-08 v1.6 曾误按 .nsis.zip 判,CI 必挂)。**业务 zip 的签名不在 tauri CLI 流程里**:由 release.yml 的 `business-manifest` 任务在 ubuntu 上用同一把私钥 minisign 签名,`.sig` 同样回写成 base64 单行约定(内容 = minisign 文本格式),并生成 `business-latest.json` 挂 Release
 - `createUpdaterArtifacts: true` 产出带签名的安装包本身:`dq-tool_<v>_x64-setup.exe` + `.exe.sig`(v2 updater 直接下载运行 NSIS 安装包,不再打 zip;macOS 对应 `.app.tar.gz` + `.sig`);`latest.json`(version/signature/url)由 `release.yml` 的 `updater-manifest` 收尾任务合并各平台 `updater-sig-*` 生成并挂 Release —— **该任务 2026-08 曾停用、2026-09-17 恢复启用**;没有它应用内更新永远 404,改 CI 时不要把它连同 macos-tauri 一起注释掉
 - `nsis.installMode: "currentUser"`(装 `%LOCALAPPDATA%\Programs`,**更新免 UAC**,高频迭代必需;旧 perMachine 安装需手工卸载重装一次)
 - **版本纪律:updater 按 semver 比较,每次发版必须递增 tauri.conf.json 的 version**,否则同版本不会被识别为更新
@@ -141,8 +147,9 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 ## 打包
 
 - `scripts/package-tauri-mac.sh` / `scripts\package-tauri-win.bat`:`cd web && npm run build` 产出 `web/dist`
-  (喂 `tauri.conf.json` 的 `frontendDist`,前端**不进 resources**)+ `:server:shadowJar` 产出纯 API jar →
-  组装 `tauri/src-tauri/resources/`(jar → `backend/dq-tool.jar`;完整 JRE → `jre/`:复制本机 JDK 后只删开发工具 bin 启动器与 jmods,
+  + `:server:shadowJar` 产出纯 API jar → 组装 `tauri/src-tauri/resources/`(**2026-09 分层分发起**:
+  业务层落 `versions/<v>/dq-tool.jar` + `versions/<v>/static/`(xcopy web\dist)+ `versions/current` 指针
+  + `versions/<v>/manifest.json`;完整 JRE 仍落 `jre/` 不变:复制本机 JDK 后只删开发工具 bin 启动器与 jmods,
   运行库模块不裁剪 —— JDBC 驱动大量反射/按名加载,jdeps/jlink 静态裁剪覆盖不全,
   实测达梦驱动初始化要 jdk.charsets 的 EUC-KR,裁剪后运行时才炸)
   → `npm run tauri build`(mac 打 dmg + app 更新包,Windows 打 NSIS `dq-tool_<版本>_x64-setup.exe`)
@@ -154,14 +161,14 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   跳过 bundle 阶段的 productName 重命名,`target/release/` 下始终没有 `dq-tool.exe`),
   脚本按 `dq-tool-tauri.exe` 优先、`dq-tool.exe` 兜底取源并统一复制成 `dq-tool.exe`,
   随后把 `dq-tool.exe` + `resources/` + 空 `data/` +
-  `PORTABLE.txt` 标记文件组装成 `dq-tool/` 目录,另把 `web\dist` 落盘为
-  `resources\static\`(绿色版 exe 内嵌 frontendDist,磁盘再带一份是为浏览器模式:
-  纯 API jar 经 `-Ddq.web.static-dir` 才能发页面)并放入 `scripts\start-browser.bat`
-  (双击即以 headless=false 起 jar、自动开浏览器窗口,数据目录同为 `<exe>/data`),
+  `PORTABLE.txt` 标记文件组装成 `dq-tool/` 目录,并放入 `scripts\start-browser.bat`
+  (浏览器模式启动器:jar 与 static 都从 `resources\versions` 的当前版本目录探测,
+  纯 API jar 须 `-Ddq.web.static-dir` 才能发页面;双击即以 headless=false 起 jar、
+  自动开浏览器窗口,数据目录同为 `<exe>/data`),
   PowerShell `Compress-Archive` 打成
   `dq-tool_<version>_windows-portable.zip`(落在 `tauri/src-tauri/target/release/`)。
   运行时 `is_portable()` 检测 exe 同目录 `PORTABLE.txt`:命中则数据目录用 `<exe>/data`、
-  自动更新禁用;**删掉该标记文件会回落成安装版口径(数据写 `~/.dq-tool/data`),勿删**。
+  全量 NSIS 更新禁用(业务层更新照常,原地换 versions 文件);**删掉该标记文件会回落成安装版口径(数据写 `~/.dq-tool/data`),勿删**。
   注意:绿色包无安装器引导,目标机器需自带 WebView2(Win10 1803+/Win11 一般已装)
 - `tauri.conf.json` 的 `version` 与项目版本保持 `0.x.y → x.y.0` 映射(安装包主版本号 ≥ 1,且必须是三段 semver),升级需手动同步
 - `resources/` 是打包产物,已 gitignore;`tauri build` 不带 resources 也能跑(开发模式)

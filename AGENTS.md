@@ -17,8 +17,8 @@ dq-tool 是一个轻量级单体应用:交付的 fat jar 是**纯 API 服务**(�
 - **业务代码只在 common 模块(Kotlin)写一份**,server 壳层(Javalin)只消费;所有数据库差异收敛在 `dialect/` 包
 - 库表结构变更一律新增 Flyway 迁移脚本,**已发布的迁移文件禁止修改**
 - **导入导出格式向后兼容是铁律**:旧版本导出的文件必须能被新版本导入(客户拿到导出文件后的处理方式不可控);格式演进优先在同版本内追加可选字段(导入忽略未知字段+缺省值兜底),确需破坏性变更时在导出文件升 `version` 并在导入端做版本检测、分版本解析,禁止让旧文件静默报错(细则见 代码约定与安全)
-- 前端构建与后端运行解耦:`make dev` / `make dev-headless`(`:server:run`,走 classpath 静态)不构建前端,前端开发走 `make dev-web`(vite 5173);`:server:shadowJar` **排除 `static/**`**,交付 jar 是纯 API 服务;`processResources` 仍把 `web/dist` 拷入 dev/测试 classpath;前端产物由 Tauri(`frontendDist` 直载 `web/dist`)与 jpackage(脚本 xcopy `web/dist` + `-Ddq.web.static-dir`)各自构建
-- Tauri 交付形态:webview 从本地 `frontendDist` 直载,跨域访问 `127.0.0.1:<动态端口>`;后端 `dq.access-token` 由 Rust 每次启动随机生成并经 `-Ddq.access-token` 注入,前端从 IPC `api_base()` 取 `{base,token}` 后走 `X-Dq-Token` 头(SSE 走 `?token=`);CORS 用 `anyHost()` 只对 `/api/*` 开放,门禁豁免清单固定为 `/api/health`、`/api/license/status`、`/api/lan/share/**`,不得扩大
+- 前端构建与后端运行解耦:`make dev` / `make dev-headless`(`:server:run`,走 classpath 静态)不构建前端,前端开发走 `make dev-web`(vite 5173);`:server:shadowJar` **排除 `static/**`**,交付 jar 是纯 API 服务;`processResources` 仍把 `web/dist` 拷入 dev/测试 classpath;前端产物由 Tauri(打进 `versions/<v>/static/`,自定义协议从磁盘直载)与 jpackage(脚本 xcopy `web/dist` + `-Ddq.web.static-dir`)各自构建
+- Tauri 交付形态:**三层分发**——系统层(Rust 壳,极少变)+ runtime 层(内嵌完整 JRE)+ 业务层(jar + 前端,`resources/versions/<x.x.x>/` 版本化目录,`versions/current` 指针,只留最近 2 版,就绪失败自动回滚);webview 经自定义协议 `dq://` 从当前版本目录的 `static/` 磁盘直载(前端不再内嵌 exe),跨域访问 `127.0.0.1:<动态端口>`;**更新双通道:业务通道(`business-latest.json`,验签后换 versions 目录 + 重启 java,安装版与绿色版都启用)优先,壳版本低于 `minShell` 时回退全量 NSIS 通道(`latest.json`,仅安装版)**;后端 `dq.access-token` 由 Rust 每次启动随机生成并经 `-Ddq.access-token` 注入,前端从 IPC `api_base()` 取 `{base,token}` 后走 `X-Dq-Token` 头(SSE 走 `?token=`);CORS 用 `anyHost()` 只对 `/api/*` 开放,门禁豁免清单固定为 `/api/health`、`/api/license/status`、`/api/lan/share/**`,不得扩大
 - **所有下载/导出入口必须走 `web/src/utils/download.js`**(`downloadFile`/`downloadText`/`downloadDataUrl`),两形态统一「直存 `<数据目录>/exports/` + 完成后通知(留「打开文件/打开文件夹」入口,与用户确认不自动弹文件管理器)」:Tauri 套壳由 Rust `save_download` 写盘(tauri:// 源 + token),浏览器·jpackage `--app` 由后端自调 `POST /api/system/save-download` 写盘(同源 + Cookie);`downloadText`/`downloadDataUrl` 等前端组装内容仍走 Blob 下载;禁止裸 `<a href="/api/...">`/裸 `window.open`——相对 `/api` 在 Tauri 下会把整个 webview 导航走(细则见 前端页面与按钮逻辑 贯穿性机制 10)
 - `data/`(H2 数据文件)不应提交或外发;功能性 `.bat` 注释一律用英文且必须保持 CRLF 行尾
 - **测试分层铁律**:日常改动只跑相关测试(`--tests` 过滤到测试类,或模块级 `./gradlew :common:test` / `:server:test`;Gradle up-to-date 自动跳过未受影响部分);**发版(走发布流程打 tag)前必须全量 `make test` 通过**(细则见 构建运行与测试)
@@ -77,6 +77,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [后台任务中心实施计划](docs/plans/后台任务中心-实施计划.md) — **已实施**(2026-09-14 随 2.0.7 发布)
 - [Tauri 直载前端 · jar 转纯 API 服务实施计划](docs/plans/Tauri直载前端-jar转纯API服务-实施计划.md) — **已实施**(T14 三平台真机 Origin 待回填);[现场交接说明](docs/plans/Tauri直载前端-jar转纯API服务-交接说明.md) 收尾后可删
 - [导出中心实施计划](docs/plans/导出中心-实施计划.md) — **已实施**(2026-09-18):15 处导出统一登记可查,见 [导出中心](docs/wiki/导出中心.md)
+- [分层分发实施计划](docs/plans/分层分发-实施计划.md) — **已实施**(2026-09-19):Tauri 三层分发(壳/JRE/业务层),业务层 versions 目录 + dq:// 磁盘直载 + 双通道更新,Windows 真机回填项见文内
 - [比对任务批量导入实施计划](docs/plans/比对任务批量导入-实施计划.md) — **已实施**(2026-09-17):Excel 一 sheet 一任务,原件留档可下载,数据源确认 → 大模型推导映射 → 人工审核开跑;任务状态机加「待处理」
 - [错误收集系统(错误中心)实施计划](docs/plans/错误收集系统-实施计划.md) — **已实施**:统一采集/落库/聚合/查看
 - [比对目标级身份实施计划](docs/plans/比对目标级身份-实施计划.md) — **已实施**(2026-09-17):身份语义下沉到目标级——任务级 keyFields 多选作默认,每目标有效身份 = identity_json 人工覆盖 ?? 推导(keyFields ∩ 映射连线,连多个默认组合身份);组合键 `\u0001` 拼接;confirm-mapping 载荷加可选 identities

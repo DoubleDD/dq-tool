@@ -16,12 +16,12 @@
 | 形态 | 页面来源 | API 地址 | 门禁 | 说明 |
 |---|---|---|---|---|
 | 浏览器 / jpackage `--app` | 服务端从 `-Ddq.web.static-dir` 磁盘目录或 classpath 发页面,**同源** | 相对 `/api`(同端口) | Cookie(服务端种)+ `X-Dq-Token` 头双保险 | 开发态(`make dev` / `dev-web`)与客户备用形态 |
-| **Tauri 安装版**(Windows NSIS) | webview 从 `frontendDist`(`web/dist`)本地直载,**`tauri://localhost` / `http://tauri.localhost` 源** | `http://127.0.0.1:<动态端口>/api`(**跨域**) | 仅 `X-Dq-Token` 头(SSE 走 `?token=`) | **用户主用形态**,CI `windows-tauri` job 产出 |
-| Tauri 绿色免安装 zip | 同安装版 | 同安装版 | 同安装版 | 数据目录 `<exe>/data`(`PORTABLE.txt` 标记)、禁用自动更新、目标机需自带 WebView2 |
+| **Tauri 安装版**(Windows NSIS) | webview 经自定义协议 `dq://` 从 `versions/current` 指向的 `versions/<v>/static/` 磁盘直载(2026-09 分层分发起,前端不再内嵌 exe),**`dq://localhost` / `http://dq.localhost` 源** | `http://127.0.0.1:<动态端口>/api`(**跨域**) | 仅 `X-Dq-Token` 头(SSE 走 `?token=`) | **用户主用形态**,CI `windows-tauri` job 产出 |
+| Tauri 绿色免安装 zip | 同安装版 | 同安装版 | 同安装版 | 数据目录 `<exe>/data`(`PORTABLE.txt` 标记)、禁用全量 NSIS 更新(业务层更新照常)、目标机需自带 WebView2 |
 
 **兼容性缺陷的共同特征**:只在 Tauri 形态暴露——因为 Tauri 不是浏览器,而是「系统 WebView + Rust 宿主」,
 宿主可以覆盖 WebView 的宿主级能力(拖放、下载、新窗口、ACL、自定义协议),也可以改变页面的 origin
-(本地 `tauri://` 直载 vs 服务端同源)。**只跑 `make dev` / 浏览器,这类问题永远测不出来。**
+(本地 `dq://` 直载 vs 服务端同源)。**只跑 `make dev` / 浏览器,这类问题永远测不出来。**
 
 当前依赖版本(判据均以仓库 `tauri/src-tauri/Cargo.lock` 锁定版本为准):
 `tauri 2.11.5`、`tauri-runtime 2.11.3`、`tauri-runtime-wry 2.11.4`、`tauri-utils 2.9.3`、`wry 0.55.1`、`tauri-plugin-updater 2.10.1`、`ureq 3.4.0`。
@@ -50,7 +50,7 @@
 | D2 | 未签名/未公证;macOS Tauri 构建停用 | 中 | 已知取舍 | Tauri(macOS/Windows) |
 | D3 | 绿色版依赖目标机自带 WebView2 | 低 | 已知取舍 | Tauri 绿色版 |
 | D4 | token 经 `-D` 进 argv,`ps` 可见 | 低 | 已知取舍 | Tauri |
-| D5 | 自定义协议对未知路径无条件回退 `index.html`(缺失 `.js` 也返回 HTML 200) | 低 | 已知取舍(诊断面板已覆盖) | Tauri |
+| D5 | 自定义协议 `dq://` 对无扩展名路径回退 `index.html`(SPA 路由需要;有扩展名的缺失文件返回 404) | 低 | 已知取舍(诊断面板已覆盖) | Tauri |
 | D6 | 内网/离线环境下自动更新外联 GitHub 必然失败 | 低 | 已知取舍(B1 已恢复,失败只记日志) | Tauri 安装版 |
 
 ---
@@ -101,7 +101,7 @@ G6 画布(ER 图 / 字段映射)的拖动走 pointer 事件,不受该机制影�
 
 ### A2. 相对 `/api` 会把 webview 导航走(已规避)
 
-本地直载形态下页面源是 `tauri://localhost`,相对路径 `/api/...` 会被解析到该源而不是后端,点击即整页导航、
+本地直载形态下页面源是 `dq://localhost`,相对路径 `/api/...` 会被解析到该源而不是后端,点击即整页导航、
 SPA 崩溃重载。2026-09 差异明细「导出比对报告」事故(点击后菜单丢失、被甩回比对列表)就是全项目唯一一处
 裸 `<a href="/api/...">` 漏网。
 
@@ -119,8 +119,9 @@ axios 也未开 `withCredentials`。**Tauri 路径只走 `X-Dq-Token` 头**,Cook
 ### A4. 前端资源打进 fat jar(已规避)
 
 旧形态把 `web/dist` 打进 75MB fat jar,Windows 杀软实时扫描造成 assets 404、白屏/卡启动。
-现形态:`shadowJar` 排除 `static/**`,交付 jar 是纯 API 服务,Tauri 从本地 `frontendDist` 直载页面
-(windows-tauri 任务恢复的原因之一,见 CHANGELOG 2.0.6 段)。
+现形态:`shadowJar` 排除 `static/**`,交付 jar 是纯 API 服务,Tauri 经自定义协议 `dq://` 从
+`versions/<v>/static/` 磁盘直载页面(2026-09 分层分发起;此前为 `frontendDist` 内嵌直载,
+windows-tauri 任务恢复的原因之一,见 CHANGELOG 2.0.6 段)。
 
 ### A5. 自定义 IPC 命令的 ACL 校验(已规避)
 
@@ -209,8 +210,9 @@ Rust 侧日志(Java 侧有 StartupLog,Rust 侧原先完全没有)。
 **现成抓手(已内置,无需改代码)**:配置了 `dq.access-token` 时(Tauri 必配),后端对每种不同的 `/api` 请求
 `Origin` 各记一条 INFO 日志「/api 请求来源 Origin=…」(每进程去重)。三平台各跑一次 `make tauri`,
 看数据目录 `logs/dq-tool-*.log` 即可回填;若某平台**完全看不到该行**,即命中上述回落条件。
-源码推断(Tauri 2.11.5):macOS/Linux 窗口 URL 为 `tauri://localhost`,Windows 为 `http://tauri.localhost`,
-预期 Origin 依次为 `tauri://localhost` / `tauri://localhost` / `http://tauri.localhost`,后端已对前两者与 `null` 验证回 `*`。
+源码推断(Tauri 2.11.5,自定义协议 `dq` 与内置 `tauri` 协议同规则):macOS/Linux 窗口 URL 为 `dq://localhost`,Windows 为 `http://dq.localhost`,
+预期 Origin 依次为 `dq://localhost` / `dq://localhost` / `http://dq.localhost`,后端已对前两者与 `null` 验证回 `*`。
+**macOS 已回填**(2026-09-19 分层分发 dev 冒烟):日志实测 `Origin=dq://localhost`,API 请求正常;Windows 行仍待 CI/真机。
 
 ### C2. `downloadText` / `downloadDataUrl` 的落盘行为(Tauri 未验证、口径不一致)
 
@@ -281,13 +283,13 @@ wry 的 `clipboard` 属性默认 `false`(`tauri-runtime-2.11.3/src/webview.rs:51
 
 | 改动类型 | 必须确认 |
 |---|---|
-| 下载 / 导出 | 走 `utils/download.js`;Tauri 下弹原生保存框、文件名取后端 `Content-Disposition` 不猜名(A2) |
+| 下载 / 导出 | 走 `utils/download.js`;Tauri 下由 Rust `save_download` 直存 `<数据目录>/exports/`,文件名取后端 `Content-Disposition` 不猜名(A2) |
 | 拖放交互 | **Tauri(Windows)真机验一次**;不要重新打开 Tauri 拖放处理器(A1) |
 | 自定义 IPC 命令 | `permissions/*.toml` 声明 + `capabilities/permissions` 列入 + `touch build.rs`(A5) |
 | 新增 http 调用 | 经 `api/base.js` 的 `apiUrl`/`authHeaders`;SSE 用 `?token=`(A3) |
 | 新增跳转 / `window.open` | 不得指向后端相对路径;深链依赖 SPA 回退,勿改成 hash 之外的方案(七.1) |
 | 剪贴板 | 带 textarea 兜底(C3) |
-| 新前端产物 / 静态资源 | 由 Tauri `frontendDist` 与 jpackage `static-dir` 各自保证,jar 里不得再出现 `static/**`(A4) |
+| 新前端产物 / 静态资源 | 由 Tauri `versions/<v>/static/` 磁盘直载与 jpackage `static-dir` 各自保证,jar 里不得再出现 `static/**`(A4) |
 | 打包资源 / 路径 | 三平台路径差异走 `bundled_resources_dir()`,不写死(A6) |
 | 启动流程 / 端口 / 数据目录 | 同步 `main.rs`(A7、A8)与 `tauri/AGENTS.md` |
 | 调试期 | 先彻底退出旧实例再跑(A9) |

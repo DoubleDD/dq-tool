@@ -1,11 +1,13 @@
 @echo off
 rem Portable (no-install) packaging script for the tauri module on Windows:
-rem builds the frontend + server fat jar, embeds a full JRE together with the jar
-rem as resources next to the exe, compiles with --no-bundle (plain release exe, no
+rem builds the frontend + server fat jar, embeds a full JRE (runtime layer) and the
+rem business layer as a versioned directory resources\versions\<v>\ with a
+rem versions\current pointer file, compiles with --no-bundle (plain release exe, no
 rem NSIS installer), then stages exe + resources + PORTABLE.txt marker + empty data\
 rem into a folder and zips it. At runtime the Rust sidecar detects PORTABLE.txt and
-rem uses <exe>\data as the data dir with the auto-updater disabled
-rem (see is_portable() in tauri/src-tauri/src/main.rs).
+rem uses <exe>\data as the data dir; the full installer auto-updater stays disabled,
+rem business-layer updates (swap files under resources\versions) still apply
+rem (see is_portable() in tauri/src-tauri/src/).
 rem Prerequisites: JDK 25+, Node 24+, pnpm 11+, Rust (cargo), PowerShell (for the zip).
 rem
 rem NOTE: keep every comment in this .bat ASCII-only. cmd parses .bat files as GBK on
@@ -39,13 +41,33 @@ if not defined JAR (
   exit /b 1
 )
 
+rem Package version for the versions\<v> layout and the zip name, read from the
+rem VERSION file (single source of truth; strip the leading "0." prefix:
+rem 0.2.0.14 -> 2.0.14). Never use %VAR:0.=% - it replaces EVERY "0." substring
+set RAW_VERSION=
+for /f "delims=" %%a in (VERSION) do set RAW_VERSION=%%a
+if not defined RAW_VERSION (
+  echo ERROR: VERSION file missing or empty
+  exit /b 1
+)
+set APP_VERSION=%RAW_VERSION%
+if "%RAW_VERSION:~0,2%"=="0." set APP_VERSION=%RAW_VERSION:~2%
+
 set RES=tauri\src-tauri\resources
 rem Keep PLACEHOLDER.txt: the bundle.resources glob in tauri.conf.json requires at
 rem least one non-hidden file under resources\
 if exist "%RES%\backend" rmdir /s /q "%RES%\backend"
+if exist "%RES%\versions" rmdir /s /q "%RES%\versions"
 if exist "%RES%\jre" rmdir /s /q "%RES%\jre"
-mkdir "%RES%\backend"
-copy "%JAR%" "%RES%\backend\dq-tool.jar" >nul
+rem Business layer ships as a versioned directory (same layout as the NSIS build):
+rem versions\<v>\dq-tool.jar + versions\<v>\static\ (web build) + versions\current
+rem pointer file. The web build is NOT duplicated to resources\static anymore:
+rem start-browser.bat probes the versions dir for both the jar and the frontend
+mkdir "%RES%\versions\%APP_VERSION%"
+copy "%JAR%" "%RES%\versions\%APP_VERSION%\dq-tool.jar" >nul
+xcopy "web\dist" "%RES%\versions\%APP_VERSION%\static\" /E /I /Q >nul || exit /b 1
+> "%RES%\versions\current" echo %APP_VERSION%
+> "%RES%\versions\%APP_VERSION%\manifest.json" echo {"version": "%APP_VERSION%"}
 
 rem Embed a full JRE instead of a jlink-trimmed one (same reason as scripts\package-win.bat:
 rem JDBC drivers load classes reflectively and jdeps cannot cover them; the DM driver
@@ -77,19 +99,9 @@ rem treated as a cargo flag; npm run works fine against a pnpm-installed node_mo
 call npm run tauri -- build --no-bundle || (popd & exit /b 1)
 popd
 
-rem Version for the zip name, read from tauri.conf.json (kept in sync by bump-version.sh)
-rem Keep the pipe bare: the whole -Command argument is double-quoted, so cmd already treats it
-rem as literal text. Escaping it as ^| reaches PowerShell as a stray positional argument and the
-rem read fails ("positional parameter cannot be found that accepts argument '^'", 2026-08 CI).
-set VERSION=
-for /f "delims=" %%v in ('powershell -NoProfile -Command "(Get-Content tauri\src-tauri\tauri.conf.json -Raw | ConvertFrom-Json).version"') do set VERSION=%%v
-if not defined VERSION (
-  echo ERROR: could not read version from tauri\src-tauri\tauri.conf.json
-  exit /b 1
-)
-
+rem Zip name uses the APP_VERSION already read from the VERSION file above
 set STAGE=tauri\src-tauri\target\release\portable
-set ZIP=tauri\src-tauri\target\release\dq-tool_%VERSION%_windows-portable.zip
+set ZIP=tauri\src-tauri\target\release\dq-tool_%APP_VERSION%_windows-portable.zip
 if exist "%STAGE%" rmdir /s /q "%STAGE%"
 mkdir "%STAGE%\dq-tool\data"
 rem --no-bundle keeps the cargo binary name (dq-tool-tauri.exe): only the bundle step
@@ -100,16 +112,16 @@ if not exist "%EXE_SRC%" set EXE_SRC=tauri\src-tauri\target\release\dq-tool.exe
 copy "%EXE_SRC%" "%STAGE%\dq-tool\dq-tool.exe" >nul || exit /b 1
 xcopy "%RES%" "%STAGE%\dq-tool\resources\" /E /I /Q >nul || exit /b 1
 
-rem Browser mode without the Tauri shell: the fat jar is pure API, so also ship the
-rem web build on disk (resources\static, served via -Ddq.web.static-dir) plus the
-rem double-click launcher scripts\start-browser.bat
-xcopy "web\dist" "%STAGE%\dq-tool\resources\static\" /E /I /Q >nul || exit /b 1
+rem Browser mode without the Tauri shell: start-browser.bat launches the versioned
+rem jar with -Ddq.web.static-dir pointing at the static\ inside the same version dir
 copy "scripts\start-browser.bat" "%STAGE%\dq-tool\" >nul || exit /b 1
 
 rem PORTABLE.txt is the marker is_portable() checks: when present next to the exe the
-rem data dir is <exe>\data and the auto-updater is disabled. Keep the content ASCII
+rem data dir is <exe>\data and the full installer auto-updater is disabled (business
+rem layer updates still apply - they just swap files under resources\versions).
+rem Keep the content ASCII
 echo This file marks the portable (no-install) edition of dq-tool.> "%STAGE%\dq-tool\PORTABLE.txt"
-echo Data is stored in the data folder next to dq-tool.exe and auto-update is disabled.>> "%STAGE%\dq-tool\PORTABLE.txt"
+echo Data is stored in the data folder next to dq-tool.exe; the full installer auto-updater is disabled (business-layer updates still apply).>> "%STAGE%\dq-tool\PORTABLE.txt"
 echo Do not delete this file, otherwise the app falls back to %%USERPROFILE%%\.dq-tool\data.>> "%STAGE%\dq-tool\PORTABLE.txt"
 
 if exist "%ZIP%" del /q "%ZIP%"

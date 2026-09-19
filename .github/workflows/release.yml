@@ -1,6 +1,8 @@
 # 打 tag(如 v1.0)触发:构建安装包并附加到 GitHub Release
 #   当前启用:Windows x64 jpackage 免安装 zip(server,浏览器 --app 模式)+ windows-tauri NSIS 安装包
-#   + windows-tauri-portable 绿色免安装 zip + updater-manifest(合并签名生成 latest.json,仅 tag 触发);
+#   + windows-tauri-portable 绿色免安装 zip + updater-manifest(合并签名生成 latest.json,仅 tag 触发)
+#   + business-manifest(业务层更新包签名并生成 business-latest.json,仅 tag 触发;业务包本体
+#     由 windows-tauri 任务产出,内容 = resources\versions\<v>\ 的 jar + 前端,跨平台通用);
 #   macos-tauri 已停用;
 #   Windows ARM64 / macOS jpackage dmg / Linux deb+rpm 注释停用,需要时取消注释即可
 # 也可在 Actions 页面手动触发(workflow_dispatch),用 target 下拉框只构建其中一个平台
@@ -130,6 +132,24 @@ jobs:
       - name: Build NSIS installer
         shell: cmd
         run: scripts\package-tauri-win.bat
+
+      # 业务层更新包:resources\versions\<v>\ 的 jar + 前端(跨平台通用,与 NSIS/绿色版
+      # 同一份内容)。此处只打 zip 不签名 —— 签名与 business-latest.json 由收尾的
+      # business-manifest 任务统一完成(私钥使用集中在 ubuntu 一处)
+      - name: Build business package
+        shell: pwsh
+        run: |
+          $v = (Get-Content VERSION -Raw).Trim() -replace '^0\.', ''
+          Compress-Archive -Path "tauri/src-tauri/resources/versions/$v/*" -DestinationPath "tauri/src-tauri/target/release/dq-tool-$v-business.zip" -CompressionLevel Optimal
+
+      # tag 构建传给 business-manifest 签名挂 Release;手动触发也传,便于单独验证业务包
+      # (zip 文件名本身带版本号,artifact 名固定即可)
+      - name: Upload business package
+        uses: actions/upload-artifact@v7
+        with:
+          name: business-pkg
+          path: tauri/src-tauri/target/release/dq-tool-*-business.zip
+          retention-days: ${{ github.event_name == 'push' && 1 || 30 }}
 
       # 统一命名: dq-tool-<版本>-<系统>-<架构>-setup.exe(tauri 产物原名 dq-tool_<版本>_x64-setup.exe)
       - name: Rename installer with platform suffix
@@ -394,6 +414,72 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: latest.json
+
+  # business-manifest:业务层更新包(jar + 前端,约几十 MB,跨平台通用)签名并生成
+  # business-latest.json 挂 Release。应用内业务更新通道经
+  # /releases/latest/download/business-latest.json 拿最新业务版信息;壳版本低于
+  # minShell 时回退走 latest.json 的全量安装包通道(两通道并存,见 tauri/AGENTS.md)
+  business-manifest:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows-tauri]  # 业务包本体由 windows-tauri 任务产出(artifact: business-pkg)
+    env:
+      # 业务包可安装的最低壳(系统层)版本 = 首个支持业务层更新的发版。
+      # 仅当壳层出现业务层依赖的变更(新 IPC 命令、启动参数、协议变化等)才上调,
+      # 否则旧壳也能直接吃新业务包 —— 这是分层分发的主要收益,别随手改成当前版本
+      BIZ_MIN_SHELL: '2.0.15'
+    steps:
+      - uses: actions/checkout@v7  # 读 scripts/updater-private.key
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: business-pkg
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      # 私钥文件是单行 base64(tauri 签名约定),还原成 minisign 文本格式后签名;
+      # 空口令私钥,minisign 非交互直接签。.sig 产物回写成 base64 单行,
+      # 与 updater 的 .sig 约定一致(内容 = base64(minisign 文本格式签名))
+      - name: Sign business package
+        run: |
+          set -euo pipefail
+          z=$(ls dq-tool-*-business.zip)
+          base64 -d scripts/updater-private.key > /tmp/updater-private.key
+          minisign -S -s /tmp/updater-private.key -m "$z"
+          rm -f /tmp/updater-private.key
+          base64 -w0 "$z.minisig" > "$z.sig"
+          ls -la "$z" "$z.sig"
+
+      - name: Generate business-latest.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          z=$(ls dq-tool-*-business.zip)
+          v="${z#dq-tool-}"; v="${v%-business.zip}"
+          Z="$z" V="$v" node <<'EOF'
+          const fs = require('fs');
+          const z = process.env.Z, v = process.env.V, tag = process.env.TAG;
+          const manifest = {
+            version: v,
+            notes: '',
+            pub_date: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
+            minShell: process.env.BIZ_MIN_SHELL,
+            signature: fs.readFileSync(`${z}.sig`, 'utf8').trim(),
+            url: `https://github.com/DoubleDD/dq-tool/releases/download/${tag}/${z}`,
+          };
+          fs.writeFileSync('business-latest.json', JSON.stringify(manifest, null, 2));
+          console.log(JSON.stringify(manifest, null, 2));
+          EOF
+
+      - name: Attach business package to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dq-tool-*-business.zip
+            dq-tool-*-business.zip.sig
+            business-latest.json
 
   # ── 以下平台暂时停用(2026-08),需要时取消注释恢复 ──────────────────────────
   #

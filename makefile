@@ -81,7 +81,7 @@ dev2: ## 起第二个开发实例(多实例/局域网共享调试,带窗口/托�
 dev-web: ## 前端开发模式(5173,代理 /api 到 10000)
 	cd web && npm run dev
 
-tauri: ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车;先构建 web/dist 供 frontendDist 直载,再打纯 API fat jar)
+tauri: ## Tauri 2 套壳版开发运行(系统 WebView + Rust 侧车;先构建 web/dist 供 dq:// 协议磁盘直载,再打纯 API fat jar)
 	@[ -d tauri/node_modules ] || (cd tauri && pnpm install)
 	cd web && npm run build
 	./gradlew :server:shadowJar

@@ -1,8 +1,15 @@
 //! tauri 模块入口:Tauri 2(系统 WebView)套壳 server 模块的 Web UI。
 //!
-//! 侧车(sidecar)模型:本进程拉起 `java -jar` server fat jar 作为子进程;webview 窗口立即
-//! 创建并显示本地加载页(ui/index.html),后台线程轮询后端就绪后 navigate 到
-//! `http://127.0.0.1:<port>`;窗口关闭/进程退出时杀掉 Java 子进程。
+//! 三层分离(2026-09 业务层在线更新改造):exe(系统层)与 jre(runtime 层)只随全量
+//! 安装包/全量 updater 变化;jar + 前端 static 作为业务层按版本落盘
+//! resources/versions/<x.x.x>/,由 current 指针选版(versions.rs),支持业务层在线更新
+//! 与就绪失败回滚(bizupdate.rs / backend.rs);开发模式(debug)完全不走 versions,
+//! jar 直取 server/build/libs 最新、前端由仓库 web/dist 服务。
+//!
+//! 侧车(sidecar)模型:本进程拉起 `java -jar` server fat jar 作为子进程(backend.rs);
+//! webview 窗口立即创建,经 dq 自定义协议从磁盘「当前业务版本 static」加载页面
+//! (protocol.rs,改造前为 frontendDist 编译期内嵌),后台线程等后端就绪后只置 ready
+//! 标志(页面不 navigate);窗口关闭/进程退出时杀掉 Java 子进程。
 //!
 //! 常驻 + 托盘(2026-08,极速启动方案):关闭窗口只隐藏不退出,Java 后端常驻,
 //! 再次打开 = 纯 WebView 显示(毫秒级,不付 JVM 启动成本);托盘菜单「打开窗口/退出」,
@@ -15,38 +22,37 @@
 // Windows:release 构建为 GUI 子系统,双击启动不弹控制台黑窗;debug 保留控制台便于看日志
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+mod backend;
+mod bizupdate;
+mod protocol;
+mod versions;
+
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::Child;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::Manager;
 
-/// 后端就绪等待总超时(H2 迁移 + Flyway 首次初始化可能较慢)
-const READY_TIMEOUT: Duration = Duration::from_secs(60);
-/// 自动更新检查间隔:安装模式启动时立即检查一次,之后按此间隔轮询
+/// 更新检查间隔(业务通道与全量通道共用):启动时立即检查一次,之后按此间隔轮询
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
-/// 就绪探针路径:授权状态接口不受授权拦截(WebServer.java 排除 /api/license/**)
-const READY_PATH: &str = "/api/license/status";
 
-/// 供信号处理器杀子进程用(libc::kill 是 async-signal-safe 的)
+/// 供信号处理器杀子进程用(libc::kill 是 async-signal-safe 的);restart 时由 backend 更新
 static CHILD_PID: AtomicI32 = AtomicI32::new(-1);
 
 fn main() {
-    let jar = find_server_jar().unwrap_or_else(|e| fatal(&format!("定位 server fat jar 失败:{e}")));
-    let java = find_java().unwrap_or_else(|e| fatal(&format!("定位 java 运行时失败:{e}")));
     let packaged = is_packaged();
     let portable = is_portable();
+    // 业务层定位:release 走 versions/<current>/(含 GC),开发模式 jar 直取 + web/dist
+    let (jar, versions_dir, static_root_path) = resolve_business_layer(packaged);
     // 浏览器访问管控令牌:每次启动随机 16 字节(32 位 hex),经 -Ddq.access-token 注入 java。
     // 前端从 IPC api_base() 取到后加 X-Dq-Token 头,webview 无感;浏览器直接访问同一后端则被拒。
     // token 绝不写进日志与 URL(仅存于进程内存与 java argv,argv 可被 ps 看到的取舍见文档)。
     let access_token = generate_access_token();
     eprintln!(
-        "[dq-tool-tauri] 后端 jar: {}(java: {},{}模式)",
+        "[dq-tool-tauri] 后端 jar: {}({}模式)",
         jar.display(),
-        java.display(),
         if portable {
             "绿色"
         } else if packaged {
@@ -56,77 +62,18 @@ fn main() {
         }
     );
 
-    // 取一个空闲端口后释放;竞态窗口内被抢注时 DqApplication 会向后避让,
-    // 由 stdout 读线程解析「避让到 N」回填实际端口
-    let probed_port = pick_free_port().unwrap_or_else(|e| fatal(&format!("探测空闲端口失败:{e}")));
-    let actual_port = Arc::new(Mutex::new(probed_port));
-    // 后端 HTTP 就绪标志:就绪线程置位,IPC api_base() 未就绪时返回 null(前端轮询)
-    let ready = Arc::new(AtomicBool::new(false));
-
-    let mut cmd = Command::new(&java);
-    // 数据目录:与 data_dir() 同口径(绿色 <exe>/data、安装 ~/.dq-tool/data、开发 ./data 或 DQ_DATA_DIR),
-    // 显式传给后端(原开发模式不传走后端默认 ./data,等价——cwd 已切到仓库根);
-    // Rust 侧读「最大内存」设置也按同一目录找 config.properties
-    let data_dir = data_dir();
-    if !portable && !packaged {
-        // 开发模式:工作目录固定仓库根(相对路径的资源/日志口径与其他模块一致)
-        cmd.current_dir(repo_root());
-    }
-    cmd.arg(format!("-Ddq.data-dir={}", data_dir.display()));
-    // 堆上限:系统设置页可改,落 <数据目录>/config.properties(dq.jvm.xmx-mb,单位 MB),JVM 启动后
-    // 不可调,故由拉起方在启动前读取注入;读不到/非法回落默认 1024MB(2026-09 由 384MB 上调:
-    // 大表扫描/导出/AI 并发会打满 384MB 进入 GC 空转,表现为接口全挂)
-    cmd.arg("-XX:+UseG1GC");
-    cmd.arg(format!("-Xmx{}m", configured_xmx_mb(&data_dir)));
-    // JDK 25 AOT 类缓存:jar 同目录存在 dq-tool.aot 才启用,开发模式/未训练环境静默跳过。
-    // 打包脚本不生成(2026-08 实测 macOS 收益≈0,启动大头是 H2+Flyway 真实初始化而非类加载,
-    // 详见 tauri/AGENTS.md);需要时手动 record→create 训练后放到 jar 同目录即可生效
-    if let Some(cache) = find_aot_cache(&jar) {
-        cmd.arg(format!("-XX:AOTCache={}", cache.display()));
-    }
-    // 纯 API 后端默认无浏览器管控;注入随机 token 后,浏览器直接打开 Tauri 拉起的后端被门禁拒绝
-    cmd.arg(format!("-Ddq.access-token={access_token}"));
-    cmd.arg("-jar")
-        .arg(&jar)
-        .arg(format!("--server.port={probed_port}"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    // Windows:java.exe 是控制台程序,GUI 父进程不加 CREATE_NO_WINDOW 拉起时会新弹一个控制台窗口
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut child = cmd
-        .spawn()
-        .unwrap_or_else(|e| fatal(&format!("拉起 Java 后端失败:{e}")));
-    CHILD_PID.store(child.id() as i32, Ordering::SeqCst);
+    // 拉起后端子进程(端口探测/stdout 避让解析/CHILD_PID 均在 BackendManager 内)
+    let backend = Arc::new(
+        backend::BackendManager::spawn(&jar, &access_token).unwrap_or_else(|e| fatal(&e)),
+    );
     install_signal_handlers();
 
-    // stdout 读线程:转发日志 + 解析端口避让输出(格式见 DqApplication:「端口 %d 被占用,避让到 %d」)
-    let stdout = child.stdout.take().expect("已声明 piped");
-    let port_slot = Arc::clone(&actual_port);
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
-            eprintln!("[backend] {line}");
-            if let Some(idx) = line.find("避让到 ") {
-                if let Ok(port) = line[idx + "避让到 ".len()..].trim().parse::<u16>() {
-                    *port_slot.lock().unwrap() = port;
-                }
-            }
-        }
-    });
+    // 当前前端 static 根的共享句柄:dq 协议每请求读取;业务更新/回滚成功后由 backend 侧更新
+    let static_root = Arc::new(Mutex::new(static_root_path));
+    let static_root_protocol = Arc::clone(&static_root);
+    let child_on_exit = backend.child_handle();
+    let child_on_tray = backend.child_handle();
 
-    // 窗口先出:立即创建 webview 从 frontendDist(web/dist)加载页面,后台线程等后端;
-    // 就绪后只置 ready 标志,页面不 navigate —— 消除「双击后数秒无窗口」的等待
-    let child = Arc::new(Mutex::new(child));
-    let child_on_exit = Arc::clone(&child);
-    let child_on_update = Arc::clone(&child);
-    let child_on_tray = Arc::clone(&child);
-    // 后端实际端口(含避让回填)托管为状态,供 save_download 命令拼本地 URL
-    let port_state = Arc::clone(&actual_port);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -135,16 +82,25 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        // dq 自定义协议:页面/静态资源从磁盘当前版本 static 根加载;wry 在 Windows 导航时
+        // 会自动把 dq://localhost/... 映射为 http://dq.localhost/...,全平台写法一致
+        .register_uri_scheme_protocol("dq", move |_ctx, request| {
+            protocol::handle(&static_root_protocol, request)
+        })
         // 自定义命令:导出任务「另存为」/通用下载「直存数据目录」(webview 经 __TAURI_INTERNALS__.invoke 调用)
-        .manage(port_state)
+        .manage(backend.port_state())
         .manage(access_token)
-        .manage(Arc::clone(&ready))
+        .manage(backend.ready_flag())
         .invoke_handler(tauri::generate_handler![api_base, save_report_as, save_download])
         .setup(move |app| {
             let window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
-                tauri::WebviewUrl::App("index.html".into()),
+                // 窗口先出:立即创建 webview 经 dq 协议加载页面,后台线程等后端;
+                // 就绪后只置 ready 标志,页面不 navigate —— 消除「双击后数秒无窗口」的等待
+                tauri::WebviewUrl::External(
+                    "dq://localhost/index.html".parse().expect("合法的 dq 协议 URL"),
+                ),
             )
             .title("dq-tool 数据质量检测")
             .inner_size(1440.0, 900.0)
@@ -185,22 +141,23 @@ fn main() {
                     _ => {}
                 })
                 .build(app)?;
-            let child = Arc::clone(&child);
-            let ready_flag = Arc::clone(&ready);
-            // 前端已由 frontendDist 本地直载:就绪后不再 navigate 到后端页面,只置 ready 标志,
-            // 由前端轮询 IPC api_base() 拿到动态端口/token 后走 X-Dq-Token 头访问 API
-            std::thread::spawn(move || match wait_ready(&child, &actual_port) {
-                Ok(port) => {
-                    eprintln!("[dq-tool-tauri] 后端已就绪: http://127.0.0.1:{port}");
-                    ready_flag.store(true, Ordering::SeqCst);
-                }
-                Err(e) => fatal(&format!("后端未在 {} 秒内就绪:{e}", READY_TIMEOUT.as_secs())),
-            });
-            // 自动更新:仅安装模式;后台线程预下载,完事后弹窗确认(开发模式不检查;
-            // 绿色免安装版也禁用 —— 更新包是 NSIS 安装包,会装进 Programs 目录破坏绿色形态)
-            if packaged && !portable {
+            // 启动监督:就绪后只置 ready 标志,由前端轮询 IPC api_base() 拿到动态端口/token
+            // 后走 X-Dq-Token 头访问 API;release 首次就绪失败回滚次新版一次,再失败 fatal
+            let mgr = Arc::clone(&backend);
+            let vd_supervise = versions_dir.clone();
+            let sr_supervise = Arc::clone(&static_root);
+            std::thread::spawn(move || backend::supervise_startup(mgr, vd_supervise, sr_supervise));
+            // 更新后台线程(业务通道 + 全量通道串联):仅打包形态(安装/绿色);开发模式不检查。
+            // 各通道启停细节(绿色版禁全量、macOS 禁业务通道)见 bizupdate.rs
+            if packaged {
                 let handle = app.handle().clone();
-                std::thread::spawn(move || auto_update(handle, child_on_update));
+                bizupdate::spawn_update_thread(
+                    handle,
+                    Arc::clone(&backend),
+                    versions_dir,
+                    Arc::clone(&static_root),
+                    portable,
+                );
             }
             Ok(())
         })
@@ -218,6 +175,40 @@ fn main() {
             _ => {}
         }
     });
+}
+
+/// 业务层(jar + 前端 static)定位:返回 (jar 路径, versions 目录[仅打包形态], static 根)。
+/// release(安装/绿色):resources/versions/ 解析 current(含完整性回落),随后 GC 只留两版;
+/// 开发模式(debug):jar = DQ_SERVER_JAR > server/build/libs 最新,前端 = 仓库 web/dist,
+/// 完全不经 versions。DQ_SERVER_JAR 覆盖在两种形态都生效(救急/测试用),但 release 的
+/// 前端 static 仍取自 versions(覆盖 jar 不影响页面来源)
+fn resolve_business_layer(packaged: bool) -> (PathBuf, Option<PathBuf>, PathBuf) {
+    if !packaged {
+        let jar = find_dev_jar().unwrap_or_else(|e| fatal(&format!("定位 server fat jar 失败:{e}")));
+        return (jar, None, repo_root().join("web/dist"));
+    }
+    // is_packaged() 已为真,bundled_resources_dir 必然命中
+    let resources = bundled_resources_dir().expect("安装版必有 resources 目录");
+    let versions_dir = resources.join("versions");
+    let resolved = versions::resolve_current(&versions_dir)
+        .unwrap_or_else(|e| fatal(&format!("解析业务版本失败:{e}")));
+    eprintln!(
+        "[dq-tool-tauri] 业务版本: {}({})",
+        resolved.version,
+        resolved.dir.display()
+    );
+    versions::gc_versions(&versions_dir, &resolved.version);
+    let jar = match std::env::var("DQ_SERVER_JAR") {
+        Ok(p) => {
+            let jar = PathBuf::from(&p);
+            if !jar.is_file() {
+                fatal(&format!("DQ_SERVER_JAR 指向的文件不存在:{p}"));
+            }
+            jar
+        }
+        Err(_) => resolved.dir.join("dq-tool.jar"),
+    };
+    (jar, Some(versions_dir), resolved.dir.join("static"))
 }
 
 /// 显示并聚焦主窗口(托盘「打开窗口」/单实例唤起/macOS Dock  reopened 共用)
@@ -245,36 +236,16 @@ fn home_dir() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// 系统设置「最大内存」(MB):读 <数据目录>/config.properties 的 dq.jvm.xmx-mb,
-/// 未设置/解析失败/超出 512~8192 一律回落默认 1024。与服务端 JvmMemoryConfig 口径保持一致,
-/// 改键名/范围/默认值时两边同步。
-fn configured_xmx_mb(data_dir: &std::path::Path) -> u32 {
-    const DEFAULT_MB: u32 = 1024;
-    let Ok(content) = std::fs::read_to_string(data_dir.join("config.properties")) else {
-        return DEFAULT_MB;
-    };
-    for line in content.lines() {
-        if let Some(value) = line.trim().strip_prefix("dq.jvm.xmx-mb=") {
-            if let Ok(mb) = value.trim().parse::<u32>() {
-                if (512..=8192).contains(&mb) {
-                    return mb;
-                }
-            }
-        }
-    }
-    DEFAULT_MB
-}
-
-// ---- 自动更新(tauri-plugin-updater,更新源为 GitHub Releases 的 latest.json)----
+// ---- 全量自动更新(tauri-plugin-updater,更新源为 GitHub Releases 的 latest.json)----
 //
-// 流程:安装模式启动时立即检查一次,之后每 UPDATE_CHECK_INTERVAL(30 分钟)轮询;
-// 后台 check → 有新版则静默预下载 → 下载完成弹原生对话框询问:
+// 由 bizupdate::spawn_update_thread 的后台线程按 UPDATE_CHECK_INTERVAL 轮询调用
+// (业务通道之后;绿色版与开发模式不进该线程)。流程:check → 有新版则静默预下载 →
+// 下载完成弹原生对话框询问:
 //   「立即更新」→ install + 重启(重启前显式杀 java 子进程,防止孤儿占着 H2 文件锁);
-//   「暂不更新」→ 版本号写入 ~/.dq-tool/update-skipped.txt,同一版本不再重复下载/打扰,
-//   出现更新版本时重新走流程。检查/下载失败只记日志,不影响主流程;失败后间隔照常,
-//   下一轮继续检查。
+//   「暂不更新」→ 版本号写入 ~/.dq-tool/update-skipped.txt(与业务通道共用同一跳过文件),
+//   同一版本不再重复下载/打扰,出现更新版本时重新走流程。检查/下载失败只记日志,不影响主流程。
 
-/// 用户选择「暂不更新」的版本记录(纯文本,一个版本号)
+/// 用户选择「暂不更新」的版本记录(纯文本,一个版本号;业务通道与全量通道共用)
 fn skipped_version_path() -> PathBuf {
     home_dir().join(".dq-tool").join("update-skipped.txt")
 }
@@ -294,18 +265,7 @@ fn write_skipped_version(version: &str) {
     let _ = std::fs::write(path, version);
 }
 
-fn auto_update(app: tauri::AppHandle, child: Arc<Mutex<Child>>) {
-    // 启动即检查一次,之后每 UPDATE_CHECK_INTERVAL 轮询;失败只记日志并继续下一轮。
-    // 注:下载完成后的确认对话框为阻塞式,用户未作答期间该线程停在此处,下一轮检查顺延
-    loop {
-        if let Err(e) = try_auto_update(&app, &child) {
-            eprintln!("[dq-tool-tauri] 自动更新失败(忽略,不影响使用):{e}");
-        }
-        std::thread::sleep(UPDATE_CHECK_INTERVAL);
-    }
-}
-
-fn try_auto_update(app: &tauri::AppHandle, child: &Arc<Mutex<Child>>) -> Result<(), String> {
+fn try_auto_update(app: &tauri::AppHandle, child: Arc<Mutex<Child>>) -> Result<(), String> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     use tauri_plugin_updater::UpdaterExt;
 
@@ -356,7 +316,7 @@ fn try_auto_update(app: &tauri::AppHandle, child: &Arc<Mutex<Child>>) -> Result<
         .blocking_show();
     if yes {
         eprintln!("[dq-tool-tauri] 用户确认更新,安装并重启...");
-        kill_child(child); // 显式杀 java 后端,不等退出事件,防孤儿占 H2 锁
+        kill_child(&child); // 显式杀 java 后端,不等退出事件,防孤儿占 H2 锁
         update.install(bytes).map_err(|e| e.to_string())?;
         app.restart();
     } else {
@@ -368,7 +328,8 @@ fn try_auto_update(app: &tauri::AppHandle, child: &Arc<Mutex<Child>>) -> Result<
 
 /// 安装版内嵌资源目录:macOS 为 <exe>/../Resources(.app 布局),
 /// Windows/Linux 为 <exe>/resources/(Tauri 2 的 bundle.resources glob 保留 resources/ 前缀落盘,
-/// NSIS 装到 $INSTDIR\resources\;旧布局资源与 exe 同目录,保留兼容)
+/// NSIS 装到 $INSTDIR\resources\;旧布局资源与 exe 同目录,保留兼容)。
+/// 判据为 versions/ 目录存在(三层分离后业务层按版本落盘;改造前判 backend/dq-tool.jar)
 fn bundled_resources_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let exe_dir = exe.parent()?;
@@ -378,7 +339,7 @@ fn bundled_resources_dir() -> Option<PathBuf> {
         exe_dir.join("resources"),
     ]
     .into_iter()
-    .find(|d| d.join("backend/dq-tool.jar").is_file())
+    .find(|d| d.join("versions").is_dir())
 }
 
 /// 是否安装版:仅 release 构建可能为安装版;debug 构建(tauri dev)恒为开发模式 ——
@@ -388,14 +349,12 @@ fn is_packaged() -> bool {
     if cfg!(debug_assertions) {
         return false;
     }
-    bundled_resources_dir()
-        .map(|d| d.join("backend/dq-tool.jar").exists())
-        .unwrap_or(false)
+    bundled_resources_dir().is_some()
 }
 
 /// 是否绿色免安装版:release 构建且 exe 同目录存在 PORTABLE.txt 标记文件
 /// (由 scripts\package-tauri-win-portable.bat 写入)。绿色版数据目录在 exe 同目录
-/// data/、不启用自动更新,其余与安装版一致(内嵌资源 backend/jre 照常消费)
+/// data/、不启用全量自动更新(业务层在线更新照常),其余与安装版一致(内嵌资源照常消费)
 fn is_portable() -> bool {
     if cfg!(debug_assertions) {
         return false;
@@ -599,28 +558,17 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// 定位 server fat jar:DQ_SERVER_JAR 环境变量 > 开发默认 server/build/libs/dq-tool-*.jar
-/// (debug 构建优先,取最新)> 安装版内嵌资源 backend/dq-tool.jar。
-/// 注意优先级:打包脚本残留的 src-tauri/resources 会被 tauri-build 复制到 target/debug/resources,
-/// debug 构建若先命中内嵌资源,`tauri dev` 会一直跑旧打包 jar,新构建的前端/后端不生效(2026-08 踩过)
-fn find_server_jar() -> Result<PathBuf, String> {
+/// 开发模式 jar 定位:DQ_SERVER_JAR 环境变量 > server/build/libs/dq-tool-*.jar(取最新)。
+/// (release 形态不再走这里:三层分离后 jar 属业务层,由 versions/ 解析;
+///  改造前 debug 优先于内嵌资源的原因仍成立——打包残留的 src-tauri/resources 会被
+///  tauri-build 复制到 target/debug/resources,若先命中内嵌资源,`tauri dev` 会一直跑旧打包 jar)
+fn find_dev_jar() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("DQ_SERVER_JAR") {
         let p = PathBuf::from(p);
         if p.is_file() {
             return Ok(p);
         }
         return Err(format!("DQ_SERVER_JAR 指向的文件不存在:{}", p.display()));
-    }
-    if cfg!(debug_assertions) {
-        if let Some(p) = latest_dev_jar() {
-            return Ok(p);
-        }
-    }
-    if let Some(res) = bundled_resources_dir() {
-        let p = res.join("backend/dq-tool.jar");
-        if p.is_file() {
-            return Ok(p);
-        }
     }
     latest_dev_jar().ok_or_else(|| {
         format!(
@@ -650,80 +598,6 @@ fn latest_dev_jar() -> Option<PathBuf> {
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     });
     candidates.pop()
-}
-
-/// 定位 java:DQ_JAVA 环境变量 > 安装版内嵌 jlink 运行时 > PATH 上的 java
-fn find_java() -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("DQ_JAVA") {
-        return Ok(PathBuf::from(p));
-    }
-    if let Some(res) = bundled_resources_dir() {
-        let java_bin = if cfg!(windows) { "jre/bin/java.exe" } else { "jre/bin/java" };
-        let p = res.join(java_bin);
-        if p.is_file() {
-            return Ok(p);
-        }
-    }
-    Ok(PathBuf::from("java"))
-}
-
-/// 定位 JDK 25 AOT 类缓存:DQ_AOT_CACHE 环境变量 > jar 同目录 dq-tool.aot;不存在返回 None(不用缓存)
-fn find_aot_cache(jar: &std::path::Path) -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("DQ_AOT_CACHE") {
-        let p = PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
-    }
-    let p = jar.parent()?.join("dq-tool.aot");
-    p.is_file().then_some(p)
-}
-
-fn pick_free_port() -> Result<u16, String> {
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    listener
-        .local_addr()
-        .map(|a| a.port())
-        .map_err(|e| e.to_string())
-}
-
-/// 轮询就绪探针直到 200;子进程提前退出或超时则报错。返回实际端口(含避让回填)
-fn wait_ready(child: &Arc<Mutex<Child>>, port_slot: &Arc<Mutex<u16>>) -> Result<u16, String> {
-    let deadline = Instant::now() + READY_TIMEOUT;
-    loop {
-        if let Some(status) = child.lock().unwrap().try_wait().map_err(|e| e.to_string())? {
-            return Err(format!("Java 后端进程提前退出:{status}"));
-        }
-        let port = *port_slot.lock().unwrap();
-        if probe(port) {
-            return Ok(port);
-        }
-        if Instant::now() >= deadline {
-            return Err(format!("探针 GET {READY_PATH} 一直未返回 200(端口 {port})"));
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
-/// 就绪探针:裸 TcpStream 手写 HTTP/1.0 GET,只看状态行是否 200(不引 HTTP client 依赖)
-fn probe(port: u16) -> bool {
-    let Ok(mut stream) = TcpStream::connect_timeout(
-        &format!("127.0.0.1:{port}").parse().expect("合法地址"),
-        Duration::from_millis(500),
-    ) else {
-        return false;
-    };
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-    let req = format!("GET {READY_PATH} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
-    if stream.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
-    let mut buf = [0u8; 128];
-    let Ok(n) = stream.read(&mut buf) else {
-        return false;
-    };
-    let head = String::from_utf8_lossy(&buf[..n]);
-    head.starts_with("HTTP/") && head[..head.find('\n').unwrap_or(head.len())].contains(" 200")
 }
 
 fn kill_child(child: &Arc<Mutex<Child>>) {

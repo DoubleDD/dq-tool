@@ -22,6 +22,17 @@ tauri-plugin-single-instance = "2"
 ureq = "3"
 # 浏览器访问管控 token 生成(每次启动随机 16 字节);Cargo.lock 已有 0.4.x 传递依赖,复用不增新条目
 getrandom = "0.4"
+# 业务层(versions/ 下的 jar + 前端)在线更新与 dq 自定义协议所需:
+# 业务更新清单(business-latest.json)反序列化
+serde = { version = "1", features = ["derive"] }
+# minisign 验签(与 tauri-plugin-updater 同一把公钥、同一算法);Cargo.lock 已有 0.2.5 传递依赖
+minisign-verify = "0.2"
+# 验签前对公钥/签名做 base64 解码(同 updater 内部 verify_signature 的做法);0.22 与 updater 锁定版本一致
+base64 = "0.22"
+# 业务更新包解压;复用 tauri-plugin-updater 已锁定的 4.6.1(原计划 zip 2.x,锁文件里已是 4.x,避免双版本)
+zip = { version = "4", default-features = false, features = ["deflate"] }
+# dq 协议按文件扩展名给 Content-Type
+mime_guess = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
