@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # tauri 模块(Tauri 2 桌面壳)macOS 打包脚本:构建前端 + server fat jar,
-# 完整 JRE 与 jar 一起作为 Tauri bundle resources 打进 .app,
+# 完整 JRE(runtime 层)与业务层(jar + 前端,版本化目录 resources/versions/<v>/ +
+# current 指针)作为 Tauri bundle resources 打进 .app,
 # 产出 .dmg 与自动更新包 .app.tar.gz + .sig(--bundles app,dmg;
-# 运行时由 Rust 侧车拉起 内嵌 jre/bin/java -jar,见 tauri/src-tauri/src/main.rs)
+# 运行时由 Rust 侧车从 versions/current 指向的版本目录拉起 jre/bin/java -jar,
+# 并经 dq:// 协议从同目录 static/ 直载前端,见 tauri/src-tauri/src/)
 # 用法: scripts/package-tauri-mac.sh [--skip-build]
 #
 # TODO: Windows / Linux 打包脚本本次未实现。要点:
@@ -17,15 +19,24 @@ if [[ "${1:-}" != "--skip-build" ]]; then
   ./gradlew :server:shadowJar
 fi
 
-# 与 tauri/src-tauri/tauri.conf.json 的 version 保持同一映射:项目版本 0.x.y -> 安装包 x.y
 JAR=$(ls -t server/build/libs/dq-tool-*.jar | grep -v plain | head -1)
 [[ -f "$JAR" ]] || { echo "找不到 server fat jar,请先执行 ./gradlew :server:shadowJar" >&2; exit 1; }
 
+# 版本号从 VERSION 文件读取(唯一源头),去开头 "0." 前缀:0.2.0.14 -> 2.0.14
+# (${VAR#0.} 是前缀匹配;批处理脚本的全局替换坑在 shell 里不存在)
+APP_VERSION=$(cat VERSION)
+APP_VERSION="${APP_VERSION#0.}"
+
 RES=tauri/src-tauri/resources
 # PLACEHOLDER.txt 保留:tauri.conf.json 的 bundle.resources glob 要求 resources/ 下至少有一个非隐藏文件
-rm -rf "$RES/backend" "$RES/jre"
-mkdir -p "$RES/backend"
-cp "$JAR" "$RES/backend/dq-tool.jar"
+rm -rf "$RES/backend" "$RES/versions" "$RES/jre"
+# 业务层版本化目录(与 scripts\package-tauri-win.bat 同布局):versions/<v>/dq-tool.jar +
+# versions/<v>/static/(web 构建产物)+ versions/current 指针 + 包内 manifest.json
+mkdir -p "$RES/versions/$APP_VERSION"
+cp "$JAR" "$RES/versions/$APP_VERSION/dq-tool.jar"
+cp -R web/dist "$RES/versions/$APP_VERSION/static"
+echo "$APP_VERSION" > "$RES/versions/current"
+echo "{\"version\": \"$APP_VERSION\"}" > "$RES/versions/$APP_VERSION/manifest.json"
 
 # 内嵌完整 JRE 而非 jlink 裁剪(原因同 jpackage 脚本:JDBC 驱动大量反射/按名加载,
 # 实测达梦驱动初始化要 jdk.charsets 的 EUC-KR,裁剪后运行时才炸),运行库模块一个不动,
