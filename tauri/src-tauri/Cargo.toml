@@ -10,7 +10,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # 侧车拉起/端口探测/就绪轮询全部用 std 实现;libc 仅 Unix 用于 Ctrl+C/SIGTERM 兜底杀子进程
-tauri = { version = "2", features = ["tray-icon"] }
+# devtools:release 构建(安装版/绿色版)也保留右键「检查元素」开发者工具,方便现场排查前端问题
+tauri = { version = "2", features = ["tray-icon", "devtools"] }
 # 自动更新(GitHub Releases 静态清单 + minisign 验签)与原生询问对话框(更新确认弹窗)
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = "2"

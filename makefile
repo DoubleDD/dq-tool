@@ -9,6 +9,9 @@ ifeq ($(shell uname -s),Darwin)
 JDK25 := $(shell /usr/libexec/java_home -v 25 2>/dev/null)
 ifneq ($(JDK25),)
 export JAVA_HOME := $(JDK25)
+# tauri 侧车 find_java() 按 DQ_JAVA > 内嵌 JRE > PATH 解析,不认 JAVA_HOME:
+# PATH 里若有低版本 JDK 的 bin(如 temurin-21),会拉起低版本 java 报 UnsupportedClassVersionError
+export DQ_JAVA := $(JDK25)/bin/java
 endif
 endif
 

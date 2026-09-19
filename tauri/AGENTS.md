@@ -47,6 +47,7 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 ```
 
 - 不是 Gradle 模块(pnpm + cargo 工程,同 web/ 的管理方式),`settings.gradle.kts` 不包含它
+- `Cargo.toml` 显式开启 `devtools` 特性:release 构建(安装版/绿色版)也保留右键「检查元素」开发者工具,方便现场排查前端问题;不要为「release 更干净」摘掉
 - 要求:Rust(cargo 1.77+)、Node、pnpm、`@tauri-apps/cli` ^2(devDependency,无前端框架依赖)
 - **依赖统一由 pnpm 管理**(2026-08,与 web 同批迁移):lock 唯一来源 `tauri/pnpm-lock.yaml`,
   `tauri/package.json` 的 `packageManager` 固定 `pnpm@11.7.0`,npm 的 `package-lock.json` 已删除;
