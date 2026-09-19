@@ -7,7 +7,9 @@ import com.example.dq.model.ErrorQuery;
 import com.example.dq.model.ErrorRecord;
 import com.example.dq.model.ErrorSource;
 import com.example.dq.model.ErrorStats;
+import com.example.dq.model.ExportKind;
 import com.example.dq.service.ErrorCenterService;
+import com.example.dq.service.ExportCenterService;
 import io.javalin.http.Context;
 import io.javalin.http.NotFoundResponse;
 
@@ -54,10 +56,12 @@ public class ErrorCenterController {
     private static final Pattern PERCENT_SEQ = Pattern.compile("%[0-9A-Fa-f]{2}");
 
     private final ErrorCenterService service;
+    private final ExportCenterService exportCenterService;
     private volatile long lastReportAt = 0L;
 
-    public ErrorCenterController(ErrorCenterService service) {
+    public ErrorCenterController(ErrorCenterService service, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
     }
 
     // ---------- 前端上报 ----------
@@ -210,6 +214,10 @@ public class ErrorCenterController {
         }
         String format = ctx.queryParam("format");
         String stamp = FILE_TS.format(LocalDateTime.now());
+        // 导出中心:点击即登记「生成中」(文件名按实际格式,直存成功后 landed 按名翻成功)
+        String ext = "json".equalsIgnoreCase(format) ? "json" : "md";
+        exportCenterService.recordStart(ExportKind.ERROR_EXPORT,
+                "错误中心导出(" + items.size() + " 条)", "dq-errors-" + stamp + "." + ext, null, ExportTrace.fullPath(ctx));
         if ("json".equalsIgnoreCase(format)) {
             ctx.contentType("application/json;charset=utf-8");
             ctx.header("Content-Disposition", "attachment; filename=\"dq-errors-" + stamp + ".json\"");

@@ -34,7 +34,8 @@ src/main/kotlin/com/example/dq/
   env/H2StoreRepair.kt     H2 文件损坏自愈:server 内核线程在 new ServiceEnv 前预检 *.mv.db,
                            确认 MVStore 损坏则重命名备份(不删)+ Recover 导出/RunScript 重建,失败以空库兜底(详见 桌面版与数据目录 wiki)
   util/CryptoUtil.kt       AES-GCM(数据库密文);TransferCrypto(导出文件固定口令)/NavicatCrypto(.ncx 密码解密);TransferJson(三种导出文件 JSON 解析入口:UTF-8 优先、GB18030 兜底且记 warn 日志、忽略未知字段);
-                           JdbcUrlRewriter(JDBC URL host:port 解析与改写,SSH 隧道用)
+                           JdbcUrlRewriter(JDBC URL host:port 解析与改写,SSH 隧道用);
+                           JvmTmpDir(JVM 全局临时目录重定向到数据目录 tmp/:系统临时目录会被清扫导致 SXSSF 导出 NoSuchFileException,DqApplication.main 早期 redirect,内含 POI 策略重建与残留清扫)
 src/main/resources/db/migration/
   V1__baseline.sql         共有表全量建表
   V2__license_info.sql     授权信息表 + 老库列补齐(ALTER IF NOT EXISTS)

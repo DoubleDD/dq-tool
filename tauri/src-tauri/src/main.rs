@@ -125,7 +125,7 @@ fn main() {
     let child_on_exit = Arc::clone(&child);
     let child_on_update = Arc::clone(&child);
     let child_on_tray = Arc::clone(&child);
-    // 后端实际端口(含避让回填)托管为状态,供 save_download_as 命令拼本地 URL
+    // 后端实际端口(含避让回填)托管为状态,供 save_download 命令拼本地 URL
     let port_state = Arc::clone(&actual_port);
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -135,11 +135,11 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
-        // 自定义命令:导出任务「另存为」/通用下载「另存为」(webview 经 __TAURI_INTERNALS__.invoke 调用)
+        // 自定义命令:导出任务「另存为」/通用下载「直存数据目录」(webview 经 __TAURI_INTERNALS__.invoke 调用)
         .manage(port_state)
         .manage(access_token)
         .manage(Arc::clone(&ready))
-        .invoke_handler(tauri::generate_handler![api_base, save_report_as, save_download_as])
+        .invoke_handler(tauri::generate_handler![api_base, save_report_as, save_download])
         .setup(move |app| {
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -497,21 +497,19 @@ async fn save_report_as(app: tauri::AppHandle, name: String, source_name: String
     Ok(true)
 }
 
-/// 通用下载「另存为」:GET 本地后端流式导出接口 + 原生保存对话框 + 流式写盘。
-/// Excel/JSON 导出接口产物不落盘(直接写 response 流),Rust 侧只能自己发 HTTP GET
-/// 拿内容——就绪探针用裸 TcpStream 手写够用,流式下载手写不可靠,故引入 ureq(阻塞式)。
-/// 文件名以后端 Content-Disposition(filename*=UTF-8'')为准,不在任何一侧重复猜命名。
+/// 通用下载「直存数据目录」:GET 本地后端流式导出接口,写 <数据目录>/exports/(不经内存/IPC),
+/// 也不再弹原生保存框——文件名以后端 Content-Disposition 为准,先写 `<name>.part` 再 rename,
+/// 成功后返回绝对路径,前端经 POST /api/system/open 调系统默认关联程序打开。
+/// 不弹框的原因:保存框要等响应头(后端生成完整份导出才写出首字节),大导出先弹「正在导出」
+/// 提示再直存,体验远好于等半分钟对话框。
 /// path 为前端传入的完整路径(含 query),如 /api/scans/123/export?tableCols=&cols=。
-/// 返回 Ok(None) 表示用户取消;Ok(Some(目标路径)) 保存成功。
+/// 返回 Ok(目标绝对路径)。
 #[tauri::command]
-async fn save_download_as(
-    app: tauri::AppHandle,
+async fn save_download(
     port: tauri::State<'_, Arc<Mutex<u16>>>,
     token: tauri::State<'_, String>,
     path: String,
-) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
-
+) -> Result<String, String> {
     let port = *port.lock().map_err(|e| e.to_string())?;
     let url = format!("http://127.0.0.1:{port}{path}");
     // 门禁令牌:后端配置了 dq.access-token 时 Rust 自发请求也必须带头(未配置时该头无影响)
@@ -534,42 +532,38 @@ async fn save_download_as(
         let body = resp.body_mut().read_to_string().unwrap_or_default();
         return Err(format!("下载失败:HTTP {} {}", resp.status(), body.trim()));
     }
+    // 解码后的文件名理论上都是后端生成的 basename,仍防一手路径分隔符
     let name = resp
         .headers()
         .get("Content-Disposition")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_cd_filename)
         .unwrap_or_else(|| "download".to_string());
+    let name = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("download")
+        .to_string();
 
-    // 对话框回调在 UI 线程,recv 阻塞放线程池(同 save_report_as)
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog()
-        .file()
-        .set_file_name(&name)
-        .save_file(move |target| {
-            let _ = tx.send(target);
-        });
-    let target = tauri::async_runtime::spawn_blocking(move || rx.recv())
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
-    let Some(target) = target else {
-        return Ok(None);
-    };
-    let target = target.into_path().map_err(|e| e.to_string())?;
-
+    let dir = data_dir().join("exports");
+    let target = dir.join(&name);
+    let tmp = dir.join(format!("{name}.part"));
     let display = target.display().to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        let mut file = std::fs::File::create(&target).map_err(|e| format!("创建文件失败:{e}"))?;
-        // 流式读写:大 Excel 不经内存,也不走 IPC 字节传输
-        std::io::copy(&mut resp.body_mut().as_reader(), &mut file)
-            .map_err(|e| format!("写入文件失败:{e}"))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败:{e}"))?;
+        let mut file = std::fs::File::create(&tmp).map_err(|e| format!("创建文件失败:{e}"))?;
+        // 流式读写:大 Excel 不经内存,也不走 IPC;失败清掉半成品,成功才 rename 成正式名
+        if let Err(e) = std::io::copy(&mut resp.body_mut().as_reader(), &mut file) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("写入文件失败:{e}"));
+        }
+        std::fs::rename(&tmp, &target).map_err(|e| format!("保存失败:{e}"))?;
         Ok::<_, String>(())
     })
     .await
     .map_err(|e| e.to_string())??;
-    eprintln!("[dq-tool-tauri] 下载另存为:{path} -> {display}");
-    Ok(Some(display))
+    eprintln!("[dq-tool-tauri] 下载直存:{path} -> {display}");
+    Ok(display)
 }
 
 /// 从 Content-Disposition 解析文件名:后端统一 `attachment; filename*=UTF-8''<percent-encoded>`

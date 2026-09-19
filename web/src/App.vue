@@ -189,7 +189,7 @@ import axios from 'axios'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import request from './api'
 import { apiUrl, authHeaders } from './api/base'
-import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, Grid, Key, List, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading, Warning } from '@element-plus/icons-vue'
+import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, FolderOpened, Grid, Key, List, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading, Warning } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
 import { backgroundTasks, initBackgroundTasks } from './stores/backgroundTasks'
@@ -236,6 +236,7 @@ const otherNav = computed(() => {
     { path: '/manual-collects', menu: 'manual-collects', label: '人工采集', icon: Star },
     { path: '/report-exports', menu: 'report-exports', label: '报告列表', icon: Download },
     { path: '/sample-exports', menu: 'sample-exports', label: '抽样导出', icon: Files },
+    { path: '/export-center', menu: 'export-center', label: '导出中心', icon: FolderOpened },
     { path: '/compare', menu: 'compare', label: '数据比对', icon: ScaleToOriginal },
     { path: '/relations', menu: 'relations', label: 'ER 关系', icon: Share },
     { path: '/object-manage', menu: 'object-manage', label: '对象管理', icon: Folder },

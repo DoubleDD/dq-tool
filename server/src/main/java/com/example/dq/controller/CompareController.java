@@ -2,15 +2,17 @@ package com.example.dq.controller;
 
 import com.example.dq.model.CreateCompareJobRequest;
 import com.example.dq.model.CompareTargetIdentity;
+import com.example.dq.model.ExportKind;
 import com.example.dq.model.MappingSuggestRequest;
 import com.example.dq.repository.CompareRepository;
 import com.example.dq.service.CompareService;
+import com.example.dq.service.ExportCenterService;
+import com.example.dq.util.SystemOpen;
 import com.example.dq.web.Validators;
 import io.javalin.http.Context;
-import jakarta.servlet.http.HttpServletResponse;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,9 +21,11 @@ import java.util.Map;
 public class CompareController {
 
     private final CompareService service;
+    private final ExportCenterService exportCenterService;
 
-    public CompareController(CompareService service) {
+    public CompareController(CompareService service, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
     }
 
     /** 提交比对任务:同步校验后落库,后台执行,前端轮询任务列表看进度 */
@@ -194,15 +198,35 @@ public class CompareController {
         public List<Long> ids;
     }
 
-    /** 比对报告导出 xlsx:首 sheet「总览」一行一系统,其后每个差异行一个 sheet 展开字段级明细;
-     * 文件名跟随任务名(导入任务可直接对上来源文件,空名回退「比对总览-{id}.xlsx」) */
-    public void export(Context ctx) throws Exception {
+    /** 比对报告导出:服务端直存 <数据目录>/compare(任务 ID 前缀命名,同名覆盖只留最后一次),
+     * 落库导出状态 + SHA-256 checksum;返回 {path,name,size,checksum} 供前端通知(可打开文件/文件夹) */
+    public void export(Context ctx) {
         long id = id(ctx);
-        String filename = URLEncoder.encode(service.exportFileName(id), StandardCharsets.UTF_8);
-        HttpServletResponse response = ctx.res();
-        response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
-        service.exportDiff(id, response.getOutputStream());
+        // 导出中心:点击即登记「生成中」,直存完成 finalize 翻成功(key 关联,失败前端按路径标 FAILED)
+        exportCenterService.recordStart(ExportKind.COMPARE_XLSX,
+                "比对任务 #" + id + " 差异报告", service.exportFileName(id),
+                "compare-export:" + id, null);
+        CompareService.ExportFileResult result = service.exportToFile(id);
+        exportCenterService.finalize(ExportKind.COMPARE_XLSX, "compare-export:" + id,
+                null, result.getName(), "compare/" + result.getName(), null, result.getChecksum(), null);
+        ctx.json(result);
+    }
+
+    /** 打开该任务的报告导出件:仅已导出且 checksum 一致放行(否则 409,文件被改/删提示重导) */
+    public void openExport(Context ctx) {
+        SystemOpen.INSTANCE.openDefault(service.resolveExportPath(id(ctx)));
+        ctx.json(Map.of("ok", true));
+    }
+
+    /** 打开报告导出件所在目录并选中;导出件缺失时退化为打开 compare 目录本身 */
+    public void revealExport(Context ctx) {
+        Path p = service.revealExportPath(id(ctx));
+        if (Files.isDirectory(p)) {
+            SystemOpen.INSTANCE.openDir(p);
+        } else {
+            SystemOpen.INSTANCE.reveal(p);
+        }
+        ctx.json(Map.of("ok", true));
     }
 
     private static long id(Context ctx) {

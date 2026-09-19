@@ -5,9 +5,13 @@ import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 /**
  * 数据比对·匹配逻辑 3(大模型归一化匹配)的 prompt 组装与响应解析,全部为纯函数便于单测。
  *
- * 输入是「匹配逻辑 1/2 都没配对上的双侧残余对象」:每侧只带身份标识(对象编码 + 对象名称),
- * 让模型按业务语义判断哪些是同一个对象(编码规则不同、名称简写/别名/错别字、缺名称等脏数据场景)。
- * 输出统一为「基准侧序号 - 目标侧序号」配对数组,序号指 prompt 里列出的 1 起序号。
+ * 输入是「编码/名称两路都没配对上的双侧残余对象」,流程三段式(见 CompareService.aiMatchResidues):
+ * 1. 本地归一化精确补配(零成本,不经过本文件);
+ * 2. 相似度召回(零成本,不经过本文件):每条基准从目标残余里召回 ≤ top-K 候选;
+ * 3. 模型裁决(本文件):按条目预算把「基准 + 各自候选列表」装批组 prompt,让模型按业务语义判断
+ *    哪些候选与基准是同一个对象(编码规则不同、名称简写/别名/错别字、缺名称等脏数据场景),
+ *    只可能配它列出的候选,防全量两两组合的平方级 token 消耗。
+ * 输出统一为「基准序号 - 目标全局序号」配对数组,序号指 prompt 里列出的 1 起序号。
  * 解析容错:回答允许带多余文字,抽取首个 JSON 数组;坏 JSON/无有效配对返回空,不抛异常
  * (残余对象下一律记缺失/多余,绝不因为模型返回不乖就炸任务)。
  */
@@ -31,48 +35,65 @@ object CompareMatchPrompts {
     /** 配对结果:基准侧序号 → 目标侧序号 */
     data class Pair(val baseSeq: Int, val targetSeq: Int)
 
-    /** 单次请求送往模型的配对数量上限(两侧乘积),控制 token 消耗 */
-    const val MAX_PAIRS_PER_REQUEST = 5000
-
     /** code/name 单值截断长度,防超长名称撑爆 prompt */
     const val MAX_IDENTIFIER_CHARS = 80
 
     const val SYSTEM_PROMPT =
-        "你是数据治理专家。用户给出两份来自不同系统的对象清单(每项含对象编号与对象名称)," +
-                "请判断哪些是同一个业务对象。判断依据:名称相同或语义相同(全称与简称、别名、俗称、" +
-                "括号补充说明、错别字、多音字、缺失名称等)即视为同一对象,不要因为编号格式不同就判为不同对象。" +
-                "只输出 JSON,不要解释。"
+        "你是数据治理专家。用户给出若干基准对象,每条基准下方列出了它的候选目标对象(每项含对象编号与对象名称)," +
+            "请判断哪些候选与基准是同一个业务对象。判断依据:名称相同或语义相同(全称与简称、别名、俗称、" +
+            "括号补充说明、错别字、多音字、缺失名称等)即视为同一对象,不要因为编号格式不同就判为不同对象。" +
+            "每条基准只可能匹配它列出的候选之一,没有对应候选时该基准不输出。只输出 JSON,不要解释。"
 
-    /** 拼配对 prompt:两侧清单(带字段名提示,空值省略)+ 输出格式约束;纯函数 */
+    /**
+     * 拼候选裁决 prompt:逐条「基准 #b: code=… | name=… / 候选: t. …; t. …」,
+     * 目标只列该基准召回到的候选(按目标全局序号),输出格式与旧全量清单版一致
+     * (「基准序号 - 目标全局序号」配对数组);纯函数。
+     */
     @JvmStatic
-    fun buildMatchPrompt(baseCodeLabel: String, baseNameLabel: String,
-                         targetCodeLabel: String, targetNameLabel: String,
-                         bases: List<MatchItem>, targets: List<MatchItem>): String {
+    fun buildCandidateMatchPrompt(baseCodeLabel: String, baseNameLabel: String,
+                                  bases: List<MatchItem>, targetsBySeq: Map<Int, MatchItem>,
+                                  candidates: Map<Int, List<Int>>): String {
         val sb = StringBuilder()
-        sb.append("编号与名称可能不一致,请按业务含义判断同一个对象。\n\n")
-        sb.append("基准清单(共 ").append(bases.size).append(" 条):\n")
-        appendItems(sb, bases, baseCodeLabel, baseNameLabel)
-        sb.append("\n目标清单(共 ").append(targets.size).append(" 条):\n")
-        appendItems(sb, targets, targetCodeLabel, targetNameLabel)
-        sb.append("\n请输出同一个对象的配对数组,元素形如 {\"b\": <基准清单序号>, \"t\": <目标清单序号>},")
-            .append("序号为上面列出的 1 起编号,如 [{\"b\":1,\"t\":3},{\"b\":2,\"t\":5}]。")
-            .append("一条只能配一条,同一序号不要重复出现;判断不了或没有对应的不要输出。")
+        sb.append("编号与名称可能不一致,请按业务含义判断同一个对象。每条基准只可能匹配它下方列出的候选目标," +
+            "候选按目标全局序号编号;判断不了或没有对应候选时不要输出该基准。\n\n")
+        for (b in bases) {
+            sb.append("基准 ").append(b.seq).append(": ")
+            appendIdentity(sb, b, baseCodeLabel, baseNameLabel)
+            sb.append('\n')
+            val cands = candidates[b.seq].orEmpty()
+            if (cands.isEmpty()) {
+                sb.append("  候选: (无)\n")
+            } else {
+                sb.append("  候选: ")
+                cands.forEachIndexed { i, tSeq ->
+                    if (i > 0) sb.append("; ")
+                    val t = targetsBySeq[tSeq] ?: return@forEachIndexed
+                    sb.append(t.seq).append(". ")
+                    appendIdentity(sb, t, baseCodeLabel, baseNameLabel)
+                }
+                sb.append('\n')
+            }
+        }
+        sb.append("\n请输出同一个对象的配对数组,元素形如 {\"b\": <基准序号>, \"t\": <目标全局序号>},")
+            .append("序号为上面列出的编号,如 [{\"b\":1,\"t\":3}]。")
+            .append("一条只能配一条,同一序号不要重复出现;目标只能配它所属基准下方列出的候选。")
             .append("只输出 JSON 数组本身,没有配对时输出 []。")
         return sb.toString()
     }
 
-    /** 追加一侧清单:一行一条「序号. code=… | name=…」,空值忽略,超长截断 */
-    private fun appendItems(sb: StringBuilder, items: List<MatchItem>, codeLabel: String, nameLabel: String) {
-        for (it in items) {
-            sb.append(it.seq).append(". ")
-            val code = it.code?.takeIf { c -> c.isNotBlank() }?.take(MAX_IDENTIFIER_CHARS)
-            val name = it.name?.takeIf { n -> n.isNotBlank() }?.take(MAX_IDENTIFIER_CHARS)
-            val parts = ArrayList<String>(2)
-            if (code != null) parts.add("$codeLabel=$code")
-            if (name != null) parts.add("$nameLabel=$name")
-            sb.append(if (parts.isEmpty()) "(编号与名称均为空)" else parts.joinToString(" | "))
-            sb.append('\n')
-        }
+    /** 候选集校验:只保留 t 确实出现在该 b 候选列表里的配对(防模型跨候选乱配);纯函数 */
+    @JvmStatic
+    fun filterPairsByCandidates(pairs: List<Pair>, candidates: Map<Int, List<Int>>): List<Pair> =
+        pairs.filter { p -> candidates[p.baseSeq]?.contains(p.targetSeq) == true }
+
+    /** 单条身份渲染「code=… | name=…」,空值忽略,超长截断(候选裁决与清单共用) */
+    private fun appendIdentity(sb: StringBuilder, item: MatchItem, codeLabel: String, nameLabel: String) {
+        val code = item.code?.takeIf { c -> c.isNotBlank() }?.take(MAX_IDENTIFIER_CHARS)
+        val name = item.name?.takeIf { n -> n.isNotBlank() }?.take(MAX_IDENTIFIER_CHARS)
+        val parts = ArrayList<String>(2)
+        if (code != null) parts.add("$codeLabel=$code")
+        if (name != null) parts.add("$nameLabel=$name")
+        sb.append(if (parts.isEmpty()) "(编号与名称均为空)" else parts.joinToString(" | "))
     }
 
     /**

@@ -1,6 +1,8 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
 import com.example.dq.service.CompareImportService;
+import com.example.dq.service.ExportCenterService;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
 import jakarta.servlet.http.HttpServletResponse;
@@ -15,9 +17,11 @@ import java.util.Map;
 public class CompareImportController {
 
     private final CompareImportService service;
+    private final ExportCenterService exportCenterService;
 
-    public CompareImportController(CompareImportService service) {
+    public CompareImportController(CompareImportService service, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
     }
 
     /** 上传 Excel 提交导入批次(multipart 字段 file,仅 .xlsx):原件落盘 + 解析 + 数据源匹配;
@@ -43,12 +47,16 @@ public class CompareImportController {
 
     /** 下载上传的原始 Excel(文件名原样,UTF-8 编码;任务列表点来源文件名走这里) */
     public void downloadFile(Context ctx) throws Exception {
-        CompareImportService.CompareImportFile file = service.downloadFile(id(ctx));
+        long id = id(ctx);
+        CompareImportService.CompareImportFile file = service.downloadFile(id);
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" +
                 URLEncoder.encode(file.getFileName(), StandardCharsets.UTF_8));
         response.setContentLengthLong(Files.size(file.getPath()));
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.IMPORT_FILE,
+                "比对导入批次 #" + id + " 原件", file.getFileName(), null, ExportTrace.fullPath(ctx));
         Files.copy(file.getPath(), response.getOutputStream());
     }
 
@@ -85,6 +93,9 @@ public class CompareImportController {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" +
                 URLEncoder.encode("比对导入模版.xlsx", StandardCharsets.UTF_8));
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.TEMPLATE,
+                "比对导入模版", "比对导入模版.xlsx", null, ExportTrace.fullPath(ctx));
         service.writeTemplate(response.getOutputStream());
     }
 

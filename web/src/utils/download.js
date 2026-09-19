@@ -1,39 +1,66 @@
 import { ElMessage } from './notify'
-import request from '../api'
+import request, { exportLanded, exportFailed } from '../api'
 import { isTauriEnv } from '../api/base'
 
 /** tauri 套壳环境(webview 注入 __TAURI_INTERNALS__);统一由 api/base 判定,此处转出一个布尔值保持既有引用可用 */
 export const isTauri = isTauriEnv()
 
 /**
- * 通用下载:桌面端(Tauri)弹原生保存对话框让用户自选保存位置(Rust 侧 save_download_as
- * 命令 GET 本地后端流式接口并写盘,文件名以后端 Content-Disposition 为准);
- * 浏览器 / jpackage --app 形态在本窗口内 fetch 成 Blob 再走 a[download](存浏览器默认下载目录)。
+ * 通用下载:两种形态同一手感——「直存 <数据目录>/exports/ + 完成后通知(手动打开文件/文件夹)」。
+ * 桌面端(Tauri)由 Rust `save_download` 命令 GET 本地后端流式接口写盘;浏览器 / jpackage --app
+ * 由后端 `POST /api/system/save-download` 自调目标导出接口写盘(与 Tauri 里 Rust 同一角色,
+ * 全部流式导出端点零改动)。文件名统一以后端 Content-Disposition 为准;后端生成整份导出才写出
+ * 首字节,等待期间弹常驻「正在导出」。
  * @param {string} apiPath 完整接口路径(含 query),如 `/api/scans/1/export?cols=`
  */
 export async function downloadFile(apiPath) {
-  if (!isTauri) {
-    // 不再 window.open 新开窗口:--app 窗口会把 _blank 新窗口甩给系统默认浏览器(另一个浏览器配置),
-    // 现场出现过新窗口空白、文件导不出来(2026-09 jpackage 免安装版);留在本窗口下载还顺带让
-    // 404(导出 token 过期)/403/500 等错误响应经 axios 拦截器解析出 message 弹提示,而非空白页。
-    // timeout: 0 取消 30s 默认超时——大文件慢速内网下载不受限;错误提示由拦截器统一弹出,这里静默
-    try {
-      const resp = await request.get(apiPath.startsWith('/api/') ? apiPath.slice(4) : apiPath, {
-        responseType: 'blob',
-        timeout: 0,
-        _raw: true
-      })
-      saveBlob(filenameFromDisposition(resp.headers['content-disposition']), resp.data)
-    } catch { /* 拦截器已弹错误提示并上报错误中心 */ }
-    return
-  }
+  let loading = null
   try {
-    // Rust 命令返回保存的绝对路径;用户取消返回 null(静默)
-    const saved = await window.__TAURI_INTERNALS__.invoke('save_download_as', { path: apiPath })
-    if (saved) ElMessage.success(`已保存到 ${saved}`)
+    loading = await ElMessage.info('正在导出,请稍候…', { duration: 0 })
+    const saved = isTauri
+      ? await window.__TAURI_INTERNALS__.invoke('save_download', { path: apiPath })
+      : (await request.post('/system/save-download', { path: apiPath })).path
+    notifyExportSaved(saved)
+    // 导出中心(push 模型):统一直存成功后回填登记记录的 rel_path + 实测大小(按文件名关联最新登记)
+    exportLanded(saved.split(/[\\/]/).pop()).catch(() => { })
   } catch (e) {
-    ElMessage.error(String(e))
+    // 导出中心:点击时已登记「生成中」,失败按路径翻 FAILED(错误提示仍由拦截器/Tauri 分支负责)
+    exportFailed(apiPath, String(e?.message ?? e).slice(0, 200)).catch(() => { })
+    // 浏览器形态 HTTP 错误已由 axios 拦截器统一弹提示;Tauri 的 invoke 错误在这里兜底
+    if (isTauri) ElMessage.error(String(e))
+  } finally {
+    loading?.close?.()
   }
+}
+
+/**
+ * 导出完成统一反馈:成功通知,留「打开文件 / 打开文件夹」手动入口(与用户确认:不自动弹文件管理器)。
+ * 供不走 downloadFile 的服务端直存导出(如比对报告 exportToFile)在完成后的回调复用;
+ * 通知中心抽屉的历史导出通知经 exportPath 复用 openSavedFile/showSavedFolder。
+ * @param {string} saved 导出件绝对路径
+ */
+export function notifyExportSaved(saved) {
+  const name = saved.split(/[\\/]/).pop()
+  ElMessage.success(`已导出:${name}`, {
+    // 10s 自动消失(用户确认):足够点「打开文件/打开文件夹」,不常驻堆叠
+    duration: 10000,
+    title: '导出完成',
+    exportPath: saved,
+    actions: [
+      { label: '打开文件', onClick: () => openSavedFile(saved) },
+      { label: '打开文件夹', onClick: () => showSavedFolder(saved) }
+    ]
+  })
+}
+
+/** 调系统默认关联程序打开产物文件(通知中心抽屉的历史导出通知也复用) */
+export function openSavedFile(path) {
+  request.post('/system/open', { path }).catch(() => { /* 拦截器已弹错误提示 */ })
+}
+
+/** 打开产物文件所在目录并选中(macOS Finder / Windows 资源管理器;同上复用) */
+export function showSavedFolder(path) {
+  request.post('/system/reveal', { path }).catch(() => { /* 拦截器已弹错误提示 */ })
 }
 
 /** Blob 落盘:a[download] 触发浏览器默认下载行为(与 downloadText 同一模式,--app 窗口与 Tauri webview 均可用) */
@@ -44,21 +71,6 @@ function saveBlob(filename, blob) {
   a.download = filename
   a.click()
   URL.revokeObjectURL(url)
-}
-
-/** 从 Content-Disposition 取下载文件名:优先 filename*=UTF-8''(各导出接口统一口径),退回 filename="..." */
-function filenameFromDisposition(header) {
-  if (header) {
-    const star = /filename\*=UTF-8''([^;]+)/i.exec(header)
-    if (star) {
-      try {
-        return decodeURIComponent(star[1].trim())
-      } catch { /* 百分号编码非法时退回 quoted 解析 */ }
-    }
-    const quoted = /filename="([^"]+)"/i.exec(header)
-    if (quoted) return quoted[1]
-  }
-  return 'download'
 }
 
 /**

@@ -68,7 +68,7 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   数据目录统一走 `data_dir()` 并显式传 `-Ddq.data-dir`(开发模式原不传走后端默认,等价但 Rust 侧读配置需要同一目录)
 - **就绪探针**:轮询 `GET /api/license/status` 直到 200(该端点不受授权拦截),超时 60 秒;
   子进程提前退出立即报错。探针用裸 TcpStream 手写 HTTP/1.0(响应小且格式固定,够用;
-  流式下载场景不可靠,`save_download_as` 已引 ureq,见「自定义 IPC 命令」)
+  流式下载场景不可靠,`save_download` 已引 ureq,见「自定义 IPC 命令」)
 - **窗口**:后端子进程拉起后立即创建 webview,从 `WebviewUrl::App("index.html")` 加载 `frontendDist`
   即 `web/dist/index.html`(原 `tauri/ui/` 启动占位页已作废删除);后台线程就绪轮询通过后**不再 navigate**,
   只把 `AtomicBool` ready 置位,由前端轮询 IPC `api_base()` 拿动态端口/token —— 页面全程来自本地资源,
@@ -101,12 +101,15 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   猜文件名**——后端产物命名是「数据源名-数据调研报告-任务id.docx」,2026-08 曾因猜错名字导致
   Windows 另存为必报「报告文件不存在或已被移动」;不引 HTTP client / fs 插件;前端检测
   `__TAURI_INTERNALS__` 存在才显示「另存为」,浏览器环境显示「下载」
-  `save_download_as(path)` —— 通用下载「另存为」(数据源/标记 JSON、扫描 Excel 等流式导出接口):
+  `save_download(path)` —— 通用下载「直存数据目录」(数据源/标记 JSON、扫描 Excel 等流式导出接口):
   产物不落盘,Rust 侧自己 `ureq` GET `http://127.0.0.1:<port><path>`(端口从托管状态读,含避让回填;请求带 `X-Dq-Token` 头),
-  原生保存对话框默认文件名取后端 `Content-Disposition`(filename*=UTF-8'',不猜命名),
-  `std::io::copy` 流式写盘(大文件不经内存/IPC);返回保存路径供前端 toast,取消返回 null。
+  文件名取后端 `Content-Disposition`(filename*=UTF-8'',不猜命名),`std::io::copy` 流式写盘到
+  `<数据目录>/exports/`(大文件不经内存/IPC;先写 `<name>.part` 再 rename,失败清半成品);
+  **不弹原生保存框**——保存框要等响应头,即后端把整份导出生成完才写出首字节,先弹框的体感是
+  「等半天才弹」;直存后返回绝对路径,前端弹常驻「正在导出」+ 完成通知可点击打开文件
+  (POST /api/system/open,后端 `SystemOpen.openDefault` 调系统默认关联程序,路径限数据目录内)。
   **ureq 是唯一 HTTP client**(阻塞式,不引 async runtime),仅为本命令引入;
-  前端统一封装在 web `utils/download.js` 的 `downloadFile(apiPath)`,非 tauri 环境回退 `window.open`
+  前端统一封装在 web `utils/download.js` 的 `downloadFile(apiPath)`,非 tauri 环境回退 Blob + a[download]
 - **必须关闭 Tauri 拖放处理器**(窗口构建链 `.disable_drag_drop_handler()`,2026-09):Tauri 默认开启拖放处理器,
   Windows 上 wry 会枚举 WebView2 子窗口 `RevokeDragDrop` + `RegisterDragDrop`,用只认 `CF_HDROP` 的
   `IDropTarget` 替换系统原本的 target(`wry/src/webview2/drag_drop.rs`),非文件拖拽在 `DragOver` 一律回
@@ -151,7 +154,11 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   跳过 bundle 阶段的 productName 重命名,`target/release/` 下始终没有 `dq-tool.exe`),
   脚本按 `dq-tool-tauri.exe` 优先、`dq-tool.exe` 兜底取源并统一复制成 `dq-tool.exe`,
   随后把 `dq-tool.exe` + `resources/` + 空 `data/` +
-  `PORTABLE.txt` 标记文件组装成 `dq-tool/` 目录,PowerShell `Compress-Archive` 打成
+  `PORTABLE.txt` 标记文件组装成 `dq-tool/` 目录,另把 `web\dist` 落盘为
+  `resources\static\`(绿色版 exe 内嵌 frontendDist,磁盘再带一份是为浏览器模式:
+  纯 API jar 经 `-Ddq.web.static-dir` 才能发页面)并放入 `scripts\start-browser.bat`
+  (双击即以 headless=false 起 jar、自动开浏览器窗口,数据目录同为 `<exe>/data`),
+  PowerShell `Compress-Archive` 打成
   `dq-tool_<version>_windows-portable.zip`(落在 `tauri/src-tauri/target/release/`)。
   运行时 `is_portable()` 检测 exe 同目录 `PORTABLE.txt`:命中则数据目录用 `<exe>/data`、
   自动更新禁用;**删掉该标记文件会回落成安装版口径(数据写 `~/.dq-tool/data`),勿删**。

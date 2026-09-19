@@ -37,8 +37,6 @@ set DIST=server\build\jpackage\dist
 if exist "%INPUT%" rmdir /s /q "%INPUT%"
 mkdir "%INPUT%"
 copy "%JAR%" "%INPUT%\" >nul
-rem 原生启动画面:打包进 app 镜像,启动时经 -splash:${APPDIR}/splash.png 立即显示(见下方 jpackage 参数)
-copy "server\src\main\resources\splash.png" "%INPUT%\" >nul
 
 rem Frontend assets are on disk now (the fat jar no longer embeds static/): stage web\dist
 rem into the app image and serve it at runtime via -Ddq.web.static-dir=${APPDIR}/static
@@ -74,8 +72,11 @@ jpackage ^
   --java-options "-Djava.awt.headless=false" ^
   --java-options "-XX:+UseG1GC" ^
   --java-options "-Xmx1g" ^
-  --java-options "-splash:${APPDIR}/splash.png" ^
   --dest "%DIST%" || exit /b 1
+
+rem Browser-mode launcher at the app-image root: same script shipped with the
+rem portable package; it auto-detects both layouts (scripts\start-browser.bat)
+copy "scripts\start-browser.bat" "%DIST%\dq-tool\" >nul || exit /b 1
 
 rem 打成 zip 便于分发
 powershell -NoProfile -Command "Compress-Archive -Force -Path '%DIST%\dq-tool' -DestinationPath '%DIST%\dq-tool-%PKG_VERSION%.zip'" || exit /b 1

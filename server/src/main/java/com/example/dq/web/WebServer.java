@@ -28,12 +28,14 @@ import com.example.dq.controller.ReportExportController;
 import com.example.dq.controller.SampleExportController;
 import com.example.dq.controller.SqlConsoleController;
 import com.example.dq.controller.ErrorCenterController;
+import com.example.dq.controller.ExportCenterController;
 import com.example.dq.controller.LogController;
 import com.example.dq.controller.ManualCollectController;
 import com.example.dq.controller.ObjectCatalogController;
 import com.example.dq.controller.ScanController;
 import com.example.dq.controller.ScanTransferController;
 import com.example.dq.controller.SystemSettingsController;
+import com.example.dq.controller.SystemController;
 import com.example.dq.controller.TagController;
 import com.example.dq.env.ServiceEnv;
 import com.example.dq.license.LicenseMenu;
@@ -147,6 +149,8 @@ public class WebServer {
     private final AtomicReference<LanController> lanCtrl = new AtomicReference<>();
     private final AtomicReference<RelationController> relationCtrl = new AtomicReference<>();
     private final AtomicReference<ErrorCenterController> errorCtrl = new AtomicReference<>();
+    private final AtomicReference<ExportCenterController> exportCenterCtrl = new AtomicReference<>();
+    private final AtomicReference<SystemController> systemCtrl = new AtomicReference<>();
     /**
      * 实时日志 Appender 引用:LogController(SSE)与 DiagnosticsController(错误日志摘录)共用同一实例
      */
@@ -221,7 +225,7 @@ public class WebServer {
                     manualCollectCtrl, objectCatalogCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     changelogCtrl, lanCtrl, relationCtrl,
-                    new LogController(logStreamAppender), errorCtrl, sessionRef);
+                    new LogController(logStreamAppender), errorCtrl, exportCenterCtrl, systemCtrl, sessionRef);
         });
 
         // ---- 桌面生命周期(原 Spring 事件/调度挂载点,改显式装配;退出动作统一走 AppShutdown) ----
@@ -261,6 +265,8 @@ public class WebServer {
                                 AtomicReference<LanController> lanCtrl,
                                 AtomicReference<RelationController> relationCtrl,
                                 LogController logCtrl, AtomicReference<ErrorCenterController> errorCtrl,
+                                AtomicReference<ExportCenterController> exportCenterCtrl,
+                                AtomicReference<SystemController> systemCtrl,
                                 AtomicReference<DesktopSession> sessionRef) {
         // 浏览器访问管控(默认关闭):配置了 dq.access-token 才生效,未配置时行为与改动前完全一致。
         // 用全局 before 而非 beforeMatched:既拦 /api/**(含未匹配路由),也拦 jpackage/static-dir 形态下的页面路由;
@@ -452,6 +458,18 @@ public class WebServer {
         routes.post("/api/report-exports/{id}/open", ctx -> reportCtrl.get().open(ctx));
         routes.post("/api/report-exports/{id}/reveal", ctx -> reportCtrl.get().reveal(ctx));
 
+        // ---- 系统级:调系统默认程序打开数据目录内产物(Tauri 导出直存后前端「打开文件」;
+        // save-download 为浏览器 /--app 形态与 Tauri 对齐的「后端直存数据目录」:自调目标导出接口写盘) ----
+        routes.post("/api/system/open", ctx -> systemCtrl.get().open(ctx));
+        routes.post("/api/system/reveal", ctx -> systemCtrl.get().reveal(ctx));
+        routes.post("/api/system/save-download", ctx -> systemCtrl.get().saveDownload(ctx));
+
+        // ---- 导出中心(V66 登记,V67 push + 点击即登记状态机):全部导出统一登记,含相对数据目录路径 ----
+        routes.get("/api/export-center", ctx -> exportCenterCtrl.get().list(ctx));
+        routes.post("/api/export-center/landed", ctx -> exportCenterCtrl.get().landed(ctx));
+        routes.post("/api/export-center/fail", ctx -> exportCenterCtrl.get().fail(ctx));
+        routes.delete("/api/export-center/{kind}/{id}", ctx -> exportCenterCtrl.get().delete(ctx));
+
         // ---- 表格批量导入数据源 + 抽样导出任务 ----
         routes.post("/api/sample-exports", ctx -> sampleExportCtrl.get().submit(ctx));
         routes.get("/api/sample-exports", ctx -> sampleExportCtrl.get().list(ctx));
@@ -460,6 +478,7 @@ public class WebServer {
         routes.get("/api/sample-exports/{id}", ctx -> sampleExportCtrl.get().detail(ctx));
         routes.get("/api/sample-exports/{id}/download", ctx -> sampleExportCtrl.get().download(ctx));
         routes.post("/api/sample-exports/{id}/open-dir", ctx -> sampleExportCtrl.get().openDir(ctx));
+        routes.post("/api/sample-exports/{id}/open", ctx -> sampleExportCtrl.get().openFile(ctx));
         routes.post("/api/sample-exports/{id}/pause", ctx -> sampleExportCtrl.get().pause(ctx));
         routes.post("/api/sample-exports/{id}/resume", ctx -> sampleExportCtrl.get().resume(ctx));
         routes.post("/api/sample-exports/{id}/export", ctx -> sampleExportCtrl.get().export(ctx));
@@ -477,7 +496,11 @@ public class WebServer {
         routes.delete("/api/compare-jobs/{id}", ctx -> compareCtrl.get().delete(ctx));
         routes.get("/api/compare-jobs/{id}/diffs", ctx -> compareCtrl.get().diffs(ctx));
         routes.get("/api/compare-jobs/{id}/report", ctx -> compareCtrl.get().report(ctx));
-        routes.get("/api/compare-jobs/{id}/export", ctx -> compareCtrl.get().export(ctx));
+        // 比对报告导出:服务端直存数据目录/compare(任务 ID 前缀命名,同名覆盖),返回 {path,name,size,checksum}
+        routes.post("/api/compare-jobs/{id}/export", ctx -> compareCtrl.get().export(ctx));
+        // 报告导出件「打开文件 / 打开文件夹」(导出统一直存数据目录/exports 后的入口)
+        routes.post("/api/compare-jobs/{id}/open-export", ctx -> compareCtrl.get().openExport(ctx));
+        routes.post("/api/compare-jobs/{id}/reveal-export", ctx -> compareCtrl.get().revealExport(ctx));
         routes.post("/api/compare-jobs/{id}/rerun", ctx -> compareCtrl.get().rerun(ctx));
         routes.post("/api/compare-jobs/{id}/archive", ctx -> compareCtrl.get().archive(ctx));
         // 「字段审核」确认映射并开始比对(仅 PENDING)/ 向导编辑提交(PENDING 保存待处理,终态保存并重跑)
@@ -993,16 +1016,18 @@ public class WebServer {
         this.env = env;
         licenseServiceRef.set(env.getLicenseService());
         dataSourceCtrl.set(new DataSourceController(env.getDataSourceService(), env.getDataSourceTransferService(),
-                env.getMetadataTransferService()));
-        scanCtrl.set(new ScanController(env.getScanService(), env.getExportService(), env.getScanWordExportService()));
-        scanTransferCtrl.set(new ScanTransferController(env.getScanTransferService()));
+                env.getMetadataTransferService(), env.getExportCenterService()));
+        scanCtrl.set(new ScanController(env.getScanService(), env.getExportService(), env.getScanWordExportService(),
+                env.getExportCenterService()));
+        scanTransferCtrl.set(new ScanTransferController(env.getScanTransferService(), env.getExportCenterService()));
         metaCtrl.set(new MetadataController(env.getMetadataService(), env.getTableDocService(),
-                env.getTableSystemService(), env.getDbStructExportService(), env.getDataSourceService()));
+                env.getTableSystemService(), env.getDbStructExportService(), env.getDataSourceService(),
+                env.getExportCenterService()));
         metaSyncCtrl.set(new MetadataSyncController(env.getMetaSyncService()));
         reportCtrl.set(new ReportExportController(env.getWordReportExportService()));
-        sampleExportCtrl.set(new SampleExportController(env.getSampleExportService()));
-        compareCtrl.set(new CompareController(env.getCompareService()));
-        compareImportCtrl.set(new CompareImportController(env.getCompareImportService()));
+        sampleExportCtrl.set(new SampleExportController(env.getSampleExportService(), env.getExportCenterService()));
+        compareCtrl.set(new CompareController(env.getCompareService(), env.getExportCenterService()));
+        compareImportCtrl.set(new CompareImportController(env.getCompareImportService(), env.getExportCenterService()));
         tagCtrl.set(new TagController(env.getTagService()));
         manualCollectCtrl.set(new ManualCollectController(env.getManualCollectService()));
         objectCatalogCtrl.set(new ObjectCatalogController(env.getObjectCatalogService()));
@@ -1011,15 +1036,17 @@ public class WebServer {
         settingsCtrl.set(new SystemSettingsController(env.getSystemSettingsService(), browserOpener,
                 env.getConfig().getDataDir()));
         licenseCtrl.set(new LicenseController(env.getLicenseService()));
-        previewCtrl.set(new PreviewController(env.getPreviewService()));
+        previewCtrl.set(new PreviewController(env.getPreviewService(), env.getExportCenterService()));
         sqlConsoleCtrl.set(new SqlConsoleController(env.getSqlConsoleService(), env.getLocalH2ConsoleService()));
-        annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService()));
-        listExportCtrl.set(new ListExportController(env.getListExportService()));
+        annotationCtrl.set(new AnnotationController(env.getAnnotationTransferService(), env.getExportCenterService()));
+        listExportCtrl.set(new ListExportController(env.getListExportService(), env.getExportCenterService()));
         diagnosticsCtrl.set(new DiagnosticsController(env.getDiagnosticsService(), logStreamAppender));
         changelogCtrl.set(new ChangelogController(env.getChangelogService()));
         lanCtrl.set(new LanController(env.getLanShareService()));
         relationCtrl.set(new RelationController(env.getRelationInferService(), env.getTableRelationService()));
-        errorCtrl.set(new ErrorCenterController(env.getErrorCenterService()));
+        errorCtrl.set(new ErrorCenterController(env.getErrorCenterService(), env.getExportCenterService()));
+        exportCenterCtrl.set(new ExportCenterController(env.getExportCenterService()));
+        systemCtrl.set(new SystemController(env.getConfig(), this::port, config.dq().getAccessTokens()));
         // 错误中心出口注入:采集 Appender 回灌启动期缓冲,静态出口供未捕获异常处理器等使用
         errorCaptureAppender.setSink(env.getErrorCenterService()::record);
         ErrorCenterHolder.bind(env.getErrorCenterService());

@@ -30,7 +30,19 @@ class CompareRepository(private val jdbc: Jdbc) {
                       /** 基准表最新更新时间快照(比对执行时探测时间字段取 MAX;V60,未采集/无字段为 NULL) */
                       val baseDataUpdatedAt: String? = null,
                       /** 任务级身份字段数组 JSON(V62);NULL = 老任务,读取时由 [keyField] 单列退化 [keyField] */
-                      val keyFieldsJson: String? = null)
+                      val keyFieldsJson: String? = null,
+                      /** 基准表中文名快照(比对执行时采集;V64,跑完后的报告/导出只读快照,老任务 NULL = 走缓存兜底) */
+                      val baseTableComment: String? = null,
+                      /** 基准表字段注释快照 JSON(字段小写 → 注释;V64;NULL = 老任务) */
+                      val baseColumnComments: String? = null,
+                      /** 导出状态(V65):'DONE'=已生成;NULL=未导出 */
+                      val exportStatus: String? = null,
+                      /** 导出件文件名(compare 目录 basename,任务 ID 前缀;V65) */
+                      val exportFile: String? = null,
+                      /** 导出件 SHA-256 hex(V65) */
+                      val exportChecksum: String? = null,
+                      /** 最近导出完成时间(V65) */
+                      val exportAt: LocalDateTime? = null)
 
     /** 任务查询统一带 import_id 左联 compare_import 取来源文件名([jobMapper] 依赖 import_file_name 别名) */
     private val jobSelect = "SELECT j.*, i.file_name AS import_file_name " +
@@ -46,7 +58,10 @@ class CompareRepository(private val jdbc: Jdbc) {
             ts(rs, "created_at"), ts(rs, "started_at"), ts(rs, "finished_at"),
             rs.getString("pending_reason"), rs.getString("object_category"),
             rs.getLong("import_id").let { if (rs.wasNull()) null else it }, rs.getString("import_file_name"),
-            rs.getString("base_data_updated_at"), rs.getString("key_fields_json"))
+            rs.getString("base_data_updated_at"), rs.getString("key_fields_json"),
+            rs.getString("base_table_comment"), rs.getString("base_column_comments"),
+            rs.getString("export_status"), rs.getString("export_file"), rs.getString("export_checksum"),
+            ts(rs, "export_at"))
     }
 
     // ---------- 目标行 ----------
@@ -64,7 +79,11 @@ class CompareRepository(private val jdbc: Jdbc) {
                          /** 目标级身份字段人工覆盖 {"keys":[...]}(V62);NULL = 按任务级 keyFields ∩ 映射键推导 */
                          val identityJson: String? = null,
                          /** 目标表身份列为空的行数:代理键进比对,编码路不参与、名称/大模型可配对(V63,老任务 NULL = 0) */
-                         val noKeyRows: Int? = null)
+                         val noKeyRows: Int? = null,
+                         /** 目标表中文名快照(比对执行时采集;V64,跑完后的导出只读快照,老任务 NULL = 走缓存兜底) */
+                         val tableComment: String? = null,
+                         /** 目标表字段注释快照 JSON(列名小写 → 注释;V64;NULL = 老任务) */
+                         val columnComments: String? = null)
 
     private val targetMapper: (ResultSet) -> TargetRow = { rs ->
         TargetRow(rs.getLong("id"), rs.getLong("job_id"), rs.getLong("datasource_id"), rs.getString("ds_name"),
@@ -77,7 +96,8 @@ class CompareRepository(private val jdbc: Jdbc) {
             doubleOrNull(rs, "coverage"), doubleOrNull(rs, "field_consistency"),
             doubleOrNull(rs, "completeness"), doubleOrNull(rs, "score"), rs.getString("error"),
             rs.getString("field_mapping_json"), rs.getString("data_updated_at"), rs.getString("identity_json"),
-            intOrNull(rs, "no_key_rows"))
+            intOrNull(rs, "no_key_rows"),
+            rs.getString("table_comment"), rs.getString("column_comments"))
     }
 
     // ---------- 差异明细行 ----------
@@ -157,7 +177,7 @@ class CompareRepository(private val jdbc: Jdbc) {
             conn.prepareStatement(
                 "UPDATE compare_job SET name=?, base_datasource_id=?, base_db=?, base_schema=?, base_table=?, " +
                     "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, key_fields_json=?, total_units=?, done_units=0, stage=NULL, " +
-                    "base_data_updated_at=NULL, error=NULL, pending_reason='MAPPING_REVIEW' " +
+                    "base_data_updated_at=NULL, base_table_comment=NULL, base_column_comments=NULL, error=NULL, pending_reason='MAPPING_REVIEW' " +
                 "WHERE id=? AND status='PENDING'").use { ps ->
                 ps.setString(1, name)
                 ps.setLong(2, baseDatasourceId)
@@ -220,7 +240,8 @@ class CompareRepository(private val jdbc: Jdbc) {
             "UPDATE compare_job SET name=?, base_datasource_id=?, base_db=?, base_schema=?, base_table=?, " +
                 "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, key_fields_json=?, total_units=?, " +
                 "done_units=0, stage=NULL, error=NULL, pending_reason=NULL, status='RUNNING', " +
-                "started_at=CURRENT_TIMESTAMP, finished_at=NULL, base_data_updated_at=NULL " +
+                "started_at=CURRENT_TIMESTAMP, finished_at=NULL, base_data_updated_at=NULL, " +
+                "base_table_comment=NULL, base_column_comments=NULL " +
             "WHERE id=? AND status IN ('DONE','FAILED','CANCELED')").use { ps ->
             ps.setString(1, name)
             ps.setLong(2, baseDatasourceId)
@@ -381,14 +402,22 @@ class CompareRepository(private val jdbc: Jdbc) {
         jdbc.update("UPDATE compare_job SET stage=? WHERE id=?", stage, id)
     }
 
+    /** 导出完成落库:状态/文件名/checksum/时间一体更新(V65);失败不落库,保留上次成功态 */
+    fun updateExport(id: Long, file: String, checksum: String) {
+        jdbc.update("UPDATE compare_job SET export_status='DONE', export_file=?, export_checksum=?, " +
+            "export_at=CURRENT_TIMESTAMP WHERE id=?", file, checksum, id)
+    }
+
     fun updateProgress(id: Long, doneUnits: Int, stage: String) {
         jdbc.update("UPDATE compare_job SET done_units=?, stage=? WHERE id=?", doneUnits, stage, id)
     }
 
-    /** 重跑:状态翻 RUNNING,进度/错误/时间清零,归档标记保留 */
+    /** 重跑:状态翻 RUNNING,进度/错误/时间清零,归档标记保留;导出跟踪一并复位——旧报告已过时,
+     * export_file/checksum 保留作留痕(「打开文件夹」仍可定位旧件),exportFileOk 要求 DONE,
+     * 故「已导出」状态与「打开文件」随重跑自动关闭,重新导出后恢复 */
     fun markRerun(id: Long, totalUnits: Int) {
         jdbc.update("UPDATE compare_job SET status='RUNNING', stage=NULL, total_units=?, done_units=0, " +
-            "error=NULL, started_at=CURRENT_TIMESTAMP, finished_at=NULL WHERE id=?", totalUnits, id)
+            "error=NULL, started_at=CURRENT_TIMESTAMP, finished_at=NULL, export_status=NULL WHERE id=?", totalUnits, id)
     }
 
     /** 任务完成(done_units 兜底写满,消除进度计数与终态不一致) */
@@ -480,6 +509,18 @@ class CompareRepository(private val jdbc: Jdbc) {
         jdbc.update("UPDATE compare_target SET data_updated_at=? WHERE id=?", value, id)
     }
 
+    /** 回写基准表中文名/字段注释快照(V64;tableComment 取不到传 null,columnCommentsJson 为字段小写 → 注释 JSON) */
+    fun updateBaseComments(jobId: Long, tableComment: String?, columnCommentsJson: String) {
+        jdbc.update("UPDATE compare_job SET base_table_comment=?, base_column_comments=? WHERE id=?",
+            tableComment, columnCommentsJson, jobId)
+    }
+
+    /** 回写某目标表中文名/字段注释快照(口径同 [updateBaseComments]) */
+    fun updateTargetComments(id: Long, tableComment: String?, columnCommentsJson: String) {
+        jdbc.update("UPDATE compare_target SET table_comment=?, column_comments=? WHERE id=?",
+            tableComment, columnCommentsJson, id)
+    }
+
     /** 全量替换目标字段映射(「字段审核」确认时落库;mappingJson 为 基准列名 → 目标列名 JSON,空 = 自动匹配) */
     fun updateTargetMapping(id: Long, mappingJson: String?) {
         jdbc.update("UPDATE compare_target SET field_mapping_json=? WHERE id=?", mappingJson, id)
@@ -499,10 +540,11 @@ class CompareRepository(private val jdbc: Jdbc) {
             "ELSE error || ' | ' || ? END WHERE id=?", note.take(1000), note.take(1000), id)
     }
 
-    /** 重跑前清空既有结果:tx 删差异明细 + 目标(目标行由调用方随后重建)+ 清基准表时间快照 */
+    /** 重跑前清空既有结果:tx 删差异明细 + 目标(目标行由调用方随后重建)+ 清基准表时间快照与注释快照 */
     fun clearResults(jobId: Long) {
         jdbc.tx { conn ->
-            conn.prepareStatement("UPDATE compare_job SET base_data_updated_at=NULL WHERE id=?").use { ps ->
+            conn.prepareStatement("UPDATE compare_job SET base_data_updated_at=NULL, " +
+                "base_table_comment=NULL, base_column_comments=NULL WHERE id=?").use { ps ->
                 ps.setLong(1, jobId)
                 ps.executeUpdate()
             }

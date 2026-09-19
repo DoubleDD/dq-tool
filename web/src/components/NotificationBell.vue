@@ -2,11 +2,13 @@
 /**
  * 头部通知中心:铃铛按钮 + 右侧抽屉展示历史通知(最新在最前),
  * 抽屉内可一键清除所有。数据来源 stores/notifications.js(localStorage 持久化,
- * 由 utils/notify.js 写入)。
+ * 由 utils/notify.js 写入)。导出成功的通知记录带 exportPath,抽屉里同样提供
+ * 「打开文件 / 打开文件夹」操作(与弹出通知的 actions 同后端端点,路径限数据目录内)。
  */
 import { ref } from 'vue'
 import { Bell } from '@element-plus/icons-vue'
 import { notifyHistory, clearNotifyHistory } from '../stores/notifications'
+import { openSavedFile, showSavedFolder } from '../utils/download'
 
 const TYPE_TEXT = { success: '操作成功', error: '操作失败', warning: '注意', info: '提示' }
 
@@ -46,6 +48,10 @@ function fmtTime(t) {
           <span class="notify-item-time">{{ fmtTime(item.time) }}</span>
         </div>
         <div class="notify-item-text">{{ item.text }}</div>
+        <div v-if="item.exportPath" class="notify-item-actions">
+          <a class="notify-item-action" @click="openSavedFile(item.exportPath)">打开文件</a>
+          <a class="notify-item-action" @click="showSavedFolder(item.exportPath)">打开文件夹</a>
+        </div>
       </div>
     </div>
   </el-drawer>
@@ -118,5 +124,17 @@ function fmtTime(t) {
   color: var(--el-text-color-regular);
   word-break: break-word;
   white-space: pre-wrap;
+}
+
+.notify-item-actions {
+  margin-top: 4px;
+  display: flex;
+  gap: 12px;
+}
+
+.notify-item-action {
+  font-size: 12px;
+  color: var(--el-color-primary);
+  cursor: pointer;
 }
 </style>

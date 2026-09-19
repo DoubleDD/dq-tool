@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "主窗口默认能力:前端已改由 Tauri 从 frontendDist(web/dist)本地加载,不再需要 remote.urls;自定义命令 api_base/save_* 均在本文件 permissions 放行",
   "windows": ["main"],
-  "permissions": ["core:default", "allow-save-report-as", "allow-save-download-as", "allow-api-base"]
+  "permissions": ["core:default", "allow-save-report-as", "allow-save-download", "allow-api-base"]
 }

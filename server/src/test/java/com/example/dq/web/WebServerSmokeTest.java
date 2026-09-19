@@ -940,5 +940,81 @@ class WebServerSmokeTest {
         HttpResponse<String> st = send("POST", "/api/compare-jobs/999999/start", null);
         assertEquals(400, st.statusCode(), st.body());
         assertTrue(st.body().contains("比对任务不存在"), st.body());
+        // 报告导出/「打开」端点路由可达:任务不存在 → 400(成功路径弹系统窗口/真实导出不在测试触发)
+        assertEquals(400, send("POST", "/api/compare-jobs/999999/export", null).statusCode());
+        assertEquals(400, send("POST", "/api/compare-jobs/999999/open-export", null).statusCode());
+        assertEquals(400, send("POST", "/api/compare-jobs/999999/reveal-export", null).statusCode());
+    }
+
+    @Test
+    void 系统打开端点校验数据目录边界() throws Exception {
+        activateLicense();
+        // 缺 path → 400
+        assertEquals(400, send("POST", "/api/system/open", "{}").statusCode());
+        // 数据目录外的真实文件 → 400(在系统临时目录造一个,跨平台必然在数据目录外)
+        Path outside = java.nio.file.Files.createTempFile("dq-open-test", ".txt");
+        HttpResponse<String> denied = send("POST", "/api/system/open",
+                "{\"path\":\"" + outside.toString().replace("\\", "\\\\") + "\"}");
+        assertEquals(400, denied.statusCode(), denied.body());
+        assertTrue(denied.body().contains("数据目录"), denied.body());
+        // 数据目录内不存在的文件 → 409;成功路径(真调系统程序打开)不在测试里触发,避免弹应用窗口
+        HttpResponse<String> missing = send("POST", "/api/system/open",
+                "{\"path\":\"" + dataDir.resolve("exports/none.xlsx").toString().replace("\\", "\\\\") + "\"}");
+        assertEquals(409, missing.statusCode(), missing.body());
+        assertTrue(missing.body().contains("不存在"), missing.body());
+    }
+
+    @Test
+    void 通用下载自调直存数据目录() throws Exception {
+        activateLicense();
+        // list-exports 两步:暂存表格数据拿 token,save-download 自调 GET 下载接口直存
+        HttpResponse<String> staged = send("POST", "/api/list-exports",
+                "{\"filename\":\"冒烟导出\",\"sheets\":[{\"name\":\"s1\",\"headers\":[\"A\"],\"rows\":[[\"1\"]]}]}");
+        assertEquals(200, staged.statusCode(), staged.body());
+        String token = staged.body().split("\"token\":\"")[1].split("\"")[0];
+        HttpResponse<String> saved = send("POST", "/api/system/save-download",
+                "{\"path\":\"/api/list-exports/" + token + "\"}");
+        assertEquals(200, saved.statusCode(), saved.body());
+        assertTrue(saved.body().contains("\"name\":\"冒烟导出.xlsx\""), saved.body());
+        // 文件真实落在数据目录/exports/,且无 .part 半成品残留
+        String path = saved.body().split("\"path\":\"")[1].split("\"")[0].replace("\\\\", "\\");
+        assertTrue(java.nio.file.Files.isRegularFile(java.nio.file.Path.of(path)), path);
+        try (var parts = java.nio.file.Files.list(dataDir.resolve("exports"))) {
+            assertTrue(parts.noneMatch(p -> p.toString().endsWith(".part")));
+        }
+        // 非法目标:非 /api/ 前缀、system/ 自调、SSE 流 → 400
+        assertEquals(400, send("POST", "/api/system/save-download", "{\"path\":\"/etc/x\"}").statusCode());
+        assertEquals(400, send("POST", "/api/system/save-download", "{\"path\":\"/api/system/open\"}").statusCode());
+        assertEquals(400, send("POST", "/api/system/save-download", "{\"path\":\"/api/logs/stream\"}").statusCode());
+        // 目标接口错误透传:list-exports token 取走即删,再存一次 → 内层 404,状态与来源 message 带到 409
+        // (内层 404 体被全局 404 处理器改写为「路径不存在」,与浏览器直连该端点行为一致,这里只断言透传链)
+        HttpResponse<String> again = send("POST", "/api/system/save-download",
+                "{\"path\":\"/api/list-exports/" + token + "\"}");
+        assertEquals(409, again.statusCode(), again.body());
+        assertTrue(again.body().contains("HTTP 404"), again.body());
+    }
+
+    @Test
+    void 导出中心统一列表与删除边界() throws Exception {
+        activateLicense();
+        // 触发一次列表导出(stage 即登记 export_record,纯历史不可重放),UNION 查询可见后删除
+        HttpResponse<String> staged = send("POST", "/api/list-exports",
+                "{\"filename\":\"导出中心冒烟\",\"sheets\":[{\"name\":\"s1\",\"headers\":[\"A\"],\"rows\":[[\"1\"]]}]}");
+        assertEquals(200, staged.statusCode(), staged.body());
+        HttpResponse<String> listed = get("/api/export-center?kind=LIST_XLSX");
+        assertEquals(200, listed.statusCode(), listed.body());
+        assertTrue(listed.body().contains("导出中心冒烟"), listed.body());
+        // 复合 id「KIND:源id」→ 取源 id 删除,删后该类型归零
+        String id = listed.body().split("\"id\":\"")[1].split(":")[1].split("\"")[0];
+        assertEquals(200, send("DELETE", "/api/export-center/LIST_XLSX/" + id, null).statusCode());
+        assertTrue(get("/api/export-center?kind=LIST_XLSX").body().contains("\"total\":0"));
+        // 删除边界(push 模型:所有类型都是登记记录,不存在一律 400;未知类型 400);landed 回填端点可达
+        assertEquals(400, send("DELETE", "/api/export-center/NOPE/1", null).statusCode());
+        assertEquals(400, send("DELETE", "/api/export-center/REPORT_DOCX/1", null).statusCode());
+        assertEquals(400, send("DELETE", "/api/export-center/SAMPLE_ZIP/1", null).statusCode());
+        assertEquals(400, send("DELETE", "/api/export-center/COMPARE_XLSX/1", null).statusCode());
+        assertEquals(400, send("DELETE", "/api/export-center/SCAN_EXCEL/999999", null).statusCode());
+        assertEquals(200, send("POST", "/api/export-center/landed", "{\"fileName\":\"none.xlsx\"}").statusCode());
+        assertEquals(400, send("POST", "/api/export-center/landed", "{}").statusCode());
     }
 }

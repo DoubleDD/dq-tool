@@ -363,13 +363,13 @@ class ComparePendingJobTest {
     }
 
     @Test
-    fun `导出文件名跟随任务名 非法字符清洗 空名回退旧格式`() {
+    fun `导出文件名跟随任务名 非法字符清洗 空名回退 ID 前缀格式`() {
         val baseId = newDs("b")
         val id1 = repo.insertJob("水库台账-表1", baseId, "db", null, "t", "code", """["code"]""", 1)
-        assertEquals("水库台账-表1.xlsx", service.exportFileName(id1))
+        assertEquals("$id1-水库台账-表1.xlsx", service.exportFileName(id1))
         val id2 = repo.insertJob("a/b\\c:d*e?f\"g<h>i|j", baseId, "db", null, "t", "code", """["code"]""", 1)
-        assertEquals("a_b_c_d_e_f_g_h_i_j.xlsx", service.exportFileName(id2))
+        assertEquals("$id2-a_b_c_d_e_f_g_h_i_j.xlsx", service.exportFileName(id2))
         val id3 = repo.insertJob("  ", baseId, "db", null, "t", "code", """["code"]""", 1)
-        assertEquals("比对总览-$id3.xlsx", service.exportFileName(id3))
+        assertEquals("$id3-比对总览.xlsx", service.exportFileName(id3))
     }
 }

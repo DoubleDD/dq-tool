@@ -448,34 +448,101 @@ class CompareMatchTest {
     // ---------- 匹配逻辑 3:prompt 组装与响应解析 ----------
 
     @Test
-    fun `prompt 带上双侧字段名与序号`() {
-        val prompt = CompareMatchPrompts.buildMatchPrompt("code", "name", "厂商编码", "厂商名称",
-            listOf(MatchItem(1, "B-001", "甲水库"), MatchItem(2, null, "乙水库")),
-            listOf(MatchItem(1, "V-9", "甲水库(改)")))
-        assertTrue(prompt.contains("基准清单(共 2 条)"))
-        assertTrue(prompt.contains("目标清单(共 1 条)"))
-        assertTrue(prompt.contains("1. code=B-001 | name=甲水库"))
-        // 编码为空时只渲染名称
-        assertTrue(prompt.contains("2. name=乙水库"))
-        assertTrue(prompt.contains("厂商编码=V-9 | 厂商名称=甲水库(改)"))
+    fun `候选裁决 prompt 带字段名与候选列表`() {
+        val targetsBySeq = mapOf(
+            3 to MatchItem(3, "V-9", "甲水库(改)"),
+            7 to MatchItem(7, "V-7", "乙水库"))
+        val prompt = CompareMatchPrompts.buildCandidateMatchPrompt(
+            "厂商编码", "厂商名称",
+            listOf(MatchItem(1, "B-001", "甲水库")), targetsBySeq, mapOf(1 to listOf(3, 7)))
+        assertTrue(prompt.contains("基准 1: 厂商编码=B-001 | 厂商名称=甲水库"))
+        assertTrue(prompt.contains("候选: 3. 厂商编码=V-9 | 厂商名称=甲水库(改); 7. 厂商编码=V-7 | 厂商名称=乙水库"))
         assertTrue(prompt.contains("只输出 JSON 数组本身"))
     }
 
     @Test
-    fun `prompt 空清单也标注 并对超长标识截断`() {
+    fun `候选裁决 prompt 空候选标注 并对超长标识截断`() {
         val long = "甲".repeat(200)
-        val prompt = CompareMatchPrompts.buildMatchPrompt("code", "name", "code", "name",
-            listOf(MatchItem(1, "x", long)), emptyList())
-        assertTrue(prompt.contains("目标清单(共 0 条)"))
+        val prompt = CompareMatchPrompts.buildCandidateMatchPrompt(
+            "code", "name", listOf(MatchItem(1, "x", long)), emptyMap(), mapOf(1 to emptyList()))
+        assertTrue(prompt.contains("候选: (无)"))
         assertTrue(prompt.contains("甲".repeat(CompareMatchPrompts.MAX_IDENTIFIER_CHARS)))
         assertFalse(prompt.contains("甲".repeat(CompareMatchPrompts.MAX_IDENTIFIER_CHARS + 1)))
     }
 
     @Test
     fun `两侧都为空的行给出可读占位`() {
-        val prompt = CompareMatchPrompts.buildMatchPrompt("code", "name", "code", "name",
-            listOf(MatchItem(1, null, "  ")), emptyList())
-        assertTrue(prompt.contains("1. (编号与名称均为空)"))
+        val prompt = CompareMatchPrompts.buildCandidateMatchPrompt(
+            "code", "name", listOf(MatchItem(1, null, "  ")),
+            mapOf(2 to MatchItem(2, null, null)), mapOf(1 to listOf(2)))
+        assertTrue(prompt.contains("基准 1: (编号与名称均为空)"))
+        assertTrue(prompt.contains("2. (编号与名称均为空)"))
+    }
+
+    @Test
+    fun `候选集校验丢弃不在候选内的配对`() {
+        val kept = CompareMatchPrompts.filterPairsByCandidates(
+            listOf(CompareMatchPrompts.Pair(1, 3), CompareMatchPrompts.Pair(1, 7),
+                CompareMatchPrompts.Pair(2, 5)),
+            mapOf(1 to listOf(3), 2 to listOf(6)))
+        assertEquals(listOf(CompareMatchPrompts.Pair(1, 3)), kept)
+    }
+
+    @Test
+    fun `名称归一化 剥括号全半角空白`() {
+        assertEquals("甲水库", normalizeNameForMatch("  甲水库(改) "))
+        assertEquals("ab水库", normalizeNameForMatch(" ＡＢ（改） 水库 "))
+        assertEquals("甲水库", normalizeNameForMatch("甲水库"))
+    }
+
+    @Test
+    fun `编码归一化 大小写与空白`() {
+        assertEquals("b-001", normalizeCodeForMatch(" B-001 "))
+        assertEquals("ab001", normalizeCodeForMatch("AB 001"))
+    }
+
+    @Test
+    fun `相似度召回 错别字与简称进候选 无关目标不进`() {
+        val targets = listOf(
+            MatchItem(1, "V-1", "甲水厍"),          // 错别字
+            MatchItem(2, "X-9", "喜马拉雅"),         // 无关
+            MatchItem(3, "V-2", "石门水库"),
+            MatchItem(4, "Q-77", "红旗水库管理处"))
+        val bases = listOf(
+            MatchItem(1, "B-1", "甲水库"),
+            MatchItem(2, "B-2", "石门"),             // 简称
+            MatchItem(3, "B-3", "红旗水库"))
+        val candidates = recallCandidates(bases, targets, k = 20, scoreCap = 2000)
+        assertTrue(candidates.getValue(1).contains(1))
+        assertFalse(candidates.getValue(1).contains(2))
+        assertTrue(candidates.getValue(2).contains(3))
+        assertTrue(candidates.getValue(3).contains(4))
+    }
+
+    @Test
+    fun `零字符交集召回不到候选`() {
+        val candidates = recallCandidates(
+            listOf(MatchItem(1, "QQ-9", "三角洲")),
+            listOf(MatchItem(1, "RR-8", "喜马拉雅")), k = 20, scoreCap = 2000)
+        assertTrue(candidates.isEmpty())
+    }
+
+    @Test
+    fun `候选池超过命中截断后仍只取 topK`() {
+        val targets = (1..30).map { MatchItem(it, "T-$it", "甲水库%04d".format(it)) }
+        val candidates = recallCandidates(
+            listOf(MatchItem(1, "B-1", "甲水库")), targets, k = 5, scoreCap = 10)
+        assertEquals(5, candidates.getValue(1).size)
+    }
+
+    @Test
+    fun `装批按条目预算拆分`() {
+        val bases = (1..50).map { MatchItem(it, "B-$it", "甲水库$it") }
+        val candidates = bases.associate { it.seq to (1..20).toList() }
+        val batches = packCandidateBatches(bases, candidates, itemBudget = 600)
+        assertEquals(2, batches.size)
+        assertEquals(28, batches[0].size) // 每批 28×(1+20)=588 ≤ 600
+        assertEquals(22, batches[1].size)
     }
 
     @Test
@@ -539,13 +606,13 @@ class CompareMatchTest {
 
     @Test
     fun `配对结果落地成 LLM 来源`() {
-        // 四条名称都不同 → 编码/名称两路一条都配不上,全量进模型
+        // 四条名称互为错别字(归一化也不相等)→ 编码/名称两路一条都配不上,全量进模型裁决
         val base = mapOf(
             "1" to rowOf("code" to "B-1", "name" to "甲水库"),
             "2" to rowOf("code" to "B-2", "name" to "乙水库"))
         val target = mapOf(
-            "T-1" to rowOf("code" to "V-1", "name" to "甲水库(改)"),
-            "T-2" to rowOf("code" to "V-2", "name" to "乙水库(改)"))
+            "T-1" to rowOf("code" to "V-1", "name" to "甲水厍"),
+            "T-2" to rowOf("code" to "V-2", "name" to "乙水厍"))
         val base0 = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
         assertEquals(0, base0.codeMatched + base0.nameMatched)
         val service = env(aiConfigured = true) { _, _, prompt ->
@@ -560,15 +627,56 @@ class CompareMatchTest {
     }
 
     @Test
+    fun `归一化精确补配 括号与大小写不花token`() {
+        val base = mapOf("1" to rowOf("code" to "B-001", "name" to "甲水库"))
+        val target = mapOf("T-1" to rowOf("code" to "b-001", "name" to "甲水库(改)"))
+        val base0 = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
+        assertEquals(0, base0.codeMatched + base0.nameMatched)
+        var called = false
+        val service = env(aiConfigured = true) { _, _, _ -> called = true; "[]" }
+        val result = service.service.aiMatchResiduesForTest(base0, base, target, listOf("code"), "name")
+        assertFalse(called)
+        assertEquals(1, result.pairs.size)
+        // 编码归一化(B-001 = b-001)先命中;名称归一化本也能配上,只是编码路优先
+        assertEquals("CODE", result.pairs[0].by)
+    }
+
+    @Test
     fun `调用失败只跳过该批 不抛异常`() {
         val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
-        val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "甲水库(改)"))
+        val target = mapOf("T-1" to rowOf("code" to "V-1", "name" to "甲水厍"))
         val base0 = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
         val service = env(aiConfigured = true) { _, _, _ -> throw IllegalStateException("HTTP 500") }
         val result = service.service.aiMatchResiduesForTest(base0, base, target, listOf("code"), "name")
         assertTrue(result.pairs.isEmpty())
         assertTrue(result.failed)
         assertTrue(result.note!!.contains("部分批次失败"))
+    }
+
+    @Test
+    fun `模型返回候选集外的配对被丢弃 未召回目标如实披露`() {
+        val base = mapOf("1" to rowOf("code" to "B-1", "name" to "甲水库"))
+        val target = mapOf(
+            "T-1" to rowOf("code" to "V-1", "name" to "甲水厍"),
+            "T-2" to rowOf("code" to "RR-8", "name" to "喜马拉雅"))
+        val base0 = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
+        val service = env(aiConfigured = true) { _, _, _ -> """[{"b":1,"t":2}]""" }
+        val result = service.service.aiMatchResiduesForTest(base0, base, target, listOf("code"), "name")
+        assertTrue(result.pairs.isEmpty()) // t=2 不在 b=1 的候选集内,丢弃
+        assertTrue(result.note!!.contains("未被任何基准召回"))
+    }
+
+    @Test
+    fun `无字符交集的残余不送模型并如实披露`() {
+        val base = mapOf("1" to rowOf("code" to "QQ-9", "name" to "三角洲"))
+        val target = mapOf("T-1" to rowOf("code" to "RR-8", "name" to "喜马拉雅"))
+        val base0 = matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM)
+        var called = false
+        val service = env(aiConfigured = true) { _, _, _ -> called = true; "[]" }
+        val result = service.service.aiMatchResiduesForTest(base0, base, target, listOf("code"), "name")
+        assertFalse(called)
+        assertTrue(result.pairs.isEmpty())
+        assertTrue(result.note!!.contains("无字符交集"))
     }
 
     @Test
@@ -590,12 +698,31 @@ class CompareMatchTest {
     }
 
     @Test
-    fun `大批量残余按上限分批调用`() {
-        // 基准 7 条 / 目标 1200 条 → 单批上限 = MAX_PAIRS_PER_REQUEST / 1200 = 4,取下限 5 → 分 2 批
+    fun `大批量同名残余按候选召回一次裁决 不再发全量清单`() {
+        // 基准 7 条 / 目标 1200 条同名族:每条基准只召回 top20 候选,7×(1+20)=147 ≤ 600 → 1 次调用
         val base = linkedMapOf<String, Map<String, String?>>()
         val target = linkedMapOf<String, Map<String, String?>>()
-        for (i in 1..7) base["B$i"] = rowOf("code" to "B$i", "name" to "基准$i")
-        for (i in 1..1200) target["T$i"] = rowOf("code" to "T$i", "name" to "目标$i")
+        for (i in 1..7) base["B$i"] = rowOf("code" to "B$i", "name" to "甲水庫${('A' + i - 1)}")
+        for (i in 1..1200) target["T$i"] = rowOf("code" to "T$i", "name" to "甲水庫%04d".format(i))
+        var calls = 0
+        var seenPrompt = ""
+        val service = env(aiConfigured = true) { _, _, p -> calls++; seenPrompt = p; "[]" }
+        service.service.aiMatchResiduesForTest(
+            matchObjects(base, target, listOf("code"), "name", MatchMode.CODE_NAME_LLM),
+            base, target, listOf("code"), "name")
+        assertEquals(1, calls)
+        assertTrue(seenPrompt.contains("候选:"))
+        // 相似度最低的目标不进任何候选列表(旧 all-pairs 会把 1200 条全塞进每个请求)
+        assertFalse(seenPrompt.contains("甲水庫1200"))
+    }
+
+    @Test
+    fun `超过条目预算拆成多批`() {
+        // 50 条基准 × 每条 20 候选 = 1050 条目 > 600 → 28+22 两批
+        val base = linkedMapOf<String, Map<String, String?>>()
+        val target = linkedMapOf<String, Map<String, String?>>()
+        for (i in 1..50) base["B$i"] = rowOf("code" to "B$i", "name" to "甲水庫A%02d".format(i))
+        for (i in 1..40) target["T$i"] = rowOf("code" to "T$i", "name" to "甲水庫T%02d".format(i))
         var calls = 0
         val service = env(aiConfigured = true) { _, _, _ -> calls++; "[]" }
         service.service.aiMatchResiduesForTest(

@@ -336,4 +336,37 @@ export function startCompareJob(id) {
   return request.post(`/compare-jobs/${id}/start`)
 }
 
+/** 打开比对任务的报告导出件 / 其所在文件夹(导出件在数据目录/compare;打开文件要求 checksum 一致,否则 409) */
+export function openCompareExport(id, reveal = false) {
+  return request.post(`/compare-jobs/${id}/${reveal ? 'reveal-export' : 'open-export'}`)
+}
+
+/** 导出比对报告:服务端直存数据目录/compare(任务 ID 前缀命名,同名覆盖只留最后一次),
+ *  落库导出状态 + checksum;返回 {path,name,size,checksum},前端完成后通知(可打开文件/文件夹) */
+export function exportCompareReport(id) {
+  return request.post(`/compare-jobs/${id}/export`)
+}
+
+// ---------- 导出中心(V66) ----------
+/** 统一分页列表;params: { kind?, keyword?, start?, end?, page?, size? } → {total, items}
+ *  item: {id:"KIND:源id", kind, title, fileName, fileSize, storage(NONE/DISK), downloadPath, status, error, createdAt, finishedAt} */
+export function listExportCenter(params = {}) {
+  return request.get('/export-center', { params })
+}
+
+/** 删除导出记录(push 模型下所有类型都是登记记录,仅删记录不动磁盘文件;不存在 400) */
+export function deleteExportCenter(kind, id) {
+  return request.delete(`/export-center/${kind}/${id}`)
+}
+
+/** 统一直存成功后的导出中心回填:按文件名关联最新 RUNNING 登记,补 rel_path(exports/<文件名>)+ 实测大小 */
+export function exportLanded(fileName) {
+  return request.post('/export-center/landed', { fileName })
+}
+
+/** 导出失败标记:把点击时登记的「生成中」记录翻 FAILED(path 关联登记的 params.path) */
+export function exportFailed(path, error) {
+  return request.post('/export-center/fail', { path, error })
+}
+
 export default request

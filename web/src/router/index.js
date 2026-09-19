@@ -11,6 +11,8 @@ const routes = [
   { path: '/ai-usage', component: () => import('../views/AiUsage.vue') },
   { path: '/report-exports', component: () => import('../views/ReportExports.vue') },
   { path: '/sample-exports', component: () => import('../views/SampleExports.vue') },
+  // 导出中心:全部导出入口统一登记可查(V66),授权恒显
+  { path: '/export-center', component: () => import('../views/ExportCenter.vue') },
   // 数据比对:任务列表 / 新建(三步向导)/ 差异明细 / 质量报告
   { path: '/compare', component: () => import('../views/CompareTasks.vue') },
   { path: '/compare/new', component: () => import('../views/CompareNew.vue') },
@@ -85,6 +87,7 @@ const MENU_ITEMS = [
   { menu: 'manual-collects', path: '/manual-collects' },
   { menu: 'report-exports', path: '/report-exports' },
   { menu: 'sample-exports', path: '/sample-exports' },
+  { menu: 'export-center', path: '/export-center' },
   { menu: 'compare', path: '/compare' },
   { menu: 'relations', path: '/relations' },
   { menu: 'object-manage', path: '/object-manage' },

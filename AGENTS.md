@@ -19,7 +19,7 @@ dq-tool 是一个轻量级单体应用:交付的 fat jar 是**纯 API 服务**(�
 - **导入导出格式向后兼容是铁律**:旧版本导出的文件必须能被新版本导入(客户拿到导出文件后的处理方式不可控);格式演进优先在同版本内追加可选字段(导入忽略未知字段+缺省值兜底),确需破坏性变更时在导出文件升 `version` 并在导入端做版本检测、分版本解析,禁止让旧文件静默报错(细则见 代码约定与安全)
 - 前端构建与后端运行解耦:`make dev` / `make dev-headless`(`:server:run`,走 classpath 静态)不构建前端,前端开发走 `make dev-web`(vite 5173);`:server:shadowJar` **排除 `static/**`**,交付 jar 是纯 API 服务;`processResources` 仍把 `web/dist` 拷入 dev/测试 classpath;前端产物由 Tauri(`frontendDist` 直载 `web/dist`)与 jpackage(脚本 xcopy `web/dist` + `-Ddq.web.static-dir`)各自构建
 - Tauri 交付形态:webview 从本地 `frontendDist` 直载,跨域访问 `127.0.0.1:<动态端口>`;后端 `dq.access-token` 由 Rust 每次启动随机生成并经 `-Ddq.access-token` 注入,前端从 IPC `api_base()` 取 `{base,token}` 后走 `X-Dq-Token` 头(SSE 走 `?token=`);CORS 用 `anyHost()` 只对 `/api/*` 开放,门禁豁免清单固定为 `/api/health`、`/api/license/status`、`/api/lan/share/**`,不得扩大
-- **所有下载/导出入口必须走 `web/src/utils/download.js`**(`downloadFile`/`downloadText`/`downloadDataUrl`),兼容浏览器·jpackage `--app`(同源 + Cookie)与 Tauri 套壳(tauri:// 源 + token,原生保存框)两种形态;禁止裸 `<a href="/api/...">`/裸 `window.open`——相对 `/api` 在 Tauri 下会把整个 webview 导航走(细则见 前端页面与按钮逻辑 贯穿性机制 10)
+- **所有下载/导出入口必须走 `web/src/utils/download.js`**(`downloadFile`/`downloadText`/`downloadDataUrl`),两形态统一「直存 `<数据目录>/exports/` + 完成后通知(留「打开文件/打开文件夹」入口,与用户确认不自动弹文件管理器)」:Tauri 套壳由 Rust `save_download` 写盘(tauri:// 源 + token),浏览器·jpackage `--app` 由后端自调 `POST /api/system/save-download` 写盘(同源 + Cookie);`downloadText`/`downloadDataUrl` 等前端组装内容仍走 Blob 下载;禁止裸 `<a href="/api/...">`/裸 `window.open`——相对 `/api` 在 Tauri 下会把整个 webview 导航走(细则见 前端页面与按钮逻辑 贯穿性机制 10)
 - `data/`(H2 数据文件)不应提交或外发;功能性 `.bat` 注释一律用英文且必须保持 CRLF 行尾
 - **测试分层铁律**:日常改动只跑相关测试(`--tests` 过滤到测试类,或模块级 `./gradlew :common:test` / `:server:test`;Gradle up-to-date 自动跳过未受影响部分);**发版(走发布流程打 tag)前必须全量 `make test` 通过**(细则见 构建运行与测试)
 - **发版流程禁止清理 worktree**:发布(合并 feature 分支/打 tag)不得删除任何 worktree 目录或分支;worktree 仅在「feature 完全完成且代码已合并入 main」后由完成该 feature 的一方自动清理,其余情况一律保留、由用户手动清理
@@ -48,6 +48,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [数据源](docs/wiki/数据源.md) — 连接信息加密、SSH 隧道、库过滤、导入导出、连接状态与断网降级、元数据批量同步
 - [元数据导入导出](docs/wiki/元数据导入导出.md) — 结构缓存 + 标注数据打包 JSON,供连不上业务库的人离线交接
 - [表格批量导入与抽样导出](docs/wiki/批量导入与抽样导出.md) — Excel 批量导入 → 数据源检测 → 按 数据源×类别 抽样导出 zip 的两步流程
+- [导出中心](docs/wiki/导出中心.md) — 全部导出入口统一登记可查(V66/V67 push 模型):导出一个文件出一条记录,记相对数据目录路径/大小/描述/时间,文件名点击直开 + 打开目录;授权恒显
 - [数据比对](docs/wiki/数据比对.md) — 对象匹配对齐 + 逐字段比对,差异明细与质量报告、xlsx 导出、行级/列级两模式;受控功能(授权码需含 `compare`)
 - [系统诊断](docs/wiki/系统诊断.md) — 环境/AI/数据源连通实测/失败记录/错误日志聚合与 Markdown 报告(授权仅内部聚合,页面不展示)
 - [错误中心](docs/wiki/错误中心.md) — 统一错误收集:前端 JS/接口、后端异常、数据库错误、任务与启动异常落 H2 按指纹聚合,可筛选/标记处理/导出
@@ -75,7 +76,7 @@ make package      # macOS dmg 安装包(其他平台见 打包与发布)
 - [浏览器访问管控实施计划](docs/plans/浏览器访问管控-实施计划.md) — **已实施**(token 门禁;前端令牌出口最终落在 `web/src/api/base.js`)
 - [后台任务中心实施计划](docs/plans/后台任务中心-实施计划.md) — **已实施**(2026-09-14 随 2.0.7 发布)
 - [Tauri 直载前端 · jar 转纯 API 服务实施计划](docs/plans/Tauri直载前端-jar转纯API服务-实施计划.md) — **已实施**(T14 三平台真机 Origin 待回填);[现场交接说明](docs/plans/Tauri直载前端-jar转纯API服务-交接说明.md) 收尾后可删
-- [导出中心实施计划](docs/plans/导出中心-实施计划.md) — **待办**(2026-09-14 调研定稿):15 处导出统一登记可查
+- [导出中心实施计划](docs/plans/导出中心-实施计划.md) — **已实施**(2026-09-18):15 处导出统一登记可查,见 [导出中心](docs/wiki/导出中心.md)
 - [比对任务批量导入实施计划](docs/plans/比对任务批量导入-实施计划.md) — **已实施**(2026-09-17):Excel 一 sheet 一任务,原件留档可下载,数据源确认 → 大模型推导映射 → 人工审核开跑;任务状态机加「待处理」
 - [错误收集系统(错误中心)实施计划](docs/plans/错误收集系统-实施计划.md) — **已实施**:统一采集/落库/聚合/查看
 - [比对目标级身份实施计划](docs/plans/比对目标级身份-实施计划.md) — **已实施**(2026-09-17):身份语义下沉到目标级——任务级 keyFields 多选作默认,每目标有效身份 = identity_json 人工覆盖 ?? 推导(keyFields ∩ 映射连线,连多个默认组合身份);组合键 `\u0001` 拼接;confirm-mapping 载荷加可选 identities

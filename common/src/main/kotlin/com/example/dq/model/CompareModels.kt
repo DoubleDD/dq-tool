@@ -143,6 +143,8 @@ data class CompareJobView(
     val importId: Long? = null,
     /** 来源导入文件名(按 import_id 左联 compare_import 取;手工建为 null) */
     val importFileName: String? = null,
+    /** 「打开文件」可点口径(V65):已导出且 SHA-256 与库中记录一致;「打开文件夹」不受此限制 */
+    val exportFileOk: Boolean = false,
 )
 
 /** 比对任务详情:任务字段 + 目标指标列表 */

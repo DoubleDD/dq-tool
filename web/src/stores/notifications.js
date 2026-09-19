@@ -2,6 +2,7 @@
  * 通知历史:只存 localStorage(dq-notify-history),不落服务端/H2,刷新与重启后保留。
  * 全局通知弹出的同时在此留痕,头部铃铛抽屉(components/NotificationBell.vue)读取展示,
  * 支持一键清空。list 最新的在最前,上限 100 条。
+ * exportPath:仅导出成功通知携带(落盘绝对路径),抽屉据此渲染「打开文件/打开文件夹」
  */
 import { reactive } from 'vue'
 
@@ -25,12 +26,13 @@ function save() {
   } catch { /* 存储满等异常静默忽略,不影响通知弹出 */ }
 }
 
-export function addNotifyRecord({ type, title, text }) {
+export function addNotifyRecord({ type, title, text, exportPath }) {
   notifyHistory.list.unshift({
     id: `${Date.now()}-${Math.random()}`,
     type,
     title,
     text,
+    ...(exportPath ? { exportPath } : {}),
     time: new Date().toISOString()
   })
   if (notifyHistory.list.length > MAX_HISTORY) notifyHistory.list.length = MAX_HISTORY

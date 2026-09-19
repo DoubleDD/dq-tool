@@ -2,7 +2,6 @@ package com.example.dq;
 
 import com.example.dq.config.BrowserOpener;
 import com.example.dq.config.ConfigLoader;
-import com.example.dq.config.DesktopSplash;
 import com.example.dq.config.InstanceLock;
 import com.example.dq.config.JvmMemoryConfig;
 import com.example.dq.config.KernelConfigAdapter;
@@ -14,6 +13,7 @@ import com.example.dq.env.H2StoreRepair;
 import com.example.dq.env.ServiceEnv;
 import com.example.dq.model.ErrorLevel;
 import com.example.dq.model.ErrorSource;
+import com.example.dq.util.JvmTmpDir;
 import com.example.dq.web.ErrorCenterHolder;
 import com.example.dq.web.WebServer;
 
@@ -44,22 +44,19 @@ public class DqApplication {
         }
         // 兼容仅支持 TLS 1.0/1.1 的老版本 SQL Server;必须在任何 TLS 使用之前调用(详见 LegacyTlsSupport)
         LegacyTlsSupport.enable();
-        // 桌面安装版(headless=false)先给出视觉反馈:启动画面第一时间弹出(安装包走 JVM 原生 -splash,
-        // 点击图标即显示;开发模式回退 Swing 启动画面),托盘改后台安装,不再阻塞主流程。
         // 显式判断 headless=false 而不是 !isHeadless():普通 java -jar 在桌面机器上运行时该属性未设置,
-        // 不能误装托盘/弹窗,保持服务器部署的原行为。
+        // 不能误装托盘/弹窗,保持服务器部署的原行为
         boolean desktop = "false".equalsIgnoreCase(System.getProperty("java.awt.headless"));
-        if (desktop) {
-            StartupLog.log("显示启动画面...");
-            DesktopSplash.showEarly();
-            StartupLog.log("启动画面已显示");
-        }
-        StartupLog.mark("早期初始化" + (desktop ? "(含启动画面)" : ""));
+        StartupLog.mark("早期初始化");
         // try 外声明:启动失败(如共享内核初始化异常)时 catch 里要关掉已拉起的应用窗口
         WebServer server = null;
         try {
             StartupLog.log("加载配置(application.yml)...");
             ConfigLoader.AppConfig config = ConfigLoader.load();
+            // 全局临时目录重定向到数据目录 tmp/:系统临时目录(%TEMP%)会被存储感知/安全软件清扫,
+            // POI SXSSF 等正在写的临时文件被删导致导出 NoSuchFileException;必须在 logback 初始化与
+            // 内核线程(首个临时文件使用方)之前调用(JDK 首次使用 java.io.tmpdir 时才固化该值)
+            JvmTmpDir.INSTANCE.redirect(Path.of(config.dataDir()));
             // logback 首次打日志即初始化:dq.data-dir / dq.log-dir 必须先于任何日志输出设置(logback.xml 引用)
             System.setProperty("dq.data-dir", config.dataDir());
             // 日志目录固定为数据目录同级的 logs/(规则单点 StartupLog.logDirFor),-Ddq.log-dir 可显式覆盖
@@ -111,8 +108,6 @@ public class DqApplication {
                     }
                     if (!takenOver) {
                         StartupLog.log("无法自动接管,提示用户手动结束旧实例,本进程退出");
-                        // 原生启动画面还罩在屏幕上且置顶,先关掉再弹提示,否则对话框可能被遮住
-                        DesktopSplash.close();
                         String message = runningPort > 0
                                 ? "检测到另一个版本的 dq-tool 正在运行,且无法自动关闭。\n"
                                         + "请在任务管理器中结束 dq-tool 进程后,再重新打开。"
@@ -179,11 +174,11 @@ public class DqApplication {
             // 实时启动阶段),不再等共享内核初始化完成(避免服务初始化期间的白屏)
             StartupLog.log("HTTP 已监听,立即打开应用窗口(页面外壳秒出,后端就绪由前端轮询等待)...");
             server.openBrowser();
-            // 首次 AWT 初始化此刻在主线程完成(原生 splash 全程罩着),保证后续 AWT 调用
-            // (托盘图标等)不落到非主线程做首次初始化(macOS 要求 AWT 在主线程初始化);
+            // 首次 AWT 初始化此刻在主线程完成,保证后续 AWT 调用(托盘图标等)不落到
+            // 非主线程做首次初始化(macOS 要求 AWT 在主线程初始化);
             // 托盘继续后台安装,不阻塞主流程(installEarlyAsync 进行中时 markTrayReady 不等待)
             if (desktop) {
-                DesktopSplash.ensureAwtInitialized();
+                ensureAwtInitializedOnMainThread();
                 StartupLog.log("后台安装系统托盘图标...");
                 TrayManager.installEarlyAsync("http://localhost:" + port);
             }
@@ -194,9 +189,8 @@ public class DqApplication {
             StartupStage.set(StartupStage.KERNEL);
             server.finishInit(kernelFuture);
             StartupLog.mark("等待共享内核");
-            // 服务就绪后关闭启动画面:此时 Chrome 已显示占位页,不留"关窗→浏览器冷启动"的死区
+            // 服务就绪;/api/health 转 200,前端轮询到 200 再加载数据
             StartupStage.set(StartupStage.READY);
-            DesktopSplash.close();
             // 回填托盘菜单引用(原 onReady 的托盘部分;headless 下 installEarly 自动跳过)
             server.markTrayReady();
             StartupLog.log("启动流程全部完成,实际端口=" + server.port());
@@ -219,8 +213,16 @@ public class DqApplication {
                     // 关窗失败不影响退出
                 }
             }
-            DesktopSplash.close();
             System.exit(1);
+        }
+    }
+
+    /** 首次 AWT 初始化落在主线程(macOS 要求),失败只影响桌面反馈,不阻塞启动 */
+    private static void ensureAwtInitializedOnMainThread() {
+        try {
+            java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment();
+        } catch (Throwable e) {
+            StartupLog.log("AWT 环境初始化失败(不影响启动)", e);
         }
     }
 

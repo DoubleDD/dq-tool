@@ -31,8 +31,6 @@ INPUT=server/build/jpackage/input
 DIST=server/build/jpackage/dist
 rm -rf "$INPUT" && mkdir -p "$INPUT"
 cp "$JAR" "$INPUT/"
-# 原生启动画面:打包进 app 镜像,经 -splash:${APPDIR}/splash.png 点击图标即显示(见下方 jpackage 参数)
-cp server/src/main/resources/splash.png "$INPUT/"
 # 前端产物(jar 已不含 static):拷到 app 镜像 static/ 子目录,运行时经 -Ddq.web.static-dir=${APPDIR}/static 从磁盘发
 rm -rf "$INPUT/static" && mkdir -p "$INPUT/static"
 cp -R web/dist/. "$INPUT/static/"
@@ -62,7 +60,6 @@ jpackage \
   --java-options '-Djava.awt.headless=false' \
   --java-options '-XX:+UseG1GC' \
   --java-options '-Xmx1g' \
-  --java-options '-splash:${APPDIR}/splash.png' \
   --dest "$DIST"
 
 if [[ "$PKG_TYPE" == deb ]]; then

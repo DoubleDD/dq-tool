@@ -75,7 +75,7 @@
     </div>
 
     <div ref="tableWrapRef" class="table-wrap">
-      <!-- max-height 由视口计算:表头固定 + 列表内部纵向滚动,分页条始终可见 -->
+      <!-- max-height 取容器实际高度(ResizeObserver):表头固定 + 列表内部纵向滚动,分页条始终可见 -->
       <!-- row-key + reserve-selection:勾选跨分页保留(导出所选时不会因翻页丢勾选) -->
       <el-table ref="tableRef" :data="rows" v-loading="loading" size="small" class="error-table"
         row-key="id" :max-height="tableMaxHeight" @row-click="onRowClick" @selection-change="onSelectionChange">
@@ -200,12 +200,14 @@ const stats = reactive({ dropped: 0, spoolPending: false })
 const detailVisible = ref(false)
 const detail = ref(null)
 
-// 表格最大高度 = 视口高 - 表格顶部位置 - 底部留白(配合 max-height 实现表头固定 + 内部滚动)
+// 表格最大高度直接取容器实际高度(ResizeObserver 监听):提示条/勾选条出现消失、窗口变化都会触发重算。
+// 不用视口估算 —— 视口法在提示条消失后不会重算,表格过高会溢出盖住分页条。
 const tableWrapRef = ref(null)
 const tableMaxHeight = ref(600)
+let tableWrapRO = null
 function updateTableMaxHeight() {
-  const top = tableWrapRef.value?.getBoundingClientRect().top
-  if (top) tableMaxHeight.value = Math.max(240, Math.floor(window.innerHeight - top - 96))
+  const h = tableWrapRef.value?.clientHeight
+  if (h) tableMaxHeight.value = Math.floor(h)
 }
 
 /** 表格引用 + 当前勾选行(随 row-key 跨分页保留;仅用于「导出所选」,不是处置) */
@@ -409,7 +411,8 @@ function watchAutoRefresh() {
 
 onMounted(() => {
   updateTableMaxHeight()
-  window.addEventListener('resize', updateTableMaxHeight)
+  tableWrapRO = new ResizeObserver(updateTableMaxHeight)
+  if (tableWrapRef.value) tableWrapRO.observe(tableWrapRef.value)
 })
 
 onActivated(() => {
@@ -424,7 +427,8 @@ onDeactivated(() => {
 
 onUnmounted(() => {
   stopTimer()
-  window.removeEventListener('resize', updateTableMaxHeight)
+  tableWrapRO?.disconnect()
+  tableWrapRO = null
 })
 
 // 自动刷新开关变化时启停定时器
@@ -493,6 +497,8 @@ watch(autoRefresh, watchAutoRefresh)
 .table-wrap {
   flex: 1;
   min-height: 0;
+  /* 硬兜底:即便 max-height 短暂失配,表格也只会被裁掉而不盖住下方分页条 */
+  overflow: hidden;
 }
 
 .error-table {

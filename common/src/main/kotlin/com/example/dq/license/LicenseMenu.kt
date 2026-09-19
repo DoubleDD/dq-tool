@@ -15,6 +15,7 @@ enum class LicenseMenu(val key: String, val label: String) {
     MANUAL_COLLECTS("manual-collects", "人工采集"),
     REPORT_EXPORTS("report-exports", "报告列表"),
     SAMPLE_EXPORTS("sample-exports", "抽样导出"),
+    EXPORT_CENTER("export-center", "导出中心"),
     COMPARE("compare", "数据比对"),
     RELATIONS("relations", "ER 关系"),
     OBJECT_MANAGE("object-manage", "对象管理"),
@@ -53,10 +54,10 @@ enum class LicenseMenu(val key: String, val label: String) {
 
         /**
          * 计算最终开放菜单集:新格式按菜单段;旧格式(菜单段为 null)按旧功能段推导,
-         * 见 [fromLegacyFeatures]。
+         * 见 [fromLegacyFeatures]。导出中心为纯查询功能,恒显(任何授权码都并上)。
          */
         fun granted(payloadFeatures: String?, payloadMenus: String?): Set<LicenseMenu> =
-            if (payloadMenus != null) parse(payloadMenus) else fromLegacyFeatures(payloadFeatures)
+            (if (payloadMenus != null) parse(payloadMenus) else fromLegacyFeatures(payloadFeatures)) + EXPORT_CENTER
 
         /** 旧格式(无菜单段)授权码的菜单推导:全部菜单除 数据比对/授权管理 外默认开放,两者按旧功能段显式包含恢复 */
         fun fromLegacyFeatures(payloadFeatures: String?): Set<LicenseMenu> {

@@ -187,9 +187,9 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watc
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
-import { getCompareJob, getCompareReport, listCompareDiffs, rerunCompareJob } from '../api'
+import { getCompareJob, getCompareReport, listCompareDiffs, rerunCompareJob, exportCompareReport } from '../api'
 import { formatDateTime, formatNumber } from '../utils/format'
-import { downloadFile } from '../utils/download'
+import { notifyExportSaved } from '../utils/download'
 import { ackTask } from '../stores/backgroundTasks'
 import CompareMappingView from '../components/CompareMappingView.vue'
 
@@ -559,10 +559,16 @@ async function confirmRerun() {
   router.push('/compare')
 }
 
-/** 导出比对报告:总览 sheet + 每差异行一 sheet;走统一 downloadFile(Tauri 原生保存框/浏览器本窗口 Blob 下载,
- * 不能裸 <a href>:Tauri webview 直载本地页面,相对 /api 会解析到 tauri:// 源把整页导航走) */
-function exportDiffs() {
-  downloadFile(`/api/compare-jobs/${jobId}/export`)
+/** 导出比对报告:总览 sheet + 每差异行一 sheet;服务端直存数据目录/compare(任务 ID 前缀命名,同名覆盖),
+ * 完成后通知(可打开文件/文件夹);与任务列表「导出表格」同一接口 */
+async function exportDiffs() {
+  const loading = await ElMessage.info('正在导出,请稍候…', { duration: 0 })
+  try {
+    const saved = await exportCompareReport(jobId)
+    notifyExportSaved(saved.path)
+  } catch { /* 拦截器已弹错误提示 */ } finally {
+    loading?.close?.()
+  }
 }
 
 onMounted(load)

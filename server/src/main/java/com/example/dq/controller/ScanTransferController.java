@@ -1,5 +1,7 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
+import com.example.dq.service.ExportCenterService;
 import com.example.dq.service.ScanTransferService;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
@@ -20,9 +22,11 @@ import java.util.Map;
 public class ScanTransferController {
 
     private final ScanTransferService service;
+    private final ExportCenterService exportCenterService;
 
-    public ScanTransferController(ScanTransferService service) {
+    public ScanTransferController(ScanTransferService service, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
     }
 
     /** 导出扫描记录为 JSON 文件;queryParam ids 逗号分隔,缺省/空 = 导出全部任务 */
@@ -30,10 +34,15 @@ public class ScanTransferController {
         String filename = URLEncoder.encode("dq-scans-"
                 + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".json",
                 StandardCharsets.UTF_8);
+        List<Long> ids = parseIds(ctx.queryParam("ids"));
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.TRANSFER_SCAN,
+                ids.isEmpty() ? "扫描记录导出(全部)" : "扫描记录导出(" + ids.size() + " 个任务)",
+                ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/json");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
-        service.export(parseIds(ctx.queryParam("ids")), response.getOutputStream());
+        service.export(ids, response.getOutputStream());
     }
 
     /** 导入预检(multipart 文件上传):返回文件内各数据源的 job 数与本机数据源清单,供前端做数据源映射 */

@@ -100,6 +100,12 @@ if not exist "%EXE_SRC%" set EXE_SRC=tauri\src-tauri\target\release\dq-tool.exe
 copy "%EXE_SRC%" "%STAGE%\dq-tool\dq-tool.exe" >nul || exit /b 1
 xcopy "%RES%" "%STAGE%\dq-tool\resources\" /E /I /Q >nul || exit /b 1
 
+rem Browser mode without the Tauri shell: the fat jar is pure API, so also ship the
+rem web build on disk (resources\static, served via -Ddq.web.static-dir) plus the
+rem double-click launcher scripts\start-browser.bat
+xcopy "web\dist" "%STAGE%\dq-tool\resources\static\" /E /I /Q >nul || exit /b 1
+copy "scripts\start-browser.bat" "%STAGE%\dq-tool\" >nul || exit /b 1
+
 rem PORTABLE.txt is the marker is_portable() checks: when present next to the exe the
 rem data dir is <exe>\data and the auto-updater is disabled. Keep the content ASCII
 echo This file marks the portable (no-install) edition of dq-tool.> "%STAGE%\dq-tool\PORTABLE.txt"
@@ -110,5 +116,6 @@ if exist "%ZIP%" del /q "%ZIP%"
 powershell -NoProfile -Command "Compress-Archive -Path '%STAGE%\dq-tool' -DestinationPath '%ZIP%' -CompressionLevel Optimal" || exit /b 1
 
 echo Portable package: %ZIP%
-echo Layout: dq-tool\dq-tool.exe + resources\ + data\ + PORTABLE.txt (unzip and run)
+echo Layout: dq-tool\dq-tool.exe + resources\ + data\ + PORTABLE.txt + start-browser.bat (unzip and run;
+echo   dq-tool.exe = desktop app, start-browser.bat = same backend in a browser window)
 endlocal

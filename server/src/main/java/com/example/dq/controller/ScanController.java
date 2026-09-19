@@ -1,6 +1,8 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
 import com.example.dq.model.ScanRequest;
+import com.example.dq.service.ExportCenterService;
 import com.example.dq.service.ExportService;
 import com.example.dq.service.ScanService;
 import com.example.dq.service.ScanWordExportService;
@@ -21,12 +23,14 @@ public class ScanController {
     private final ScanService scanService;
     private final ExportService exportService;
     private final ScanWordExportService scanWordExportService;
+    private final ExportCenterService exportCenterService;
 
     public ScanController(ScanService scanService, ExportService exportService,
-                          ScanWordExportService scanWordExportService) {
+                          ScanWordExportService scanWordExportService, ExportCenterService exportCenterService) {
         this.scanService = scanService;
         this.exportService = exportService;
         this.scanWordExportService = scanWordExportService;
+        this.exportCenterService = exportCenterService;
     }
 
     public void create(Context ctx) throws Exception {
@@ -72,6 +76,9 @@ public class ScanController {
     public void export(Context ctx) throws IOException {
         long jobId = jobId(ctx);
         String filename = URLEncoder.encode("dq-scan-" + jobId + ".xlsx", StandardCharsets.UTF_8);
+        // 导出中心:点击即登记「生成中」,统一直存成功后 landed 翻成功(文件名请求期生成,前置与 CD 同一口径)
+        exportCenterService.recordStart(ExportKind.SCAN_EXCEL,
+                "扫描任务 #" + jobId + " 结果", ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
@@ -85,6 +92,9 @@ public class ScanController {
         long dsId = ctx.pathParamAsClass("dsId", Long.class).get();
         String schema = ctx.pathParam("schema");
         String filename = URLEncoder.encode("dq-scan-latest-" + schema + ".xlsx", StandardCharsets.UTF_8);
+        exportCenterService.recordStart(ExportKind.SCAN_EXCEL,
+                "数据源 " + scanService.datasourceName(dsId) + "·" + schema + " 最新扫描结果",
+                ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
@@ -97,6 +107,8 @@ public class ScanController {
     public void exportWord(Context ctx) throws IOException {
         long jobId = jobId(ctx);
         String filename = URLEncoder.encode("dq-scan-" + jobId + "-表结构.docx", StandardCharsets.UTF_8);
+        exportCenterService.recordStart(ExportKind.SCAN_WORD,
+                "扫描任务 #" + jobId + " 表结构文档", ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);

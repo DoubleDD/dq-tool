@@ -738,4 +738,51 @@ class CompareExportTest {
             wb.close()
         }
     }
+
+    // ---------- 注释快照(V64):跑完断网(VPN 被挤掉)也能导出/出报告 ----------
+
+    @Test
+    fun `导出表中文名与字段中文优先读比对快照不依赖结构缓存`() {
+        val env = Env()
+        val jobId = env.seedDiffs()
+        val targetId = env.repo.listTargets(jobId).single().id
+        // 比对执行时采集的注释快照;不 seed 任何结构缓存,注释值与缓存路径不同即可证快照优先
+        env.repo.updateBaseComments(jobId, "快照-基准表",
+            """{"id":"快照-编码注释","name":"快照-名称注释","capacity":"快照-库容注释"}""")
+        env.repo.updateTargetComments(targetId, "快照-目标表", """{"id":"快照-目标编码注释"}""")
+
+        val out = ByteArrayOutputStream()
+        env.service.exportDiff(jobId, out)
+
+        val wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            val overview = wb.getSheetAt(0)
+            assertEquals("快照-基准表", overview.getRow(1).getCell(0).stringCellValue)
+            assertEquals("快照-目标表", overview.getRow(2).getCell(0).stringCellValue)
+            // 字段级差异汇总:基准字段中文取基准表快照,业务表字段中文取目标表快照(该列无注释留空)
+            val fieldSummary = wb.getSheetAt(2)
+            assertEquals(listOf("id", "快照-编码注释", "id", "快照-目标编码注释"),
+                (2..5).map { fieldSummary.getRow(1).getCell(it).stringCellValue })
+            assertEquals(listOf("name", "快照-名称注释", "name", ""),
+                (2..5).map { fieldSummary.getRow(2).getCell(it).stringCellValue })
+        } finally {
+            wb.close()
+        }
+    }
+
+    @Test
+    fun `报告问题字段排行中文字段名读快照且老任务离线兜底留空不抛异常`() {
+        val env = Env()
+        val jobId = env.seedDiffs()
+        // 离线兜底:老任务无快照、无结构缓存(数据源指向不可达 MySQL,缓存优先回源失败静默降级)→ 注释留空
+        val offline = env.service.report(jobId)
+        assertEquals(listOf("capacity" to null, "name" to null),
+            offline.fieldIssues.map { it.field to it.comment })
+
+        // 比对执行时采集的字段注释快照 → 排行带中文名(未快照到的字段仍留空)
+        env.repo.updateBaseComments(jobId, null, """{"name":"快照-名称注释"}""")
+        val reported = env.service.report(jobId)
+        assertEquals(listOf("capacity" to null, "name" to "快照-名称注释"),
+            reported.fieldIssues.map { it.field to it.comment })
+    }
 }

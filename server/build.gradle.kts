@@ -71,16 +71,6 @@ tasks.named<JavaExec>("run") {
     // 统一使用 G1 + 1GB 堆上限(桌面单机小堆场景 ZGC 内部结构开销大于收益,与安装包参数一致;
     // 2026-09 由 384MB 上调:大表扫描/Excel 导出/AI 长文并发的实际占用会打满 384MB 进入 GC 空转,表现为接口全挂)
     jvmArgs("-XX:+UseG1GC", "-Xmx1g")
-    // 原生启动画面(开发模式无 jar,走文件系统相对路径;生产由打包脚本注入 -splash:${APPDIR}/splash.png)
-    // 仅桌面开发模式启用:原生 splash 由 launcher 在 main() 之前显示,main 里再设 headless=true 也收不回去,
-    // headless 调试(make dev-headless)带 -splash 会常驻一张启动图并把进程变成 GUI 应用(Dock 图标/抢焦点)。
-    // 桌面判定与 make dev 注入方式一致:JAVA_TOOL_OPTIONS 含 -Djava.awt.headless=false
-    val desktopDev = providers.environmentVariable("JAVA_TOOL_OPTIONS")
-        .map { it.contains("java.awt.headless=false") }
-        .getOrElse(false)
-    if (desktopDev) {
-        jvmArgs("-splash:server/src/main/resources/splash.png")
-    }
 }
 
 // ---- 前端构建(dev/测试仍走 classpath,交付 jar 不含前端) ----

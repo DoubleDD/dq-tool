@@ -1,6 +1,8 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
 import com.example.dq.service.DataSourceService;
+import com.example.dq.service.ExportCenterService;
 import com.example.dq.service.DataSourceTransferService;
 import com.example.dq.service.MetadataTransferService;
 import com.example.dq.model.DataSourceConfig;
@@ -39,10 +41,12 @@ public class DataSourceController {
     private final DataSourceService service;
     private final DataSourceTransferService transferService;
     private final MetadataTransferService metadataTransferService;
+    private final ExportCenterService exportCenterService;
 
     public DataSourceController(DataSourceService service, DataSourceTransferService transferService,
-                                MetadataTransferService metadataTransferService) {
+                                MetadataTransferService metadataTransferService, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
         this.transferService = transferService;
         this.metadataTransferService = metadataTransferService;
     }
@@ -167,6 +171,9 @@ public class DataSourceController {
         String filename = URLEncoder.encode("dq-datasources-"
                 + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".json",
                 StandardCharsets.UTF_8);
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.TRANSFER_DATASOURCE,
+                "数据源配置导出(" + ids.size() + " 个)", ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/json");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
@@ -191,6 +198,8 @@ public class DataSourceController {
         String filename = URLEncoder.encode("dq-metadata-"
                 + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".json",
                 StandardCharsets.UTF_8);
+        exportCenterService.recordStart(ExportKind.TRANSFER_METADATA,
+                "元数据缓存导出(" + ids.size() + " 个)", ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/json");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);

@@ -84,6 +84,7 @@ const PAGE_TABS = {
   '/ai-usage': '模型用量统计',
   '/report-exports': '报告列表',
   '/sample-exports': '抽样导出',
+  '/export-center': '导出中心',
   '/compare': '数据比对',
   '/relations': 'ER 关系',
   '/object-manage': '对象管理',

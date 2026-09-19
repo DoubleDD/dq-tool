@@ -56,10 +56,15 @@ function reflow() {
   }
 }
 
-function open(type, text, { duration, onClick } = {}) {
-  openQueue = openQueue.then(async () => {
+function open(type, text, { duration, onClick, actions } = {}) {
+  const created = openQueue.then(async () => {
     await nextTick()
     const item = { id: ++notifySeq }
+    // 操作按钮(如导出完成「打开文件/打开文件夹」):点击先关通知再执行业务动作
+    const closer = { close: null }
+    const wrapped = actions?.length
+      ? actions.map(a => ({ label: a.label, onClick: () => { closer.close?.(); a.onClick() } }))
+      : undefined
     const handle = ElNotification({
       title: TYPE_TITLES[type] || TYPE_TITLES.info,
       type,
@@ -69,6 +74,7 @@ function open(type, text, { duration, onClick } = {}) {
       customClass: `dq-notify-${item.id} dq-notify-${type}`,
       message: h(NotifyBody, {
         text,
+        actions: wrapped,
         // 原地展开/收起,高度变化后重算堆叠,下方通知跟随上移/下移(top 有过渡动画)
         onExpand: () => nextTick(reflow),
         onCollapse: () => nextTick(reflow)
@@ -81,6 +87,7 @@ function open(type, text, { duration, onClick } = {}) {
         nextTick(reflow)
       }
     })
+    closer.close = handle.close
     item.close = handle.close
     item.el = document.querySelector(`.dq-notify-${item.id}`)
     item.inst = findNotifyInstance(item.el)
@@ -90,7 +97,12 @@ function open(type, text, { duration, onClick } = {}) {
     stack.unshift(item)
     await nextTick()
     reflow()
+    return item
   })
+  // 队列容错:单条创建失败(极端)不拖死后续通知;返回值带 close 句柄,
+  // 供「正在导出」这类常驻提示完成后主动关闭(dedup 命中时 show 返回 undefined,调用方自行兜底)
+  openQueue = created.catch(() => {})
+  return created
 }
 
 function show(type, message, options = {}) {
@@ -104,10 +116,11 @@ function show(type, message, options = {}) {
   for (const [k, t] of recent) if (now - t > DEDUP_WINDOW_MS) recent.delete(k)
   let duration = options.duration ?? TYPE_DURATIONS[type] ?? 4500
   if (text.length > LONG_TEXT_LEN) duration = Math.max(duration, LONG_DURATION)
-  // 标题默认「操作成功/失败」等通用文案,业务可自定义(如「推导完成」);留痕到通知中心用同一标题
+  // 标题默认「操作成功/失败」等通用文案,业务可自定义(如「推导完成」);留痕到通知中心用同一标题。
+  // exportPath 为导出成功通知的落盘路径(可序列化),通知中心抽屉据此重现「打开文件/打开文件夹」
   const title = options.title || TYPE_TITLES[type] || TYPE_TITLES.info
-  addNotifyRecord({ type, title, text })
-  open(type, text, { duration, onClick: options.onClick })
+  addNotifyRecord({ type, title, text, exportPath: options.exportPath })
+  return open(type, text, { duration, onClick: options.onClick, actions: options.actions })
 }
 
 function ElMessageCompat(options) {

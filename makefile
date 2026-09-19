@@ -97,7 +97,7 @@ test: ## 全部测试(含 Testcontainers,需要 Docker)
 
 run: build ## 构建并运行 fat jar,带窗口/托盘(jar 纯 API;前端经 -Ddq.web.static-dir=web/dist 从磁盘发)
 	cd web && npm run build
-	java -XX:+UseG1GC -Xmx1g -Djava.awt.headless=false -Ddq.web.static-dir=web/dist -splash:server/src/main/resources/splash.png -jar $(JAR)
+	java -XX:+UseG1GC -Xmx1g -Djava.awt.headless=false -Ddq.web.static-dir=web/dist -jar $(JAR)
 
 run-headless: build ## 构建并运行 fat jar,无窗口/托盘(服务器方式;前端经 -Ddq.web.static-dir=web/dist 从磁盘发)
 	cd web && npm run build

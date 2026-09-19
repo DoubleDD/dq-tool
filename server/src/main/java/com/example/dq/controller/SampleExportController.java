@@ -1,5 +1,7 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
+import com.example.dq.service.ExportCenterService;
 import com.example.dq.service.SampleExportService;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
@@ -17,9 +19,11 @@ import java.util.Map;
 public class SampleExportController {
 
     private final SampleExportService service;
+    private final ExportCenterService exportCenterService;
 
-    public SampleExportController(SampleExportService service) {
+    public SampleExportController(SampleExportService service, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
     }
 
     /** 上传 Excel 提交任务(multipart 字段 file,仅 .xlsx);后台执行,前端轮询任务列表看进度 */
@@ -65,12 +69,21 @@ public class SampleExportController {
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" +
                 URLEncoder.encode("抽样导入模版.xlsx", StandardCharsets.UTF_8));
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.TEMPLATE,
+                "抽样导入模版", "抽样导入模版.xlsx", null, ExportTrace.fullPath(ctx));
         service.writeTemplate(response.getOutputStream());
     }
 
     /** 调系统文件管理器打开任务产物目录 */
     public void openDir(Context ctx) {
         service.openDir(id(ctx));
+        ctx.json(Map.of("ok", true));
+    }
+
+    /** 调系统默认关联程序打开任务 zip(导出中心文件名直开) */
+    public void openFile(Context ctx) {
+        service.openFile(id(ctx));
         ctx.json(Map.of("ok", true));
     }
 

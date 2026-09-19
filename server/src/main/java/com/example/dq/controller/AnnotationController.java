@@ -1,6 +1,8 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
 import com.example.dq.service.AnnotationTransferService;
+import com.example.dq.service.ExportCenterService;
 import io.javalin.http.Context;
 import io.javalin.http.UploadedFile;
 import jakarta.servlet.http.HttpServletResponse;
@@ -18,9 +20,11 @@ import java.util.Map;
 public class AnnotationController {
 
     private final AnnotationTransferService service;
+    private final ExportCenterService exportCenterService;
 
-    public AnnotationController(AnnotationTransferService service) {
+    public AnnotationController(AnnotationTransferService service, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
     }
 
     /** 导出标记定义(含描述)、表-标记关联、表描述为 JSON 文件 */
@@ -28,6 +32,9 @@ public class AnnotationController {
         String filename = URLEncoder.encode("dq-annotations-"
                 + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + ".json",
                 StandardCharsets.UTF_8);
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.TRANSFER_ANNOTATION,
+                "标注与描述导出", ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/json");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);

@@ -44,6 +44,18 @@ object SystemOpen {
         log.info("已调系统程序打开文档: {}", path)
     }
 
+    /** 调系统默认关联程序打开任意文件(Tauri 导出直存后「打开文件」;xlsx/json/zip 等通用产物,
+     *  不做 Word/WPS 偏好——那是 openDocument 的 Word 文档专用逻辑) */
+    fun openDefault(path: Path) {
+        when {
+            os.contains("mac") -> start("open", path.toString())
+            // start 的第一个 "" 是窗口标题占位:不传时含空格/特殊字符的路径会被截断
+            os.contains("win") -> start("cmd", "/c", "start", "", path.toString())
+            else -> start("xdg-open", path.toString())
+        }
+        log.info("已调系统默认程序打开文件: {}", path)
+    }
+
     /** 打开文件所在目录并选中文件(macOS Finder / Windows 资源管理器;Linux 只开目录) */
     fun reveal(path: Path) {
         when {

@@ -1,5 +1,7 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
+import com.example.dq.service.ExportCenterService;
 import com.example.dq.service.PreviewService;
 import io.javalin.http.Context;
 
@@ -13,9 +15,11 @@ import java.sql.SQLException;
 public class PreviewController {
 
     private final PreviewService service;
+    private final ExportCenterService exportCenterService;
 
-    public PreviewController(PreviewService service) {
+    public PreviewController(PreviewService service, ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
     }
 
     /** 数据预览:列结构 + 第 page 页 size 行数据 + 全表总数;支持 where/orderBy 原文过滤(DataGrip 风格);page 缺省 1、size 缺省 20 */
@@ -33,10 +37,15 @@ public class PreviewController {
         long dsId = ctx.pathParamAsClass("dsId", Long.class).get();
         String table = ctx.pathParam("table");
         String filename = URLEncoder.encode("dq-preview-" + table + ".xlsx", StandardCharsets.UTF_8);
+        String db = ctx.queryParam("db");
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.PREVIEW_XLSX,
+                "数据预览 " + (db == null || db.isBlank() ? "" : db + ".") + ctx.pathParam("schema") + "." + table,
+                ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);
-        service.exportTable(dsId, ctx.queryParam("db"), ctx.pathParam("schema"), table,
+        service.exportTable(dsId, db, ctx.pathParam("schema"), table,
                 ctx.queryParam("where"), ctx.queryParam("orderBy"), response.getOutputStream());
     }
 }

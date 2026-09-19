@@ -35,12 +35,18 @@ import org.apache.poi.xssf.streaming.SXSSFWorkbook
 import org.apache.poi.xssf.usermodel.XSSFCellStyle
 import org.apache.poi.xssf.usermodel.XSSFColor
 import org.slf4j.LoggerFactory
+import java.nio.file.Files
+import java.nio.file.Path
 import java.time.format.DateTimeFormatter
 import java.io.OutputStream
 import java.math.BigDecimal
+import java.nio.file.StandardCopyOption
+import java.security.MessageDigest
 import java.sql.Types
 import java.time.Duration
 import java.time.LocalDateTime
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -86,7 +92,23 @@ class CompareService(
     /** 表字段清单读取点(默认走 [MetadataService] 缓存优先路径;测试可注入 fake 避免连业务库) */
     private val columnsLister: (datasourceId: Long, db: String, schema: String, table: String) -> List<ColumnMeta> =
         { dsId, db, schema, table -> metadataService.listTableColumns(dsId, db, schema, table) },
+    /** 表注释读取点(默认走 [MetadataService] 缓存优先路径;取不到/失败返回 null,测试可注入 fake) */
+    private val tableCommentLister: (datasourceId: Long, db: String, schema: String, table: String) -> String? =
+        { dsId, db, schema, table ->
+            try {
+                metadataService.listTables(dsId, db.ifBlank { null }, schema)
+                    .firstOrNull { it.name.equals(table, ignoreCase = true) }
+                    ?.comment?.takeIf { it.isNotBlank() }
+            } catch (e: Exception) {
+                null // 元数据不可达静默降级:注释快照留空,不炸比对
+            }
+        },
+    /** 报告导出件目录(V65 起服务端直存 `<数据目录>/compare`,任务 ID 前缀命名;不传(单测)时 exportFileOk 恒 false) */
+    private val compareDir: Path? = null,
 ) {
+
+    /** 导出件 SHA-256 校验缓存:绝对路径 → (size, mtimeMillis, sha256hex);导出件写后不变,按 size+mtime 失效 */
+    private val exportChecksumCache = ConcurrentHashMap<String, Triple<Long, Long, String>>()
 
     /** 匹配逻辑 3 的 LLM 调用点:给定可用 AI 配置与会话内容,返回模型回答 */
     fun interface AiChat {
@@ -296,6 +318,23 @@ class CompareService(
     }
 
     /** 解析落库的字段映射 JSON;解析失败按「未指定映射」处理(不炸任务,执行时回落自动匹配) */
+    /** 字段注释快照 JSON(字段小写 → 注释);全部无注释时是 "{}",同样是有效快照(导出/报告不再回源兜底) */
+    private fun snapshotComments(columns: List<ColumnMeta>): String =
+        columns.filter { !it.comment.isNullOrBlank() }
+            .associate { it.name.lowercase() to it.comment!! }
+            .let { objectMapper.writeValueAsString(it) }
+
+    /** 解析注释快照 JSON(字段小写 → 注释);NULL/解析失败返回 null(调用方走本地缓存兜底) */
+    private fun parseCommentMap(json: String?): Map<String, String>? =
+        json?.let {
+            try {
+                objectMapper.readValue<Map<String, String>>(it)
+            } catch (e: Exception) {
+                log.warn("注释快照 JSON 解析失败,按未快照处理: {}", e.message)
+                null
+            }
+        }
+
     private fun parseMapping(json: String?): Map<String, String> =
         json?.takeIf { it.isNotBlank() }?.let {
             try {
@@ -633,6 +672,10 @@ class CompareService(
             // 基准表「数据最新更新时间」快照:探测时间字段取 MAX,失败/无字段留 NULL(导出留空)
             repo.updateBaseDataUpdatedAt(jobId, detectLatestDataTime(
                 job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseColumns, baseDialect))
+            // 基准表中文名/字段注释快照:跑完后的报告/导出只读快照(现场 VPN 共用会被挤掉,跑完即断网)
+            repo.updateBaseComments(jobId,
+                tableCommentLister(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable),
+                snapshotComments(baseColumns))
             val baseLoaded = loadRows(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseDialect,
                 fields.map { SelectedCol(it, baseByName.getValue(it.lowercase()).name) },
                 keyColumns.map { it.name })
@@ -685,6 +728,9 @@ class CompareService(
         val schema = effectiveSchema(t.schemaName, t.dbName)
         val cols = columnsLister(t.datasourceId, t.dbName, schema, t.tableName)
         if (cols.isEmpty()) throw IllegalStateException("目标表不存在或没有字段: ${t.tableName}")
+        // 目标表中文名/字段注释快照(口径同基准表,见 run):跑完后的导出只读快照
+        repo.updateTargetComments(t.id, tableCommentLister(t.datasourceId, t.dbName, schema, t.tableName),
+            snapshotComments(cols))
         val byName = cols.associateBy { it.name.lowercase() }
         val mapping = parseMapping(t.fieldMappingJson).mapKeys { it.key.lowercase() }
         // 该目标的有效身份字段:人工覆盖(identity_json)优先,否则按「任务级身份 ∩ 映射键」推导
@@ -729,7 +775,11 @@ class CompareService(
         if (mode == MatchMode.CODE_NAME_LLM) {
             val ai = aiMatchResidues(match, baseMap, targetMap, identity, nameField)
             if (ai.pairs.isNotEmpty() || ai.note != null) {
-                match = match.copy(pairs = match.pairs + ai.pairs, aiMatched = ai.pairs.size,
+                // 三路计数按来源分开累加:补配里既有归一化精确配上的 CODE/NAME 对,也有模型裁决的 LLM 对
+                match = match.copy(pairs = match.pairs + ai.pairs,
+                    codeMatched = match.codeMatched + ai.pairs.count { it.by == "CODE" },
+                    nameMatched = match.nameMatched + ai.pairs.count { it.by == "NAME" },
+                    aiMatched = ai.pairs.count { it.by == "LLM" },
                     llmNote = ai.note, llmFailed = ai.failed)
             }
             // 同名二轮消歧:同名歧义组带全部比对字段取值再交大模型重判,避免名称首配张冠李戴
@@ -986,13 +1036,107 @@ class CompareService(
     }
 
     /**
-     * 差异导出文件名:跟随任务名(`\/:*?"<>|` 清洗为 `_`),任务名为空回退旧格式「比对总览-{id}.xlsx」。
-     * 导入任务的任务名本身带 文件名-sheet 名,导出件可直接对上来源
+     * 差异导出文件名:任务 ID 前缀 + 任务名(`\/:*?"<>|` 清洗为 `_`),任务名为空回退「{id}-比对总览.xlsx」。
+     * ID 前缀避免同名任务互相覆盖;导入任务的任务名本身带 文件名-sheet 名,导出件可直接对上来源
      */
     fun exportFileName(id: Long): String {
         val job = repo.getJob(id) ?: throw IllegalArgumentException("比对任务不存在: $id")
-        val base = job.name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
-        return if (base.isEmpty()) "比对总览-$id.xlsx" else "$base.xlsx"
+        return exportFileNameOf(id, job.name)
+    }
+
+    /** 差异导出文件名(纯函数,[exportFileName]/[exportToFile]/列表 exportFileOk 共用同一命名口径) */
+    private fun exportFileNameOf(id: Long, name: String): String {
+        val base = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        return if (base.isEmpty()) "$id-比对总览.xlsx" else "$id-$base.xlsx"
+    }
+
+    /** 导出结果视图:[exportToFile] 返回,前端通知(可打开文件/文件夹)用 */
+    data class ExportFileResult(val path: String, val name: String, val size: Long, val checksum: String)
+
+    /**
+     * 导出比对报告到 <数据目录>/compare/(服务端直存,两种形态同一行为,不再走 downloadFile 流):
+     * 临时文件生成 → SHA-256 → rename 正式名(同名覆盖只留最后一次;任务改名致文件名变化时清掉旧件)
+     * → 落库 export_status/checksum(失败不落库,保留上次成功态)。
+     */
+    fun exportToFile(id: Long): ExportFileResult {
+        val dir = compareDir ?: throw IllegalStateException("比对导出目录未配置")
+        val job = repo.getJob(id) ?: throw IllegalArgumentException("比对任务不存在: $id")
+        Files.createDirectories(dir)
+        val name = exportFileNameOf(id, job.name)
+        val target = dir.resolve(name)
+        val tmp = dir.resolve("$name.${UUID.randomUUID().toString().substring(0, 8)}.part")
+        try {
+            Files.newOutputStream(tmp).use { out -> exportDiff(id, out) }
+            val checksum = sha256(tmp)
+            // 任务改名后旧名文件已无人引用,清掉避免堆积;先删旧再覆盖新,任一步失败都还留有一份完整件
+            val old = job.exportFile?.takeIf { it != name }
+            if (old != null) Files.deleteIfExists(dir.resolve(old))
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
+            repo.updateExport(id, name, checksum)
+            exportChecksumCache.remove(target.toAbsolutePath().toString())
+            log.info("比对报告导出完成: taskId={}, 文件={}({} bytes)", id, target, Files.size(target))
+            return ExportFileResult(target.toAbsolutePath().toString(), name, Files.size(target), checksum)
+        } catch (e: Exception) {
+            Files.deleteIfExists(tmp)
+            throw e
+        }
+    }
+
+    /** 「打开文件」可点口径(V65):已导出(DONE)且文件存在且 SHA-256 与库中记录一致;带缓存,列表轮询不反复整文件哈希 */
+    fun exportFileOk(exportStatus: String?, exportFile: String?, exportChecksum: String?): Boolean {
+        val dir = compareDir ?: return false
+        if (exportStatus != "DONE" || exportFile == null || exportChecksum == null) return false
+        val file = dir.resolve(exportFile)
+        return Files.isRegularFile(file) && checksumCached(file) == exportChecksum
+    }
+
+    /** 「打开文件」路径:已导出且 checksum 一致才放行;文件被改/删给明确提示 */
+    fun resolveExportPath(id: Long): Path {
+        val dir = compareDir ?: throw IllegalStateException("比对导出目录未配置")
+        val job = repo.getJob(id) ?: throw IllegalArgumentException("比对任务不存在: $id")
+        val file = job.exportFile?.let { dir.resolve(it) }
+        if (job.exportStatus != "DONE" || file == null || !Files.isRegularFile(file)) {
+            throw IllegalStateException("尚未生成比对报告导出件,请先「导出表格」")
+        }
+        if (checksumCached(file) != job.exportChecksum) {
+            throw IllegalStateException("比对报告导出件已被修改或损坏,请重新「导出表格」")
+        }
+        return file
+    }
+
+    /** 「打开文件夹」路径:有完整导出件则定位到它(文件管理器选中),否则退化为打开 compare 目录本身 */
+    fun revealExportPath(id: Long): Path {
+        val dir = compareDir ?: throw IllegalStateException("比对导出目录未配置")
+        val job = repo.getJob(id) ?: throw IllegalArgumentException("比对任务不存在: $id")
+        val file = job.exportFile?.let { dir.resolve(it) }
+        if (file != null && Files.isRegularFile(file)) return file
+        Files.createDirectories(dir)
+        return dir
+    }
+
+    /** SHA-256 hex,按 (path,size,mtime) 缓存(导出件写后不变,文件被改即自动失效重算) */
+    private fun checksumCached(file: Path): String {
+        val abs = file.toAbsolutePath().toString()
+        val size = Files.size(file)
+        val mtime = Files.getLastModifiedTime(file).toMillis()
+        val hit = exportChecksumCache[abs]
+        if (hit != null && hit.first == size && hit.second == mtime) return hit.third
+        val sha = sha256(file)
+        exportChecksumCache[abs] = Triple(size, mtime, sha)
+        return sha
+    }
+
+    private fun sha256(file: Path): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(file).buffered().use { input ->
+            val buf = ByteArray(1 shl 20)
+            while (true) {
+                val n = input.read(buf)
+                if (n < 0) break
+                digest.update(buf, 0, n)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     // ---------- 差异导出 / 质量报告 ----------
@@ -1223,33 +1367,50 @@ class CompareService(
         }
     }
 
-    /** 预取导出上下文:表注释 + 所属系统 + 明细表头字段注释(元数据失败静默为空;所属系统读本地 H2) */
+    /**
+     * 预取导出上下文:表注释 + 所属系统 + 明细表头字段注释。
+     * 表/字段注释优先读比对执行时的快照(V64,跑完后断网也能导出带中文名的文件);老任务(快照 NULL)
+     * 兜底走缓存优先(缓存未就绪回源业务库取,直连库即可拿到;不可达静默降级);所属系统读本地 H2;导出必须能出文件。
+     */
     private fun exportContext(job: CompareRepository.JobRow,
                               targets: List<CompareRepository.TargetRow>): ExportContext {
         val comments = HashMap<String, String>()
         val systems = HashMap<String, String>()
         val fallbackSystem = HashMap<Long, String?>()
         val columnComments = HashMap<String, Map<String, String>>()
-        // 取样范围 = 数据源 + 库 + schema:各目标 schema 各自快照在 compare_target 上,不能只用库名推
+        // 表中文名:快照优先;老任务(快照 NULL)按「数据源 + 库 + schema」走缓存优先兜底
+        // (各目标 schema 各自快照在 compare_target 上,不能只用库名推)
+        job.baseTableComment?.let { comments[ExportContext.key(job.baseDatasourceId, job.baseDb, job.baseTable)] = it }
+        targets.forEach { t ->
+            t.tableComment?.let { comments[ExportContext.key(t.datasourceId, t.dbName, t.tableName)] = it }
+        }
         val scopes = LinkedHashSet<Triple<Long, String, String>>()
         scopes.add(Triple(job.baseDatasourceId, job.baseDb,
             effectiveSchema(job.baseSchema, job.baseDb)))
         targets.forEach {
             scopes.add(Triple(it.datasourceId, it.dbName, effectiveSchema(it.schemaName, it.dbName)))
         }
+        if (job.baseTableComment == null || targets.any { it.tableComment == null }) {
+            for ((dsId, db, schema) in scopes) {
+                try {
+                    for (t in metadataService.listTables(dsId, db.ifBlank { null }, schema)) {
+                        val name = t.name ?: continue
+                        val tableKey = ExportContext.key(dsId, db, name)
+                        // 快照已有的表以快照为准(执行时口径),不覆盖
+                        if (!comments.containsKey(tableKey)) {
+                            t.comment?.takeIf { it.isNotBlank() }?.let { comments[tableKey] = it }
+                        }
+                    }
+                } catch (e: Exception) {
+                    log.debug("导出取表注释失败(忽略): 数据源{} 库{} schema{}: {}", dsId, db, schema, e.message)
+                }
+            }
+        }
         for ((dsId, db, schema) in scopes) {
             fallbackSystem[dsId] = try {
                 dataSourceService.get(dsId).name
             } catch (e: Exception) {
                 null // 数据源已删除:所属系统留空(基准回落空串),不影响导出
-            }
-            try {
-                for (t in metadataService.listTables(dsId, db.ifBlank { null }, schema)) {
-                    val name = t.name ?: continue
-                    t.comment?.takeIf { it.isNotBlank() }?.let { comments[ExportContext.key(dsId, db, name)] = it }
-                }
-            } catch (e: Exception) {
-                log.debug("导出取表注释失败(忽略): 数据源{} 库{} schema{}: {}", dsId, db, schema, e.message)
             }
             try {
                 for ((table, system) in tableSystemRepo.findBySchema(dsId, db, schema)) {
@@ -1259,11 +1420,16 @@ class CompareService(
                 log.debug("导出取所属系统失败(忽略): 数据源{} 库{} schema{}: {}", dsId, db, schema, e.message)
             }
         }
-        // 明细表头的字段注释:无注释的字段回落字段名,取不到只记 debug;
+        // 明细表头的字段注释:快照优先;老任务缓存优先兜底。无注释的字段回落字段名,取不到只记 debug;
         // 对象分组 sheet 的表头按基准口径取中文列名,基准表也要预取
-        fun loadColumnComments(dsId: Long, db: String, schema: String, table: String) {
+        fun loadColumnComments(dsId: Long, db: String, schema: String, table: String, snapshotJson: String?) {
             val tableKey = ExportContext.key(dsId, db, table)
             if (columnComments.containsKey(tableKey)) return
+            val snapshot = parseCommentMap(snapshotJson)
+            if (snapshot != null) {
+                columnComments[tableKey] = snapshot
+                return
+            }
             try {
                 columnComments[tableKey] = metadataService.listTableColumns(dsId, db.ifBlank { null }, schema, table)
                     .filter { !it.comment.isNullOrBlank() }
@@ -1272,9 +1438,11 @@ class CompareService(
                 log.debug("导出取字段注释失败(忽略): 数据源{} 库{} 表{}: {}", dsId, db, table, e.message)
             }
         }
-        loadColumnComments(job.baseDatasourceId, job.baseDb, effectiveSchema(job.baseSchema, job.baseDb), job.baseTable)
+        loadColumnComments(job.baseDatasourceId, job.baseDb, effectiveSchema(job.baseSchema, job.baseDb),
+            job.baseTable, job.baseColumnComments)
         for (t in targets) {
-            loadColumnComments(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName)
+            loadColumnComments(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName,
+                t.columnComments)
         }
         return ExportContext(comments, systems, fallbackSystem, columnComments)
     }
@@ -1945,8 +2113,9 @@ class CompareService(
                 if (d.isMismatch()) fieldCounts.merge(d.field, 1L, Long::plus)
             }
         }
-        // 排行项的中文字段名:基准表字段注释,取不到为 null(前端回落只显示字段名),失败静默降级
-        val fieldComments = try {
+        // 排行项的中文字段名:优先基准表字段注释快照(比对执行时采集,跑完断网也能出报告);
+        // 老任务(快照 NULL)走缓存优先兜底(不可达静默降级),取不到为 null
+        val fieldComments = parseCommentMap(job.baseColumnComments) ?: try {
             metadataService.listTableColumns(job.baseDatasourceId, job.baseDb.ifBlank { null },
                 effectiveSchema(job.baseSchema, job.baseDb), job.baseTable)
                 .filter { !it.comment.isNullOrBlank() }
@@ -2022,7 +2191,9 @@ class CompareService(
             if (r.totalUnits > 0) r.doneUnits * 100 / r.totalUnits else 0,
             r.error, r.archived, r.createdAt, r.startedAt, r.finishedAt,
             r.startedAt?.let { Duration.between(it, r.finishedAt ?: LocalDateTime.now()).toMillis() },
-            r.pendingReason, r.objectCategory, r.importId, r.importFileName)
+            r.pendingReason, r.objectCategory, r.importId, r.importFileName,
+            // 「打开文件」置灰口径(V65):已导出且 checksum 一致;「打开文件夹」始终可点(退化开 compare 目录)
+            exportFileOk = exportFileOk(r.exportStatus, r.exportFile, r.exportChecksum))
     }
 
     private fun toTargetView(t: CompareRepository.TargetRow): CompareTargetView {
@@ -2086,27 +2257,48 @@ class CompareService(
     }
 
     /**
-     * 匹配逻辑 3:把编码/名称两路都没配上的双侧残余对象交大模型归一化配对。
-     * - 没有残余 / 未配置大模型 / 残余超过 [LLM_RESIDUE_LIMIT] → 不调用模型,残余保持缺失/多余,并给出说明;
-     * - 否则按「基准侧分批 × 目标侧全量残余」组 prompt(单批配对数受
-     *   [CompareMatchPrompts.MAX_PAIRS_PER_REQUEST] 约束),逐批解析配对;
+     * 匹配逻辑 3:把编码/名称两路都没配上的双侧残余对象补配齐——**每条残余要么被配对、要么经
+     * 语义判读后才能定性未匹配**,不允许不看就记缺失/多余。三段式:
+     * 1. 没有残余 / 未配置大模型 / 残余超过 [LLM_RESIDUE_LIMIT](失控保险丝,防身份字段配错
+     *    导致全表进残余)→ 不调用模型,残余保持缺失/多余并给出说明;
+     * 2. 本地归一化精确补配(零成本,[appendNormalizedPairs]):先吃掉大小写/全半角/空白/
+     *    括号补充说明类脏数据,配不上的才进模型;
+     * 3. 相似度召回(零成本,[recallCandidates])+ 模型裁决:每条基准只带自己的 top-K 候选
+     *    按条目预算装批(避免全量两两组合的平方级 token),[CompareMatchPrompts.parsePairs] 解析后
+     *    再过候选集校验(只采纳落在该基准候选内的配对,防模型跨候选乱配);
+     * - 与所有目标零字符交集(召回不到候选)的基准、未被任何基准召回的目标在说明里如实计数披露
+     *   (召回覆盖不到的极端别名可能漏配,需人工核对);
      * - 单个批次失败只跳过该批(记说明并置 failed)继续下一批,**绝不因为模型返工而炸任务**。
      */
     private fun aiMatchResidues(match: MatchResult, baseMap: LinkedHashMap<String, Map<String, String?>>,
                                 targetMap: Map<String, Map<String, String?>>, keyFields: List<String>,
                                 nameField: String?): AiMatchOutcome {
-        val (baseResidueKeys, targetResidueKeys) = match.residues(baseMap, targetMap)
-        if (baseResidueKeys.isEmpty() || targetResidueKeys.isEmpty()) return AiMatchOutcome(emptyList(), null, false)
+        val (rawBaseResidue, rawTargetResidue) = match.residues(baseMap, targetMap)
+        if (rawBaseResidue.isEmpty() || rawTargetResidue.isEmpty()) return AiMatchOutcome(emptyList(), null, false)
         val config = aiConfigService?.findConfig()
         if (config == null) {
             return AiMatchOutcome(emptyList(),
-                "未配置大模型,${baseResidueKeys.size} 条基准侧残余与 ${targetResidueKeys.size} 条目标侧残余按未匹配处理",
+                "未配置大模型,${rawBaseResidue.size} 条基准侧残余与 ${rawTargetResidue.size} 条目标侧残余按未匹配处理",
                 false)
         }
-        if (baseResidueKeys.size > LLM_RESIDUE_LIMIT || targetResidueKeys.size > LLM_RESIDUE_LIMIT) {
+        if (rawBaseResidue.size > LLM_RESIDUE_LIMIT || rawTargetResidue.size > LLM_RESIDUE_LIMIT) {
             return AiMatchOutcome(emptyList(),
-                "残余对象过多(基准 ${baseResidueKeys.size} 条 / 目标 ${targetResidueKeys.size} 条,上限 " +
+                "残余对象过多(基准 ${rawBaseResidue.size} 条 / 目标 ${rawTargetResidue.size} 条,上限 " +
                     "$LLM_RESIDUE_LIMIT),未做归一化补配", false)
+        }
+
+        val pairs = ArrayList<MatchedPair>()
+        val errors = ArrayList<String>()
+        val usedBaseKeys = HashSet<String>()
+        val usedTargetKeys = HashSet<String>()
+        // Phase 0:本地归一化精确补配(零成本),格式类脏数据不花 token 直接配掉
+        appendNormalizedPairs(rawBaseResidue, rawTargetResidue, baseMap, targetMap,
+            keyFields, nameField, pairs, usedBaseKeys, usedTargetKeys)
+        // Phase 0 之后的新残余才进召回 + 模型
+        val baseResidueKeys = rawBaseResidue.filter { it !in usedBaseKeys }
+        val targetResidueKeys = rawTargetResidue.filter { it !in usedTargetKeys }
+        if (baseResidueKeys.isEmpty() || targetResidueKeys.isEmpty()) {
+            return AiMatchOutcome(pairs, null, false)
         }
 
         val baseSeqKeys = baseResidueKeys.withIndex().associate { (i, k) -> (i + 1) to k }
@@ -2119,17 +2311,20 @@ class CompareService(
             CompareMatchPrompts.MatchItem(i + 1, compositeKey(targetMap.getValue(k), keyFields),
                 nameField?.let { idValue(targetMap.getValue(k), it) })
         }
-        // 单批基准侧条数:保证「批内基准 × 目标全量」不超过单请求配对数上限,且不少于下限(避免批次过碎漏配)
-        val batchSize = (CompareMatchPrompts.MAX_PAIRS_PER_REQUEST / targetItems.size)
-            .coerceAtLeast(LLM_MIN_BATCH_SIZE)
-        val pairs = ArrayList<MatchedPair>()
-        val errors = ArrayList<String>()
-        val usedBaseKeys = HashSet<String>()
-        val usedTargetKeys = HashSet<String>()
-        for (batch in baseItems.chunked(batchSize)) {
-            val codeLabel = keyFields.joinToString("+")
-            val prompt = CompareMatchPrompts.buildMatchPrompt(codeLabel, nameField ?: "名称",
-                codeLabel, nameField ?: "名称", batch, targetItems)
+        // Phase 1:相似度召回(零成本);与所有目标零字符交集的基准召回不到候选,如实计数
+        val candidates = recallCandidates(baseItems, targetItems, LLM_CANDIDATES_PER_BASE, LLM_POOL_SCORE_CAP)
+        val noCandidateBases = baseItems.count { it.seq !in candidates }
+        val seenTargets = candidates.values.flatten().toHashSet()
+        val unseenTargets = targetItems.count { it.seq !in seenTargets }
+        // Phase 2:按条目预算装批,逐批模型裁决(候选集校验后跨批去重落地)
+        val codeLabel = keyFields.joinToString("+")
+        val nameLabel = nameField ?: "名称"
+        val targetsBySeq = targetItems.associateBy { it.seq }
+        val batches = packCandidateBatches(baseItems.filter { it.seq in candidates },
+            candidates, LLM_MAX_ITEMS_PER_REQUEST)
+        for (batch in batches) {
+            val prompt = CompareMatchPrompts.buildCandidateMatchPrompt(codeLabel, nameLabel,
+                batch, targetsBySeq, candidates)
             val answer = try {
                 aiChat.call(config, CompareMatchPrompts.SYSTEM_PROMPT, prompt)
             } catch (e: Exception) {
@@ -2137,18 +2332,27 @@ class CompareService(
                 if (errors.size < LLM_ERROR_KEEP) errors.add(abbreviate(e.message))
                 continue
             }
-            val parsed = CompareMatchPrompts.parsePairs(answer, batch.map { it.seq },
-                targetItems.map { it.seq })
-            for (p in parsed) {
+            val parsed = CompareMatchPrompts.parsePairs(answer, batch.map { it.seq }, targetItems.map { it.seq })
+            for (p in CompareMatchPrompts.filterPairsByCandidates(parsed, candidates)) {
                 val baseKey = baseSeqKeys[p.baseSeq] ?: continue
                 val targetKey = targetSeqKeys[p.targetSeq] ?: continue
                 if (!usedBaseKeys.add(baseKey) || !usedTargetKeys.add(targetKey)) continue
                 pairs.add(MatchedPair(baseKey, targetKey, "LLM"))
             }
         }
-        if (errors.isEmpty()) return AiMatchOutcome(pairs, null, false)
-        return AiMatchOutcome(pairs,
-            "大模型归一化补配部分批次失败(${errors.joinToString(";")}),失败批次的对象按未匹配处理", true)
+        val notes = ArrayList<String>()
+        if (errors.isNotEmpty()) {
+            notes.add("大模型归一化补配部分批次失败(${errors.joinToString(";")}),失败批次的对象按未匹配处理")
+        }
+        if (noCandidateBases > 0) {
+            notes.add("$noCandidateBases 条基准对象与所有目标的编码/名称无字符交集,无法召回候选,按未匹配处理" +
+                "(召回覆盖不到的极端别名可能漏配,需人工核对)")
+        }
+        if (unseenTargets > 0) {
+            notes.add("$unseenTargets 条目标对象未被任何基准召回为候选,若实际存在对应基准" +
+                "(如零字符交集的别名)会被误报为多余,需人工核对")
+        }
+        return AiMatchOutcome(pairs, notes.takeIf { it.isNotEmpty() }?.joinToString(";"), errors.isNotEmpty())
     }
 
     /** 单测入口:直接对给定配对结果跑同名二轮消歧(生产路径由 compareOneTarget 在匹配逻辑 3 下调用) */
@@ -2263,11 +2467,24 @@ class CompareService(
         /** 目标缺列时 diff_json 里 value 的特殊标记 */
         const val MISSING_COLUMN_MARK = "«字段缺失»"
 
-        /** 大模型归一化补配的参与总量上限(双侧残余各不超过该值才送模型) */
-        const val LLM_RESIDUE_LIMIT = 2000
+        /**
+         * 大模型归一化补配的残余上限(双侧残余各不超过该值才送模型):只做失控保险丝
+         * (身份字段配错导致全表进残余),正常业务量级(召回 + 裁决结构下成本约为 N×K)不再触顶;
+         * 超限不补配并在目标备注里说明
+         */
+        const val LLM_RESIDUE_LIMIT = 20000
 
-        /** 单次请求最少送多少条基准侧对象(与目标侧残余的乘积受 CompareMatchPrompts.MAX_PAIRS_PER_REQUEST 约束) */
-        const val LLM_MIN_BATCH_SIZE = 5
+        /** 每条基准残余召回多少条候选目标送模型裁决(top-K,相似度降序) */
+        const val LLM_CANDIDATES_PER_BASE = 20
+
+        /**
+         * 单请求条目预算(每条基准 1 + 其候选数):贪心装批,约 ≤6 万 token/请求,
+         * 128k context 的模型可安全承载
+         */
+        const val LLM_MAX_ITEMS_PER_REQUEST = 600
+
+        /** 召回精排前的候选池命中截断:防「全部同名」场景退化成全量两两比对 */
+        const val LLM_POOL_SCORE_CAP = 2000
 
         /** 单次请求失败的累计记录上限(避免 note 过长) */
         private const val LLM_ERROR_KEEP = 3
@@ -2795,6 +3012,176 @@ internal fun MatchResult.residues(baseMap: LinkedHashMap<String, Map<String, Str
     return baseMap.keys.filter { it !in matchedBase } to targetMap.keys.filter { it !in matchedTarget }
 }
 
+// ---------- 匹配逻辑 3 的本地预处理(归一化精确补配 + 相似度召回 + 装批,全部零成本纯函数) ----------
+
+/** 编码归一化:trim、lowercase、去空白——吃掉大小写/首尾空白/内嵌空格类脏数据 */
+internal fun normalizeCodeForMatch(value: String): String =
+    value.trim().lowercase().filter { !it.isWhitespace() }
+
+/** 名称括号段剥离正则:(…) (…) […] 【…】 〔…〕整段去掉,「甲水库(改)」→「甲水库」 */
+private val NAME_BRACKET_REGEX = Regex("[(（\\[【〔][^()（）\\[\\]【】〔〕]*[)）\\]】〕]")
+
+/**
+ * 名称归一化:trim、lowercase、去空白、全角字母数字转半角、剥括号补充说明整段——
+ * 「甲水库(改)」「甲水库」「ＡＢ 水库」归一为同一名称;
+ * 仅用于匹配逻辑 3 的本地补配/召回,不改变匹配逻辑 1/2 的名称相等口径
+ */
+internal fun normalizeNameForMatch(value: String): String {
+    var s = value.trim().lowercase()
+    s = s.map { c ->
+        when (c) {
+            in '０'..'９' -> '0' + (c - '０')
+            in 'ａ'..'ｚ' -> 'a' + (c - 'ａ')
+            else -> c
+        }
+    }.joinToString("")
+    s = NAME_BRACKET_REGEX.replace(s, "")
+    return s.filter { !it.isWhitespace() }
+}
+
+/** 名称归一化后的字符二元组(bigram)集合;长度 1 退化为单字集合;空名称返回空集 */
+internal fun nameBigrams(normalizedName: String): Set<String> {
+    if (normalizedName.isEmpty()) return emptySet()
+    if (normalizedName.length == 1) return setOf(normalizedName)
+    val set = HashSet<String>(normalizedName.length)
+    for (i in 0 until normalizedName.length - 1) set.add(normalizedName.substring(i, i + 2))
+    return set
+}
+
+/** 编码归一化后切字母段/数字段(长度≥2 才算),如 "sk-001-a" → {"sk","001"} */
+private val CODE_TOKEN_REGEX = Regex("[a-z]+|[0-9]+")
+
+internal fun codeTokens(normalizedCode: String): Set<String> =
+    CODE_TOKEN_REGEX.findAll(normalizedCode).map { it.value }.filter { it.length >= 2 }.toSet()
+
+/** 二元组 Jaccard 相似度;两侧任一空返回 0 */
+internal fun bigramJaccard(a: Set<String>, b: Set<String>): Double {
+    if (a.isEmpty() || b.isEmpty()) return 0.0
+    var inter = 0
+    for (x in a) if (x in b) inter++
+    return inter.toDouble() / (a.size + b.size - inter)
+}
+
+/** 包含关系分:短串被长串包含时返回 短/长(覆盖全称/简称),否则 0 */
+internal fun containmentScore(a: String, b: String): Double {
+    if (a.isEmpty() || b.isEmpty()) return 0.0
+    val (shorter, longer) = if (a.length <= b.length) a to b else b to a
+    return if (longer.contains(shorter)) shorter.length.toDouble() / longer.length else 0.0
+}
+
+/**
+ * 匹配逻辑 3 Phase 0:本地归一化精确补配(确定性、零 token):只处理传入的残余
+ * (编码/名称两路之后的),编码归一化相等 → CODE,名称归一化相等 → NAME;
+ * 索引保留先出现行,与 matchObjects 同口径;调用方用 [matchedBase]/[matchedTarget]
+ * 收走新配对、并把两侧残余过滤成新残余
+ */
+internal fun appendNormalizedPairs(baseResidueKeys: List<String>, targetResidueKeys: List<String>,
+                                   baseMap: Map<String, Map<String, String?>>,
+                                   targetMap: Map<String, Map<String, String?>>,
+                                   keyFields: List<String>, nameField: String?,
+                                   pairs: MutableList<MatchedPair>,
+                                   matchedBase: MutableSet<String>,
+                                   matchedTarget: MutableSet<String>) {
+    val targetByNormCode = HashMap<String, String>()
+    for (tk in targetResidueKeys) {
+        val code = compositeKey(targetMap.getValue(tk), keyFields)?.let { normalizeCodeForMatch(it) } ?: continue
+        targetByNormCode.putIfAbsent(code, tk)
+    }
+    for (bk in baseResidueKeys) {
+        if (bk in matchedBase) continue
+        val code = compositeKey(baseMap.getValue(bk), keyFields)?.let { normalizeCodeForMatch(it) } ?: continue
+        val tk = targetByNormCode[code] ?: continue
+        if (tk in matchedTarget) continue
+        pairs.add(MatchedPair(bk, tk, "CODE")); matchedBase.add(bk); matchedTarget.add(tk)
+    }
+    if (nameField == null) return
+    val targetByNormName = HashMap<String, String>()
+    for (tk in targetResidueKeys) {
+        if (tk in matchedTarget) continue
+        val name = idValue(targetMap.getValue(tk), nameField)
+            ?.let { normalizeNameForMatch(it) }?.takeIf { it.isNotEmpty() } ?: continue
+        targetByNormName.putIfAbsent(name, tk)
+    }
+    for (bk in baseResidueKeys) {
+        if (bk in matchedBase) continue
+        val name = idValue(baseMap.getValue(bk), nameField)
+            ?.let { normalizeNameForMatch(it) }?.takeIf { it.isNotEmpty() } ?: continue
+        val tk = targetByNormName[name] ?: continue
+        if (tk in matchedTarget) continue
+        pairs.add(MatchedPair(bk, tk, "NAME")); matchedBase.add(bk); matchedTarget.add(tk)
+    }
+}
+
+/**
+ * 匹配逻辑 3 Phase 1:相似度召回(零 token)——为每条基准残余从目标残余里召回 ≤ [k] 条候选。
+ * 倒排索引 = 目标名称 bigram + 编码 token → 目标序号;每条基准查索引得候选池,池子超过
+ * [scoreCap] 先按命中次数截断(防「全部同名」场景退化成全量两两比对),再按
+ * 「2×名称 Jaccard + 包含关系分 + 编码共享加分」精排取 top-K;
+ * 与所有目标零字符交集(编码/名称 bigram、token 全不中)的基准不进返回表,由调用方如实计数披露。
+ */
+internal fun recallCandidates(bases: List<CompareMatchPrompts.MatchItem>,
+                              targets: List<CompareMatchPrompts.MatchItem>,
+                              k: Int, scoreCap: Int): Map<Int, List<Int>> {
+    data class TInfo(val seq: Int, val normCode: String, val normName: String,
+                     val bigrams: Set<String>, val tokens: Set<String>)
+
+    val tInfos = targets.map { t ->
+        val nc = t.code?.let { normalizeCodeForMatch(it) } ?: ""
+        val nn = t.name?.let { normalizeNameForMatch(it) } ?: ""
+        TInfo(t.seq, nc, nn, nameBigrams(nn), codeTokens(nc))
+    }
+    val index = HashMap<String, MutableList<Int>>()
+    for ((i, ti) in tInfos.withIndex()) {
+        for (g in ti.bigrams) index.getOrPut(g) { ArrayList() }.add(i)
+        for (tk in ti.tokens) index.getOrPut("t:$tk") { ArrayList() }.add(i)
+    }
+    val result = HashMap<Int, List<Int>>(bases.size)
+    for (b in bases) {
+        val nc = b.code?.let { normalizeCodeForMatch(it) } ?: ""
+        val nn = b.name?.let { normalizeNameForMatch(it) } ?: ""
+        val bg = nameBigrams(nn)
+        val tk = codeTokens(nc)
+        if (bg.isEmpty() && tk.isEmpty()) continue // 编码+名称全无标识,无可召回
+        val hits = HashMap<Int, Int>()
+        for (g in bg) index[g]?.forEach { i -> hits[i] = (hits[i] ?: 0) + 1 }
+        for (t in tk) index["t:$t"]?.forEach { i -> hits[i] = (hits[i] ?: 0) + 1 }
+        if (hits.isEmpty()) continue
+        val pool = if (hits.size > scoreCap) {
+            hits.entries.sortedByDescending { it.value }.take(scoreCap).map { it.key }
+        } else hits.keys.toList()
+        val scored = ArrayList<Pair<Int, Double>>(pool.size)
+        for (i in pool) {
+            val ti = tInfos[i]
+            val codeBonus = if (tk.isNotEmpty() && ti.tokens.any { it in tk }) 1.0 else 0.0
+            scored.add(i to (2.0 * bigramJaccard(bg, ti.bigrams) +
+                containmentScore(nn, ti.normName) + codeBonus))
+        }
+        scored.sortByDescending { it.second }
+        result[b.seq] = scored.take(k).map { tInfos[it.first].seq }
+    }
+    return result
+}
+
+/**
+ * 匹配逻辑 3 Phase 2 装批:按条目预算(每条基准 1 + 其候选数)贪心装批,
+ * 返回每批的基准条目;无候选的基准不在任何批(调用方已如实计数披露)
+ */
+internal fun packCandidateBatches(baseItems: List<CompareMatchPrompts.MatchItem>,
+                                  candidates: Map<Int, List<Int>>,
+                                  itemBudget: Int): List<List<CompareMatchPrompts.MatchItem>> {
+    val batches = ArrayList<List<CompareMatchPrompts.MatchItem>>()
+    var current = ArrayList<CompareMatchPrompts.MatchItem>()
+    var used = 0
+    for (b in baseItems) {
+        val cost = 1 + (candidates[b.seq]?.size ?: 0)
+        if (current.isNotEmpty() && used + cost > itemBudget) {
+            batches.add(current); current = ArrayList(); used = 0
+        }
+        current.add(b); used += cost
+    }
+    if (current.isNotEmpty()) batches.add(current)
+    return batches
+}
 
 /** 同名歧义组:某名称(忽略大小写)双侧都存在、且至少一侧有 ≥2 条同名对象——只按名称首配会张冠李戴,需二轮消歧 */
 internal data class SameNameGroup(val name: String, val baseKeys: List<String>, val targetKeys: List<String>)

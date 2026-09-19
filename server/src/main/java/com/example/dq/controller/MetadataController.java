@@ -1,6 +1,8 @@
 package com.example.dq.controller;
 
+import com.example.dq.model.ExportKind;
 import com.example.dq.model.SchemaDocUpdateRequest;
+import com.example.dq.service.ExportCenterService;
 import com.example.dq.model.TableDocUpdateRequest;
 import com.example.dq.model.TableSystemBatchRequest;
 import com.example.dq.service.DataSourceService;
@@ -26,11 +28,14 @@ public class MetadataController {
     private final TableSystemService tableSystemService;
     private final DbStructExportService dbStructExportService;
     private final DataSourceService dataSourceService;
+    private final ExportCenterService exportCenterService;
 
     public MetadataController(MetadataService service, TableDocService tableDocService,
                               TableSystemService tableSystemService,
-                              DbStructExportService dbStructExportService, DataSourceService dataSourceService) {
+                              DbStructExportService dbStructExportService, DataSourceService dataSourceService,
+                              ExportCenterService exportCenterService) {
         this.service = service;
+        this.exportCenterService = exportCenterService;
         this.tableDocService = tableDocService;
         this.tableSystemService = tableSystemService;
         this.dbStructExportService = dbStructExportService;
@@ -150,6 +155,9 @@ public class MetadataController {
         long dsId = dsId(ctx);
         String dsName = dataSourceService.get(dsId).getName();
         String filename = URLEncoder.encode(sanitize(dsName) + "-数据库表结构.docx", StandardCharsets.UTF_8);
+        // 导出中心:点击即登记「生成中」,直存成功后 landed 翻成功
+        exportCenterService.recordStart(ExportKind.DBSTRUCT_WORD,
+                "数据源 " + dsName + " 整库表结构", ExportTrace.decode(filename), null, ExportTrace.fullPath(ctx));
         HttpServletResponse response = ctx.res();
         response.setContentType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
         response.setHeader("Content-Disposition", "attachment; filename*=UTF-8''" + filename);

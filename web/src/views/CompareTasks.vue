@@ -107,8 +107,14 @@
         <template #default="{ row }">
           <div style="display: inline-flex; flex-direction: column; align-items: center; gap: 4px">
             <div>
+              <!-- 导出中:点「导出表格」后行内进度(蓝色加载 tag,与「映射推导中」同款),完成后由 exportFileOk 翻「已导出」 -->
+              <el-tag v-if="exportingIds.has(row.id)" type="primary" size="small">
+                <el-icon class="is-loading" style="margin-right: 2px"><Loading /></el-icon>导出中
+              </el-tag>
+              <!-- 已导出:DONE 且导出件 checksum 与库中一致;重新比对会复位 export_status,标签随之消失 -->
+              <el-tag v-else-if="row.status === 'DONE' && row.exportFileOk" type="primary" size="small">已导出</el-tag>
               <!-- 待处理(批量导入):映射推导中=蓝色加载 tag,其余原因=灰色 tag + 原因 tooltip -->
-              <el-tooltip v-if="row.status === 'PENDING'" :content="pendingReasonTip(row)" placement="top" :show-after="200">
+              <el-tooltip v-else-if="row.status === 'PENDING'" :content="pendingReasonTip(row)" placement="top" :show-after="200">
                 <el-tag v-if="row.pendingReason === 'MAPPING_RUNNING'" type="primary" size="small">
                   <el-icon class="is-loading" style="margin-right: 2px"><Loading /></el-icon>映射推导中
                 </el-tag>
@@ -137,19 +143,34 @@
           <span v-else>{{ formatDuration(row.startedAt, row.finishedAt) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="350" fixed="right" class-name="nowrap-cell">
+      <el-table-column label="操作" width="400" fixed="right" class-name="nowrap-cell">
         <template #default="{ row }">
+          <!-- flex 横排居中:link 按钮与「打开」下拉触发同轴对齐(混排 inline 时下拉触发带 icon 会基线错位) -->
+          <div class="op-cell">
           <!-- 待处理任务:字段审核(弹画布确认映射后开始比对)/ 编辑(进向导逐步改);映射推导中(MAPPING_RUNNING)不显示(映射还没出来,没得审) -->
           <template v-if="row.status === 'PENDING' && row.pendingReason !== 'MAPPING_RUNNING'">
             <el-button link type="primary" @click="openMappingReview(row)">字段审核</el-button>
             <el-button link type="primary" @click="router.push(`/compare/new?edit=${row.id}`)">编辑</el-button>
           </template>
           <el-button v-if="row.status === 'DONE'" link type="primary" @click="router.push(`/compare/${row.id}/diff`)">查看详情</el-button>
-          <!-- 导出比对报告:总览 sheet + 每差异行一 sheet,与详情页「导出比对报告」同一接口 -->
-          <el-button v-if="row.status === 'DONE'" link type="primary" @click="exportReport(row)">导出比对报告</el-button>
+          <!-- 导出表格:总览 sheet + 每差异行一 sheet,与详情页「导出比对报告」同一接口;导出中禁重点 -->
+          <el-button v-if="row.status === 'DONE'" link type="primary" :disabled="exportingIds.has(row.id)" @click="exportReport(row)">导出表格</el-button>
           <!-- 已完成任务可再次编辑:进向导改配置,保存后直接按新配置重新比对(旧差异明细覆盖) -->
           <el-button v-if="row.status === 'DONE'" link type="primary" @click="router.push(`/compare/new?edit=${row.id}`)">编辑</el-button>
           <el-button v-if="row.status === 'DONE' || row.status === 'FAILED'" link type="primary" @click="confirmRerun(row)">重新比对</el-button>
+          <!-- 打开最近一次导出的比对报告(V65):服务端直存 <数据目录>/compare(任务 ID 前缀命名,同名覆盖),
+               下拉收纳「打开文件/打开文件夹」;「打开文件」置灰口径=行级 exportFileOk(文件存在且 checksum 与 H2 一致),
+               「打开文件夹」始终可点(无导出件时退化为打开 compare 目录) -->
+          <el-dropdown v-if="row.status === 'DONE'" trigger="click" @command="(cmd) => onOpenExport(row, cmd)">
+            <el-button link type="primary">打开<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="open" :disabled="!row.exportFileOk">打开文件</el-dropdown-item>
+                <el-dropdown-item command="reveal">打开文件夹</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          </div>
           <!-- 删除不在操作列提供,统一走首列勾选 + 工具栏「批量删除」(单条=只勾一行) -->
         </template>
       </el-table-column>
@@ -269,12 +290,12 @@ import { onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref } fro
 import { useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
-import { Document, Loading, UploadFilled } from '@element-plus/icons-vue'
+import { ArrowDown, Document, Loading, UploadFilled } from '@element-plus/icons-vue'
 import request, {
   listCompareJobs, getCompareJob, rerunCompareJob, batchDeleteCompareJobs,
-  submitCompareImport, getCompareImport, confirmCompareImport
+  submitCompareImport, getCompareImport, confirmCompareImport, openCompareExport, exportCompareReport
 } from '../api'
-import { downloadFile } from '../utils/download'
+import { downloadFile, notifyExportSaved } from '../utils/download'
 import { formatBytes, formatDateTime, formatDuration, statusTagType, statusText } from '../utils/format'
 import { ackTask } from '../stores/backgroundTasks'
 import CompareMappingReview from '../components/CompareMappingReview.vue'
@@ -283,6 +304,8 @@ const router = useRouter()
 
 const tasks = ref([])
 const loading = ref(false)
+// 导出中的任务 id 集(行内「导出中」状态,请求结束即删;Set 的 has 在 reactive 下可追踪)
+const exportingIds = reactive(new Set())
 const showArchived = ref(false)
 // 分页(服务端分页,与错误中心同模式):total 由列表接口返回
 const page = ref(1)
@@ -422,9 +445,21 @@ function stopPolling() {
   }
 }
 
-/** 导出比对报告(与详情页同一接口;走统一 downloadFile,Tauri 原生保存框/浏览器 Blob 下载) */
-function exportReport(row) {
-  downloadFile(`/api/compare-jobs/${row.id}/export`)
+/** 导出表格(与详情页同一接口):行内状态列显「导出中」,服务端直存数据目录/compare 完成后通知,刷新列表翻「已导出」 */
+async function exportReport(row) {
+  exportingIds.add(row.id)
+  try {
+    const saved = await exportCompareReport(row.id)
+    notifyExportSaved(saved.path)
+  } catch { /* 拦截器已弹错误提示 */ } finally {
+    exportingIds.delete(row.id)
+  }
+  load()
+}
+
+/** 打开最近一次导出的比对报告文件 / 其所在文件夹(下拉「打开」两项;未导出过 409 由拦截器提示) */
+function onOpenExport(row, cmd) {
+  openCompareExport(row.id, cmd === 'reveal').catch(() => { /* 拦截器已弹错误提示 */ })
 }
 
 /** 重新比对:确认后按原目标清单重跑(RUNNING 时后端 409,拦截器统一提示) */
@@ -649,6 +684,18 @@ onUnmounted(() => { stopPolling(); stopImportPolling() })
 /* 发起时间/耗时/操作列不换行 */
 :deep(.nowrap-cell) {
   white-space: nowrap;
+}
+
+/* 操作列按钮组:flex + gap 统一间距并水平居中对齐——link 按钮与「打开」下拉触发同轴
+   (混排 inline 时下拉触发带 icon 会基线错位,与同行按钮视觉上不在一条水平线) */
+.op-cell {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+.op-cell :deep(.el-button) {
+  margin-left: 0;
 }
 
 /* 分页条右对齐(与错误中心 .pager-row 同写法) */

@@ -38,6 +38,8 @@ sheet 顺序:概览 / 表列表 / 「字段汇总」单 sheet 合并所有 DONE 
 
 两个入口共用同一组 sheet 写入逻辑(`ExportService` 内部把各 sheet 写入解耦为「表列表 + 取字段 lambda + 表描述 map」,任务版按 jobId+表名取字段,最新版按 scan_table 快照行 id 取字段):
 
+- **SXSSF 临时文件目录**:`ExportService`/`PreviewService`/`ListExportService`/`CompareService` 的 xlsx 均为 SXSSF 流式写,POI 默认把 `poi-sxssf-sheet*.xml` 落到系统临时目录(%TEMP%/poifiles),会被系统存储感知/安全软件清扫,导出回读时报 `NoSuchFileException`(现场报错形态:HTTP 409 + `java.nio.file.NoSuchFileException ...\Temp\poifiles\poi-sxssf-sheet*.xml`)。启动早期 `DqApplication.main` 经 `JvmTmpDir.redirect` 把 **JVM 全局临时目录**重定向到数据目录 `tmp/`,SXSSF 随之落 `tmp/poifiles` 并清扫上次进程残留;须保持「main 早期先于任何临时文件使用方」的调用位置,新增 SXSSF 导出服务无需额外处理
+
 - **按任务导出**:`GET /api/scans/{jobId}/export`(前端入口:扫描记录/任务详情的「导出 Excel」弹窗 `ExportButton.vue`),sheet 结构如上,概览含任务状态/强制全量/空值规则/起止时间
 - **最新扫描结果导出**:`GET /api/datasources/{dsId}/schemas/{schema}/export-latest?db=`(前端入口:表列表页「导出」下拉 →「导出扫描结果」,ExportButton hideTrigger 模式经 ref 唤起弹窗),不依赖指定任务记录——每张表跨任务取最近一次表级 DONE 的扫描快照(`ScanRepository.latestDoneScanTables`,与表列表页「点击表名直达最新结果」同口径),字段明细按快照行 id 取(`listScanColumns`);sheet 少「异常表」(口径内全是 DONE,表列表「状态」列恒为 DONE),概览为最新口径文案(数据源/库·Schema/数据口径说明/最晚扫描完成时间 + 统计总结);无任何 DONE 数据时抛 `IllegalStateException`(409),前端同时按 `latestScans` 映射为空禁用按钮;单测 `ExportServiceTest`(跨任务快照取舍/空数据 409/任务导出 sheet 结构回归)
 

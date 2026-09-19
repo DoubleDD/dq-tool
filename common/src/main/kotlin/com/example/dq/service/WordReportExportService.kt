@@ -1,6 +1,7 @@
 package com.example.dq.service
 
 import com.example.dq.config.AppConfig
+import com.example.dq.model.ExportKind
 import com.example.dq.model.ReportExportView
 import com.example.dq.repository.DataSourceRepository
 import com.example.dq.repository.ReportExportRepository
@@ -21,6 +22,8 @@ class WordReportExportService(
     private val repo: ReportExportRepository,
     private val dataSourceRepo: DataSourceRepository,
     private val config: AppConfig,
+    /** 导出中心(V67):任务产物落盘后推送完整记录(相对路径/大小);单测不传 */
+    private val exportCenterService: ExportCenterService? = null,
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -40,6 +43,10 @@ class WordReportExportService(
             throw IllegalArgumentException("未选择要导出的库")
         }
         val id = repo.insert(datasourceId, database ?: "", schemaNames?.joinToString(","))
+        // 导出中心:点击即登记「生成中」(报告是长任务,导出中心立即可见),key 关联终态
+        val dsName = dataSourceRepo.findById(datasourceId)?.name ?: "数据源$datasourceId"
+        exportCenterService?.recordStart(ExportKind.REPORT_DOCX,
+            "数据源 $dsName · 数据调研报告", key = "report-export:$id")
         executor.execute { run(id, datasourceId, database, schemaNames) }
         log.info("Word 报告导出任务已提交: id={}, datasourceId={}, db={}, 库={}", id, datasourceId, database, schemaNames)
         return id
@@ -60,10 +67,16 @@ class WordReportExportService(
             }
             repo.finish(id, file.toString(), Files.size(file))
             log.info("Word 报告导出完成: id={}, 文件={}({} bytes)", id, file, Files.size(file))
+            // 导出中心:登记翻成功(提交时已登记「生成中」,这里补文件名/相对路径/实测大小与 SHA-256)
+            exportCenterService?.finalize(ExportKind.REPORT_DOCX, "report-export:$id",
+                fileName = file.fileName.toString(), relPath = "reports/${file.fileName}",
+                artifact = file)
         } catch (e: Exception) {
             log.error("Word 报告导出失败: id={}", id, e)
             Files.deleteIfExists(file)
             repo.fail(id, (e.message ?: "导出失败").take(2000))
+            exportCenterService?.finalize(ExportKind.REPORT_DOCX, "report-export:$id",
+                error = (e.message ?: "导出失败").take(1000))
         }
     }
 

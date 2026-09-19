@@ -145,7 +145,7 @@ public class TrayManager {
         }
     }
 
-    /** 托盘「打开窗口」;服务尚未就绪时忽略本次点击(splash 正在提示启动中) */
+    /** 托盘「打开窗口」;服务尚未就绪时忽略本次点击 */
     private static void openWindow(String url) {
         BrowserOpener opener = browserOpenerRef;
         if (opener == null) {
@@ -220,23 +220,7 @@ public class TrayManager {
         menu.show(anchor, 0, 0);
     }
 
-    /**
-     * 选一个能显示中文的字体:Windows 上 Dialog 逻辑字体在部分区域设置/精简 JRE 下
-     * 不含中文字形(界面显示方块),按候选顺序用 canDisplay 探测;都找不到时返回 null 保持默认。
-     * 启动画面(DesktopSplash)使用。
-     */
-    static Font pickChineseFont(int size) {
-        String[] candidates = {"Microsoft YaHei UI", "Microsoft YaHei", "SimSun", "PingFang SC", "Noto Sans CJK SC"};
-        for (String name : candidates) {
-            Font font = new Font(name, Font.PLAIN, size);
-            if (font.canDisplay('打')) {
-                return font;
-            }
-        }
-        return null;
-    }
-
-    /** 运行时绘制 DQ 图标:圆角蓝底白字,64px,托盘按平台自动缩放;启动画面(DesktopSplash)共用 */
+    /** 运行时绘制 DQ 图标:圆角蓝底白字,64px,托盘按平台自动缩放 */
     static Image createImage() {
         int size = 64;
         BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);

@@ -3,6 +3,7 @@ package com.example.dq.service
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.DataSourceRequest
+import com.example.dq.model.ExportKind
 import com.example.dq.model.SampleExportDetailView
 import com.example.dq.model.SampleExportItemView
 import com.example.dq.model.SampleExportTaskView
@@ -47,6 +48,8 @@ class SampleExportService(
     private val systemSettingsService: SystemSettingsService,
     private val dialectFactory: DialectFactory,
     private val config: AppConfig,
+    /** 导出中心(V67):zip 落盘后推送完整记录(相对路径/大小);单测不传 */
+    private val exportCenterService: ExportCenterService? = null,
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -81,6 +84,9 @@ class SampleExportService(
         }
         val taskId = repo.insert(fileName, result.rows.size)
         repo.insertItems(taskId, result.rows)
+        // 导出中心:点击即登记「生成中」(抽样是长任务,导出中心立即可见),key 关联终态
+        exportCenterService?.recordStart(ExportKind.SAMPLE_ZIP,
+            "抽样导出 · $fileName", key = "sample-export:$taskId")
         // 解析行(含口令)直接内存传给后台线程,口令不落库;检测线程结束即丢弃
         executor.execute { run(taskId, result.rows, result.skipped) }
         log.info("抽样导出任务已提交: id={}, 文件={}, 有效行={}, 跳过行={}", taskId, fileName, result.rows.size, result.skipped.size)
@@ -96,11 +102,14 @@ class SampleExportService(
             repo.markDetected(taskId)
             log.info("抽样导出数据源检测完成,待用户决策: id={}", taskId)
         } catch (e: TaskCancelledException) {
-            // 暂停中的任务被「取消并删除」:记录与产物已删,不再写状态
+            // 暂停中的任务被「取消并删除」:记录与产物已删,导出中心标记失败(取消)
             log.info("抽样导出任务已取消删除: id={}", taskId)
+            exportCenterService?.finalize(ExportKind.SAMPLE_ZIP, "sample-export:$taskId", error = "任务已取消删除")
         } catch (e: Exception) {
             log.error("抽样导出数据源检测失败: id={}", taskId, e)
             repo.fail(taskId, (e.message ?: "数据源检测失败").take(2000))
+            exportCenterService?.finalize(ExportKind.SAMPLE_ZIP, "sample-export:$taskId",
+                error = (e.message ?: "数据源检测失败").take(1000))
         }
     }
 
@@ -126,13 +135,20 @@ class SampleExportService(
             val (zipPath, zipSize) = zipTaskDir(taskId)
             repo.finish(taskId, zipPath, zipSize)
             log.info("抽样导出完成: id={}, zip={}({} bytes)", taskId, zipPath, zipSize)
+            // 导出中心:登记翻成功(提交时已登记「生成中」,这里补文件名/相对路径/实测大小与 SHA-256)
+            exportCenterService?.finalize(ExportKind.SAMPLE_ZIP, "sample-export:$taskId",
+                fileName = downloadName(taskId), relPath = config.dataDir.relativize(Path.of(zipPath)).toString(),
+                artifact = Path.of(zipPath))
         } catch (e: TaskCancelledException) {
-            // 暂停中的任务被「取消并删除」:记录与产物已删,不再写状态
+            // 暂停中的任务被「取消并删除」:记录与产物已删,导出中心标记失败(取消)
             log.info("抽样导出任务已取消删除: id={}", taskId)
+            exportCenterService?.finalize(ExportKind.SAMPLE_ZIP, "sample-export:$taskId", error = "任务已取消删除")
         } catch (e: Exception) {
             // 任务级失败不清已落盘文件,留着便于排查
             log.error("抽样导出失败: id={}", taskId, e)
             repo.fail(taskId, (e.message ?: "导出失败").take(2000))
+            exportCenterService?.finalize(ExportKind.SAMPLE_ZIP, "sample-export:$taskId",
+                error = (e.message ?: "导出失败").take(1000))
         }
     }
 
@@ -648,6 +664,8 @@ class SampleExportService(
             }
             repo.deleteTask(id)
             deleteArtifacts(id)
+            // 导出中心:任务删除,登记标记失败(产物已不存在,打开无意义)
+            exportCenterService?.finalize(ExportKind.SAMPLE_ZIP, "sample-export:$id", error = "任务已删除")
             deleted.add(id)
             log.info("抽样导出任务已删除: id={}, 文件={}", id, row.fileName)
         }
@@ -713,6 +731,11 @@ class SampleExportService(
             throw IllegalStateException("zip 文件已被移动或删除,请重新导出")
         }
         return path
+    }
+
+    /** 调系统默认关联程序打开 zip(导出中心文件名直开,口径同 downloadZip) */
+    fun openFile(id: Long) {
+        SystemOpen.openDefault(downloadZip(id))
     }
 
     /** 下载文件名:<原Excel名去扩展名>-抽样导出-<id>.zip */

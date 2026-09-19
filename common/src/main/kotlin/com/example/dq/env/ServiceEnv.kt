@@ -9,6 +9,7 @@ import com.example.dq.repository.AiUsageRepository
 import com.example.dq.repository.CompareImportRepository
 import com.example.dq.repository.CompareRepository
 import com.example.dq.repository.DataSourceRepository
+import com.example.dq.repository.ExportRecordRepository
 import com.example.dq.repository.Jdbc
 import com.example.dq.repository.LicenseRecordRepository
 import com.example.dq.repository.MetaCacheRepository
@@ -46,6 +47,7 @@ import com.example.dq.service.DataSourceTransferService
 import com.example.dq.service.DbStructExportService
 import com.example.dq.service.DiagnosticsService
 import com.example.dq.service.ErrorCenterService
+import com.example.dq.service.ExportCenterService
 import com.example.dq.service.ExportService
 import com.example.dq.service.LicenseService
 import com.example.dq.service.ListExportService
@@ -190,11 +192,14 @@ class ServiceEnv(val config: AppConfig) {
     val scanWordExportService = ScanWordExportService(scanService, tagRepo, schemaDocRepo)
     val dbStructExportService = DbStructExportService(metadataService, dataSourceService, dialectFactory, tagRepo)
     val listExportService = ListExportService()
+    /** 导出中心(V66 登记,V67 push 模型):统一登记表;word/sample 两个落盘导出服务完成时推送记录 */
+    val exportCenterService = ExportCenterService(ExportRecordRepository(jdbc), config.dataDir)
     val wordReportService = WordReportService(dataSourceService, metadataService, scanRepo, schemaDocRepo,
         dialectFactory, tagRepo, tableDocRepo, aiConfigService, aiService)
-    val wordReportExportService = WordReportExportService(wordReportService, reportExportRepo, dataSourceRepo, config)
+    val wordReportExportService = WordReportExportService(wordReportService, reportExportRepo, dataSourceRepo, config,
+        exportCenterService)
     val sampleExportService = SampleExportService(sampleExportRepo, dataSourceRepo, dataSourceService,
-        systemSettingsService, dialectFactory, config)
+        systemSettingsService, dialectFactory, config, exportCenterService)
     val licenseService = LicenseService(licenseRepo, crypto, config.licensePublicKey,
         licenseRecordRepo, config.licensePrivateKey, config.appVersion)
     val diagnosticsService = DiagnosticsService(config, dataSourceService, dataSourceRepo, licenseService,
@@ -212,7 +217,9 @@ class ServiceEnv(val config: AppConfig) {
         // 列级对比字段映射预生成(场景:比对映射)
         aiMappingChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MAPPING) },
         // 导出「数据最新更新时间」的时间字段语义匹配(场景:比对时间)
-        aiTimeChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_TIME) })
+        aiTimeChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_TIME) },
+        // 报告导出件目录(V65 起 <数据目录>/compare,服务端直存 + checksum 跟踪,「打开」置灰口径用)
+        compareDir = config.dataDir.resolve("compare"))
     /** 比对任务批量导入:一 sheet 一任务,数据源实测建档 + 大模型推导字段映射,任务落 PENDING 待人工审核 */
     val compareImportService = CompareImportService(compareImportRepo, dataSourceRepo, dataSourceService,
         metadataService, compareService, aiConfigService, config,
@@ -235,6 +242,8 @@ class ServiceEnv(val config: AppConfig) {
         metaSyncService.recoverUnfinished()
         compareService.recoverUnfinished()
         compareImportService.recoverUnfinished()
+        // 导出中心:残留「生成中」登记一律 FAILED(报告/抽样等执行体已随重启消亡)
+        exportCenterService.recoverInterrupted()
         // 错误中心最后就绪:此前(建表/迁移/恢复期)产生的错误已落 logs/error-spool.jsonl,此处回灌入库并执行保留策略
         errorCenterService.markReady()
     }

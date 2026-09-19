@@ -128,7 +128,7 @@ Tauri 2 对自定义 app 命令强制 ACL 校验,未登记则 IPC 层直接拒�
 不进 Rust 命令、后端无日志,错误只 toast 在前端)。每个命令须在 `tauri/src-tauri/permissions/*.toml`
 声明 `allow-<命令名-连字符>` 并列入 `capabilities/default.json` 的 `permissions`。
 坑:`permissions/` 目录不存在时 `build.rs` 不会对其发 `cargo:rerun-if-changed`,**首次新增权限文件后要
-`touch build.rs`**。现有命令:`api_base`、`save_report_as`、`save_download_as`。
+`touch build.rs`**。现有命令:`api_base`、`save_report_as`、`save_download`。
 
 ### A6. 打包资源路径与 `resources/` 前缀(已规避)
 
@@ -214,13 +214,13 @@ Rust 侧日志(Java 侧有 StartupLog,Rust 侧原先完全没有)。
 
 ### C2. `downloadText` / `downloadDataUrl` 的落盘行为(Tauri 未验证、口径不一致)
 
-`downloadFile`(后端流式接口)在 Tauri 下走 Rust `save_download_as`,弹原生保存对话框并 toast 保存路径;
+`downloadFile`(后端流式接口)在 Tauri 下走 Rust `save_download`,直存 `<数据目录>/exports/` 并 toast 可点击打开文件;
 但 `downloadText`(诊断报告、drawio 导出)与 `downloadDataUrl`(画布「另存为图片」)走
 **Blob/DataURL + `<a download>`**(`web/src/utils/download.js:34`、`:49`)。Tauri 未装 `on_download` 处理器,
 Windows WebView2 会走默认下载行为——**静默存到系统「下载」目录**,既不弹保存框也没有“已保存到…”提示,
 与其它导出手感不同,用户容易以为没导出。
 
-**处置建议**:统一收口到 `save_download_as`(前端把内容 POST 给后端再由 Rust 拉取,或扩一个直接传字节的 IPC 命令),
+**处置建议**:统一收口到 `save_download`(前端把内容 POST 给后端再由 Rust 拉取,或扩一个直接传字节的 IPC 命令),
 或至少在 Tauri 下实测确认落盘位置并补一句提示。
 
 ### C3. 剪贴板能力与兜底(低)
