@@ -137,20 +137,21 @@ class LicenseServiceTest {
         val service = newServiceWithKey(
             Base64.getEncoder().encodeToString(kp.public.encoded),
             Base64.getEncoder().encodeToString(kp.private.encoded))
-        // 管理员签发:显式勾选 3 个菜单(新格式无隐式基础集,未勾选的菜单一律不开放)
+        // 管理员签发:显式勾选 3 个菜单(新格式无隐式基础集,未勾选的菜单一律不开放;
+        // 导出中心授权恒显,解析时强制并入,见 LicenseMenu)
         val record = service.generateLicense(
             LicenseGenerateRequest("甲公司", "2027-12-31", menus = listOf("dashboard", "compare", "license-admin")))
 
         service.activate(record.code)
         val status = service.status()
         assertTrue(status.activated)
-        assertEquals(setOf("dashboard", "compare", "license-admin"), status.menus!!.toSet())
+        assertEquals(setOf("dashboard", "export-center", "compare", "license-admin"), status.menus!!.toSet())
         // 勾选的菜单校验通过;未勾选的拒绝
         service.checkMenu(LicenseMenu.COMPARE)
         service.checkMenu(LicenseMenu.LICENSE_ADMIN, false)
         assertThrows(LicenseMenuRequiredException::class.java) { service.checkMenu(LicenseMenu.LOGS) }
         assertThrows(LicenseMenuRequiredException::class.java) { service.checkMenu(LicenseMenu.DATASOURCE) }
-        // 留档可见菜单列表(按枚举声明顺序规范化)
+        // 留档可见菜单列表(按枚举声明顺序规范化;恒显的导出中心在激活解析时并入,不回写留档)
         assertEquals("dashboard,compare,license-admin", service.listLicenses().single().menus)
     }
 
