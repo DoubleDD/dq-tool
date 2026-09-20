@@ -10,6 +10,8 @@
  * - `lane-change` 回抛级联当前所在 数据源/库/schema,父级据此算 `disabledTables` 等联动数据。
  */
 import { computed, reactive, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import { EditPen } from '@element-plus/icons-vue'
 import { ElMessage } from '../utils/notify'
 import TableCascadePicker from './TableCascadePicker.vue'
 
@@ -29,6 +31,11 @@ const props = defineProps({
   // 右侧清单面板标题与空态文案
   panelTitle: { type: String, default: '已选表' },
   emptyText: { type: String, default: '还没有已选表,请在左侧选好库/schema 后,点表名右侧的 + 加入' },
+  // 条目第一行名称可编辑(比对任务:自定义显示名,写到条目 name 字段;清空 = 恢复默认名)
+  nameEditable: { type: Boolean, default: false },
+  // 库描述(schema_doc)缓存:键 `${数据源id}|${多库方言?db:''}|${schema||db}` → 描述(由父级按需加载);
+  // 默认显示名回落链:条目 name(自定义)> 库描述 > 数据源名
+  schemaDescs: { type: Object, default: () => ({}) },
   // 右侧面板宽度;清单默认撑满与左侧级联同高,panelMaxHeight 传值时作为上限(数字按 px 处理,字符串原样使用)
   panelWidth: { type: [Number, String], default: 420 },
   panelMaxHeight: { type: [Number, String], default: null }
@@ -86,6 +93,39 @@ function removeAt(i) {
   emit('update:modelValue', next)
 }
 
+/** 库描述缓存键(与父级加载方同一口径):多库方言(SQL Server/Kingbase)带 db,单库方言 db 归空、schema 空时以 db(库名)兜底 */
+function descKeyOf(t) {
+  const multi = ['SQLSERVER', 'KINGBASE'].includes(dsOf(t)?.dbType)
+  return `${t.datasourceId}|${multi ? (t.db || '') : ''}|${t.schema || t.db || ''}`
+}
+
+/** 条目默认显示名:库描述 > 数据源名(自定义名 t.name 由调用处另判) */
+function defaultNameOf(t) {
+  return props.schemaDescs[descKeyOf(t)] || dsOf(t)?.name || ''
+}
+
+/** 编辑条目自定义显示名(仅 nameEditable):清空 = 清除自定义名,第一行恢复默认名(库描述/数据源名) */
+async function editName(t, i) {
+  const defName = defaultNameOf(t)
+  const source = props.schemaDescs[descKeyOf(t)] ? '库描述' : '数据源'
+  const { value } = await ElMessageBox.prompt('自定义名称', `当前名称来源:${source}(${defName || '未知'})`, {
+    confirmButtonText: '保存',
+    cancelButtonText: '取消',
+    inputValue: t.name || defName,
+    inputPlaceholder: '留空则恢复默认名称',
+    // 允许清空(清空 = 存 null,展示回落默认名);其余一律放行
+    inputValidator: () => true
+  }).catch(() => ({ value: null }))
+  if (value === null || value === undefined) return
+  const name = (value || '').trim()
+  if (name === (t.name || defName)) return
+  const next = [...props.modelValue]
+  // 清空时删除 name 字段(提交载荷按 falsy 归 null),避免残留空串
+  next[i] = { ...t, ...(name ? { name } : {}) }
+  if (!name) delete next[i].name
+  emit('update:modelValue', next)
+}
+
 const px = (v) => (typeof v === 'number' ? `${v}px` : v)
 const sideStyle = computed(() => ({ width: px(props.panelWidth) }))
 // panelMaxHeight 为空时清单撑满面板(与左侧级联同高);传值时作为上限、内容贴合
@@ -120,10 +160,13 @@ const listStyle = computed(() => (props.panelMaxHeight ? { maxHeight: px(props.p
         <div class="picked-list" :style="listStyle">
           <div v-for="(t, i) in modelValue" :key="i" class="picked-item">
             <span class="picked-index">{{ i + 1 }}</span>
-            <span class="picked-label" :title="`${dsOf(t)?.name || ''} · ${locOf(t)}`">
-              <span class="picked-ds">{{ dsOf(t)?.name || '' }}</span>
+            <span class="picked-label" :title="`${t.name || defaultNameOf(t)} · ${locOf(t)}`">
+              <span class="picked-ds">{{ t.name || defaultNameOf(t) }}</span>
               <span class="picked-loc">{{ locOf(t) }}</span>
             </span>
+            <el-button v-if="nameEditable" link type="primary" title="自定义名称" @click="editName(t, i)">
+              <el-icon><EditPen /></el-icon>
+            </el-button>
             <el-button link type="danger" @click="removeAt(i)">删除</el-button>
           </div>
           <div v-if="!modelValue.length" class="picked-empty">{{ emptyText }}</div>

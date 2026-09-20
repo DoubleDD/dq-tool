@@ -113,13 +113,13 @@ class CompareExportFlowTest {
             val overview = wb.getSheetAt(0)
             assertEquals("匹配编码数", overview.getRow(0).getCell(6).stringCellValue)
             assertEquals("匹配对象数", overview.getRow(0).getCell(7).stringCellValue)
-            // 第 1 行基准表,第 2 行厂商库目标
-            assertEquals("reservoir_base_info", overview.getRow(1).getCell(1).stringCellValue)
+            // 第 1 行基准表,第 2 行厂商库目标;表名为单元格内三行「表名 / 系统名 / （库.模式）」格式
+            assertEquals("reservoir_base_info\n基准库\n（reservoir_base）", overview.getRow(1).getCell(1).stringCellValue)
             assertEquals(100.0, overview.getRow(1).getCell(3).numericCellValue)
             assertEquals("水库基础信息表", overview.getRow(1).getCell(0).stringCellValue)
             // 数据最新更新时间:比对时按名称命中 update_time → MAX(update_time),两侧各取各自最新
             assertEquals("2026-01-03 07:30:00", overview.getRow(1).getCell(4).stringCellValue)
-            assertEquals("t_reservoir_info", overview.getRow(2).getCell(1).stringCellValue)
+            assertEquals("t_reservoir_info\n厂商运管系统\n（reservoir_vendor）", overview.getRow(2).getCell(1).stringCellValue)
             assertEquals("厂商运管系统", overview.getRow(2).getCell(2).stringCellValue)
             assertEquals(101.0, overview.getRow(2).getCell(3).numericCellValue)
             assertEquals("2026-02-02 10:00:00", overview.getRow(2).getCell(4).stringCellValue)
@@ -144,8 +144,8 @@ class CompareExportFlowTest {
                 "差异说明", "差异类型"),
                 (0..13).map { rowLevel.getRow(0).getCell(it).stringCellValue })
             // 编码/名称字段列:基准侧 = 主键 reservoir_code / 显示名自动取 reservoir_name,业务侧无映射按同名回落
-            assertEquals(listOf("reservoir_base_info", "水库基础信息表", "reservoir_code", "R091", "reservoir_name", "水库91",
-                "t_reservoir_info", "", "reservoir_code", "", "reservoir_name", "", "基准有目标无", "缺失"),
+            assertEquals(listOf("reservoir_base_info\n基准库\n（reservoir_base）", "水库基础信息表", "reservoir_code", "R091", "reservoir_name", "水库91",
+                "t_reservoir_info\n厂商运管系统\n（reservoir_vendor）", "", "reservoir_code", "", "reservoir_name", "", "基准有目标无", "缺失"),
                 (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
             // 缺失 3 + 多余 4 = 7 行(名称不一致 5 条不计入对象级差异)
             val expectedRows = target.missingCount!! + target.extraCount!!
@@ -201,6 +201,64 @@ class CompareExportFlowTest {
 
     /** 明细 sheet 最后一行数据行号(首行即表头,数据紧随其后) */
     private fun lastDataRow(detail: org.apache.poi.ss.usermodel.Sheet): Int = detail.lastRowNum
+
+    /**
+     * 抽样比对(V70):sample_rows=5 的任务双侧各「按身份列排序取前 5 条」,
+     * base_count/target_count 落样本量 5,比对正常完成,导出总览披露抽样口径
+     */
+    @Test
+    fun `抽样任务只取前N条且总览带抽样说明`() {
+        val containerUrl = MYSQL.jdbcUrl.substringBeforeLast("/") + "/"
+        DriverManager.getConnection(containerUrl + "reservoir_base", MYSQL.username, MYSQL.password).use { conn ->
+            conn.createStatement().use { st ->
+                st.execute("DROP TABLE IF EXISTS reservoir_base.sample_base")
+                st.execute("DROP TABLE IF EXISTS reservoir_vendor.sample_target")
+                st.execute("CREATE TABLE reservoir_base.sample_base(" +
+                    "code VARCHAR(32) PRIMARY KEY, name VARCHAR(64)) ENGINE=InnoDB")
+                st.execute("CREATE TABLE reservoir_vendor.sample_target(" +
+                    "code VARCHAR(32) PRIMARY KEY, name VARCHAR(64)) ENGINE=InnoDB")
+                // 双侧各 10 行:R001~R008 完全一致,R009/R010 名称不同(抽样前 5 条碰不到它们)
+                for (i in 1..10) {
+                    st.execute(("INSERT INTO reservoir_base.sample_base VALUES('R%03d','水库%d')").format(i, i))
+                    val name = if (i >= 9) "改名水库$i" else "水库$i"
+                    st.execute(("INSERT INTO reservoir_vendor.sample_target VALUES('R%03d','%s')").format(i, name))
+                }
+            }
+        }
+        val baseId = dataSourceService.create(DataSourceRequest(
+            "抽样基准库", containerUrl + "reservoir_base", MYSQL.username, MYSQL.password, null, null))
+        val vendorId = dataSourceService.create(DataSourceRequest(
+            "抽样厂商库", MYSQL.jdbcUrl, MYSQL.username, MYSQL.password, null, null))
+        val jobId = compareService.submit(CreateCompareJobRequest(
+            name = "抽样比对-E2E", baseDatasourceId = baseId, baseDb = "", baseSchema = "reservoir_base",
+            baseTable = "sample_base", keyField = "code",
+            fields = listOf("code", "name"), sampleRows = 5,
+            targets = listOf(CompareTargetSpec(vendorId, "", "reservoir_vendor", "sample_target"))))
+        awaitDone(jobId)
+
+        // 条数 = 样本量(各取前 5 条);R001~R005 完全一致 → 与基准完全一致(指标为样本口径)
+        val target = compareRepo.listTargets(jobId).single()
+        assertEquals("DONE", target.status)
+        assertEquals(5, target.baseCount)
+        assertEquals(5, target.targetCount)
+        assertEquals(5, target.matchedCount)
+        assertEquals(0, target.fieldMismatchCount)
+
+        val out = ByteArrayOutputStream()
+        compareService.exportDiff(jobId, out)
+        val wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            val overview = wb.getSheetAt(0)
+            assertEquals("基准表(抽样比对,不参与差异统计)", overview.getRow(1).getCell(9).stringCellValue)
+            assertEquals(5.0, overview.getRow(1).getCell(3).numericCellValue)
+            assertEquals(5.0, overview.getRow(2).getCell(3).numericCellValue)
+            val reason = overview.getRow(2).getCell(9).stringCellValue
+            assertTrue(reason.contains("与基准完全一致"), reason)
+            assertTrue(reason.contains("抽样比对:每侧仅取前 5 条(按身份列排序)"), reason)
+        } finally {
+            wb.close()
+        }
+    }
 
     /**
      * 身份列为空的行:以行内代理键进比对——编码路对它无命中,名称路按名称精准配对

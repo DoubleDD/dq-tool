@@ -33,8 +33,12 @@ class DesktopSessionTest {
     private final AtomicLong nano = new AtomicLong(0L);
 
     private DesktopSession newSession(FlagShutdown shutdown) {
+        return newSession(shutdown, 5);
+    }
+
+    private DesktopSession newSession(FlagShutdown shutdown, int heartbeatIntervalSeconds) {
         DqProperties props = new DqProperties();
-        return new DesktopSession(props, shutdown, wall::get, nano::get);
+        return new DesktopSession(props, shutdown, () -> heartbeatIntervalSeconds, wall::get, nano::get);
     }
 
     private void advanceMillis(long millis) {
@@ -101,6 +105,27 @@ class DesktopSessionTest {
 
         waitForExit(shutdown);
         assertTrue(shutdown.exited.get(), "唤醒后持续无心跳仍应超时退出");
+    }
+
+    @Test
+    void 心跳间隔大于配置超时时看门狗按三个间隔判定() throws Exception {
+        FlagShutdown shutdown = new FlagShutdown();
+        // 心跳间隔 60 秒(系统设置页可调):有效超时 = max(45s, 3×60s) = 180s
+        DesktopSession session = newSession(shutdown, 60);
+        session.markAppModeOpened();
+        session.beat();
+
+        // 超过配置超时 45s 但不足 3 个心跳间隔:窗口可能还开着(心跳还没到点),不应误杀
+        advanceMillis(60_000);
+        session.watchdog();
+        assertFalse(shutdown.exited.get(), "心跳间隔 60s 时超过配置超时 45s 不应立即退出");
+
+        // 超过 3 个心跳间隔仍无心跳:判定窗口已关闭,退出
+        advanceMillis(130_000);
+        session.watchdog();
+
+        waitForExit(shutdown);
+        assertTrue(shutdown.exited.get(), "超过 3 个心跳间隔未收到心跳应触发退出");
     }
 
     @Test

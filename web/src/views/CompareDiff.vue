@@ -22,6 +22,8 @@
           <span>对象名称:{{ job.displayField || '自动(第一个文本型字段)' }}</span>
           <span>匹配逻辑:{{ matchModeLabel(job.matchMode) }}</span>
           <span>对比模式:{{ job.compareMode === 'COLUMN' ? '行级+列级对比' : '行级对比' }}</span>
+          <!-- 抽样标识(V70):非空 = 双侧各按身份字段排序取前 N 条比对,本页指标为样本口径 -->
+          <span v-if="job.sampleRows" style="color: var(--el-color-success)">抽样比对:每侧前 {{ job.sampleRows }} 条</span>
           <span>上次比对:{{ formatDateTime(job.finishedAt) }}</span>
         </div>
 
@@ -57,7 +59,7 @@
 
           <el-alert v-if="failedTargets.length" type="warning" :closable="false" style="margin-bottom: 12px">
             <template #title>
-              {{ failedTargets.map((t) => t.dsName || `数据源 ${t.datasourceId}`).join('、') }} 比对失败,未参与下方明细展示
+              {{ failedTargets.map((t) => displayNameOf(t)).join('、') }} 比对失败,未参与下方明细展示
             </template>
           </el-alert>
 
@@ -73,7 +75,7 @@
             </el-radio-group>
             <el-radio-group v-model="targetFilter" size="small">
               <el-radio-button value="">全部业务系统</el-radio-button>
-              <el-radio-button v-for="t in doneTargets" :key="t.id" :value="String(t.id)">{{ t.dsName || `数据源 ${t.datasourceId}` }}</el-radio-button>
+              <el-radio-button v-for="t in doneTargets" :key="t.id" :value="String(t.id)">{{ displayNameOf(t) }}</el-radio-button>
             </el-radio-group>
             <el-input v-model="kwInput" size="small" clearable placeholder="对象名称或编码" style="width: 220px" />
           </div>
@@ -102,7 +104,7 @@
                       <template #default="{ row: r }">{{ r.baseKnown ? displayVal(r.base) : '—' }}</template>
                     </el-table-column>
                     <!-- 业务系统列 min-width 与父表一致(140):两表同宽且 flex 规则相同,右边界逐列对齐 -->
-                    <el-table-column v-for="t in visibleTargets" :key="t.id" :label="t.dsName || `数据源 ${t.datasourceId}`" min-width="140">
+                    <el-table-column v-for="t in visibleTargets" :key="t.id" :label="displayNameOf(t)" min-width="140">
                       <template #default="{ row: r }">
                         <span v-if="!r.perTarget[t.id]" style="color: var(--el-text-color-secondary)">—</span>
                         <span v-else-if="!r.perTarget[t.id].known" style="color: var(--el-text-color-secondary)">一致</span>
@@ -132,12 +134,12 @@
                 </div>
               </template>
             </el-table-column>
-            <el-table-column v-for="t in visibleTargets" :key="t.id" :label="t.dsName || `数据源 ${t.datasourceId}`" min-width="140" align="center">
+            <el-table-column v-for="t in visibleTargets" :key="t.id" :label="displayNameOf(t)" min-width="140" align="center">
               <template #header>
                 <!-- 同一数据源可能有多个目标表,表头补一行目标表定位串(悬浮看全串) -->
                 <el-tooltip :content="tableLabel(t)" placement="top" :show-after="300">
                   <div>
-                    <div>{{ t.dsName || `数据源 ${t.datasourceId}` }}</div>
+                    <div>{{ displayNameOf(t) }}</div>
                     <div class="col-sub">{{ tableLabel(t) }}</div>
                   </div>
                 </el-tooltip>
@@ -236,6 +238,11 @@ const visibleTargets = computed(() =>
 function tableLabel(t) {
   const schemaPart = t.db ? `${t.db}.${t.schema || ''}` : (t.schema || '')
   return schemaPart ? `${schemaPart}.${t.table}` : t.table
+}
+
+/** 目标展示名:自定义显示名(V72)> 库描述(schema_doc)> 数据源名快照 > 「数据源 id」兜底 */
+function displayNameOf(t) {
+  return t.displayName || t.schemaDesc || t.dsName || `数据源 ${t.datasourceId}`
 }
 
 const baseTableLabel = computed(() => {
@@ -407,7 +414,7 @@ function expandTip(row) {
   const parts = []
   for (const t of doneTargets.value) {
     const st = row.byTarget[t.id]
-    const name = t.dsName || `数据源 ${t.datasourceId}`
+    const name = displayNameOf(t)
     if (st?.diffType === 'MISSING') parts.push(`${name} 缺失该对象(基准有、目标无)`)
     if (st?.diffType === 'EXTRA') parts.push(`${name} 多余该对象(目标有、基准无)`)
   }

@@ -437,6 +437,25 @@ class MetadataService(
     private fun normalizeDb(database: String?): String = database ?: ""
 
     /**
+     * 库描述读取(schema_doc,比对目标默认显示名回落链等展示口径用):db/schema 按方言归一——
+     * 单库方言 db 归空串、schema 空时以 db(库名)兜底(写入口径:库列表页单库方言不传 db);
+     * 多库方言 db 保留。数据源已删/无描述/blank 一律返回 null(调用方回落数据源名),不抛异常
+     */
+    fun schemaDescription(datasourceId: Long, database: String?, schema: String?): String? {
+        val multiDb = try {
+            dataSourceService.get(datasourceId).dbType
+                ?.let { dialectFactory.get(it).supportsMultiDatabase() } == true
+        } catch (e: Exception) {
+            false // 数据源已删:按单库口径兜底查,查不到返回 null,静默降级
+        }
+        val schemaName = schema?.takeIf { it.isNotBlank() }
+            ?: (if (!multiDb) database?.takeIf { it.isNotBlank() } else null)
+            ?: return null
+        val db = if (multiDb) normalizeDb(database) else ""
+        return schemaDocRepo.find(datasourceId, db, schemaName)?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
      * 缓存/快照读取键(按优先级递减):多库方言请求库是 JDBC URL 里配置的默认库时,追加空串槽位兜底——
      * 扫描与库列表页 db='' 兜底沉淀的缓存/快照都落在空串槽位,与按库名访问默认库是同一目录
      * (断网推导降级出真实库名后,比对选表器按库名取默认库的表/字段也能命中)。

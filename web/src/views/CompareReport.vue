@@ -30,7 +30,7 @@
             <el-table :data="report.targets" border>
               <el-table-column label="业务系统" min-width="140">
                 <template #default="{ row }">
-                  <div>{{ row.dsName || `数据源 ${row.datasourceId}` }}</div>
+                  <div>{{ displayNameOf(row) }}</div>
                   <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ (row.db ? row.db + '.' : '') + (row.schema || '') + '.' + row.table }}</div>
                 </template>
               </el-table-column>
@@ -151,6 +151,11 @@ function percent(v) {
   return v == null ? '—' : `${(v * 100).toFixed(1)}%`
 }
 
+/** 目标展示名:自定义显示名(V72)> 库描述(schema_doc)> 数据源名快照 > 「数据源 id」兜底 */
+function displayNameOf(t) {
+  return t.displayName || t.schemaDesc || t.dsName || `数据源 ${t.datasourceId}`
+}
+
 function num(v) {
   return v == null ? '—' : formatNumber(v)
 }
@@ -161,7 +166,7 @@ const maxIssueCount = computed(() => Math.max(1, ...(report.value?.fieldIssues |
 const missExtraRows = computed(() =>
   (report.value?.targets || [])
     .filter((t) => t.status === 'DONE')
-    .map((t) => ({ id: t.id, name: t.dsName || `数据源 ${t.datasourceId}`, missing: t.missingCount ?? 0, extra: t.extraCount ?? 0 }))
+    .map((t) => ({ id: t.id, name: displayNameOf(t), missing: t.missingCount ?? 0, extra: t.extraCount ?? 0 }))
 )
 const maxMissExtra = computed(() => Math.max(1, ...missExtraRows.value.flatMap((r) => [r.missing, r.extra])))
 

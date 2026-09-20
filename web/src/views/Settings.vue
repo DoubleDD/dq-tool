@@ -91,6 +91,31 @@
       </div>
     </el-card>
 
+    <!-- 页面心跳:前端上报 /api/heartbeat 的间隔 -->
+    <el-card class="settings-card" shadow="never">
+      <template #header>
+        <span>页面心跳</span>
+      </template>
+      <div class="settings-desc">
+        页面按该间隔向后端上报心跳。桌面安装版据此判断窗口是否已关闭:连续约 3 个间隔未收到心跳即自动退出后端进程,
+        间隔越长,关闭窗口后后端退出越慢;服务器部署(普通浏览器访问)本项只影响心跳请求频率。保存后立即生效。
+      </div>
+      <el-form label-width="200px" v-loading="heartbeatLoading">
+        <el-form-item label="心跳间隔">
+          <el-input-number v-model="heartbeatForm.value" :min="1" :max="heartbeatUnitMax" controls-position="right" style="width: 160px" />
+          <el-select v-model="heartbeatForm.unit" style="width: 90px; margin-left: 8px" @change="onHeartbeatUnitChange">
+            <el-option value="s" label="秒" />
+            <el-option value="m" label="分" />
+            <el-option value="h" label="时" />
+          </el-select>
+          <span class="field-hint">范围 1 秒 ~ 24 小时,默认 5 秒</span>
+        </el-form-item>
+      </el-form>
+      <div class="card-actions">
+        <el-button type="primary" :loading="heartbeatSaving" @click="saveHeartbeat">保存</el-button>
+      </div>
+    </el-card>
+
     <!-- AI 配置:大模型接口 -->
     <el-card class="settings-card" shadow="never">
       <template #header>
@@ -173,6 +198,7 @@ import { downloadFile } from '../utils/download'
 import { confirmImportFile } from '../utils/importFileIdentify'
 import AiConfigForm from '../components/AiConfigForm.vue'
 import { themeState, setThemeMode } from '../stores/theme'
+import { heartbeatState } from '../stores/heartbeat'
 
 // ---------- 扫描设置 ----------
 const GIB = 1024 * 1024 * 1024
@@ -307,6 +333,60 @@ async function saveMemory() {
   }
 }
 
+// ---------- 页面心跳 ----------
+// 心跳间隔(秒)在表单里按 秒/分/时 单位展示;保存后写回 heartbeatState,App.vue 的心跳定时器即时重建
+const HEARTBEAT_UNITS = { s: 1, m: 60, h: 3600 }
+const HEARTBEAT_UNIT_MAX = { s: 86400, m: 1440, h: 24 }
+const heartbeatLoading = ref(false)
+const heartbeatSaving = ref(false)
+const heartbeatForm = reactive({ value: 5, unit: 's' })
+let heartbeatPrevUnit = 's'
+const heartbeatUnitMax = computed(() => HEARTBEAT_UNIT_MAX[heartbeatForm.unit])
+
+// 秒 → 表单展示值:能整除的用最大单位(3600 → 1 时),否则落回秒
+function heartbeatSecondsToForm(seconds) {
+  if (seconds % 3600 === 0) return { value: seconds / 3600, unit: 'h' }
+  if (seconds % 60 === 0) return { value: seconds / 60, unit: 'm' }
+  return { value: seconds, unit: 's' }
+}
+
+async function loadHeartbeat() {
+  heartbeatLoading.value = true
+  try {
+    const v = await request.get('/system-settings/heartbeat')
+    Object.assign(heartbeatForm, heartbeatSecondsToForm(v.intervalSeconds))
+    heartbeatPrevUnit = heartbeatForm.unit
+    heartbeatState.intervalSeconds = v.intervalSeconds
+  } finally {
+    heartbeatLoading.value = false
+  }
+}
+
+// 切换单位时把当前值按旧单位折算成秒再换算到新单位,避免显示值突变
+function onHeartbeatUnitChange(newUnit) {
+  const seconds = heartbeatForm.value * HEARTBEAT_UNITS[heartbeatPrevUnit]
+  heartbeatPrevUnit = newUnit
+  heartbeatForm.value = Math.min(Math.max(1, Math.round(seconds / HEARTBEAT_UNITS[newUnit])), HEARTBEAT_UNIT_MAX[newUnit])
+}
+
+async function saveHeartbeat() {
+  const seconds = heartbeatForm.value * HEARTBEAT_UNITS[heartbeatForm.unit]
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 86400) {
+    ElMessage.warning('请检查填写内容:心跳间隔范围为 1 秒 ~ 24 小时')
+    return
+  }
+  heartbeatSaving.value = true
+  try {
+    const v = await request.put('/system-settings/heartbeat', { intervalSeconds: seconds })
+    Object.assign(heartbeatForm, heartbeatSecondsToForm(v.intervalSeconds))
+    heartbeatPrevUnit = heartbeatForm.unit
+    heartbeatState.intervalSeconds = v.intervalSeconds
+    ElMessage.success('心跳间隔已保存,立即生效')
+  } finally {
+    heartbeatSaving.value = false
+  }
+}
+
 // ---------- AI 配置 ----------
 const aiFormRef = ref(null)
 
@@ -398,6 +478,7 @@ onActivated(() => {
   loadScanSettings()
   loadBrowserSettings()
   loadMemory()
+  loadHeartbeat()
   aiFormRef.value?.load()
 })
 </script>

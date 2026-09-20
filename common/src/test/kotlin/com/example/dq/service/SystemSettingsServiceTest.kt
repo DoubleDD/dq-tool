@@ -103,4 +103,24 @@ class SystemSettingsServiceTest {
         service.saveBrowserApp(null)
         assertNull(service.browserApp())
     }
+
+    @Test
+    fun `心跳间隔默认 5 秒,保存读取与范围钳制,扫描设置保存不清掉心跳`() {
+        assertEquals(5, service.heartbeatIntervalSeconds())
+
+        service.saveHeartbeatInterval(300)
+        assertEquals(300, service.heartbeatIntervalSeconds())
+
+        // 范围钳制:下限 1 秒,上限 24 小时
+        service.saveHeartbeatInterval(0)
+        assertEquals(1, service.heartbeatIntervalSeconds())
+        service.saveHeartbeatInterval(100_000)
+        assertEquals(86_400, service.heartbeatIntervalSeconds())
+
+        // 保存扫描参数(整行 upsert)不清掉心跳间隔;扫描恢复默认也不动心跳列
+        service.saveScanSettings(ScanSettingsRequest(workers = 16))
+        assertEquals(86_400, service.heartbeatIntervalSeconds())
+        service.resetScanSettings()
+        assertEquals(86_400, service.heartbeatIntervalSeconds())
+    }
 }

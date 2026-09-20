@@ -336,6 +336,12 @@ export function startCompareJob(id) {
   return request.post(`/compare-jobs/${id}/start`)
 }
 
+/** 更新比对目标自定义显示名(备用接口,向导内编辑走 updateCompareJob 随 targets 提交);
+ *  displayName 传 null/空串 = 清除,展示回落数据源名快照 */
+export function updateCompareTargetDisplayName(id, targetId, displayName) {
+  return request.put(`/compare-jobs/${id}/targets/${targetId}/display-name`, { displayName })
+}
+
 /** 打开比对任务的报告导出件 / 其所在文件夹(导出件在数据目录/compare;打开文件要求 checksum 一致,否则 409) */
 export function openCompareExport(id, reveal = false) {
   return request.post(`/compare-jobs/${id}/${reveal ? 'reveal-export' : 'open-export'}`)

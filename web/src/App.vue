@@ -192,6 +192,7 @@ import { apiUrl, authHeaders } from './api/base'
 import { Coin, Connection, Document, Download, EditPen, Expand, Files, FirstAidKit, Fold, Folder, FolderOpened, Grid, Key, List, Monitor, MoreFilled, Odometer, PriceTag, ScaleToOriginal, Setting, Share, Star, Sunny, Moon, TrendCharts, Back, Right, Refresh, Loading, Warning } from '@element-plus/icons-vue'
 import { tabState, syncTab, closeTab } from './stores/tabs'
 import { themeState, initTheme, cycleTheme } from './stores/theme'
+import { heartbeatState, loadHeartbeatInterval } from './stores/heartbeat'
 import { backgroundTasks, initBackgroundTasks } from './stores/backgroundTasks'
 import { fetchLicenseStatus, grantedMenus, routeMenuKey, firstGrantedHome } from './router'
 import LicenseFooter from './components/LicenseFooter.vue'
@@ -503,13 +504,20 @@ watch(() => route.fullPath, () => {
 }, { immediate: true })
 
 // 页面心跳:桌面安装版(--app 窗口)的后端看门狗据此判断窗口是否已关闭,超时未收到心跳则退出进程。
+// 间隔走系统设置(stores/heartbeat,默认 5 秒),设置页保存后 watch 到变化即重建定时器,无需刷新。
 // 用裸 axios 绕过全局拦截器:后端已退出时的连接失败不应弹错误提示
 let heartbeatTimer
-onMounted(() => {
+function startHeartbeat() {
+  clearInterval(heartbeatTimer)
   heartbeatTimer = setInterval(() => {
     axios.get(apiUrl('/heartbeat'), { timeout: 5000, headers: authHeaders() }).catch(() => {})
-  }, 5000)
+  }, Math.max(1, heartbeatState.intervalSeconds) * 1000)
+}
+onMounted(() => {
+  startHeartbeat()
+  loadHeartbeatInterval()
 })
+watch(() => heartbeatState.intervalSeconds, startHeartbeat)
 onUnmounted(() => clearInterval(heartbeatTimer))
 
 function onTabClick(pane) {

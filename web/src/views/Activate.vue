@@ -59,8 +59,10 @@ import { markActivated } from '../router'
 
 const router = useRouter()
 const status = ref(null)
-// 内测版:授权码输入框默认填入内测授权码,打开激活页即可直接点「激活」
-const code = ref('DQ1.5YaF6YOo5rWL6K-VfFBFUk1BTkVOVHwxLjh8fHwwMWQyYzA3NzI1N2I0YTcyYTU3NDgxNDc4YmZmYWE3ZXwxNzg2NDY3OTg4MjM1fHNjYW4sZGF0YXNvdXJjZSxleGNlbCxyZXBvcnQsYWlfZG9jLGFpX3RhZyx0YWc.8Yz5TdM5PQ1fjiFtTuacqpeGr_cEqWWrBj1sd5iQ-rs0oMEP92YbpDm0Mdfv9efKFiofJ0hX1xl_AQft6M1wBQ')
+// 内测授权码:仅当 H2 中确认没有任何授权(status 明确未激活)时才预填,打开激活页即可直接点「激活」;
+// H2 已有授权(含已过期)一律回填库中当前授权码,避免一键激活把正式授权覆盖成内测码导致菜单集变化
+const DEFAULT_TRIAL_CODE = 'DQ1.5YaF6YOo5rWL6K-VfFBFUk1BTkVOVHwxLjh8fHwwMWQyYzA3NzI1N2I0YTcyYTU3NDgxNDc4YmZmYWE3ZXwxNzg2NDY3OTg4MjM1fHNjYW4sZGF0YXNvdXJjZSxleGNlbCxyZXBvcnQsYWlfZG9jLGFpX3RhZyx0YWc.8Yz5TdM5PQ1fjiFtTuacqpeGr_cEqWWrBj1sd5iQ-rs0oMEP92YbpDm0Mdfv9efKFiofJ0hX1xl_AQft6M1wBQ'
+const code = ref('')
 const submitting = ref(false)
 const showRenew = ref(false)
 
@@ -70,6 +72,13 @@ onMounted(async () => {
   if (status.value?.activated && !status.value?.expired) {
     markActivated(status.value)
     router.replace('/')
+    return
+  }
+  // H2 已有授权(含已过期):回填库中当前授权码;从未激活过才预填内测码;状态请求失败不预填,宁空勿错
+  if (status.value?.activated) {
+    code.value = status.value.code || ''
+  } else if (status.value) {
+    code.value = DEFAULT_TRIAL_CODE
   }
 })
 

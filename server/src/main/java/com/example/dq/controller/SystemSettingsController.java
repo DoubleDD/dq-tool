@@ -22,6 +22,14 @@ public class SystemSettingsController {
     public record JvmMemoryRequest(Integer xmxMb) {
     }
 
+    /** 页面心跳设置视图:intervalSeconds=有效值,其余为默认值/取值边界(供前端回显与单位换算) */
+    public record HeartbeatView(int intervalSeconds, int defaultSeconds, int minSeconds, int maxSeconds) {
+    }
+
+    /** 页面心跳保存请求(间隔,秒) */
+    public record HeartbeatRequest(Integer intervalSeconds) {
+    }
+
     private final SystemSettingsService service;
     private final BrowserOpener browserOpener;
     private final java.nio.file.Path dataDir;
@@ -107,5 +115,28 @@ public class SystemSettingsController {
                 JvmMemoryConfig.readMb(dataDir),
                 (int) (Runtime.getRuntime().maxMemory() / (1024 * 1024)),
                 JvmMemoryConfig.DEFAULT_MB, JvmMemoryConfig.MIN_MB, JvmMemoryConfig.MAX_MB);
+    }
+
+    /** 页面心跳间隔:有效值 + 默认值/取值边界(前端按此间隔上报 /api/heartbeat,桌面看门狗按 3 个间隔判窗口关闭) */
+    public void heartbeatGet(Context ctx) {
+        ctx.json(heartbeatView());
+    }
+
+    /** 保存页面心跳间隔(秒),超界由内核钳制;保存后前端即时生效,看门狗超时随 3 个间隔自适应放宽 */
+    public void heartbeatSave(Context ctx) {
+        Integer seconds = ctx.bodyAsClass(HeartbeatRequest.class).intervalSeconds();
+        if (seconds == null) {
+            throw new IllegalArgumentException("心跳间隔不能为空");
+        }
+        service.saveHeartbeatInterval(seconds);
+        ctx.json(heartbeatView());
+    }
+
+    private HeartbeatView heartbeatView() {
+        return new HeartbeatView(
+                service.heartbeatIntervalSeconds(),
+                SystemSettingsService.DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+                SystemSettingsService.MIN_HEARTBEAT_INTERVAL_SECONDS,
+                SystemSettingsService.MAX_HEARTBEAT_INTERVAL_SECONDS);
     }
 }

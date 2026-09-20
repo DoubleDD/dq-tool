@@ -40,6 +40,12 @@ object SqlLogConnection {
         "setBlob", "setClob", "setNClob", "setArray", "setRef", "setRowId", "setSQLXML"
     )
 
+    /** 单个参数渲染/单条 SQL 文本的最大长度:超限截断,避免超大日志行撑爆日志文件与 SSE 推送 */
+    private const val MAX_RENDER_LEN = 1000
+    private const val MAX_SQL_LEN = 8000
+    /** ByteArray 参数最多 hex 的字节数 */
+    private const val BYTE_HEAD_LEN = 64
+
     private val EXECUTE_METHODS = setOf(
         "executeQuery", "executeUpdate", "execute", "executeLargeUpdate",
         "executeBatch", "executeLargeBatch"
@@ -136,17 +142,22 @@ object SqlLogConnection {
         }
 
         private fun logSql(sql: String, params: Map<Int, String>) {
+            val text = truncate(sql, MAX_SQL_LEN)
             if (params.isEmpty()) {
-                log.info("SQL: {}", sql)
+                log.info("SQL: {}", text)
             } else {
                 val sorted = params.toSortedMap()
                 val rendered = sorted.entries.joinToString(", ") { (k, v) -> "$k=$v" }
-                log.info("SQL: {}  [参数: {}]", sql, rendered)
+                log.info("SQL: {}  [参数: {}]", text, rendered)
             }
         }
     }
 
     private fun argsOrEmpty(args: Array<out Any>?): Array<out Any> = args ?: emptyArray()
+
+    /** 超长文本截断:保留前 max 个字符并追加截断标记 */
+    private fun truncate(s: String, max: Int = MAX_RENDER_LEN): String =
+        if (s.length <= max) s else s.substring(0, max) + "…(截断,原长度 " + s.length + ")"
 
     /**
      * 反射调用并拆包 InvocationTargetException:底层 JDBC 抛出的 SQLException 必须原样透出,
@@ -163,10 +174,14 @@ object SqlLogConnection {
     private fun render(value: Any?): String {
         return when (value) {
             null -> "NULL"
-            is String -> "'" + value.replace("'", "''") + "'"
+            // 大文本/大二进制参数全量打出会产出超大日志行,一律截断(上限见 MAX_RENDER_LEN)
+            is String -> "'" + truncate(value.replace("'", "''")) + "'"
             is java.util.Date -> "'" + value.toString() + "'"
-            is ByteArray -> "0x" + value.joinToString("") { "%02x".format(it) }
-            else -> value.toString()
+            is ByteArray -> {
+                val head = value.take(BYTE_HEAD_LEN).joinToString("") { "%02x".format(it) }
+                "0x" + head + if (value.size > BYTE_HEAD_LEN) "…(共 " + value.size + " 字节,截断)" else ""
+            }
+            else -> truncate(value.toString())
         }
     }
 }

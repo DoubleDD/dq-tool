@@ -58,14 +58,14 @@ const baseSpec = computed(() => {
 
 const baseLabel = computed(() => (job.value ? locOf(baseSpec.value) : ''))
 
-/** 交给映射画布的对比表清单(带展示名;dsName 为建任务时的数据源名称快照) */
+/** 交给映射画布的对比表清单(带展示名;回落链:自定义显示名(V72)> 库描述(schema_doc)> 数据源名称快照) */
 const mappingTargets = computed(() => targets.value.map((t) => ({
   datasourceId: t.datasourceId,
   db: t.db || '',
   schema: t.schema || '',
   table: t.table,
-  label: `${t.dsName || `数据源 ${t.datasourceId}`} · ${locOf(t)}`,
-  dsName: t.dsName || ''
+  label: `${t.displayName || t.schemaDesc || t.dsName || `数据源 ${t.datasourceId}`} · ${locOf(t)}`,
+  dsName: t.displayName || t.schemaDesc || t.dsName || ''
 })))
 
 /** 解析后端返回的 JSON 数组(兼容「JSON 字符串」与「已解析数组」两种形态);解析不出非空数组返回 null */

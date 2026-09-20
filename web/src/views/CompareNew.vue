@@ -55,6 +55,14 @@
         <el-tooltip placement="top" :content="matchModeTip" :show-after="200">
           <el-icon class="meta-help"><QuestionFilled /></el-icon>
         </el-tooltip>
+        <el-divider direction="vertical" />
+        <span class="meta-label">抽样条数</span>
+        <el-input-number v-model="sampleRows" :min="1" :max="500000" placeholder="全量"
+                         controls-position="right" style="width: 130px" />
+        <el-tooltip placement="top" :show-after="200"
+                    content="抽样比对:基准表与每个对比表各按身份字段排序只取前 N 条比对,大表可先快速摸底;留空 = 全量比对">
+          <el-icon class="meta-help"><QuestionFilled /></el-icon>
+        </el-tooltip>
       </div>
       <div class="base-cascade-wrap" :class="{ compact: form.table }">
         <TableCascadePicker
@@ -114,6 +122,8 @@
         panel-title="已添加比对系统"
         empty-text="还没有比对系统,请在左侧选好库/模式后,点表名右侧的 + 加入(至少 1 个)"
         :panel-max-height="168"
+        name-editable
+        :schema-descs="schemaDescs"
         @lane-change="onLaneChange"
       />
     </div>
@@ -285,6 +295,9 @@ const matchModeLabel = computed(() => MATCH_MODES.find((m) => m.value === matchM
 // 「先编码后名称+大模型归一化」必须给出对象名称字段(否则无法按名称配对,后端提交时会 400)
 const matchModeRequiresName = computed(() => matchMode.value !== 'EXACT')
 
+// 抽样条数(V70):留空 = 全量比对;填了 = 两侧各按身份字段排序取前 N 条比对(1~500000,后端校验同口径)
+const sampleRows = ref(null)
+
 /** 「自动」候选 = 第一个文本型非身份字段(按基准表字段顺序);无则空串(提交 null,object_name 落空串) */
 function autoDisplayField() {
   const hit = columns.value.find((c) => !keyFields.value.includes(c.name) && TEXT_JDBC_TYPES.has(c.jdbcType))
@@ -355,11 +368,12 @@ const aiSuggestNote = ref('')
 watch(() => targets.value.map((t) => `${t.datasourceId}|${t.db}|${t.schema}|${t.table}`).join(','),
   (nv, ov) => { if (suppressInvalidate || nv === ov) return; aiSuggestNote.value = ''; invalidateFrom(1) })
 
-/** 交给映射画布的对比表清单(带展示名) */
+/** 交给映射画布的对比表清单(带展示名;自定义名优先,保证画布标题与向导清单一改俱改) */
 const mappingTargets = computed(() => targets.value.map((t) => ({
   datasourceId: t.datasourceId, db: t.db || '', schema: t.schema, table: t.table, label: targetLabel(t),
-  // 数据源名单独带一份:字段映射画布标题/映射管理弹窗要拼「数据源名 · 中文表名」,从 label 里拆太脆
-  dsName: targetDs(t)?.name || ''
+  // 数据源名单独带一份:字段映射画布标题/映射管理弹窗要拼「数据源名 · 中文表名」,从 label 里拆太脆;
+  // 默认名回落链与向导清单一致:自定义名 > 库描述 > 数据源名
+  dsName: t.name || schemaDescOf(t) || targetDs(t)?.name || ''
 })))
 
 // ---------- 步骤 3:目标级有效身份(推导 + 人工收缩覆盖) ----------
@@ -417,10 +431,50 @@ function targetLoc(t) {
   return `${schemaPart ? schemaPart + '.' : ''}${t.table}`
 }
 
+/** 目标展示名:自定义名优先,其次库描述(schema_doc),再其次数据源名;拼上定位串(库.模式.表) */
 function targetLabel(t) {
-  const ds = targetDs(t)
-  if (!ds || !t.table) return ''
-  return `${ds.name} · ${targetLoc(t)}`
+  const name = t.name || schemaDescOf(t) || targetDs(t)?.name
+  if (!name || !t.table) return ''
+  return `${name} · ${targetLoc(t)}`
+}
+
+// ---------- 库描述(schema_doc):默认显示名回落链「自定义名 > 库描述 > 数据源名」的一环 ----------
+
+// 多库方言判定口径与库列表页(Schemas.vue)一致
+function isMultiDbDs(ds) {
+  return ['SQLSERVER', 'KINGBASE'].includes(ds?.dbType)
+}
+
+// 库描述缓存:键 = `${数据源id}|${多库方言?db:''}|${schema||db}`,与 TableMultiPicker.descKeyOf 同一口径
+const schemaDescs = ref({})
+const schemaDescFetched = new Set()
+
+// 目标清单一变(含编辑回填),对未拉过的 (数据源,库) 拉一次库统计(带描述);失败静默——描述缺失回落数据源名即可
+watch(() => targets.value.map((t) => `${t.datasourceId}|${t.db || ''}|${t.schema || ''}`).join(','),
+  () => loadSchemaDescs())
+
+async function loadSchemaDescs() {
+  for (const t of targets.value) {
+    const dbParam = isMultiDbDs(targetDs(t)) ? (t.db || '') : ''
+    const fetchKey = `${t.datasourceId}|${dbParam}`
+    if (schemaDescFetched.has(fetchKey)) continue
+    schemaDescFetched.add(fetchKey) // 先占位防重复拉取;失败也记过,不再重试
+    try {
+      const q = dbParam ? `?db=${encodeURIComponent(dbParam)}` : ''
+      const rows = await request.get(`/datasources/${t.datasourceId}/schema-stats${q}`, { _silent: true })
+      const next = { ...schemaDescs.value }
+      for (const r of rows || []) {
+        if (r.description) next[`${t.datasourceId}|${dbParam}|${r.name}`] = r.description
+      }
+      schemaDescs.value = next
+    } catch { /* 静默:描述缺失时显示名回落数据源名 */ }
+  }
+}
+
+/** 目标库描述(无描述返回空串);键口径与 loadSchemaDescs/TableMultiPicker.descKeyOf 一致 */
+function schemaDescOf(t) {
+  const multi = isMultiDbDs(targetDs(t))
+  return schemaDescs.value[`${t.datasourceId}|${multi ? (t.db || '') : ''}|${t.schema || t.db || ''}`] || ''
 }
 
 /** 是否与基准表完全同源(数据源+库+模式+表都相同):该组合禁止作为比对系统 */
@@ -605,11 +659,15 @@ function buildPayload() {
     matchMode: matchMode.value,
     // 对比模式(第 1 步复选框):ROW 仅行级 / COLUMN 行级+列级;编辑模式同样允许改
     compareMode: compareMode.value,
+    // 抽样条数(第 1 步,可空):两侧各按身份字段排序取前 N 条;null/0/空 = 全量比对
+    sampleRows: sampleRows.value || null,
     targets: targets.value.map((t, i) => ({
       datasourceId: Number(t.datasourceId),
       db: t.db || null,
       schema: t.schema,
       table: t.table,
+      // 自定义显示名(第 2 步清单铅笔编辑);空串/未设置 = null,展示回落数据源名快照
+      displayName: (t.name || '').trim() || null,
       // 第 3 步人工连线的字段映射;空对象 = 不指定,后端按字段名自动匹配
       mapping: Object.keys(mappings.value[i] || {}).length ? mappings.value[i] : null,
       // 目标级身份人工覆盖:仅收缩过(与推导不一致)时带 { keys };null = 按推导(已连线的默认身份字段)
@@ -722,8 +780,12 @@ async function prefillEdit(jobId) {
     form.table = job.baseTable
     columnCompare.value = job.compareMode === 'COLUMN'
     matchMode.value = job.matchMode || 'EXACT'
+    // 抽样条数反填:老任务/全量任务为 null,输入框留空
+    sampleRows.value = job.sampleRows ?? null
     targets.value = (d.targets || []).map((t) => ({
-      datasourceId: t.datasourceId, db: t.db || '', schema: t.schema || '', table: t.table
+      datasourceId: t.datasourceId, db: t.db || '', schema: t.schema || '', table: t.table,
+      // 自定义显示名反填(向导清单第一行/第 3 步画布标题用);null = 未自定义
+      name: t.displayName || undefined
     }))
     mappings.value = (d.targets || []).map((t) => ({ ...(t.mapping || {}) }))
     // 目标级身份覆盖:identityJson 解析反填(null = 按推导);人工收缩的勾选在身份条上还原

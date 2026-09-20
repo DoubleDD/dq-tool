@@ -232,6 +232,21 @@ class LicenseServiceTest {
     }
 
     @Test
+    fun `status回传当前激活码明文供前端输入框回填`() {
+        val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
+        val service = newServiceWithKey(
+            Base64.getEncoder().encodeToString(kp.public.encoded),
+            Base64.getEncoder().encodeToString(kp.private.encoded))
+        // 未激活(H2 无授权码):code 为 null,前端才回落兜底内测码
+        assertNull(service.status().code)
+
+        // 激活后:status 透出 H2 中当前授权码明文,前端激活页/更换授权码对话框回填它
+        val record = service.generateLicense(LicenseGenerateRequest("甲公司", "permanent"))
+        service.activate(record.code)
+        assertEquals(record.code, service.status().code)
+    }
+
+    @Test
     fun `备注仅留档展示不写入授权码`() {
         val kp = KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         val service = newService(Base64.getEncoder().encodeToString(kp.private.encoded))

@@ -198,6 +198,20 @@ public class CompareController {
         public List<Long> ids;
     }
 
+    /** 单目标自定义显示名(V72,备用接口;向导内编辑走任务 PUT 随 targets 提交):
+     * body {"displayName": "..."},空/blank = 清除,展示回落数据源名快照 */
+    public void updateTargetDisplayName(Context ctx) {
+        long targetId = ctx.pathParamAsClass("targetId", Long.class).get();
+        UpdateDisplayNameRequest req = ctx.bodyAsClass(UpdateDisplayNameRequest.class);
+        service.updateTargetDisplayName(id(ctx), targetId, req == null ? null : req.displayName);
+        ctx.json(Map.of("ok", true));
+    }
+
+    /** 显示名更新请求体 */
+    public static class UpdateDisplayNameRequest {
+        public String displayName;
+    }
+
     /** 比对报告导出:服务端直存 <数据目录>/compare(任务 ID 前缀命名,同名覆盖只留最后一次),
      * 落库导出状态 + SHA-256 checksum;返回 {path,name,size,checksum} 供前端通知(可打开文件/文件夹) */
     public void export(Context ctx) {

@@ -4,7 +4,7 @@ import com.example.dq.config.DesktopSession;
 import io.javalin.http.Context;
 
 /**
- * 页面心跳:前端每 5 秒调一次,桌面安装版的看门狗(DesktopSession)据此判断
+ * 页面心跳:前端按心跳间隔(系统设置页可调,默认 5 秒)调一次,桌面安装版的看门狗(DesktopSession)据此判断
  * --app 窗口是否还开着;不被授权拦截,未激活状态下也要能上报。
  */
 public class HeartbeatController {

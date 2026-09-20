@@ -62,6 +62,7 @@ class CompareExportTest {
         val repo: CompareRepository
         val metaCacheRepo: MetaCacheRepository
         val tableSystemRepo: TableSystemRepository
+        val schemaDocRepo: SchemaDocRepository
         val service: CompareService
 
         init {
@@ -72,6 +73,7 @@ class CompareExportTest {
             repo = CompareRepository(jdbc)
             metaCacheRepo = MetaCacheRepository(jdbc)
             tableSystemRepo = TableSystemRepository(jdbc)
+            schemaDocRepo = SchemaDocRepository(jdbc)
             val dsRepo = DataSourceRepository(jdbc)
             val config = AppConfig(dataDir = Files.createTempDirectory("compare-export-test"))
             val dataSourceService = DataSourceService(dsRepo, CryptoUtil(config), DialectFactory, config,
@@ -81,7 +83,7 @@ class CompareExportTest {
             dataSourceService.create(DataSourceRequest(
                 "厂商库", "jdbc:mysql://localhost:3306/reservoir_vendor", "root", "p", null, null))
             val metadataService = MetadataService(dataSourceService, DialectFactory, ScanRepository(jdbc),
-                SchemaStatRepository(jdbc), SchemaDocRepository(jdbc), metaCacheRepo)
+                SchemaStatRepository(jdbc), schemaDocRepo, metaCacheRepo)
             service = CompareService(repo, dataSourceService, DialectFactory,
                 metadataService, mockk(relaxed = true), tableSystemRepo)
         }
@@ -143,7 +145,8 @@ class CompareExportTest {
         assertEquals(2, overview.size)
         val base = overview[0]
         assertNull(base.targetId)
-        assertEquals("reservoir_base_info", base.tableName)
+        // 表名统一「表名（系统名.数据库名.模式名）」格式(schema 空省略该段)
+        assertEquals("reservoir_base_info\n基准库\n（reservoir_base）", base.tableName)
         assertEquals("水库基础信息表", base.tableComment)
         assertEquals("基准库", base.systemName)
         assertEquals(100, base.rowCount)
@@ -274,6 +277,27 @@ class CompareExportTest {
         assertTrue(overview[1].diffReason!!.contains("连接超时"))
     }
 
+    @Test
+    fun `抽样任务总览差异原因带抽样说明`() {
+        val env = Env()
+        val sampled = jobRow().copy(sampleRows = 50000)
+        val overview = env.service.buildOverviewRows(sampled, listOf(targetRow()), emptyMap(),
+            CompareService.ExportContext())
+        // 基准行:披露「抽样比对」口径
+        assertEquals("基准表(抽样比对,不参与差异统计)", overview[0].diffReason)
+        // 目标行:差异原因末尾追加抽样口径说明
+        val reason = overview[1].diffReason!!
+        assertTrue(reason.contains("基准有目标无的对象 7 条"), reason)
+        assertTrue(reason.endsWith(";抽样比对:每侧仅取前 50000 条(按身份列排序)"), reason)
+        // 条数列保持实际读取数不动(抽样后 = 样本量)
+        assertEquals(101, overview[1].rowCount)
+        // 全量任务(sampleRows 空)维持原文案,不回归
+        val full = env.service.buildOverviewRows(jobRow(), listOf(targetRow()), emptyMap(),
+            CompareService.ExportContext())
+        assertEquals("基准表(不参与差异统计)", full[0].diffReason)
+        assertFalse(full[1].diffReason!!.contains("抽样比对"), full[1].diffReason!!)
+    }
+
     // ---------- xlsx 结构 ----------
 
     @Test
@@ -304,12 +328,12 @@ class CompareExportTest {
                 "与基准差", "匹配编码数", "匹配对象数", "差异条数", "差异原因"),
                 (0..9).map { overview.getRow(0).getCell(it)?.stringCellValue ?: "" })
             assertEquals("表注释-reservoir_base_info", overview.getRow(1).getCell(0).stringCellValue)
-            assertEquals("reservoir_base_info", overview.getRow(1).getCell(1).stringCellValue)
+            assertEquals("reservoir_base_info\n基准库\n（reservoir_base）", overview.getRow(1).getCell(1).stringCellValue)
             assertEquals("基准库", overview.getRow(1).getCell(2).stringCellValue)  // 未登记 → 数据源名
             assertEquals(100.0, overview.getRow(1).getCell(3).numericCellValue)
             assertEquals("", overview.getRow(1).getCell(4).stringCellValue)  // 未采集时间快照 → 留空
             assertEquals("表注释-t_reservoir_info", overview.getRow(2).getCell(0).stringCellValue)
-            assertEquals("t_reservoir_info", overview.getRow(2).getCell(1).stringCellValue)
+            assertEquals("t_reservoir_info\n厂商系统\n（reservoir_vendor）", overview.getRow(2).getCell(1).stringCellValue)
             assertEquals("厂商系统", overview.getRow(2).getCell(2).stringCellValue)  // table_system 登记值
             assertEquals(101.0, overview.getRow(2).getCell(3).numericCellValue)
             assertEquals(1.0, overview.getRow(2).getCell(5).numericCellValue)   // 与基准差
@@ -327,11 +351,11 @@ class CompareExportTest {
             // 其 name/capacity 字段级不一致仍体现在下方明细 sheet
             // R002 缺失:业务侧编码/名称留空、差异类型「缺失」;R900 多余:基准侧留空、差异类型「多余」
             // 编码/名称字段列与取值无关恒填:基准侧 = 主键 id / 显示名未配置留空,业务侧无映射按同名回落
-            assertEquals(listOf("reservoir_base_info", "表注释-reservoir_base_info", "id", "R002", "", "乙水库",
-                "t_reservoir_info", "表注释-t_reservoir_info", "id", "", "", "", "基准有目标无", "缺失"),
+            assertEquals(listOf("reservoir_base_info\n基准库\n（reservoir_base）", "表注释-reservoir_base_info", "id", "R002", "", "乙水库",
+                "t_reservoir_info\n厂商系统\n（reservoir_vendor）", "表注释-t_reservoir_info", "id", "", "", "", "基准有目标无", "缺失"),
                 (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
-            assertEquals(listOf("reservoir_base_info", "表注释-reservoir_base_info", "id", "", "", "",
-                "t_reservoir_info", "表注释-t_reservoir_info", "id", "R900", "", "厂区水库", "目标有基准无", "多余"),
+            assertEquals(listOf("reservoir_base_info\n基准库\n（reservoir_base）", "表注释-reservoir_base_info", "id", "", "", "",
+                "t_reservoir_info\n厂商系统\n（reservoir_vendor）", "表注释-t_reservoir_info", "id", "R900", "", "厂区水库", "目标有基准无", "多余"),
                 (0..13).map { rowLevel.getRow(2).getCell(it).stringCellValue })
             assertEquals(2, rowLevel.lastRowNum)
 
@@ -345,11 +369,11 @@ class CompareExportTest {
             // 无显式映射(按名称自动匹配):业务表字段与基准字段同名;无字段注释时「字段中文/业务表字段中文」都留空
             fun summaryRow(row: Int) = (0..5).map { fieldSummary.getRow(row).getCell(it).stringCellValue } +
                 (6..9).map { fieldSummary.getRow(row).getCell(it).numericCellValue }
-            assertEquals(listOf("t_reservoir_info", "表注释-t_reservoir_info", "id", "", "id", "", 2.0, 1.0, 1.0, 0.0),
+            assertEquals(listOf("t_reservoir_info\n厂商系统\n（reservoir_vendor）", "表注释-t_reservoir_info", "id", "", "id", "", 2.0, 1.0, 1.0, 0.0),
                 summaryRow(1))
-            assertEquals(listOf("t_reservoir_info", "表注释-t_reservoir_info", "name", "", "name", "", 3.0, 1.0, 1.0, 1.0),
+            assertEquals(listOf("t_reservoir_info\n厂商系统\n（reservoir_vendor）", "表注释-t_reservoir_info", "name", "", "name", "", 3.0, 1.0, 1.0, 1.0),
                 summaryRow(2))
-            assertEquals(listOf("t_reservoir_info", "表注释-t_reservoir_info", "capacity", "", "capacity", "", 3.0, 1.0, 1.0, 1.0),
+            assertEquals(listOf("t_reservoir_info\n厂商系统\n（reservoir_vendor）", "表注释-t_reservoir_info", "capacity", "", "capacity", "", 3.0, 1.0, 1.0, 1.0),
                 summaryRow(3))
             assertEquals(3, fieldSummary.lastRowNum)
 
@@ -409,6 +433,123 @@ class CompareExportTest {
     }
 
     @Test
+    fun `自定义显示名优先于系统登记与数据源名出现在导出各处`() {
+        val env = Env()
+        val jobId = env.seedDiffs()
+        val targetId = env.repo.listTargets(jobId).single().id
+        // 同时登记 table_system 与自定义显示名(V72):各处系统名应一律用自定义名
+        env.seedMeta(
+            Triple(DS_BASE, "reservoir_base", "reservoir_base_info"),
+            Triple(DS_TARGET, "reservoir_vendor", "t_reservoir_info"),
+            systems = mapOf(ctxKey(DS_TARGET, "reservoir_vendor", "t_reservoir_info") to "厂商系统"))
+        env.repo.updateTargetDisplayName(targetId, "灌区一张图")
+        val out = ByteArrayOutputStream()
+        env.service.exportDiff(jobId, out)
+
+        val wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            val overview = wb.getSheetAt(0)
+            // 总览:目标行「所属系统」与表名三行里的系统名都是自定义名(优先级高于 table_system 登记)
+            assertEquals("灌区一张图", overview.getRow(2).getCell(2).stringCellValue)
+            assertEquals("t_reservoir_info\n灌区一张图\n（reservoir_vendor）",
+                overview.getRow(2).getCell(1).stringCellValue)
+            // 明细 sheet 名「序号_表名_自定义名」;明细 sheet 最左「业务系统名称」列同为自定义名
+            assertTrue(wb.getSheetName(5).startsWith("1_t_reservoir_info_灌区一张图"), wb.getSheetName(5))
+            assertEquals("灌区一张图", wb.getSheetAt(5).getRow(1).getCell(0).stringCellValue)
+        } finally {
+            wb.close()
+        }
+    }
+
+    @Test
+    fun `显示名清除后导出口径回落系统登记与数据源名`() {
+        val env = Env()
+        val jobId = env.seedDiffs()
+        val targetId = env.repo.listTargets(jobId).single().id
+        env.repo.updateTargetDisplayName(targetId, "灌区一张图")
+        // 空串/blank 视为清除(与前端「清空即恢复数据源名」口径一致)
+        env.repo.updateTargetDisplayName(targetId, "  ")
+        assertNull(env.repo.listTargets(jobId).single().displayName)
+        env.seedMeta(Triple(DS_TARGET, "reservoir_vendor", "t_reservoir_info"))
+        val out = ByteArrayOutputStream()
+        env.service.exportDiff(jobId, out)
+
+        val wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            // 未登记所属系统回落数据源名快照「厂商库」(与既有行为一致)
+            assertEquals("厂商库", wb.getSheetAt(0).getRow(2).getCell(2).stringCellValue)
+            assertTrue(wb.getSheetName(5).startsWith("1_t_reservoir_info_厂商库"), wb.getSheetName(5))
+            assertEquals("厂商库", wb.getSheetAt(5).getRow(1).getCell(0).stringCellValue)
+        } finally {
+            wb.close()
+        }
+    }
+
+    @Test
+    fun `库描述作默认显示名出现在导出各处且自定义名仍优先`() {
+        val env = Env()
+        val jobId = env.seedDiffs()
+        val targetId = env.repo.listTargets(jobId).single().id
+        // 库描述(schema_doc;MySQL 单库方言写入口径:db_name 空串、schema_name=库名)
+        env.schemaDocRepo.upsert(DS_TARGET, "", "reservoir_vendor", "厂商库描述")
+        env.seedMeta(
+            Triple(DS_BASE, "reservoir_base", "reservoir_base_info"),
+            Triple(DS_TARGET, "reservoir_vendor", "t_reservoir_info"))
+        // 目标视图动态透出库描述(描述改后页面跟随,非快照)
+        assertEquals("厂商库描述", env.service.report(jobId).targets.single().schemaDesc)
+
+        val out = ByteArrayOutputStream()
+        env.service.exportDiff(jobId, out)
+        var wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            val overview = wb.getSheetAt(0)
+            // 未自定义、未登记 table_system:各处系统名回落库描述(优先于数据源名快照)
+            assertEquals("厂商库描述", overview.getRow(2).getCell(2).stringCellValue)
+            assertEquals("t_reservoir_info\n厂商库描述\n（reservoir_vendor）",
+                overview.getRow(2).getCell(1).stringCellValue)
+            assertTrue(wb.getSheetName(5).startsWith("1_t_reservoir_info_厂商库描述"), wb.getSheetName(5))
+            assertEquals("厂商库描述", wb.getSheetAt(5).getRow(1).getCell(0).stringCellValue)
+        } finally {
+            wb.close()
+        }
+
+        // 自定义显示名仍优先于库描述
+        env.repo.updateTargetDisplayName(targetId, "灌区一张图")
+        out.reset()
+        env.service.exportDiff(jobId, out)
+        wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            assertEquals("灌区一张图", wb.getSheetAt(0).getRow(2).getCell(2).stringCellValue)
+            assertTrue(wb.getSheetName(5).startsWith("1_t_reservoir_info_灌区一张图"), wb.getSheetName(5))
+        } finally {
+            wb.close()
+        }
+    }
+
+    @Test
+    fun `导出所属系统table_system登记优先于库描述`() {
+        val env = Env()
+        val jobId = env.seedDiffs()
+        // 同时有 table_system 登记与库描述(无自定义名):导出「所属系统」按登记值,库描述排在登记之后
+        env.schemaDocRepo.upsert(DS_TARGET, "", "reservoir_vendor", "厂商库描述")
+        env.seedMeta(
+            Triple(DS_BASE, "reservoir_base", "reservoir_base_info"),
+            Triple(DS_TARGET, "reservoir_vendor", "t_reservoir_info"),
+            systems = mapOf(ctxKey(DS_TARGET, "reservoir_vendor", "t_reservoir_info") to "厂商系统"))
+        val out = ByteArrayOutputStream()
+        env.service.exportDiff(jobId, out)
+
+        val wb = XSSFWorkbook(ByteArrayInputStream(out.toByteArray()))
+        try {
+            assertEquals("厂商系统", wb.getSheetAt(0).getRow(2).getCell(2).stringCellValue)
+            // 明细 sheet 名不查 table_system(口径:自定义名 > 库描述 > 数据源名快照)
+            assertTrue(wb.getSheetName(5).startsWith("1_t_reservoir_info_厂商库描述"), wb.getSheetName(5))
+        } finally {
+            wb.close()
+        }
+    }
+
+    @Test
     fun `行级对比明细列对象级差异行且总览差异条数只看数量差异`() {
         val env = Env()
         val jobId = env.repo.insertJob("身份口径", DS_BASE, "reservoir_base", null, "reservoir_base_info",
@@ -432,8 +573,8 @@ class CompareExportTest {
         try {
             val rowLevel = wb.getSheetAt(1)
             // 只有「编码不同」的对象列入,差异类型「不一致」;编码/名称字段列恒填(基准 id/name,无映射业务侧同名)
-            assertEquals(listOf("reservoir_base_info", "", "id", "R002", "name", "乙",
-                "t_reservoir_info", "", "id", "X002", "name", "乙", "id: 基准「R002」→ 目标「X002」", "不一致"),
+            assertEquals(listOf("reservoir_base_info\n基准库\n（reservoir_base）", "", "id", "R002", "name", "乙",
+                "t_reservoir_info\n厂商库\n（reservoir_vendor）", "", "id", "X002", "name", "乙", "id: 基准「R002」→ 目标「X002」", "不一致"),
                 (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
             assertEquals(1, rowLevel.lastRowNum)  // R001(仅字段差异)与 R003(仅名称不同)都不占行
             // 总览「差异条数」= 数量差异(缺失 + 多余)= 0:行级 sheet 那 1 行是编码不一致(属性差异),
@@ -546,7 +687,7 @@ class CompareExportTest {
             assertEquals("B1", wb.getSheetAt(6).getRow(1).getCell(4).stringCellValue)
             // 字段级差异汇总按目标分块:厂商A(缺失 2 + 多余 1)、厂商B(缺失 1 + 多余 1)各两个比对字段
             val fieldSummary = wb.getSheetAt(2)
-            assertEquals(listOf("t_a", "t_a", "t_b", "t_b"),
+            assertEquals(listOf("t_a\n厂商库\n（db_a）", "t_a\n厂商库\n（db_a）", "t_b\n厂商库\n（db_b）", "t_b\n厂商库\n（db_b）"),
                 (1..4).map { fieldSummary.getRow(it).getCell(0).stringCellValue })
             assertEquals(3.0, fieldSummary.getRow(1).getCell(6).numericCellValue)  // 厂商A id: 2+1+0
             assertEquals(2.0, fieldSummary.getRow(3).getCell(6).numericCellValue)  // 厂商B id: 1+1+0
@@ -557,8 +698,8 @@ class CompareExportTest {
                 (1..5).map { rowLevel.getRow(it).let { r ->
                     // 基准侧编码在 EXTRA 行留空,业务侧编码在 MISSING 行留空,合并取非空侧
                     r.getCell(3).stringCellValue.ifEmpty { r.getCell(9).stringCellValue } } })
-            assertEquals("t_a", rowLevel.getRow(3).getCell(6).stringCellValue)   // A9 属厂商A
-            assertEquals("t_b", rowLevel.getRow(5).getCell(6).stringCellValue)   // A9 属厂商B
+            assertEquals("t_a\n厂商库\n（db_a）", rowLevel.getRow(3).getCell(6).stringCellValue)   // A9 属厂商A
+            assertEquals("t_b\n厂商库\n（db_b）", rowLevel.getRow(5).getCell(6).stringCellValue)   // A9 属厂商B
             assertEquals(5, rowLevel.lastRowNum)
         } finally {
             wb.close()
@@ -616,11 +757,11 @@ class CompareExportTest {
 
             // 行级对比明细「编码/名称字段」列:显式映射目标取连线到的目标列(A: aid/aname),无映射按同名回落(B: id/name)
             val rowLevel = wb.getSheetAt(1)
-            assertEquals(listOf("reservoir_base_info", "", "id", "R002", "name", "乙水库",
-                "t_a", "表注释-t_a", "aid", "", "aname", "", "基准有目标无", "缺失"),
+            assertEquals(listOf("reservoir_base_info\n基准库\n（reservoir_base）", "", "id", "R002", "name", "乙水库",
+                "t_a\n厂商系统A\n（db_a）", "表注释-t_a", "aid", "", "aname", "", "基准有目标无", "缺失"),
                 (0..13).map { rowLevel.getRow(1).getCell(it).stringCellValue })
-            assertEquals(listOf("reservoir_base_info", "", "id", "", "name", "",
-                "t_b", "表注释-t_b", "id", "R900", "name", "多余水库", "目标有基准无", "多余"),
+            assertEquals(listOf("reservoir_base_info\n基准库\n（reservoir_base）", "", "id", "", "name", "",
+                "t_b\n厂商库\n（db_b）", "表注释-t_b", "id", "R900", "name", "多余水库", "目标有基准无", "多余"),
                 (0..13).map { rowLevel.getRow(2).getCell(it).stringCellValue })
             assertEquals(2, rowLevel.lastRowNum)
         } finally {
@@ -670,10 +811,10 @@ class CompareExportTest {
                 "厂商系统A业务表字段名", "厂商系统A业务表中文", "厂商系统A业务表值", "差异原因",
                 "厂商库业务表字段名", "厂商库业务表中文", "厂商库业务表值", "差异原因"),
                 (0..12).map { sheet.getRow(0).getCell(it).stringCellValue })
-            // 第二行表头:各侧表定位 [库名][schema][表名](schema 为空省略该段)
-            assertEquals("[reservoir_base][reservoir_base_info]", sheet.getRow(1).getCell(0).stringCellValue)
-            assertEquals("[db_a][t_a]", sheet.getRow(1).getCell(5).stringCellValue)
-            assertEquals("[db_b][t_b]", sheet.getRow(1).getCell(9).stringCellValue)
+            // 第二行表头:各侧表定位「表名 / 系统名 / （库.模式）」(单元格内三行,空段省略)
+            assertEquals("reservoir_base_info\n基准库\n（reservoir_base）", sheet.getRow(1).getCell(0).stringCellValue)
+            assertEquals("t_a\n厂商系统A\n（db_a）", sheet.getRow(1).getCell(5).stringCellValue)
+            assertEquals("t_b\n厂商库\n（db_b）", sheet.getRow(1).getCell(9).stringCellValue)
 
             fun row(r: Int) = (0..12).map { sheet.getRow(r).getCell(it)?.stringCellValue ?: "" }
             // R001:id 两侧一致(差异原因留空);name A 不一致、B 一致;

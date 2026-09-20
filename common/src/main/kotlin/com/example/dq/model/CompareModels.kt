@@ -27,6 +27,8 @@ data class CompareTargetSpec(
      * 留空/null = 按「任务级 keyFields ∩ 映射键」推导,推导为空提交校验拦下
      */
     val identity: CompareTargetIdentity? = null,
+    /** 自定义显示名(V72,向导清单铅笔编辑):留空/null/blank = 回落数据源名快照;展示与导出统一优先使用 */
+    val displayName: String? = null,
 )
 
 /** 提交比对任务请求:基准表 + 比对主键 + 比对字段(含主键) + 多个比对目标 */
@@ -58,6 +60,11 @@ data class CreateCompareJobRequest(
      * 留空 = ROW(与既有行为一致);未知值报 400。
      */
     val compareMode: String? = null,
+    /**
+     * 抽样条数(V70):双侧各「按身份列排序取前 N 条」比对;留空/null = 全量比对(旧行为);
+     * 给出时须在 1~500000 之间(提交校验拦下,上限同单侧行数上限)
+     */
+    val sampleRows: Int? = null,
 )
 
 /** 对比模式(compare_job.compare_mode):决定新建向导默认比对多少字段、字段映射由谁生成;执行引擎同一套 */
@@ -145,6 +152,8 @@ data class CompareJobView(
     val importFileName: String? = null,
     /** 「打开文件」可点口径(V65):已导出且 SHA-256 与库中记录一致;「打开文件夹」不受此限制 */
     val exportFileOk: Boolean = false,
+    /** 抽样条数(V70):双侧各按身份列排序取前 N 条;null = 全量比对 */
+    val sampleRows: Int? = null,
 )
 
 /** 比对任务详情:任务字段 + 目标指标列表 */
@@ -217,6 +226,10 @@ data class CompareTargetView(
     val mapping: Map<String, String>? = null,
     /** 目标级身份字段人工覆盖(基准表实际列名);null = 按「任务级 keyFields ∩ 映射键」推导 */
     val identityKeys: List<String>? = null,
+    /** 自定义显示名(V72);null = 未自定义,展示回落库描述/数据源名快照 */
+    val displayName: String? = null,
+    /** 库描述(schema_doc,库列表页可编辑;动态查非快照,描述改后页面跟随):默认显示名回落链的一环,null = 无描述 */
+    val schemaDesc: String? = null,
 )
 
 /**

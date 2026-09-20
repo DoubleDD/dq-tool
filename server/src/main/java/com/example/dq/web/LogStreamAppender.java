@@ -29,6 +29,14 @@ public class LogStreamAppender extends UnsynchronizedAppenderBase<ILoggingEvent>
 
     private static final int MAX_BUFFER = 500;
 
+    /**
+     * 单条消息/堆栈的最大长度:超限截断。
+     * 条数有界但单条长度无界时,错误风暴(全堆栈)或超大 SQL 会经环形缓冲 + SSE 把浏览器内存打爆
+     * (前端 Logs.vue 每条都渲染完整 stackTrace),这里在源头截断兜底。
+     */
+    private static final int MAX_MESSAGE_LEN = 4000;
+    private static final int MAX_STACK_LEN = 8000;
+
     /** 环形缓冲区:最近 MAX_BUFFER 条日志,SSE 连接时先推送这部分 */
     private final Deque<LogEntry> buffer = new ConcurrentLinkedDeque<>();
 
@@ -41,8 +49,8 @@ public class LogStreamAppender extends UnsynchronizedAppenderBase<ILoggingEvent>
         String level = event.getLevel().toString();
         String thread = event.getThreadName();
         String logger = event.getLoggerName();
-        String message = event.getFormattedMessage();
-        String stackTrace = formatStackTrace(event.getThrowableProxy());
+        String message = truncate(event.getFormattedMessage(), MAX_MESSAGE_LEN);
+        String stackTrace = truncate(formatStackTrace(event.getThrowableProxy()), MAX_STACK_LEN);
 
         LogEntry entry = new LogEntry(ts, level, thread, logger, message, stackTrace);
 
@@ -80,6 +88,12 @@ public class LogStreamAppender extends UnsynchronizedAppenderBase<ILoggingEvent>
             sb.append(indent).append("Caused by: ");
             appendThrowable(sb, proxy.getCause(), indent);
         }
+    }
+
+    /** 超长文本截断:保留前 max 个字符并追加截断标记 */
+    private static String truncate(String s, int max) {
+        if (s == null || s.length() <= max) return s;
+        return s.substring(0, max) + "\n...(已截断,原长度 " + s.length() + " 字符)";
     }
 
     /** 返回缓冲区快照(连接时先推送历史日志) */

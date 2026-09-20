@@ -13,6 +13,11 @@ class SchemaDocRepository(private val jdbc: Jdbc) {
         return map
     }
 
+    /** 单条库描述(比对目标默认显示名等展示口径用);无记录返回 null */
+    fun find(datasourceId: Long, dbName: String, schemaName: String): String? =
+        jdbc.queryOne("SELECT description FROM schema_doc WHERE datasource_id=? AND db_name=? AND schema_name=?",
+            datasourceId, dbName, schemaName) { rs -> rs.getString(1) }
+
     fun upsert(datasourceId: Long, dbName: String, schema: String, description: String) {
         jdbc.update("MERGE INTO schema_doc(datasource_id, db_name, schema_name, description, updated_at) " +
                 "KEY(datasource_id, db_name, schema_name) VALUES (?,?,?,?,CURRENT_TIMESTAMP)",

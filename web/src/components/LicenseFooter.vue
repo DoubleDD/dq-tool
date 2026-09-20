@@ -52,7 +52,8 @@ async function load() {
 }
 
 function openDialog() {
-  code.value = ''
+  // 回填 H2 中当前授权码(更换场景在现有码基础上粘贴新码覆盖;拿不到状态时留空)
+  code.value = status.value?.code || ''
   dialogVisible.value = true
 }
 async function onActivate() {

@@ -192,6 +192,29 @@ class SqlLogConnectionTest {
     }
 
     @Test
+    fun `超大参数与SQL文本截断`() {
+        connect().use { conn ->
+            conn.prepareStatement("CREATE TABLE b(id INT PRIMARY KEY, body VARCHAR(20000), bin VARBINARY(20000))").use { st ->
+                st.execute()
+            }
+            conn.prepareStatement("INSERT INTO b VALUES(?, ?, ?)").use { st ->
+                st.setInt(1, 1)
+                st.setString(2, "x".repeat(5000))
+                st.setBytes(3, ByteArray(500) { 0x0f })
+                st.executeUpdate()
+            }
+        }
+        val insert = sqlEvents().firstOrNull { it.contains("INSERT INTO b") }
+        assertTrue(insert != null, "缺 INSERT: " + sqlEvents())
+        // 大文本参数截断:不含完整 5000 个 x,带截断标记
+        assertFalse(insert!!.contains("x".repeat(5000)), "大文本参数未截断")
+        assertTrue(insert.contains("截断"), "缺截断标记: " + insert.takeLast(200))
+        // ByteArray 只 hex 前 64 字节并标注总长度
+        assertTrue(insert.contains("共 500 字节"), "ByteArray 应标注总字节数: " + insert.takeLast(200))
+        assertTrue(insert.length < 4000, "日志行不应携带全量参数,实际长度: " + insert.length)
+    }
+
+    @Test
     fun `statement复用后 陈旧参数被清空`() {
         connect().use { conn ->
             conn.prepareStatement("CREATE TABLE r(id INT PRIMARY KEY, name VARCHAR(20))").use { st ->

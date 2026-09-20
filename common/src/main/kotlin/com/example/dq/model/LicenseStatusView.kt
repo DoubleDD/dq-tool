@@ -3,7 +3,8 @@ package com.example.dq.model
 import java.time.LocalDate
 
 /**
- * 授权状态视图(只回传展示字段,不回传授权码本身)。
+ * 授权状态视图(展示字段 + 当前激活码明文)。
+ * code 回传用于激活页/更换授权码对话框回填库中当前授权码(H2 已有授权时不再回落兜底内测码);
  * 授权码扩展字段中的 serverUrl 属敏感信息,禁止出现在本视图;前端只展示 sid/username/timestamp。
  */
 data class LicenseStatusView(
@@ -26,6 +27,8 @@ data class LicenseStatusView(
     val menus: List<String>? = null,
     /** 免接口鉴权标记(演示用):仅已激活未过期且授权码带标记时为 true,生效时后端跳过 dq.access-token 校验 */
     val bypassAuth: Boolean = false,
+    /** 当前激活的授权码明文(供激活页/更换授权码输入框回填;未激活为 null) */
+    val code: String? = null,
 ) {
     companion object {
         @JvmStatic

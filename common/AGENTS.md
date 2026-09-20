@@ -100,6 +100,9 @@ src/main/resources/db/migration/
   V61__meta_database_multi_db_cleanup.sql 多库方言库清单缓存污染清理:schema 名误写 meta_database 的 db_name='' 槽位(库清单),按 SCHEMA 标记判定删除,下次访问回源重建
   V62__compare_target_identity.sql 比对目标级身份字段:compare_job.key_fields_json(任务级身份字段数组,NULL=老任务由 key_field 退化 [keyField])+ compare_target.identity_json(目标级人工覆盖 {"keys":[...]},NULL=按 keyFields ∩ 映射键推导)(ALTER IF NOT EXISTS)
   V63__compare_target_no_key_rows.sql 比对目标身份列为空的行数 compare_target.no_key_rows(身份列为空的行以行内代理键进比对,编码路不参与、名称/大模型可配对;target_count/base_count 同为实际读到的总行数;ALTER IF NOT EXISTS)
+  V70__compare_sample_rows.sql    比对抽样:compare_job.sample_rows 列(任务级抽样条数,NULL=全量;抽样 = 双侧各按身份列排序取前 N 条,loadRows 读满即停;校验 1~500000)
+  V71__system_settings_heartbeat.sql  页面心跳间隔:system_settings.heartbeat_interval_seconds 列(秒,NULL=默认 5;系统设置页「页面心跳」秒/分/时可调,桌面看门狗按 max(配置超时, 3 个间隔) 判窗口关闭)
+  V72__compare_target_display_name.sql 比对目标自定义显示名 compare_target.display_name(VARCHAR(256) 可空;向导清单铅笔编辑,展示回落链 自定义名 > 库描述(schema_doc) > ds_name 快照,导出侧在库描述前多一级 table_system 登记;重跑保留)
 src/main/resources/db/migration-aiusage/   AI 用量独立库(dqaiusage)迁移脚本,独立 flyway_schema_history
   V1__ai_usage_log.sql      用量流水全量建表:token/费用/峰谷时段 + scan_job_id + 扫描标签快照(scan_label/scan_created_at)+ 请求/响应内容(request_content/response_content CLOB,记录截断 5 万字符,供 prompt 调优回溯)
 src/test/kotlin/           方言/分段/级联删除/标记(TagRepository/TagService)/AI prompt/授权码/Flyway 迁移单测 + Testcontainers 端到端(MySQL/PG/SQLServer;SSH 隧道 SshTunnelIntegrationTest:linuxserver/openssh-server 跳板机 + MySQL 网络别名,注意该镜像 sshd 监听 2222 且默认 AllowTcpForwarding no 需 custom-cont-init.d 打开)

@@ -6,13 +6,14 @@ import org.slf4j.LoggerFactory;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 
 /**
  * 桌面安装版(--app 应用模式窗口)的生命周期看门狗。
  * 问题背景:安装包隐藏终端,用户关闭浏览器 --app 窗口后没有地方能结束后端进程,残留孤儿进程。
- * 方案:前端每 5 秒上报一次心跳(/api/heartbeat),本进程拉起的 --app 窗口存在时武装看门狗,
- * 超过 dq.desktop.shutdown-timeout-seconds 未收到心跳即判定窗口已关闭,优雅退出进程。
+ * 方案:前端按心跳间隔(系统设置页可调,默认 5 秒)上报心跳(/api/heartbeat),本进程拉起的 --app 窗口存在时武装看门狗,
+ * 超过 max(dq.desktop.shutdown-timeout-seconds, 3 个心跳间隔) 未收到心跳即判定窗口已关闭,优雅退出进程。
  * 系统托盘(TrayManager)可用时以后台守护进程方式运行,托盘提供「打开窗口/退出」入口,
  * 看门狗停用;本类仅作为托盘不可用环境的兜底。
  * java -jar 服务器部署、页面开在普通浏览器标签页(未由本进程拉起 app 窗口)等场景不受影响。
@@ -34,6 +35,8 @@ public class DesktopSession {
     private final AppShutdown shutdown;
     private final LongSupplier wallClock;
     private final LongSupplier nanoClock;
+    /** 页面心跳间隔(秒)供应器:每轮看门狗实时取(系统设置页可改,内核未就绪时由调用方回落默认) */
+    private final IntSupplier heartbeatIntervalSeconds;
     /** 本进程是否成功拉起了 --app 应用模式窗口(只有这种情况才需要看门狗) */
     private volatile boolean appModeOpened;
     /** 托盘图标(TrayManager)生效时后端以守护进程方式常驻,看门狗停用 */
@@ -45,13 +48,20 @@ public class DesktopSession {
     private volatile long lastRunNanos;
 
     public DesktopSession(DqProperties props, AppShutdown shutdown) {
-        this(props, shutdown, System::currentTimeMillis, System::nanoTime);
+        this(props, shutdown, () -> com.example.dq.service.SystemSettingsService.DEFAULT_HEARTBEAT_INTERVAL_SECONDS);
+    }
+
+    /** 心跳间隔可注入:系统设置页改后看门狗下一轮即按新间隔判定 */
+    public DesktopSession(DqProperties props, AppShutdown shutdown, IntSupplier heartbeatIntervalSeconds) {
+        this(props, shutdown, heartbeatIntervalSeconds, System::currentTimeMillis, System::nanoTime);
     }
 
     /** 时钟可注入,供测试模拟挂起场景 */
-    DesktopSession(DqProperties props, AppShutdown shutdown, LongSupplier wallClock, LongSupplier nanoClock) {
+    DesktopSession(DqProperties props, AppShutdown shutdown, IntSupplier heartbeatIntervalSeconds,
+            LongSupplier wallClock, LongSupplier nanoClock) {
         this.props = props;
         this.shutdown = shutdown;
+        this.heartbeatIntervalSeconds = heartbeatIntervalSeconds;
         this.wallClock = wallClock;
         this.nanoClock = nanoClock;
         this.lastRunWallMillis = wallClock.getAsLong();
@@ -81,10 +91,13 @@ public class DesktopSession {
     }
 
     void watchdog() {
-        int timeoutSeconds = props.getDesktop().getShutdownTimeoutSeconds();
-        if (trayActive || !appModeOpened || timeoutSeconds <= 0 || lastBeatMillis == 0) {
+        int configuredTimeout = props.getDesktop().getShutdownTimeoutSeconds();
+        if (trayActive || !appModeOpened || configuredTimeout <= 0 || lastBeatMillis == 0) {
             return;
         }
+        // 页面心跳间隔可调(系统设置页):窗口开着时心跳间隔可能长于配置的超时,
+        // 有效超时取 max(配置超时, 3 个心跳间隔),保证窗口开着不会被误杀
+        long timeoutSeconds = Math.max(configuredTimeout, 3L * heartbeatIntervalSeconds.getAsInt());
         long now = wallClock.getAsLong();
         long nanos = nanoClock.getAsLong();
         long wallDelta = now - lastRunWallMillis;

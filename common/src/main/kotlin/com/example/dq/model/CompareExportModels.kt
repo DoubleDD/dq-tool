@@ -6,7 +6,7 @@ package com.example.dq.model
  * 与基准差 / 匹配编码数 / 匹配对象数 / 差异条数 / 差异原因。
  */
 data class CompareExportOverviewRow(
-    /** 表英文名称:基准/目标表名 */
+    /** 表英文名称:统一单元格内三行「表名 / 系统名 / （数据库名.模式名）」显示格式(空段省略) */
     val tableName: String,
     /** 表中文名:表注释(取不到留空) */
     val tableComment: String?,

@@ -137,9 +137,10 @@ class CompareService(
         val r = resolveRequest(req)
         val jobId = repo.insertJob(r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
             r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size, r.displayField,
-            r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields))
+            r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields), r.sampleRows)
         for (t in r.targets) {
-            repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson, t.identityJson)
+            repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson, t.identityJson,
+                t.displayName)
         }
         executor.execute { run(jobId) }
         log.info("比对任务已提交: id={}, 名称={}, 基准={}.{}, 目标数={}, 匹配逻辑={}, 对比模式={}",
@@ -151,7 +152,9 @@ class CompareService(
     private data class ResolvedRequest(
         val name: String, val baseDatasourceId: Long, val baseDb: String, val baseTable: String,
         val keyField: String, val keyFields: List<String>, val fields: List<String>, val displayField: String?,
-        val matchMode: MatchMode, val compareMode: CompareMode, val targets: List<ResolvedTarget>)
+        val matchMode: MatchMode, val compareMode: CompareMode, val targets: List<ResolvedTarget>,
+        /** 抽样条数(双侧各按身份列排序取前 N 条);null = 全量比对 */
+        val sampleRows: Int? = null)
 
     /**
      * submit / updatePending 共用的同步校验与归一:基准数据源存在、目标非空、fields 含全部身份字段、
@@ -207,6 +210,11 @@ class CompareService(
         val matchMode = normalizeMatchMode(req.matchMode)
         // 对比模式:空 = 行级(与既有行为一致);只影响向导默认字段与映射来源,执行引擎同一套
         val compareMode = CompareMode.normalize(req.compareMode)
+        // 抽样条数(V70):双侧各按身份列排序取前 N 条;上限沿用单侧行数上限 MAX_SIDE_ROWS
+        val sampleRows = req.sampleRows
+        if (sampleRows != null && (sampleRows < 1 || sampleRows > MAX_SIDE_ROWS)) {
+            throw IllegalArgumentException("抽样条数须为 1~$MAX_SIDE_ROWS 的整数")
+        }
         if (matchMode.requiresName && displayField == null) {
             throw IllegalArgumentException(
                 "${matchMode.label}需要按对象名称配对,请在「选择基准表」里指定对象名称字段")
@@ -230,15 +238,18 @@ class CompareService(
             ensureIdentityColumns(mapping, identity, colsByName, ds.name, table)
             ResolvedTarget(dsId, ds.name, db, spec.schema, table,
                 mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) },
-                identityKeys?.let { objectMapper.writeValueAsString(mapOf("keys" to it)) })
+                identityKeys?.let { objectMapper.writeValueAsString(mapOf("keys" to it)) },
+                spec.displayName?.trim()?.takeIf { it.isNotEmpty() })
         }
         return ResolvedRequest(name, baseDsId, baseDb, baseTable, actualKey, actualKeyFields, fields, displayField,
-            matchMode, compareMode, resolved)
+            matchMode, compareMode, resolved, sampleRows)
     }
 
     private data class ResolvedTarget(val datasourceId: Long, val dsName: String?,
                                       val db: String, val schema: String?, val table: String,
-                                      val mappingJson: String? = null, val identityJson: String? = null)
+                                      val mappingJson: String? = null, val identityJson: String? = null,
+                                      /** 自定义显示名(V72;已归一:trim 且非空) */
+                                      val displayName: String? = null)
 
     /** 目标级身份覆盖归一:keys 必须在基准表存在且 ⊆ 任务级身份字段,归一为基准表实际列名;空 = 未覆盖 */
     private fun normalizeIdentityOverride(raw: List<String>?, jobKeyFields: List<String>,
@@ -360,8 +371,9 @@ class CompareService(
             } catch (e: Exception) {
                 t.dsName
             }
+            // 自定义显示名随旧行保留(V72):重跑不重建向导表单,沿用用户改过的名字
             repo.insertTarget(jobId, t.datasourceId, dsName, t.dbName, t.schemaName, t.tableName,
-                t.fieldMappingJson, t.identityJson)
+                t.fieldMappingJson, t.identityJson, t.displayName)
         }
         executor.execute { run(jobId) }
         log.info("比对任务重跑: id={}, 目标数={}", jobId, oldTargets.size)
@@ -513,9 +525,9 @@ class CompareService(
         val r = resolveRequest(req)
         repo.replacePendingJob(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
             r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size, r.displayField,
-            r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields),
+            r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields), r.sampleRows,
             r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table,
-                it.mappingJson, it.identityJson) })
+                it.mappingJson, it.identityJson, it.displayName) })
         log.info("待处理比对任务已更新: id={}, 名称={}, 目标数={}", jobId, r.name, r.targets.size)
     }
 
@@ -536,11 +548,26 @@ class CompareService(
         val updated = repo.replaceAndRestart(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema,
             r.baseTable, r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size,
             r.displayField, r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields),
+            r.sampleRows,
             r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table,
-                it.mappingJson, it.identityJson) })
+                it.mappingJson, it.identityJson, it.displayName) })
         if (updated == 0) throw IllegalStateException("任务状态已变化,请刷新后重试")
         executor.execute { run(jobId) }
         log.info("比对任务已编辑并重跑: id={}, 名称={}, 目标数={}", jobId, r.name, r.targets.size)
+    }
+
+    /**
+     * 更新单个目标的自定义显示名(V72,备用接口;向导内编辑走任务 PUT 随 targets 提交):
+     * displayName 空/blank = 清除,展示回落数据源名快照;目标必须属于该任务
+     */
+    fun updateTargetDisplayName(jobId: Long, targetId: Long, displayName: String?) {
+        repo.getJob(jobId) ?: throw IllegalArgumentException("比对任务不存在: $jobId")
+        if (repo.listTargets(jobId).none { it.id == targetId }) {
+            throw IllegalArgumentException("目标不属于该任务: $targetId")
+        }
+        repo.updateTargetDisplayName(targetId, displayName)
+        log.info("比对目标显示名已更新: jobId={}, targetId={}, 显示名={}", jobId, targetId,
+            displayName?.trim().orEmpty().ifEmpty { "(清除)" })
     }
 
     /**
@@ -645,8 +672,10 @@ class CompareService(
             log.warn("比对任务不在运行中,跳过执行: id={}, 状态={}", jobId, job.status)
             return
         }
+        val jobT0 = System.currentTimeMillis()
         try {
-            repo.updateStage(jobId, "连接数据源,读取基准表…")
+            repo.updateStage(jobId, "连接数据源,读取基准表…${job.sampleRows?.let { "(抽样前 $it 条)" } ?: ""}")
+            var stageT0 = jobT0
             val baseDs = dataSourceService.get(job.baseDatasourceId)
             val baseDialect = dialectFactory.get(baseDs.dbType!!)
             val baseSchema = effectiveSchema(job.baseSchema, job.baseDb)
@@ -676,20 +705,30 @@ class CompareService(
             repo.updateBaseComments(jobId,
                 tableCommentLister(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable),
                 snapshotComments(baseColumns))
+            val baseMetaMs = System.currentTimeMillis() - stageT0
+            stageT0 = System.currentTimeMillis()
+            // 抽样(V70):sample_rows 非空 = 双侧各「按身份列排序取前 N 条」,读取阶段文案注明便于现场看日志确认
+            val sampleNote = job.sampleRows?.let { "(抽样前 $it 条)" } ?: ""
             val baseLoaded = loadRows(job.baseDatasourceId, job.baseDb, baseSchema, job.baseTable, baseDialect,
                 fields.map { SelectedCol(it, baseByName.getValue(it.lowercase()).name) },
-                keyColumns.map { it.name })
+                keyColumns.map { it.name }, job.sampleRows)
             val baseMap = baseLoaded.rows
             if (baseLoaded.noKeyRows > 0) {
                 log.warn("基准表 {} 读到 {} 行,其中 {} 行身份列为空(编码路不参与,仅名称/大模型可配对)",
                     job.baseTable, baseLoaded.totalRead, baseLoaded.noKeyRows)
             }
-            repo.updateProgress(jobId, 1, "基准表读取完成(共 ${baseLoaded.totalRead} 行)")
+            repo.updateProgress(jobId, 1, "基准表读取完成(共 ${baseLoaded.totalRead} 行)$sampleNote")
+            // 性能计时埋点(排查比对慢在哪一段):基准侧 元数据+快照 / 全量读取
+            log.info("比对基准读取计时: jobId={}, 元数据+快照={}ms, 读取={}ms({}行)",
+                jobId, baseMetaMs, System.currentTimeMillis() - stageT0, baseLoaded.totalRead)
 
             val targets = repo.listTargets(jobId)
             var done = 1
             for (t in targets) {
-                val label = t.dsName ?: "数据源${t.datasourceId}"
+                // 进度文案展示名口径与导出一致:自定义显示名 > 库描述(schema_doc) > 数据源名快照
+                val label = t.displayName?.takeIf { it.isNotBlank() }
+                    ?: schemaDescOf(t.datasourceId, t.dbName, t.schemaName)
+                    ?: t.dsName ?: "数据源${t.datasourceId}"
                 repo.updateStage(jobId, "比对 $label…")
                 repo.markTargetRunning(t.id)
                 try {
@@ -702,7 +741,8 @@ class CompareService(
                 repo.updateProgress(jobId, done, "比对 $label 完成")
             }
             repo.finishJob(jobId)
-            log.info("比对任务完成: id={}, 目标数={}", jobId, targets.size)
+            log.info("比对任务完成: id={}, 目标数={}, 总耗时={}ms",
+                jobId, targets.size, System.currentTimeMillis() - jobT0)
         } catch (e: Exception) {
             log.error("比对任务失败: id={}", jobId, e)
             repo.failJob(jobId, (e.message ?: "比对任务失败").take(2000))
@@ -726,6 +766,8 @@ class CompareService(
         val ds = dataSourceService.get(t.datasourceId)
         val dialect = dialectFactory.get(ds.dbType!!)
         val schema = effectiveSchema(t.schemaName, t.dbName)
+        // 性能计时埋点(排查比对慢在哪一段):逐目标 info 级分阶段耗时日志,见函数末尾汇总
+        val targetT0 = System.currentTimeMillis()
         val cols = columnsLister(t.datasourceId, t.dbName, schema, t.tableName)
         if (cols.isEmpty()) throw IllegalStateException("目标表不存在或没有字段: ${t.tableName}")
         // 目标表中文名/字段注释快照(口径同基准表,见 run):跑完后的导出只读快照
@@ -759,8 +801,11 @@ class CompareService(
         // 目标表「数据最新更新时间」快照:口径同基准表(探测时间字段取 MAX,失败/无字段留 NULL)
         repo.updateTargetDataUpdatedAt(t.id, detectLatestDataTime(
             t.datasourceId, t.dbName, schema, t.tableName, cols, dialect))
+        val metaMs = System.currentTimeMillis() - targetT0
+        var stageT0 = System.currentTimeMillis()
         val targetLoaded = loadRows(t.datasourceId, t.dbName, schema, t.tableName, dialect, select,
-            keyColumns.map { it.name })
+            keyColumns.map { it.name }, job.sampleRows)
+        val loadMs = System.currentTimeMillis() - stageT0
         val targetMap = targetLoaded.rows
         if (targetLoaded.noKeyRows > 0) {
             // 身份列为空的行只走了名称/大模型两路(编码路对它无命中),透出避免「为什么编码没配上」的困惑
@@ -771,8 +816,12 @@ class CompareService(
 
         // 对象对齐:编码/名称两路(纯函数),匹配逻辑 3 再对残余调用大模型归一化补配
         val nameField = displayField?.takeIf { mode.requiresName }
+        stageT0 = System.currentTimeMillis()
         var match = matchObjects(baseMap, targetMap, identity, nameField, mode)
+        val matchMs = System.currentTimeMillis() - stageT0
+        var llmMs = 0L
         if (mode == MatchMode.CODE_NAME_LLM) {
+            stageT0 = System.currentTimeMillis()
             val ai = aiMatchResidues(match, baseMap, targetMap, identity, nameField)
             if (ai.pairs.isNotEmpty() || ai.note != null) {
                 // 三路计数按来源分开累加:补配里既有归一化精确配上的 CODE/NAME 对,也有模型裁决的 LLM 对
@@ -798,10 +847,14 @@ class CompareService(
                 match = match.copy(llmNote = match.llmNote ?: refine.note,
                     llmFailed = match.llmFailed || refine.failed)
             }
+            llmMs = System.currentTimeMillis() - stageT0
         }
+        stageT0 = System.currentTimeMillis()
         val result = diffObjects(baseMap, targetMap, fields, identity, numericFields, displayField,
             match.pairs)
+        val diffMs = System.currentTimeMillis() - stageT0
 
+        stageT0 = System.currentTimeMillis()
         val all = result.same + result.diff + result.missing + result.extra
         all.chunked(DIFF_BATCH_SIZE).forEach { batch ->
             repo.insertDiffs(job.id, t.id, batch.map { d ->
@@ -809,6 +862,7 @@ class CompareService(
                     d.diffs?.let { objectMapper.writeValueAsString(truncateDiffs(it)) }, d.matchBy)
             })
         }
+        val writeMs = System.currentTimeMillis() - stageT0
 
         // base_count = 基准表实际读到的总行数(含身份列为空被跳过的行;跳过行有 warn 日志可见),
         // 与 target_count 同为物理行数口径,导出总览「条数/与基准差」两侧可比
@@ -825,6 +879,11 @@ class CompareService(
             result.extra.size, result.fieldMismatchCount, coverage, fieldConsistency, completeness, score,
             match.codeMatched, match.nameMatched, match.aiMatched,
             noKeyRows = targetLoaded.noKeyRows)
+        // 性能计时汇总:元数据+快照 / 读取 / 配对 / 大模型 / 比较 / 落库 / 合计,对照找慢的那段
+        log.info("比对目标计时: jobId={}, 目标={}.{}, 元数据+快照={}ms, 读取={}ms({}行), 配对={}ms, 大模型={}ms, " +
+            "比较={}ms, 落库={}ms({}行), 合计={}ms",
+            job.id, t.dbName, t.tableName, metaMs, loadMs, targetLoaded.totalRead, matchMs, llmMs,
+            diffMs, writeMs, all.size, System.currentTimeMillis() - targetT0)
         if (match.llmNote != null) {
             log.info("比对目标大模型补配: jobId={}, 目标={}.{}, {}", job.id, t.dbName, t.tableName, match.llmNote)
         }
@@ -851,10 +910,13 @@ class CompareService(
      * (各身份列值 trim 后以「\u0001」拼接,单列即现状),行值 rs.getObject()?.toString();
      * 身份列任一为空的行**不丢弃**:以行内代理键([NO_KEY_ROW_PREFIX]+序号)进 map——
      * 「任意一边 code 空就用 name 匹配」的口径要求它们进名称/大模型配对,编码路对代理键自然无命中;
-     * 单侧超过 [MAX_SIDE_ROWS] 抛 IllegalStateException
+     * 单侧超过 [MAX_SIDE_ROWS] 抛 IllegalStateException;
+     * [maxRows] 非空 = 抽样(V70):确定性「按身份列排序取前 N 条」,首页 limit 取 min(N, 5000),
+     * 累计读满 N 即停(分页按首个身份列升序,双侧同一口径才有交集)
      */
     private fun loadRows(datasourceId: Long, database: String, schema: String, table: String,
-                         dialect: DbDialect, select: List<SelectedCol>, keyColumns: List<String>): LoadedRows {
+                         dialect: DbDialect, select: List<SelectedCol>, keyColumns: List<String>,
+                         maxRows: Int? = null): LoadedRows {
         // 身份列对应的行 map 键(基准字段名):身份字段恒入比对字段,select 必然包含全部身份列
         val keyFields = keyColumns.map { kc ->
             select.firstOrNull { it.column == kc }?.field
@@ -870,8 +932,11 @@ class CompareService(
                 var offset = 0L
                 while (true) {
                     var pageRows = 0
+                    // 抽样:首页与每页都只取「还差多少条」,读满 maxRows 即不再翻页
+                    val limit = if (maxRows == null) PAGE_SIZE
+                    else minOf(PAGE_SIZE, (maxRows - totalRead).coerceAtLeast(1))
                     stmt.executeQuery(dialect.pageRowsSql(conn, schema, table, select.map { it.column },
-                        null, dialect.quote(keyColumns.first()), offset, PAGE_SIZE)).use { rs ->
+                        null, dialect.quote(keyColumns.first()), offset, limit)).use { rs ->
                         while (rs.next()) {
                             pageRows++
                             totalRead++
@@ -890,7 +955,8 @@ class CompareService(
                             }
                         }
                     }
-                    if (pageRows < PAGE_SIZE) break
+                    if (pageRows < limit) break
+                    if (maxRows != null && totalRead >= maxRows) break
                     offset += PAGE_SIZE
                 }
             }
@@ -1153,7 +1219,7 @@ class CompareService(
      * - sheet 4「数据级字段对比差异总览」:一行一条数据(对象),按系统给 对比字段数/相同字段数/不同字段数
      *   数量统计(见 [writeColumnDetailSheet])
      * - sheet 5「列级对比明细」:所有比对系统的逐字段取值横向合并,一行一个「对象 × 基准字段」,
-     *   两行表头(第二行显示各侧表定位 `[库名][schema][表名]`),左侧 5 列与两行表头冻结(见 [writeMergedDetailSheet])
+     *   两行表头(第二行显示各侧表定位「表名 / 系统名 / （库.模式）」),左侧 5 列与两行表头冻结(见 [writeMergedDetailSheet])
      * - 其后每个比对目标一个字段级明细 sheet:sheet 名「序号_表名_数据源名」,序号与总览行顺序一一对应;
      *   每个 sheet 装该系统**全部**差异,一行一个「对象 × 字段」
      *   (DIFF 逐不一致字段展开,MISSING/EXTRA 按整行快照逐比对字段展开)
@@ -1194,15 +1260,17 @@ class CompareService(
                 fillPattern = FillPatternType.SOLID_FOREGROUND
                 setFillForegroundColor(XSSFColor(DIFF_FILL_RGB, null))
             }
-            writeOverviewSheet(wb, overview)
+            // 表名单元格多行格式(表名/系统名/（库.模式）)需要自动换行才能完整显示
+            val wrapStyle = wb.createCellStyle().apply { wrapText = true }
+            writeOverviewSheet(wb, overview, wrapStyle)
             // 行级对比明细(固定第二个 sheet):一行一个「对象 × 比对目标」
-            writeRowLevelSheet(wb, job, targets, diffsByTarget, context, identityByTarget)
+            writeRowLevelSheet(wb, job, targets, diffsByTarget, context, identityByTarget, wrapStyle)
             // 字段级差异汇总(固定第三个 sheet):一行一个「比对目标 × 基准字段」
-            writeFieldSummarySheet(wb, job, targets, diffsByTarget, context)
+            writeFieldSummarySheet(wb, job, targets, diffsByTarget, context, wrapStyle)
             // 数据级字段对比差异总览(固定第四个 sheet):一行一条数据,按系统给字段数统计
             writeColumnDetailSheet(wb, job, targets, diffsByTarget, context, diffStyle)
             // 列级对比明细(固定第五个 sheet):所有系统逐字段取值横向合并,左侧 5 列冻结
-            writeMergedDetailSheet(wb, job, targets, diffsByTarget, context, diffStyle)
+            writeMergedDetailSheet(wb, job, targets, diffsByTarget, context, diffStyle, wrapStyle)
             // 总览里的每个目标行一个明细 sheet,序号与总览行顺序一致
             val used = mutableSetOf(OVERVIEW_SHEET_NAME, ROW_LEVEL_SHEET_NAME, FIELD_SUMMARY_SHEET_NAME,
                 COLUMN_DETAIL_SHEET_NAME, MERGED_DETAIL_SHEET_NAME)
@@ -1210,9 +1278,11 @@ class CompareService(
             for (t in targets) {
                 val diffs = diffsByTarget[t.id].orEmpty()
                 if (diffs.isEmpty()) continue
-                // sheet 名「序号_表名_数据源名」:同一系统多张表互比靠表名区分,表名必须靠前(31 字符上限从尾部截,别截掉表名)
+                // sheet 名「序号_表名_系统名」:系统名按「自定义显示名 > 库描述 > 数据源名快照」口径;同一系统多张表互比靠表名区分,表名必须靠前(31 字符上限从尾部截,别截掉表名)
                 val sheet = wb.createSheet(
-                    ExcelCells.sheetName("${++idx}_${t.tableName}_${t.dsName ?: "数据源" + t.datasourceId}", used))
+                    ExcelCells.sheetName("${++idx}_${t.tableName}_${t.displayName
+                        ?: context.schemaDesc(t.datasourceId, t.dbName, t.tableName)
+                        ?: t.dsName ?: "数据源" + t.datasourceId}", used))
                 writeDiffDetailSheet(sheet, job, t, diffs, context, diffStyle)
                 sheet.flushRows() // 行写盘,避免多个 sheet 同时驻留内存(临时文件由 wb.close() 统一清理)
             }
@@ -1220,16 +1290,20 @@ class CompareService(
         } // use 块关闭工作簿并清理临时文件(dispose 已废弃,close 已覆盖)
     }
 
-    /** 总览行构建(纯函数,便于单测):第一行为基准表本身(无目标 id、与基准差留空),之后一行一个比对目标 */
+    /** 总览行构建(纯函数,便于单测):第一行为基准表本身(无目标 id、与基准差留空),之后一行一个比对目标;
+     *  抽样任务(V70,sample_rows 非空)在基准行与各目标行的「差异原因」披露「抽样比对」事实与口径 */
     internal fun buildOverviewRows(job: CompareRepository.JobRow, targets: List<CompareRepository.TargetRow>,
                                    objectDiffs: Map<Long, ObjectLevelDiffs>,
                                    ctx: ExportContext): List<CompareExportOverviewRow> {
         val baseCount = targets.mapNotNull { it.baseCount }.maxOrNull()
+        val sampleReason = job.sampleRows?.let { "抽样比对:每侧仅取前 $it 条(按身份列排序)" }
         val rows = ArrayList<CompareExportOverviewRow>(targets.size + 1)
+        val baseSystem = ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable)
         rows.add(CompareExportOverviewRow(
-            tableName = job.baseTable,
+            // 导出文件内表名统一单元格内三行「表名 / 系统名 / （库.模式）」格式(空段省略)
+            tableName = tableDisplayName(baseSystem, job.baseDb, job.baseSchema, job.baseTable),
             tableComment = ctx.comment(job.baseDatasourceId, job.baseDb, job.baseTable),
-            systemName = ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable),
+            systemName = baseSystem,
             rowCount = baseCount,
             // 数据最新更新时间 = 比对执行时探测时间字段取 MAX 的快照;没有可用字段/取数失败/老任务留空
             dataUpdatedAt = job.baseDataUpdatedAt.orEmpty(),
@@ -1237,17 +1311,18 @@ class CompareService(
             matchedCount = null,
             matchedTotal = null,
             diffCount = null,
-            diffReason = BASELINE_REASON,
+            diffReason = if (sampleReason != null) "基准表(抽样比对,不参与差异统计)" else BASELINE_REASON,
             targetId = null,
         ))
         // 基准行数缺失时退化为各目标自报的 base_count,保证「与基准差」仍可计算
         val perTargetBase = targets.mapNotNull { it.baseCount }.firstOrNull() ?: baseCount
         for (t in targets) {
             val targetCount = t.targetCountOrFallback()
+            val system = ctx.systemName(t.datasourceId, t.dbName, t.tableName)
             rows.add(CompareExportOverviewRow(
-                tableName = t.tableName,
+                tableName = tableDisplayName(system, t.dbName, t.schemaName, t.tableName),
                 tableComment = ctx.comment(t.datasourceId, t.dbName, t.tableName),
-                systemName = ctx.systemName(t.datasourceId, t.dbName, t.tableName),
+                systemName = system,
                 rowCount = targetCount,
                 // 口径同基准行:该目标表探测到的时间字段 MAX 快照,没有则留空
                 dataUpdatedAt = t.dataUpdatedAt.orEmpty(),
@@ -1260,8 +1335,9 @@ class CompareService(
                 // 总览只做行级数量对比,属性差异(编码不一致/字段值不一致)不计,
                 // 由「行级对比明细」与各目标明细 sheet 体现
                 diffCount = objectDiffs[t.id]?.let { it.missing + it.extra } ?: 0,
-                diffReason = t.diffReason(baseCount = perTargetBase, targetCount = targetCount,
-                    identityDiff = objectDiffs[t.id]?.identity ?: 0),
+                diffReason = (t.diffReason(baseCount = perTargetBase, targetCount = targetCount,
+                    identityDiff = objectDiffs[t.id]?.identity ?: 0) ?: "与基准完全一致")
+                    .let { if (sampleReason != null) "$it;$sampleReason" else it },
                 targetId = t.id,
             ))
         }
@@ -1341,6 +1417,10 @@ class CompareService(
         private val comments: Map<String, String> = emptyMap(),
         private val systems: Map<String, String> = emptyMap(),
         private val fallbackSystem: Map<Long, String?> = emptyMap(),
+        /** 目标自定义显示名(V72):表键 → 显示名,系统名口径最高优先 */
+        private val displayNames: Map<String, String> = emptyMap(),
+        /** 目标库描述(schema_doc):表键 → 描述,系统名口径排在 table_system 登记之后、数据源名之前 */
+        private val schemaDescs: Map<String, String> = emptyMap(),
         /** 明细表头用的字段注释:表键 → (字段小写 → 注释),由 exportContext 预取 */
         private val columnComments: Map<String, Map<String, String>> = emptyMap(),
     ) {
@@ -1348,9 +1428,16 @@ class CompareService(
         fun comment(datasourceId: Long, db: String, table: String): String? =
             comments[key(datasourceId, db, table)]
 
-        /** 所属系统:table_system 登记值,未登记回落数据源名 */
+        /** 所属系统:自定义显示名(V72)> table_system 登记值 > 库描述(schema_doc)> 数据源名,逐级回落 */
         fun systemName(datasourceId: Long, db: String, table: String): String? =
-            systems[key(datasourceId, db, table)] ?: fallbackSystem[datasourceId]
+            displayNames[key(datasourceId, db, table)]
+                ?: systems[key(datasourceId, db, table)]
+                ?: schemaDescs[key(datasourceId, db, table)]
+                ?: fallbackSystem[datasourceId]
+
+        /** 目标库描述(明细 sheet 名等不参与 table_system 登记的展示位用);无描述返回 null */
+        fun schemaDesc(datasourceId: Long, db: String, table: String): String? =
+            schemaDescs[key(datasourceId, db, table)]
 
         /** 明细表头:字段注释优先(表中文名口径),无注释回落字段名 */
         fun fieldHeader(datasourceId: Long, db: String, table: String, field: String): String =
@@ -1378,6 +1465,16 @@ class CompareService(
         val systems = HashMap<String, String>()
         val fallbackSystem = HashMap<Long, String?>()
         val columnComments = HashMap<String, Map<String, String>>()
+        // 目标自定义显示名(V72):系统名口径最高优先,随目标行快照,不依赖外部登记
+        val displayNames = HashMap<String, String>()
+        // 目标库描述(schema_doc,动态查非快照):系统名口径排在 table_system 登记之后、数据源名之前
+        val schemaDescs = HashMap<String, String>()
+        targets.forEach { t ->
+            t.displayName?.takeIf { it.isNotBlank() }
+                ?.let { displayNames[ExportContext.key(t.datasourceId, t.dbName, t.tableName)] = it }
+            schemaDescOf(t.datasourceId, t.dbName, t.schemaName)
+                ?.let { schemaDescs[ExportContext.key(t.datasourceId, t.dbName, t.tableName)] = it }
+        }
         // 表中文名:快照优先;老任务(快照 NULL)按「数据源 + 库 + schema」走缓存优先兜底
         // (各目标 schema 各自快照在 compare_target 上,不能只用库名推)
         job.baseTableComment?.let { comments[ExportContext.key(job.baseDatasourceId, job.baseDb, job.baseTable)] = it }
@@ -1444,11 +1541,12 @@ class CompareService(
             loadColumnComments(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName,
                 t.columnComments)
         }
-        return ExportContext(comments, systems, fallbackSystem, columnComments)
+        return ExportContext(comments, systems, fallbackSystem, displayNames, schemaDescs, columnComments)
     }
 
     /** 总览 sheet:表头 + 一行一系统(首行基准表,与后续明细 sheet 序号一一对应) */
-    private fun writeOverviewSheet(wb: SXSSFWorkbook, overview: List<CompareExportOverviewRow>) {
+    private fun writeOverviewSheet(wb: SXSSFWorkbook, overview: List<CompareExportOverviewRow>,
+                                   wrapStyle: CellStyle) {
         val sheet = wb.createSheet(OVERVIEW_SHEET_NAME)
         val head = sheet.createRow(0)
         EXPORT_OVERVIEW_HEADERS.forEachIndexed { i, h -> head.createCell(i).setCellValue(h) }
@@ -1456,7 +1554,8 @@ class CompareService(
         for (row in overview) {
             val excelRow = sheet.createRow(r++)
             excelRow.createCell(0).setCellValue(row.tableComment ?: "")
-            excelRow.createCell(1).setCellValue(row.tableName)
+            // 表名为单元格内多行(表名/系统名/（库.模式）),需自动换行样式
+            excelRow.createCell(1).apply { setCellValue(row.tableName); cellStyle = wrapStyle }
             excelRow.createCell(2).setCellValue(row.systemName ?: "")
             ExcelCells.cell(excelRow.createCell(3), row.rowCount)
             excelRow.createCell(4).setCellValue(row.dataUpdatedAt ?: "")
@@ -1494,17 +1593,23 @@ class CompareService(
                                    targets: List<CompareRepository.TargetRow>,
                                    diffsByTarget: Map<Long, List<CompareRepository.DiffRow>>,
                                    ctx: ExportContext,
-                                   identityByTarget: Map<Long, List<String>>) {
+                                   identityByTarget: Map<Long, List<String>>,
+                                   wrapStyle: CellStyle) {
         val sheet = wb.createSheet(ROW_LEVEL_SHEET_NAME)
         var r = 0
         val head = sheet.createRow(r++)
         ROW_LEVEL_HEADERS.forEachIndexed { i, h -> head.createCell(i).setCellValue(h) }
 
         val baseComment = ctx.comment(job.baseDatasourceId, job.baseDb, job.baseTable).orEmpty()
+        // 表名单元格统一单元格内三行「表名 / 系统名 / （库.模式）」格式
+        val baseTableLabel = tableDisplayName(ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable),
+            job.baseDb, job.baseSchema, job.baseTable)
         var written = 0
         var truncated = false
         loop@ for (t in targets) {
             val targetComment = ctx.comment(t.datasourceId, t.dbName, t.tableName).orEmpty()
+            val targetTableLabel = tableDisplayName(ctx.systemName(t.datasourceId, t.dbName, t.tableName),
+                t.dbName, t.schemaName, t.tableName)
             // 该目标的有效身份字段(人工覆盖 ?? 推导;基准侧字段名)
             val identity = identityByTarget[t.id] ?: listOf(job.keyField)
             // 业务侧身份/名称字段:显式映射(人工连线)里基准字段连到的目标列;
@@ -1529,13 +1634,13 @@ class CompareService(
                 if (row.diffType == "DIFF" && !hasIdentityDiff(identity, row, rowMap)) continue
 
                 val excelRow = sheet.createRow(r++)
-                excelRow.createCell(0).setCellValue(job.baseTable)
+                excelRow.createCell(0).apply { setCellValue(baseTableLabel); cellStyle = wrapStyle }
                 excelRow.createCell(1).setCellValue(baseComment)
                 excelRow.createCell(2).setCellValue(identity.joinToString("+"))
                 excelRow.createCell(3).setCellValue(if (extra) "" else row.objectKey.orEmpty())
                 excelRow.createCell(4).setCellValue(job.displayField.orEmpty())
                 excelRow.createCell(5).setCellValue(if (extra) "" else row.objectName.orEmpty())
-                excelRow.createCell(6).setCellValue(t.tableName)
+                excelRow.createCell(6).apply { setCellValue(targetTableLabel); cellStyle = wrapStyle }
                 excelRow.createCell(7).setCellValue(targetComment)
                 excelRow.createCell(8).setCellValue(targetKeyField)
                 excelRow.createCell(9).setCellValue(if (extra) row.objectKey.orEmpty() else targetCode.orEmpty())
@@ -1577,7 +1682,7 @@ class CompareService(
     private fun writeFieldSummarySheet(wb: SXSSFWorkbook, job: CompareRepository.JobRow,
                                        targets: List<CompareRepository.TargetRow>,
                                        diffsByTarget: Map<Long, List<CompareRepository.DiffRow>>,
-                                       ctx: ExportContext) {
+                                       ctx: ExportContext, wrapStyle: CellStyle) {
         val sheet = wb.createSheet(FIELD_SUMMARY_SHEET_NAME)
         var r = 0
         val head = sheet.createRow(r++)
@@ -1615,7 +1720,11 @@ class CompareService(
                 val mismatch = mismatchByField[f] ?: 0
                 val targetColumn = mappingLower[f.lowercase()] ?: f
                 val excelRow = sheet.createRow(r++)
-                excelRow.createCell(0).setCellValue(t.tableName)
+                excelRow.createCell(0).apply {
+                    setCellValue(tableDisplayName(
+                        ctx.systemName(t.datasourceId, t.dbName, t.tableName), t.dbName, t.schemaName, t.tableName))
+                    cellStyle = wrapStyle
+                }
                 excelRow.createCell(1).setCellValue(targetComment)
                 excelRow.createCell(2).setCellValue(f)
                 excelRow.createCell(3).setCellValue(
@@ -1735,7 +1844,7 @@ class CompareService(
      * 一行一个「对象 × 基准字段」,多系统并排逐字段对照取值:
      * - 两行表头:首行 对象编码/对象名称(动态列名,与各目标明细 sheet 同口径)+ 基准字段名/基准字段中文/基准表值
      *   共 5 列,右侧每个比对系统 4 列「{所属系统}业务表字段名 / {所属系统}业务表中文 / {所属系统}业务表值 / 差异原因」
-     *   (所属系统与总览同口径);第二行显示各侧表定位 `[库名][schema][表名]`(schema 为空省略该段,
+     *   (所属系统与总览同口径);第二行显示各侧表定位「表名 / 系统名 / （库.模式）」(单元格内三行,空段省略,
      *   基准侧写在前 5 列首格,各系统写在其 4 列首格);左侧 5 列与两行表头**冻结**
      *   (createFreezePane(5, 2),横向/纵向滚动时身份、基准列与表头不跟随)
      * - 行集合:有差异的对象(任一目标存在 DIFF/MISSING 行)× 各系统比对字段的**并集**(保持任务字段顺序):
@@ -1750,7 +1859,7 @@ class CompareService(
     private fun writeMergedDetailSheet(wb: SXSSFWorkbook, job: CompareRepository.JobRow,
                                        targets: List<CompareRepository.TargetRow>,
                                        diffsByTarget: Map<Long, List<CompareRepository.DiffRow>>,
-                                       ctx: ExportContext, diffStyle: CellStyle) {
+                                       ctx: ExportContext, diffStyle: CellStyle, wrapStyle: CellStyle) {
         val sheet = wb.createSheet(MERGED_DETAIL_SHEET_NAME)
         // 左侧 5 列(对象编码/名称 + 基准字段名/中文/值)+ 两行表头冻结:滚动比对时不丢身份、基准上下文与表头
         sheet.createFreezePane(5, 2)
@@ -1770,11 +1879,21 @@ class CompareService(
             head.createCell(7 + i * 4).setCellValue("${sys}业务表值")
             head.createCell(8 + i * 4).setCellValue("差异原因")
         }
-        // 第二行表头:各侧表定位 `[库名][schema][表名]`(schema 为空省略该段)
+        // 第二行表头:各侧表定位,统一单元格内三行「表名 / 系统名 / （库.模式）」格式(空段省略;
+        // 系统名与首行动态列头同口径,未登记回落数据源名)
         val sub = sheet.createRow(r++)
-        sub.createCell(0).setCellValue(tablePath(job.baseDb, job.baseSchema, job.baseTable))
+        sub.createCell(0).apply {
+            setCellValue(tableDisplayName(ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable),
+                job.baseDb, job.baseSchema, job.baseTable))
+            cellStyle = wrapStyle
+        }
         targets.forEachIndexed { i, t ->
-            sub.createCell(5 + i * 4).setCellValue(tablePath(t.dbName, t.schemaName, t.tableName))
+            sub.createCell(5 + i * 4).apply {
+                setCellValue(tableDisplayName(
+                    ctx.systemName(t.datasourceId, t.dbName, t.tableName) ?: "数据源${t.datasourceId}",
+                    t.dbName, t.schemaName, t.tableName))
+                cellStyle = wrapStyle
+            }
         }
 
         val fields = parseFields(job.fieldsJson)
@@ -1922,8 +2041,10 @@ class CompareService(
         } catch (e: Exception) {
             false
         }
-        // 最左侧定位列:业务系统名称/库/(模式)/表名/表中文名(整 sheet 同值,逐行重复便于筛选)
-        val systemName = ctx.systemName(t.datasourceId, t.dbName, t.tableName)
+        // 最左侧定位列:业务系统名称/库/(模式)/表名/表中文名(整 sheet 同值,逐行重复便于筛选);
+        // 系统名口径:自定义显示名 > table_system 登记/数据源名(ctx.systemName 已含)> 数据源名快照
+        val systemName = t.displayName?.takeIf { it.isNotBlank() }
+            ?: ctx.systemName(t.datasourceId, t.dbName, t.tableName)
             ?: t.dsName ?: "数据源${t.datasourceId}"
         val tableComment = ctx.comment(t.datasourceId, t.dbName, t.tableName).orEmpty()
         val prefix = if (showSchema) 5 else 4
@@ -2193,8 +2314,17 @@ class CompareService(
             r.startedAt?.let { Duration.between(it, r.finishedAt ?: LocalDateTime.now()).toMillis() },
             r.pendingReason, r.objectCategory, r.importId, r.importFileName,
             // 「打开文件」置灰口径(V65):已导出且 checksum 一致;「打开文件夹」始终可点(退化开 compare 目录)
-            exportFileOk = exportFileOk(r.exportStatus, r.exportFile, r.exportChecksum))
+            exportFileOk = exportFileOk(r.exportStatus, r.exportFile, r.exportChecksum),
+            sampleRows = r.sampleRows)
     }
+
+    /**
+     * 目标库描述(schema_doc,库列表页可编辑):默认显示名回落链「自定义名 > 库描述 > 数据源名快照」的一环。
+     * 动态查不做快照(描述后续被改,页面/导出跟随);db/schema 归一与单/多库方言处理在
+     * [MetadataService.schemaDescription] 内完成,数据源已删/无描述返回 null
+     */
+    private fun schemaDescOf(datasourceId: Long, db: String, schema: String?): String? =
+        metadataService.schemaDescription(datasourceId, db.ifBlank { null }, schema)
 
     private fun toTargetView(t: CompareRepository.TargetRow): CompareTargetView {
         val (db, schema) = normalizeLocation(t.datasourceId, t.dbName, t.schemaName)
@@ -2206,7 +2336,8 @@ class CompareService(
             t.missingCount, t.extraCount, t.fieldMismatchCount,
             t.coverage, t.fieldConsistency, t.completeness, t.score, t.error,
             parseMapping(t.fieldMappingJson).takeIf { it.isNotEmpty() },
-            parseIdentityKeys(t.identityJson))
+            parseIdentityKeys(t.identityJson), t.displayName,
+            schemaDescOf(t.datasourceId, db, schema))
     }
 
     private fun parseFields(json: String?): List<String> =
@@ -2219,9 +2350,18 @@ class CompareService(
             }
         } ?: emptyList()
 
-    /** 表定位串 `[库名][schema][表名]`(schema 为空省略该段),列级对比明细第二行表头用 */
-    private fun tablePath(db: String, schema: String?, table: String): String =
-        listOf(db, schema.orEmpty(), table).filter { it.isNotBlank() }.joinToString("") { "[$it]" }
+    /**
+     * 导出文件内表名统一显示格式:单元格内三行——表名 / 系统名 / （数据库名.模式名）;
+     * 系统名空省略该行,库与模式都空省略第三行(单行太长,拆行展示)
+     */
+    private fun tableDisplayName(system: String?, db: String, schema: String?, table: String): String {
+        val lines = ArrayList<String>(3)
+        lines.add(table)
+        if (!system.isNullOrBlank()) lines.add(system)
+        val location = listOf(db, schema.orEmpty()).filter { it.isNotBlank() }
+        if (location.isNotEmpty()) lines.add("（${location.joinToString(".")}）")
+        return lines.joinToString("\n")
+    }
 
     private fun parseDiffs(json: String?): List<FieldDiff>? =
         json?.let {

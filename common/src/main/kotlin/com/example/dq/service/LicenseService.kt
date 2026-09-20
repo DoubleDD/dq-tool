@@ -58,7 +58,7 @@ class LicenseService(
     @Volatile
     private var cached: LicenseStatusView? = null
 
-    /** 当前授权状态(展示用,不回传授权码本身;serverUrl 永不回传) */
+    /** 当前授权状态(展示用;code 回传当前激活码明文供前端输入框回填,serverUrl 永不回传) */
     fun status(): LicenseStatusView {
         return cached ?: loadStatus().also { cached = it }
     }
@@ -209,14 +209,16 @@ class LicenseService(
         // 未配置公钥时无法验签,按未激活处理(activate 会拒绝并提示)
         val key = publicKey ?: return LicenseStatusView.notActivated()
         return try {
-            val payload = LicenseCodec.decodeAndVerify(crypto.decrypt(row.codeEnc), key)
+            val code = crypto.decrypt(row.codeEnc)
+            val payload = LicenseCodec.decodeAndVerify(code, key)
             val today = LocalDate.now()
             val expired = LicenseCodec.isExpired(payload.expiresAt, today)
             val daysLeft = payload.expiresAt?.let { maxOf(ChronoUnit.DAYS.between(today, it), 0) }
             LicenseStatusView(true, expired, payload.customer, payload.expiresAt, daysLeft,
                 username = payload.username, sid = payload.sid, timestamp = payload.timestamp,
                 menus = LicenseMenu.ALL.filter { it in LicenseMenu.granted(payload.features, payload.menus) }.map { it.key },
-                bypassAuth = !expired && payload.bypassAuth)
+                bypassAuth = !expired && payload.bypassAuth,
+                code = code)
         } catch (e: RuntimeException) {
             log.warn("库存授权码校验失败,按未激活处理: {}", e.message)
             LicenseStatusView.notActivated()

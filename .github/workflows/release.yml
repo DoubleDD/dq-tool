@@ -439,14 +439,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y minisign
 
       # 私钥文件是单行 base64(tauri 签名约定),还原成 minisign 文本格式后签名;
-      # 空口令私钥,minisign 非交互直接签。.sig 产物回写成 base64 单行,
+      # 私钥为空口令,但 minisign 无免交互参数(它的 -p 是公钥文件),加密格式私钥
+      # 必走 get_password() 提示;CI 无 TTY 时退回读 stdin,stdin 是 /dev/null 则
+      # EOF 报错 exit 2(2026-09 首发踩坑),故用 echo 喂一个空行当空口令。
+      # .sig 产物回写成 base64 单行,
       # 与 updater 的 .sig 约定一致(内容 = base64(minisign 文本格式签名))
       - name: Sign business package
         run: |
           set -euo pipefail
           z=$(ls dq-tool-*-business.zip)
           base64 -d scripts/updater-private.key > /tmp/updater-private.key
-          minisign -S -s /tmp/updater-private.key -m "$z"
+          echo "" | minisign -S -s /tmp/updater-private.key -m "$z"
           rm -f /tmp/updater-private.key
           base64 -w0 "$z.minisig" > "$z.sig"
           ls -la "$z" "$z.sig"

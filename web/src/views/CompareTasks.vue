@@ -66,6 +66,10 @@
             <el-tag size="small" :type="row.compareMode === 'COLUMN' ? 'warning' : 'info'" effect="plain" style="margin-left: 4px">
               {{ row.compareMode === 'COLUMN' ? '行级+列级' : '行级' }}
             </el-tag>
+            <!-- 抽样标识(V70):sampleRows 非空 = 双侧各按身份字段排序取前 N 条比对,指标为样本口径 -->
+            <el-tag v-if="row.sampleRows" size="small" type="success" effect="plain" style="margin-left: 4px">
+              抽样 {{ row.sampleRows }} 条
+            </el-tag>
           </div>
           <div style="color: var(--el-text-color-secondary); font-size: 12px">T-{{ row.id }}</div>
           <!-- 来源文件名:仅批量导入来的任务有(importId 非空),点击下载上传的 Excel 原件 -->

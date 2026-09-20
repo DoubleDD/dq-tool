@@ -335,15 +335,51 @@ class DialectSqlGenTest {
 
     @Test
     fun `DM表清单 默认用ALL_SEGMENTS统计大小`() {
-        val sql = DmDialect.listTablesSql(true)
+        val sql = DmDialect.listTablesSql("all_segments")
         assertTrue(sql.contains("FROM all_segments s"))
     }
 
     @Test
-    fun `DM表清单 降级模式不引用ALL_SEGMENTS`() {
-        val sql = DmDialect.listTablesSql(false)
-        assertFalse(sql.contains("all_segments"))
+    fun `DM表清单 降级模式不引用段视图`() {
+        val sql = DmDialect.listTablesSql(null)
+        assertFalse(sql.contains("segments"))
         assertTrue(sql.contains("FROM all_tables t"))
+    }
+
+    @Test
+    fun `DM表清单 DBA_SEGMENTS与USER_SEGMENTS降级变体`() {
+        val dba = DmDialect.listTablesSql("dba_segments")
+        assertTrue(dba.contains("FROM dba_segments s"))
+        assertFalse(dba.contains("all_segments"))
+        val user = DmDialect.listTablesSql("user_segments")
+        assertTrue(user.contains("FROM user_segments s"))
+        // user_segments 无 owner 列,只统计当前用户
+        assertTrue(user.contains("t.owner = USER"))
+    }
+
+    @Test
+    fun `DM表清单 TABLE_USED_SPACE函数兜底变体`() {
+        val sql = DmDialect.listTablesSql("table_func")
+        assertTrue(sql.contains("TABLE_USED_SPACE(t.owner, t.table_name) * PAGE()"), sql)
+        assertFalse(sql.contains("segments"))
+        assertTrue(DmDialect.sumSizeSql("table_func").contains("TABLE_USED_SPACE"))
+    }
+
+    @Test
+    fun `DM体积来源降级链 固定五环`() {
+        assertEquals(listOf("all_segments", "dba_segments", "table_func", "user_segments", null),
+                DmDialect.sizeSourceChain())
+    }
+
+    @Test
+    fun `DM体积来源探测 缓存落点与重探`() {
+        val chain = DmDialect.sizeSourceChain()
+        assertEquals(chain, DmDialect.sizeSourcePlan(chain, null, 0L))
+        val cached = DmDialect.SizeSourceChoice("dba_segments", 1000L)
+        assertEquals(listOf("dba_segments", "table_func", "user_segments", null),
+                DmDialect.sizeSourcePlan(chain, cached, 2000L))
+        assertEquals(chain, DmDialect.sizeSourcePlan(chain, cached,
+                1000L + DmDialect.SIZE_SOURCE_REPROBE_MS + 1))
     }
 
     @Test
@@ -355,9 +391,9 @@ class DialectSqlGenTest {
         assertTrue(OracleDialect.listTablesSql(23, true, listOf("T1")).contains("AND t.table_name IN (?)"))
         assertTrue(OracleDialect.listTablesSql(19, false, listOf("T1")).contains("AND t.table_name IN (?)"))
 
-        val dm = DmDialect.listTablesSql(true, listOf("T1"))
+        val dm = DmDialect.listTablesSql("all_segments", listOf("T1"))
         assertTrue(dm.contains("AND t.table_name IN (?)"), dm)
-        assertFalse(DmDialect.listTablesSql(true).contains("IN (?"))
+        assertFalse(DmDialect.listTablesSql("all_segments").contains("IN (?"))
     }
 
     @Test

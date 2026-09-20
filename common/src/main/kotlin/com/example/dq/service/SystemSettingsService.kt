@@ -16,6 +16,15 @@ class SystemSettingsService(
     private val config: AppConfig,
 ) {
 
+    companion object {
+        /** 页面心跳间隔默认值(秒):与改动前前端硬编码的 5 秒一致 */
+        const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS: Int = 5
+        /** 心跳间隔下限(秒) */
+        const val MIN_HEARTBEAT_INTERVAL_SECONDS: Int = 1
+        /** 心跳间隔上限(秒):24 小时(页面单位支持秒/分/时) */
+        const val MAX_HEARTBEAT_INTERVAL_SECONDS: Int = 24 * 3600
+    }
+
     /** 合并 DB 自定义值与配置文件默认值后的有效扫描参数(供扫描/规划/分块执行实时读取) */
     fun scanSettings(): ScanConfig {
         val row = repo.get()
@@ -63,6 +72,9 @@ class SystemSettingsService(
                 lanEnabled = prev?.lanEnabled,
                 instanceId = prev?.instanceId,
                 instanceName = prev?.instanceName,
+                // 非扫描列整体透传,整行 upsert 不得清掉无关设置(心跳间隔、局域网手动实例清单)
+                lanManualPeers = prev?.lanManualPeers,
+                heartbeatIntervalSeconds = prev?.heartbeatIntervalSeconds,
             )
         )
     }
@@ -86,6 +98,27 @@ class SystemSettingsService(
                     workers = null, chunksPerTable = null, rowThreshold = null,
                     sizeThresholdBytes = null, sampleRows = null, statementTimeoutSeconds = null,
                     browserApp = browserId,
+                )
+            )
+        }
+    }
+
+    /** 页面心跳间隔(秒):DB 自定义值,未设置回落默认 5 秒;前端按此上报,桌面看门狗按 3 个间隔判窗口关闭 */
+    fun heartbeatIntervalSeconds(): Int =
+        repo.get()?.heartbeatIntervalSeconds ?: DEFAULT_HEARTBEAT_INTERVAL_SECONDS
+
+    /** 保存页面心跳间隔(秒),超界钳制到 [1, 24h];保存后前端即时生效,看门狗超时随 3 个间隔自适应放宽 */
+    fun saveHeartbeatInterval(seconds: Int) {
+        val clamped = seconds.coerceIn(MIN_HEARTBEAT_INTERVAL_SECONDS, MAX_HEARTBEAT_INTERVAL_SECONDS)
+        val prev = repo.get()
+        if (prev != null) {
+            repo.upsert(prev.copy(heartbeatIntervalSeconds = clamped))
+        } else {
+            repo.upsert(
+                SystemSettingsRepository.SystemSettingsRow(
+                    workers = null, chunksPerTable = null, rowThreshold = null,
+                    sizeThresholdBytes = null, sampleRows = null, statementTimeoutSeconds = null,
+                    heartbeatIntervalSeconds = clamped,
                 )
             )
         }

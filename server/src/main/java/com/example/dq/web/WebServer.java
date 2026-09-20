@@ -43,6 +43,7 @@ import com.example.dq.model.LicenseAdminRequiredException;
 import com.example.dq.model.LicenseMenuRequiredException;
 import com.example.dq.model.LicenseRequiredException;
 import com.example.dq.service.LicenseService;
+import com.example.dq.service.SystemSettingsService;
 import io.javalin.Javalin;
 import io.javalin.config.RoutesConfig;
 import io.javalin.json.JavalinJackson3;
@@ -231,7 +232,15 @@ public class WebServer {
         // ---- 桌面生命周期(原 Spring 事件/调度挂载点,改显式装配;退出动作统一走 AppShutdown) ----
         // 连接池由共享内核懒构建,退出时按需取(内核未构建完就退出时跳过关池)
         AppShutdown shutdown = new AppShutdown(app, () -> env == null ? null : env.getDataSource());
-        this.session = new DesktopSession(props, shutdown);
+        // 心跳间隔供应器:内核就绪后实时读系统设置(页面可改),未就绪/读取失败回落默认,绝不让看门狗因设置读取异常中断
+        this.session = new DesktopSession(props, shutdown, () -> {
+            try {
+                return env != null ? env.getSystemSettingsService().heartbeatIntervalSeconds()
+                        : SystemSettingsService.DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
+            } catch (Exception e) {
+                return SystemSettingsService.DEFAULT_HEARTBEAT_INTERVAL_SECONDS;
+            }
+        });
         this.browserOpener = new BrowserOpener(session, Path.of(config.dataDir(), "browser-app.txt"));
         this.trayManager = new TrayManager(browserOpener, session, shutdown);
         sessionRef.set(session);
@@ -508,6 +517,8 @@ public class WebServer {
         // 「待处理」直接开始比对(编辑向导「保存并比对」在 PUT 之后调用;仅 PENDING 且非 DS_ERROR)
         routes.post("/api/compare-jobs/{id}/start", ctx -> compareCtrl.get().start(ctx));
         routes.put("/api/compare-jobs/{id}", ctx -> compareCtrl.get().update(ctx));
+        // 单目标自定义显示名(V72,备用接口;向导清单编辑随任务 PUT 提交,不走这里)
+        routes.put("/api/compare-jobs/{id}/targets/{targetId}/display-name", ctx -> compareCtrl.get().updateTargetDisplayName(ctx));
 
         // ---- 比对任务批量导入(一 sheet 一任务,原件留档;门禁同 compare) ----
         routes.post("/api/compare-imports", ctx -> compareImportCtrl.get().submit(ctx));
@@ -600,6 +611,8 @@ public class WebServer {
         routes.put("/api/system-settings/browser", ctx -> settingsCtrl.get().browserSave(ctx));
         routes.get("/api/system-settings/jvm-memory", ctx -> settingsCtrl.get().jvmMemoryGet(ctx));
         routes.put("/api/system-settings/jvm-memory", ctx -> settingsCtrl.get().jvmMemorySave(ctx));
+        routes.get("/api/system-settings/heartbeat", ctx -> settingsCtrl.get().heartbeatGet(ctx));
+        routes.put("/api/system-settings/heartbeat", ctx -> settingsCtrl.get().heartbeatSave(ctx));
         routes.get("/api/license/status", ctx -> licenseCtrl.get().status(ctx));
         routes.post("/api/license/activate", ctx -> licenseCtrl.get().activate(ctx));
         // 授权码管理(仅配置了签发私钥的管理员实例;在 /api/license 前缀下,不被激活拦截)

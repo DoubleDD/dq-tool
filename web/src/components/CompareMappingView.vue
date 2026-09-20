@@ -16,7 +16,7 @@ import RelationGraphCanvas from './RelationGraphCanvas.vue'
 const props = defineProps({
   // 比对任务:baseDatasourceId/baseDb/baseSchema/baseTable/keyField
   job: { type: Object, required: true },
-  // 任务对比目标:[{ datasourceId, db, schema, table, dsName, mapping }]
+  // 任务对比目标:[{ datasourceId, db, schema, table, dsName(快照), displayName(自定义名,可空), schemaDesc(库描述,可空), mapping }]
   targets: { type: Array, default: () => [] }
 })
 
@@ -35,11 +35,12 @@ function nodeKey(spec) {
 const baseKey = computed(() => nodeKey(baseSpec.value))
 const targetKeys = computed(() => props.targets.map((t) => nodeKey(t)))
 
-/** 目标展示名:数据源名 · 库.模式.表(与新建向导 targetLabel 同口径) */
+/** 目标展示名:自定义显示名(V72)> 库描述(schema_doc)> 数据源名 · 库.模式.表(与新建向导 targetLabel 同口径) */
 function targetLabel(t) {
   const schemaPart = t.db ? `${t.db}.${t.schema || ''}` : (t.schema || '')
   const loc = `${schemaPart ? schemaPart + '.' : ''}${t.table}`
-  return t.dsName ? `${t.dsName} · ${loc}` : loc
+  const name = t.displayName || t.schemaDesc || t.dsName
+  return name ? `${name} · ${loc}` : loc
 }
 
 /** 基准表定位串:db.schema.table(库/模式可空时省略对应段) */
