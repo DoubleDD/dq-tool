@@ -134,6 +134,39 @@ class ExportCenterServiceTest {
     }
 
     @Test
+    fun `同名覆盖导出只留最新一条记录`() {
+        val env = Env()
+        Files.createDirectories(env.dataDir.resolve("compare"))
+        // 同一任务反复导出,文件名相同、后者覆盖前者(比对报告 export 的既有行为)
+        repeat(3) {
+            env.service.recordStart(ExportKind.COMPARE_XLSX, "比对任务 #46 差异报告",
+                "46-示例任务.xlsx", key = "compare-export:46")
+            Files.write(env.dataDir.resolve("compare/46-示例任务.xlsx"), ByteArray(10 + it))
+            env.service.finalize(ExportKind.COMPARE_XLSX, key = "compare-export:46",
+                fileName = "46-示例任务.xlsx", relPath = "compare/46-示例任务.xlsx",
+                artifact = env.dataDir.resolve("compare/46-示例任务.xlsx"))
+        }
+        val page = env.service.list(null, null, null, null, 1, 20)
+        assertEquals(1, page.total)
+        val row = page.items.single()
+        assertEquals("SUCCESS", row.status)
+        assertEquals("compare/46-示例任务.xlsx", row.relPath)
+        assertEquals(12L, row.fileSize)
+
+        // 直存 landed 路径同样清理同 rel_path 旧记录
+        Files.createDirectories(env.dataDir.resolve("exports"))
+        repeat(2) {
+            env.service.recordStart(ExportKind.SCAN_EXCEL, "扫描任务 #1 结果", "dq-scan-1.xlsx",
+                path = "/api/scans/1/export")
+            Files.write(env.dataDir.resolve("exports/dq-scan-1.xlsx"), ByteArray(20))
+            env.service.landed("dq-scan-1.xlsx")
+        }
+        assertEquals(1, env.service.list(null, "dq-scan-1", null, null, 1, 20).total)
+        // 不同名的记录不受影响
+        assertEquals(2, env.service.list(null, null, null, null, 1, 20).total)
+    }
+
+    @Test
     fun `kind与关键字与时间筛选与删除`() {
         val env = Env()
         env.service.recordStart(ExportKind.SCAN_EXCEL, "扫描任务 #1 结果", "dq-scan-1.xlsx",

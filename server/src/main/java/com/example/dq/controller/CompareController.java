@@ -222,7 +222,8 @@ public class CompareController {
                 "compare-export:" + id, null);
         CompareService.ExportFileResult result = service.exportToFile(id);
         exportCenterService.finalize(ExportKind.COMPARE_XLSX, "compare-export:" + id,
-                null, result.getName(), "compare/" + result.getName(), null, result.getChecksum(), null);
+                null, result.getName(), "compare/" + result.getName(),
+                java.nio.file.Paths.get(result.getPath()), result.getChecksum(), null);
         ctx.json(result);
     }
 

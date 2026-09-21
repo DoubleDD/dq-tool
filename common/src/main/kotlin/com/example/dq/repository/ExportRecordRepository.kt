@@ -51,6 +51,10 @@ class ExportRecordRepository(private val jdbc: Jdbc) {
     fun failRunning(error: String): Int =
         jdbc.update("UPDATE export_record SET status='FAILED', error=? WHERE status='RUNNING'", error)
 
+    /** 同名覆盖导出:新记录落盘成功后,清除同 rel_path 的旧记录(文件已被覆盖,旧记录校验和必然失配) */
+    fun deleteOthersByRelPath(relPath: String, keepId: Long): Int =
+        jdbc.update("DELETE FROM export_record WHERE rel_path=? AND id<>?", relPath, keepId)
+
     /** 分页列表:kind 等值、keyword 对 title/file_name LIKE、created_at 起止(含当日由 service 侧 +1 天) */
     fun page(kind: String?, keyword: String?, start: LocalDateTime?, endExclusive: LocalDateTime?,
              page: Int, size: Int): ExportCenterPage {

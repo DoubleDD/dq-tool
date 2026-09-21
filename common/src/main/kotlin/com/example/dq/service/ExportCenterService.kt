@@ -17,6 +17,7 @@ import java.time.LocalDateTime
  *   前端失败 `failByPath` 按路径标 FAILED;
  * - 异步任务(报告 Word/抽样 zip):提交时 `recordStart`(params 记 `key: 业务:<id>`)→ 完成 `finalizeByKey`
  *   (成功补文件名/路径/大小,失败带 error);取消删除/重启中断同样走 finalize。
+ * 同名覆盖导出(比对报告等固定文件名直存):新记录落盘成功后清除同 rel_path 旧记录,列表只留最新一条。
  * 登记失败只记日志,绝不影响导出本身。
  */
 class ExportCenterService(
@@ -64,6 +65,7 @@ class ExportCenterService(
             val checksum = abs?.let { if (Files.isRegularFile(it)) sha256(it) else null }
             repo.updateLanded(id, "exports/$name", size, checksum)
             log.info("导出中心回填: file={}, relPath=exports/{}, size={}, sha256={}", name, name, size, checksum)
+            purgeOverwritten("exports/$name", id)
         } catch (e: Exception) {
             log.error("导出中心回填失败: file={}", name, e)
         }
@@ -86,6 +88,7 @@ class ExportCenterService(
             if (error == null) {
                 repo.updateFinal(id, "SUCCESS", fileName, relPath, size, sha, null)
                 log.info("导出中心终态 SUCCESS: kind={}, file={}", kind, fileName)
+                if (relPath != null) purgeOverwritten(relPath, id)
             } else {
                 repo.updateFinal(id, "FAILED", fileName, relPath, size, sha, error.take(1000))
                 log.info("导出中心终态 FAILED: kind={}, error={}", kind, error)
@@ -115,6 +118,12 @@ class ExportCenterService(
         } catch (e: Exception) {
             log.error("导出中心失败标记出错: path={}", path, e)
         }
+    }
+
+    /** 同名覆盖导出:新记录落盘成功后,同 rel_path 的旧记录一并清除(旧文件已被覆盖,留着只会校验失配) */
+    private fun purgeOverwritten(relPath: String, keepId: Long) {
+        val n = repo.deleteOthersByRelPath(relPath, keepId)
+        if (n > 0) log.info("导出中心同名覆盖清理: relPath={}, 清除旧记录 {} 条", relPath, n)
     }
 
     /** SHA-256 hex(流式读盘,landed/finalize 共用) */
