@@ -161,6 +161,8 @@ data class CompareJobView(
     val exportFileOk: Boolean = false,
     /** 抽样条数(V70):双侧各按身份列排序取前 N 条;null = 全量比对 */
     val sampleRows: Int? = null,
+    /** 基准库描述(schema_doc,库列表页可编辑):基准表显示名回落链「库描述 > 数据源名」的一环,动态查非快照 */
+    val baseSchemaDesc: String? = null,
 )
 
 /** 比对任务详情:任务字段 + 目标指标列表 */

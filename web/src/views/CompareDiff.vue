@@ -16,7 +16,7 @@
         <!-- 任务信息条 -->
         <div class="info-bar">
           <span>任务:{{ job.name }}(T-{{ job.id }})</span>
-          <span>数据源:{{ job.baseDatasourceName || `数据源 ${job.baseDatasourceId}` }}</span>
+          <span>数据源:{{ job.baseSchemaDesc || job.baseDatasourceName || `数据源 ${job.baseDatasourceId}` }}</span>
           <span>基准表:{{ baseTableLabel }}</span>
           <span>比对主键:{{ job.keyField }}</span>
           <span>对象名称:{{ job.displayField || '自动(第一个文本型字段)' }}</span>

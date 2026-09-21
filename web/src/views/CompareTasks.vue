@@ -86,7 +86,7 @@
       </el-table-column>
       <el-table-column label="基准表" min-width="200" show-overflow-tooltip>
         <template #default="{ row }">
-          <div>{{ row.baseDatasourceName || `数据源 ${row.baseDatasourceId}` }}</div>
+          <div>{{ row.baseSchemaDesc || row.baseDatasourceName || `数据源 ${row.baseDatasourceId}` }}</div>
           <div style="color: var(--el-text-color-secondary); font-size: 12px">{{ baseTableLabel(row) }}</div>
         </template>
       </el-table-column>

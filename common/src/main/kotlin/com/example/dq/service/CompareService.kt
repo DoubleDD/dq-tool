@@ -1770,6 +1770,9 @@ class CompareService(
         val displayNames = HashMap<String, String>()
         // 目标库描述(schema_doc,动态查非快照):系统名口径排在 table_system 登记之后、数据源名之前
         val schemaDescs = HashMap<String, String>()
+        // 基准表同款回落:页面/导出第一行显示优先库描述、兜底数据源名
+        schemaDescOf(job.baseDatasourceId, job.baseDb, job.baseSchema)
+            ?.let { schemaDescs[ExportContext.key(job.baseDatasourceId, job.baseDb, job.baseTable)] = it }
         targets.forEach { t ->
             t.displayName?.takeIf { it.isNotBlank() }
                 ?.let { displayNames[ExportContext.key(t.datasourceId, t.dbName, t.tableName)] = it }
@@ -2621,7 +2624,8 @@ class CompareService(
             r.pendingReason, r.objectCategory, r.importId, r.importFileName,
             // 「打开文件」置灰口径(V65):已导出且 checksum 一致;「打开文件夹」始终可点(退化开 compare 目录)
             exportFileOk = exportFileOk(r.exportStatus, r.exportFile, r.exportChecksum),
-            sampleRows = r.sampleRows)
+            sampleRows = r.sampleRows,
+            baseSchemaDesc = schemaDescOf(r.baseDatasourceId, db, schema))
     }
 
     /**
