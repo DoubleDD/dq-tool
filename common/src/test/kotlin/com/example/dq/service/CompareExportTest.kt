@@ -740,9 +740,10 @@ class CompareExportTest {
         try {
             assertEquals("数据级字段对比差异总览", wb.getSheetName(3))
             val sheet = wb.getSheetAt(3)
+            // 业务表名列头按统一显示格式(表名/系统名/（库.模式）三行) + 指标名第四行
             assertEquals(listOf("id", "name", "基准表字段数",
-                "厂商系统A对比字段数", "厂商系统A相同字段数", "厂商系统A不同字段数",
-                "厂商库对比字段数", "厂商库相同字段数", "厂商库不同字段数"),
+                "t_a\n厂商系统A\n（db_a）\n对比字段数", "t_a\n厂商系统A\n（db_a）\n相同字段数", "t_a\n厂商系统A\n（db_a）\n不同字段数",
+                "t_b\n厂商库\n（db_b）\n对比字段数", "t_b\n厂商库\n（db_b）\n相同字段数", "t_b\n厂商库\n（db_b）\n不同字段数"),
                 (0..8).map { sheet.getRow(0).getCell(it).stringCellValue })
 
             fun num(r: Int, c: Int) = sheet.getRow(r).getCell(c).numericCellValue
@@ -811,8 +812,9 @@ class CompareExportTest {
                 "厂商系统A业务表字段名", "厂商系统A业务表中文", "厂商系统A业务表值", "差异原因",
                 "厂商库业务表字段名", "厂商库业务表中文", "厂商库业务表值", "差异原因"),
                 (0..12).map { sheet.getRow(0).getCell(it).stringCellValue })
-            // 第二行表头:各侧表定位「表名 / 系统名 / （库.模式）」(单元格内三行,空段省略)
-            assertEquals("reservoir_base_info\n基准库\n（reservoir_base）", sheet.getRow(1).getCell(0).stringCellValue)
+            // 第二行表头:各侧表定位「表名 / 系统名 / （库.模式）」(单元格内三行,空段省略;
+            // 基准侧写在基准表块首格「基准字段名」列,与各系统写在其 4 列块首格同口径)
+            assertEquals("reservoir_base_info\n基准库\n（reservoir_base）", sheet.getRow(1).getCell(2).stringCellValue)
             assertEquals("t_a\n厂商系统A\n（db_a）", sheet.getRow(1).getCell(5).stringCellValue)
             assertEquals("t_b\n厂商库\n（db_b）", sheet.getRow(1).getCell(9).stringCellValue)
 

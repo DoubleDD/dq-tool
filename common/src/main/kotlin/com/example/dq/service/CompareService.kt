@@ -1268,7 +1268,7 @@ class CompareService(
             // 字段级差异汇总(固定第三个 sheet):一行一个「比对目标 × 基准字段」
             writeFieldSummarySheet(wb, job, targets, diffsByTarget, context, wrapStyle)
             // 数据级字段对比差异总览(固定第四个 sheet):一行一条数据,按系统给字段数统计
-            writeColumnDetailSheet(wb, job, targets, diffsByTarget, context, diffStyle)
+            writeColumnDetailSheet(wb, job, targets, diffsByTarget, context, diffStyle, wrapStyle)
             // 列级对比明细(固定第五个 sheet):所有系统逐字段取值横向合并,左侧 5 列冻结
             writeMergedDetailSheet(wb, job, targets, diffsByTarget, context, diffStyle, wrapStyle)
             // 总览里的每个目标行一个明细 sheet,序号与总览行顺序一致
@@ -1750,8 +1750,8 @@ class CompareService(
      * 数据级字段对比差异总览 sheet(固定第四个 sheet,始终生成):按数据行聚合的字段对比统计,
      * **一行一条数据(对象)**,只给数量、不精确到具体字段(逐字段取值看「列级对比明细」与各目标明细 sheet):
      * - 首行即表头:对象编码/对象名称(动态列名,与各目标明细 sheet 同口径)+ 基准表字段数 +
-     *   每目标三列「{所属系统}对比字段数 / {所属系统}相同字段数 / {所属系统}不同字段数」
-     *   (所属系统与总览同口径,动态取名)
+     *   每目标三列「对比字段数 / 相同字段数 / 不同字段数」,业务表名按统一显示格式
+     *   (表名/系统名/（库.模式）三行)放在指标名前(所属系统与总览同口径,动态取名)
      * - 行集合:有差异的对象(任一目标存在 DIFF/MISSING 行;多余 EXTRA 对象不属基准侧,不展开)
      * - 基准表字段数 = 任务比对字段总数(整表恒同);
      *   对比字段数 = 该系统参与比对的字段数(显式映射 = 连线字段数,无映射 = 基准表字段数);
@@ -1762,7 +1762,7 @@ class CompareService(
     private fun writeColumnDetailSheet(wb: SXSSFWorkbook, job: CompareRepository.JobRow,
                                        targets: List<CompareRepository.TargetRow>,
                                        diffsByTarget: Map<Long, List<CompareRepository.DiffRow>>,
-                                       ctx: ExportContext, diffStyle: CellStyle) {
+                                       ctx: ExportContext, diffStyle: CellStyle, wrapStyle: CellStyle) {
         val sheet = wb.createSheet(COLUMN_DETAIL_SHEET_NAME)
 
         var r = 0
@@ -1773,9 +1773,14 @@ class CompareService(
         head.createCell(2).setCellValue("基准表字段数")
         targets.forEachIndexed { i, t ->
             val sys = ctx.systemName(t.datasourceId, t.dbName, t.tableName) ?: "数据源${t.datasourceId}"
-            head.createCell(3 + i * 3).setCellValue("${sys}对比字段数")
-            head.createCell(4 + i * 3).setCellValue("${sys}相同字段数")
-            head.createCell(5 + i * 3).setCellValue("${sys}不同字段数")
+            // 业务表名用统一显示格式(表名/系统名/（库.模式）三行) + 指标名作第四行,多行需自动换行
+            val table = tableDisplayName(sys, t.dbName, t.schemaName, t.tableName)
+            listOf("对比字段数", "相同字段数", "不同字段数").forEachIndexed { j, metric ->
+                head.createCell(3 + i * 3 + j).apply {
+                    setCellValue("$table\n$metric")
+                    cellStyle = wrapStyle
+                }
+            }
         }
 
         val fields = parseFields(job.fieldsJson)
@@ -1845,7 +1850,7 @@ class CompareService(
      * - 两行表头:首行 对象编码/对象名称(动态列名,与各目标明细 sheet 同口径)+ 基准字段名/基准字段中文/基准表值
      *   共 5 列,右侧每个比对系统 4 列「{所属系统}业务表字段名 / {所属系统}业务表中文 / {所属系统}业务表值 / 差异原因」
      *   (所属系统与总览同口径);第二行显示各侧表定位「表名 / 系统名 / （库.模式）」(单元格内三行,空段省略,
-     *   基准侧写在前 5 列首格,各系统写在其 4 列首格);左侧 5 列与两行表头**冻结**
+     *   基准侧写在基准表块首格「基准字段名」列,各系统写在其 4 列块首格);左侧 5 列与两行表头**冻结**
      *   (createFreezePane(5, 2),横向/纵向滚动时身份、基准列与表头不跟随)
      * - 行集合:有差异的对象(任一目标存在 DIFF/MISSING 行)× 各系统比对字段的**并集**(保持任务字段顺序):
      *   显式映射的任务,该系统比对字段 = 连线字段(未连线 = 未比对);无映射(按名称自动匹配)的任务 = 全部比对字段
@@ -1880,9 +1885,10 @@ class CompareService(
             head.createCell(8 + i * 4).setCellValue("差异原因")
         }
         // 第二行表头:各侧表定位,统一单元格内三行「表名 / 系统名 / （库.模式）」格式(空段省略;
-        // 系统名与首行动态列头同口径,未登记回落数据源名)
+        // 系统名与首行动态列头同口径,未登记回落数据源名);基准侧写在基准表块首格(基准字段名列),
+        // 与各系统写在其 4 列块首格同口径,避免压在身份列下
         val sub = sheet.createRow(r++)
-        sub.createCell(0).apply {
+        sub.createCell(2).apply {
             setCellValue(tableDisplayName(ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable),
                 job.baseDb, job.baseSchema, job.baseTable))
             cellStyle = wrapStyle
