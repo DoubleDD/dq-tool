@@ -11,13 +11,14 @@
  * 数据源异常(pendingReason=DS_ERROR)的任务:画布上方红条提示先修数据源再回来确认
  * (confirm-mapping 是 DS_ERROR 任务的复活出口,确认时后端会重读两侧字段重验);
  * 导入异常(IMPORT_ERROR,基准表读不出/缺身份字段)的任务画布加载不出字段,提示走「编辑」向导修正。
- * 工具条左侧「AI 预生成字段映射」与向导第三步同款(列级对比任务才显示):大模型按基准表全字段
+ * 工具条左侧「AI 预生成字段映射」与向导第三步同款(恒显,不限列级对比):大模型按基准表全字段
  * 逐目标产出建议并整组回填(替换现有连线,含导入时的推导结果),人工核对后再确认。
  */
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from '../utils/notify'
 import request, { getCompareJob, confirmCompareMapping, suggestCompareMapping } from '../api'
 import CompareFieldMapping from './CompareFieldMapping.vue'
+import CompareAiTraceDialog from './CompareAiTraceDialog.vue'
 
 const props = defineProps({
   // 弹窗显隐(v-model)
@@ -37,6 +38,8 @@ const loading = ref(false)
 const confirming = ref(false)
 // 「AI 预生成字段映射」进行中(与向导第三步同接口:逐目标逐次调大模型,耗时可到分钟级)
 const aiSuggesting = ref(false)
+// 「AI 推导依据」弹窗显隐(查看导入时大模型推导映射的调用明细)
+const aiTraceVisible = ref(false)
 // 画布 v-model:与 targets 同序,元素为 { 基准字段名: 目标列名 }
 const mappings = ref([])
 
@@ -81,7 +84,7 @@ function parseJsonArray(v) {
   return out.length ? out : null
 }
 
-/** 解析目标级 identityJson({keys:[...]} 的 JSON 字符串或已解析对象)为 keys 数组;无覆盖返回 null */
+/** 解析目标级 identityKeys(字符串数组,或兼容 {keys:[...]}/JSON 字符串形态)为 keys 数组;无覆盖返回 null */
 function parseIdentityKeys(v) {
   if (v == null) return null
   let o = v
@@ -92,8 +95,8 @@ function parseIdentityKeys(v) {
   return parseJsonArray(Array.isArray(o) ? o : o?.keys)
 }
 
-// 任务级默认身份字段:keyFieldsJson(JSON 数组)优先,老任务(null)退化为 [keyField] 单列
-const jobKeyFields = computed(() => parseJsonArray(job.value?.keyFieldsJson) || (job.value?.keyField ? [job.value.keyField] : []))
+// 任务级默认身份字段:详情视图 keyFields(数组,后端已把老任务归一为 [keyField] 单列)优先,keyField 单列兜底
+const jobKeyFields = computed(() => parseJsonArray(job.value?.keyFields) || (job.value?.keyField ? [job.value.keyField] : []))
 
 // 目标级身份人工覆盖:与 targets 同序,null = 按推导,string[] = 收缩后的 keyFields 子集(预填自各目标 identityJson)
 const identityOverrides = ref([])
@@ -152,7 +155,7 @@ async function load() {
     detail.value = d
     mappings.value = (d?.targets || []).map((t) => ({ ...(t.mapping || {}) }))
     // 目标级身份覆盖反填(null = 按推导):审核时可直接看到/再调整人工收缩
-    identityOverrides.value = (d?.targets || []).map((t) => parseIdentityKeys(t.identityJson))
+    identityOverrides.value = (d?.targets || []).map((t) => parseIdentityKeys(t.identityKeys))
   } catch {
     // 拦截器已提示;详情拉不到就没有可审的内容,直接收起
     visible.value = false
@@ -259,11 +262,13 @@ async function confirm() {
           :key-fields="jobKeyFields"
           v-model="mappings"
         >
-          <!-- 列级对比任务:大模型预生成字段映射,放工具条最左(与向导第三步同款按钮) -->
-          <template v-if="job.compareMode === 'COLUMN'" #toolbar-prepend>
+          <!-- 大模型预生成字段映射(恒显,不限列级对比),放工具条最左(与向导第三步同款按钮) -->
+          <template #toolbar-prepend>
             <el-button size="small" type="primary" plain :loading="aiSuggesting" :disabled="!targets.length" @click="aiSuggest">
               AI 预生成字段映射
             </el-button>
+            <!-- AI 推导依据:查看导入时大模型推导字段映射的逐批调用记录(主要是 MAPPING 场景) -->
+            <el-button size="small" plain @click="aiTraceVisible = true">AI 推导依据</el-button>
           </template>
         </CompareFieldMapping>
       </template>
@@ -272,6 +277,8 @@ async function confirm() {
       <el-button @click="visible = false">取消</el-button>
       <el-button type="primary" :loading="confirming" :disabled="!job" @click="confirm">确认并开始比对</el-button>
     </template>
+    <!-- AI 推导依据弹窗(共用比对 AI 判定明细组件;append-to-body 嵌套在本弹窗之上) -->
+    <CompareAiTraceDialog v-model="aiTraceVisible" :job-id="jobId" />
     <!-- 目标级身份收缩弹窗(与向导第 3 步同款):勾选的子集作为 identities[targetId].keys 随确认提交 -->
     <el-dialog v-model="identityDialog.visible" title="调整该对比表的身份字段" width="420px" append-to-body>
       <div class="identity-dialog-tip">

@@ -215,6 +215,12 @@ function clearSelection() {
 
 // 选中集合变化 → 就地重绘节点 HTML 刷选中描边/底纹(不跑布局,拖动后的节点位置不丢)
 watch(selectedTables, () => repaintInPlace())
+// mapping 模式:身份列/高亮列/待连线激活列只影响节点 HTML 渲染口径(「身份」徽章、基准字段加粗),
+// 不进 graphData 缓存键(进了会整图重建、视口跳动)——画布常在字段加载后即渲染(向导第 1 步),
+// 之后反填/勾选身份字段、连线增删都要就地重绘节点 HTML,否则徽章与加粗停留在初次渲染的旧状态
+watch(() => [props.identityColumns, props.highlightColumns, props.activeColumn], () => {
+  if (props.mode === 'mapping') repaintInPlace()
+}, { deep: true })
 // 图数据重建(刷新/批量否决后):选中集合与聚焦表裁掉已不在图里的表,操作条计数随之为准
 watch(
   () => props.nodes,

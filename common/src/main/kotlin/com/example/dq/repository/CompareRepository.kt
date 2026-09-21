@@ -45,7 +45,9 @@ class CompareRepository(private val jdbc: Jdbc) {
                       /** 最近导出完成时间(V65) */
                       val exportAt: LocalDateTime? = null,
                       /** 抽样条数(V70):双侧各按身份列排序取前 N 条;NULL = 全量比对(老任务/批量导入默认) */
-                      val sampleRows: Int? = null)
+                      val sampleRows: Int? = null,
+                      /** 对象名称字段数组 JSON(V73);NULL = 老任务,读取时由 [displayField] 单列退化或空表 */
+                      val displayFieldsJson: String? = null)
 
     /** 任务查询统一带 import_id 左联 compare_import 取来源文件名([jobMapper] 依赖 import_file_name 别名) */
     private val jobSelect = "SELECT j.*, i.file_name AS import_file_name " +
@@ -64,7 +66,7 @@ class CompareRepository(private val jdbc: Jdbc) {
             rs.getString("base_data_updated_at"), rs.getString("key_fields_json"),
             rs.getString("base_table_comment"), rs.getString("base_column_comments"),
             rs.getString("export_status"), rs.getString("export_file"), rs.getString("export_checksum"),
-            ts(rs, "export_at"), intOrNull(rs, "sample_rows"))
+            ts(rs, "export_at"), intOrNull(rs, "sample_rows"), rs.getString("display_fields_json"))
     }
 
     // ---------- 目标行 ----------
@@ -137,17 +139,18 @@ class CompareRepository(private val jdbc: Jdbc) {
      * matchMode 为对象对齐匹配逻辑(EXACT/CODE_THEN_NAME/CODE_NAME_LLM),空 = 老任务按「只按编码」解读;
      * compareMode 为对比模式(ROW/COLUMN),空 = 行级(老任务兼容);
      * keyFieldsJson 为任务级身份字段全量数组(keyField 旧列仍写 keys 第一项;老任务 NULL,读取退化 [keyField]);
-     * sampleRows 为抽样条数(V70,空 = 全量比对)
+     * sampleRows 为抽样条数(V70,空 = 全量比对);
+     * displayFieldsJson 为对象名称字段全量数组(V73;displayField 旧列仍写名称字段第一项;老任务 NULL,读取退化单列)
      */
     fun insertJob(name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?, baseTable: String,
                   keyField: String, fieldsJson: String, totalUnits: Int, displayField: String? = null,
                   matchMode: String? = null, compareMode: String? = null, keyFieldsJson: String? = null,
-                  sampleRows: Int? = null): Long =
+                  sampleRows: Int? = null, displayFieldsJson: String? = null): Long =
         jdbc.insert("INSERT INTO compare_job(name, base_datasource_id, base_db, base_schema, base_table, " +
-            "key_field, fields_json, display_field, match_mode, compare_mode, key_fields_json, sample_rows, status, total_units, started_at) " +
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'RUNNING',?,CURRENT_TIMESTAMP)",
+            "key_field, fields_json, display_field, match_mode, compare_mode, key_fields_json, sample_rows, display_fields_json, status, total_units, started_at) " +
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'RUNNING',?,CURRENT_TIMESTAMP)",
             name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fieldsJson, displayField,
-            matchMode, compareMode, keyFieldsJson, sampleRows, totalUnits)
+            matchMode, compareMode, keyFieldsJson, sampleRows, displayFieldsJson, totalUnits)
 
     /**
      * 落「待处理」任务(批量导入专用,V59):status=PENDING、不进执行器、started_at 留空;
@@ -157,12 +160,13 @@ class CompareRepository(private val jdbc: Jdbc) {
     fun insertPendingJob(name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
                          baseTable: String, keyField: String, fieldsJson: String, totalUnits: Int,
                          displayField: String?, matchMode: String?, compareMode: String?,
-                         pendingReason: String, objectCategory: String?, importId: Long?): Long =
+                         pendingReason: String, objectCategory: String?, importId: Long?,
+                         displayFieldsJson: String? = null): Long =
         jdbc.insert("INSERT INTO compare_job(name, base_datasource_id, base_db, base_schema, base_table, " +
             "key_field, fields_json, display_field, match_mode, compare_mode, status, pending_reason, " +
-            "object_category, import_id, total_units) VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?)",
+            "object_category, import_id, total_units, display_fields_json) VALUES (?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?,?)",
             name, baseDatasourceId, baseDb, baseSchema, baseTable, keyField, fieldsJson, displayField,
-            matchMode, compareMode, pendingReason, objectCategory, importId, totalUnits)
+            matchMode, compareMode, pendingReason, objectCategory, importId, totalUnits, displayFieldsJson)
 
     /** 待处理任务编辑时重建的目标行(照 rerun 的清空重建口径) */
     data class NewTarget(val datasourceId: Long, val dsName: String?, val dbName: String,
@@ -180,12 +184,12 @@ class CompareRepository(private val jdbc: Jdbc) {
     fun replacePendingJob(id: Long, name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
                           baseTable: String, keyField: String, fieldsJson: String, totalUnits: Int,
                           displayField: String?, matchMode: String?, compareMode: String?,
-                          keyFieldsJson: String?, sampleRows: Int?,
+                          keyFieldsJson: String?, displayFieldsJson: String?, sampleRows: Int?,
                           targets: List<NewTarget>) {
         jdbc.tx { conn ->
             conn.prepareStatement(
                 "UPDATE compare_job SET name=?, base_datasource_id=?, base_db=?, base_schema=?, base_table=?, " +
-                    "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, key_fields_json=?, sample_rows=?, total_units=?, done_units=0, stage=NULL, " +
+                    "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, key_fields_json=?, display_fields_json=?, sample_rows=?, total_units=?, done_units=0, stage=NULL, " +
                     "base_data_updated_at=NULL, base_table_comment=NULL, base_column_comments=NULL, error=NULL, pending_reason='MAPPING_REVIEW' " +
                 "WHERE id=? AND status='PENDING'").use { ps ->
                 ps.setString(1, name)
@@ -199,9 +203,10 @@ class CompareRepository(private val jdbc: Jdbc) {
                 ps.setString(9, matchMode)
                 ps.setString(10, compareMode)
                 ps.setString(11, keyFieldsJson)
-                if (sampleRows != null) ps.setInt(12, sampleRows) else ps.setNull(12, Types.INTEGER)
-                ps.setInt(13, totalUnits)
-                ps.setLong(14, id)
+                ps.setString(12, displayFieldsJson)
+                if (sampleRows != null) ps.setInt(13, sampleRows) else ps.setNull(13, Types.INTEGER)
+                ps.setInt(14, totalUnits)
+                ps.setLong(15, id)
                 ps.executeUpdate()
             }
             for (sql in listOf("DELETE FROM compare_diff WHERE job_id=?",
@@ -245,11 +250,11 @@ class CompareRepository(private val jdbc: Jdbc) {
     fun replaceAndRestart(id: Long, name: String, baseDatasourceId: Long, baseDb: String, baseSchema: String?,
                           baseTable: String, keyField: String, fieldsJson: String, totalUnits: Int,
                           displayField: String?, matchMode: String, compareMode: String,
-                          keyFieldsJson: String?, sampleRows: Int?,
+                          keyFieldsJson: String?, displayFieldsJson: String?, sampleRows: Int?,
                           targets: List<NewTarget>): Int = jdbc.tx { conn ->
         val updated = conn.prepareStatement(
             "UPDATE compare_job SET name=?, base_datasource_id=?, base_db=?, base_schema=?, base_table=?, " +
-                "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, key_fields_json=?, sample_rows=?, total_units=?, " +
+                "key_field=?, fields_json=?, display_field=?, match_mode=?, compare_mode=?, key_fields_json=?, display_fields_json=?, sample_rows=?, total_units=?, " +
                 "done_units=0, stage=NULL, error=NULL, pending_reason=NULL, status='RUNNING', " +
                 "started_at=CURRENT_TIMESTAMP, finished_at=NULL, base_data_updated_at=NULL, " +
                 "base_table_comment=NULL, base_column_comments=NULL " +
@@ -265,9 +270,10 @@ class CompareRepository(private val jdbc: Jdbc) {
             ps.setString(9, matchMode)
             ps.setString(10, compareMode)
             ps.setString(11, keyFieldsJson)
-            if (sampleRows != null) ps.setInt(12, sampleRows) else ps.setNull(12, Types.INTEGER)
-            ps.setInt(13, totalUnits)
-            ps.setLong(14, id)
+            ps.setString(12, displayFieldsJson)
+            if (sampleRows != null) ps.setInt(13, sampleRows) else ps.setNull(13, Types.INTEGER)
+            ps.setInt(14, totalUnits)
+            ps.setLong(15, id)
             ps.executeUpdate()
         }
         if (updated == 0) {
@@ -306,10 +312,10 @@ class CompareRepository(private val jdbc: Jdbc) {
      * 任务已删除/已被人工处理(原因翻走)时返回 0,后台线程据此放弃回写
      */
     fun finishPendingMapping(id: Long, keyField: String, fieldsJson: String, displayField: String?,
-                             pendingReason: String, error: String?): Int =
-        jdbc.update("UPDATE compare_job SET key_field=?, fields_json=?, display_field=?, pending_reason=?, error=? " +
+                             pendingReason: String, error: String?, displayFieldsJson: String? = null): Int =
+        jdbc.update("UPDATE compare_job SET key_field=?, fields_json=?, display_field=?, pending_reason=?, error=?, display_fields_json=? " +
             "WHERE id=? AND status='PENDING' AND pending_reason='MAPPING_RUNNING'",
-            keyField, fieldsJson, displayField, pendingReason, error?.take(1000), id)
+            keyField, fieldsJson, displayField, pendingReason, error?.take(1000), displayFieldsJson, id)
 
     /** 服务重启:残留「映射推导中」的 PENDING 任务转 MAPPING_REVIEW(推导线程已随重启消亡,人工审核补线复活) */
     fun recoverMappingOnStartup(error: String): Int =

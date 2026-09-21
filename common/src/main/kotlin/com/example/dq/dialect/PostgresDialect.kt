@@ -5,9 +5,38 @@ import com.example.dq.model.TableStat
 
 import java.sql.Connection
 import java.sql.SQLException
+import java.sql.Statement
+import kotlin.math.ceil
 
 /** PostgreSQL 方言 */
 open class PostgresDialect : AbstractDialect() {
+
+    companion object {
+        /**
+         * 解析 SHOW statement_timeout 的返回值("0" / "5000ms" / "30s" / "1min 30s" / "1h")为秒;
+         * 无法解析返回 null(调用方按无限制处理);纯函数便于单测(金仓/瀚高继承同口径)
+         */
+        internal fun parsePgTimeoutSeconds(raw: String?): Int? {
+            if (raw == null) return null
+            val s = raw.trim()
+            if (s == "0") return 0
+            var total = 0.0
+            var matched = false
+            for (m in Regex("""(\d+(?:\.\d+)?)\s*(ms|s|min|h)""").findAll(s)) {
+                matched = true
+                val v = m.groupValues[1].toDoubleOrNull() ?: return null
+                total += when (m.groupValues[2]) {
+                    "ms" -> v / 1000.0
+                    "s" -> v
+                    "min" -> v * 60
+                    "h" -> v * 3600
+                    else -> 0.0
+                }
+            }
+            // 亚秒上限按 1s 计(保守);完全解析不出按「未知」交回调用方
+            return if (matched) maxOf(1, ceil(total).toInt()) else null
+        }
+    }
 
     override fun type(): DbType {
         return DbType.POSTGRESQL
@@ -46,6 +75,32 @@ open class PostgresDialect : AbstractDialect() {
     @Throws(SQLException::class)
     override fun currentSchema(conn: Connection): String? {
         return queryFirstString(conn, "SELECT current_schema()")
+    }
+
+    /** PG 系驱动仅在 autocommit=false + fetchSize>0 时走服务端游标,否则整表缓冲进客户端内存 */
+    override fun configureStreamingRead(conn: Connection, stmt: Statement) {
+        conn.autoCommit = false
+        stmt.fetchSize = 1000
+    }
+
+    /** PG 系服务端语句上限:statement_timeout(USERSET,本会话可放宽;金仓/瀚高继承同口径) */
+    override fun probeServerStatementLimitSeconds(conn: Connection): Int? {
+        return try {
+            conn.createStatement().use { st ->
+                try {
+                    st.execute("SET statement_timeout = 0")
+                } catch (e: SQLException) {
+                    // 放宽失败不致命,下面的 SHOW 读到的是仍生效的值
+                }
+                st.executeQuery("SHOW statement_timeout").use { rs ->
+                    if (!rs.next()) return null
+                    parsePgTimeoutSeconds(rs.getString(1))?.takeIf { it > 0 }
+                }
+            }
+        } catch (e: Exception) {
+            // 探测失败按无限制走流式,流式真被杀还有分页降级兜底
+            null
+        }
     }
 
     @Throws(SQLException::class)

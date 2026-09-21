@@ -1,6 +1,7 @@
 package com.example.dq.controller;
 
 import com.example.dq.model.ExportKind;
+import com.example.dq.model.SchemaDictDescRequest;
 import com.example.dq.model.SchemaDocUpdateRequest;
 import com.example.dq.service.ExportCenterService;
 import com.example.dq.model.TableDocUpdateRequest;
@@ -10,6 +11,7 @@ import com.example.dq.service.DbStructExportService;
 import com.example.dq.service.MetadataService;
 import com.example.dq.service.TableDocService;
 import com.example.dq.service.TableSystemService;
+import com.example.dq.web.Validators;
 import io.javalin.http.Context;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -148,6 +150,17 @@ public class MetadataController {
         service.updateSchemaDescription(dsId(ctx), ctx.queryParam("db"), ctx.pathParam("schema"),
                 req.getDescription());
         ctx.json(Map.of("ok", true));
+    }
+
+    /** 批量设置库描述:读字典表按库名精准匹配回写 schema_doc,响应 {totalRows, matched, skipped, unmatchedTotal, unmatched} */
+    public void applySchemaDictDescriptions(Context ctx) throws SQLException {
+        SchemaDictDescRequest req = Validators.validate(ctx.bodyAsClass(SchemaDictDescRequest.class));
+        ctx.json(service.applySchemaDescriptionsFromDict(dsId(ctx), req));
+    }
+
+    /** 库描述 map(通用表选择器库/schema 栏描述展示):schema_name -> description */
+    public void schemaDescriptions(Context ctx) {
+        ctx.json(service.schemaDescriptions(dsId(ctx), ctx.queryParam("db")));
     }
 
     /** 数据源整库表结构 Word 导出(所有白名单过滤后的库),同步渲染下载 */

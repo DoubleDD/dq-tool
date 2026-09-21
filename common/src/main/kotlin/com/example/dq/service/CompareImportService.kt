@@ -3,11 +3,13 @@ package com.example.dq.service
 import com.example.dq.config.AppConfig
 import com.example.dq.model.AiScene
 import com.example.dq.model.ColumnMeta
+import com.example.dq.model.CompareAiTrace
 import com.example.dq.model.CompareImportView
 import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.model.PendingReason
 import com.example.dq.model.TestConnectionRequest
+import com.example.dq.repository.CompareAiTraceRepository
 import com.example.dq.repository.CompareImportRepository
 import com.example.dq.repository.DataSourceRepository
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -72,6 +74,10 @@ class CompareImportService(
             (e.message ?: "连接失败").take(2000)
         }
     },
+    /** AI 判定留痕仓储(AI 用量库 compare_ai_trace);空 = 不留痕(单测默认) */
+    private val aiTraceRepo: CompareAiTraceRepository? = null,
+    /** AI 判定留痕记录点(默认写 [aiTraceRepo];测试注入捕获器) */
+    private val aiTraceRecorder: (CompareAiTrace) -> Unit = { t -> aiTraceRepo?.insert(t) },
 ) {
 
     private val log = LoggerFactory.getLogger(javaClass)
@@ -537,6 +543,11 @@ class CompareImportService(
                 val locked = ctx.lockedList[i]
                 val targetId = ctx.targetIds[i]
                 var mapping: Map<String, String> = locked
+                // 留痕上下文:走到大模型调用才记(列读取/未配置等前置失败不是 AI 判定)
+                var tracePrompt: String? = null
+                var traceAnswer: String? = null
+                var traceMerged: Map<String, String>? = null
+                var traceDurationMs: Long? = null
                 try {
                     val cols = columnsLister(outcome.dsId!!, row.databaseName,
                         CompareService.effectiveSchema(row.schemaName, row.databaseName), row.tableName)
@@ -551,20 +562,62 @@ class CompareImportService(
                         loc(ctx.sheet.base.databaseName, ctx.sheet.base.schemaName, ctx.sheet.base.tableName),
                         baseFieldItems, loc(row.databaseName, row.schemaName, row.tableName),
                         cols.map { CompareMappingPrompts.columnItemOf(it) }, locked)
-                    val answer = aiMappingChat.call(aiConfig, CompareMappingPrompts.SYSTEM_PROMPT, prompt)
+                    tracePrompt = prompt
+                    val callStart = System.nanoTime()
+                    val answer = try {
+                        aiMappingChat.call(aiConfig, CompareMappingPrompts.SYSTEM_PROMPT, prompt)
+                    } finally {
+                        // 调用成功/抛异常都记耗时(未走到调用则保持 null,不落留痕)
+                        traceDurationMs = (System.nanoTime() - callStart) / 1_000_000
+                    }
+                    traceAnswer = answer
                     val suggested = CompareMappingPrompts.parseMappingSuggest(answer, fields, cols, keyField)
                     val merged = LinkedHashMap<String, String>(suggested)
                     locked.forEach { (k, v) -> merged[k] = v } // 锁定优先(表格身份字段不进推导范围)
+                    traceMerged = merged
                     if (merged.keys.none { it.equals(keyField, ignoreCase = true) }) {
                         throw IllegalStateException("映射不含比对主键,需人工审核补线")
                     }
                     mapping = merged
+                    // 留痕:推导出的完整映射 + 表格锁定项(锁定行前端标注)
+                    recordTrace {
+                        CompareAiTrace(jobId = ctx.jobId, targetId = targetId,
+                            targetLabel = loc(row.databaseName, row.schemaName, row.tableName),
+                            scene = AiScene.COMPARE_MAPPING.name, stage = CompareAiTrace.STAGE_MAPPING,
+                            model = aiConfig.model,
+                            requestContent = traceRequestContent(CompareMappingPrompts.SYSTEM_PROMPT, prompt),
+                            responseContent = answer,
+                            resultJson = objectMapper.writeValueAsString(
+                                mapOf("mapping" to merged, "locked" to locked)),
+                            durationMs = traceDurationMs)
+                    }
                 } catch (e: Exception) {
                     log.warn("比对导入映射推导失败: sheet={}, 目标={}.{}: {}",
                         ctx.sheet.sheetName, row.databaseName, row.tableName, e.message)
                     // 推导失败只留锁定项并记目标说明,由人工在审核画布上补线(不做无大模型降级)
                     compareService.notePendingTarget(targetId,
                         "映射推导失败(${(e.message ?: e.javaClass.simpleName).take(200)}),仅保留表格锁定项,请人工审核补线")
+                    // 留痕:调过大模型的失败也记一条(仅锁定项 + 错误摘要进 response)
+                    if (tracePrompt != null) {
+                        recordTrace {
+                            CompareAiTrace(jobId = ctx.jobId, targetId = targetId,
+                                targetLabel = loc(row.databaseName, row.schemaName, row.tableName),
+                                scene = AiScene.COMPARE_MAPPING.name, stage = CompareAiTrace.STAGE_MAPPING,
+                                model = aiConfig?.model,
+                                requestContent = traceRequestContent(CompareMappingPrompts.SYSTEM_PROMPT, tracePrompt!!),
+                                responseContent = traceAnswer
+                                    ?: "调用失败: ${(e.message ?: e.javaClass.simpleName).take(200)}",
+                                // failed 标记:映射推导失败的 result_json 非空(保留锁定项供前端展示),
+                                // 靠它区分「成功但映射少」与「推导失败只剩锁定项」
+                                resultJson = traceMerged?.let {
+                                    objectMapper.writeValueAsString(
+                                        mapOf("mapping" to it, "locked" to locked, "failed" to true))
+                                } ?: objectMapper.writeValueAsString(
+                                    mapOf("mapping" to emptyMap<String, String>(), "locked" to locked,
+                                        "failed" to true)),
+                                durationMs = traceDurationMs)
+                        }
+                    }
                 }
                 targetMappings[targetId] = mapping
             }
@@ -704,6 +757,19 @@ class CompareImportService(
     private fun loc(db: String?, schema: String?, table: String) =
         listOfNotNull(db?.takeIf { it.isNotBlank() }, schema?.takeIf { it.isNotBlank() }, table)
             .joinToString(".")
+
+    /** AI 判定留痕记录:组装/写入任何失败只记 warn,绝不影响映射推导主流程 */
+    private fun recordTrace(build: () -> CompareAiTrace) {
+        try {
+            aiTraceRecorder(build())
+        } catch (e: Exception) {
+            log.warn("比对导入 AI 判定留痕记录失败(忽略): {}", e.message)
+        }
+    }
+
+    /** 留痕的请求内容口径:与 AiService 落 ai_usage_log 的 [system]+[user] 拼装一致(落库前由仓储截断) */
+    private fun traceRequestContent(systemPrompt: String, userPrompt: String): String =
+        "[system]\n$systemPrompt\n\n[user]\n$userPrompt"
 
     /** 按解析行拼 JDBC URL(类型取表格「数据库类型」列) */
     private fun jdbcUrlOf(row: CompareImportExcelParser.ImportRow): String =

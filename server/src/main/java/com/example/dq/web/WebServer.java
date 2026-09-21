@@ -459,6 +459,10 @@ public class WebServer {
         routes.post("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().generateTableDoc(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/doc", ctx -> metaCtrl.get().updateTableDoc(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/description", ctx -> metaCtrl.get().updateSchemaDescription(ctx));
+        // 库列表「批量设置描述」:从字典表按库名精准匹配回写 schema_doc
+        routes.post("/api/datasources/{dsId}/schema-descriptions/from-dict", ctx -> metaCtrl.get().applySchemaDictDescriptions(ctx));
+        // 库描述 map(通用表选择器库/schema 栏描述展示)
+        routes.get("/api/datasources/{dsId}/schema-descriptions", ctx -> metaCtrl.get().schemaDescriptions(ctx));
 
         // ---- Word 报告异步导出任务 ----
         routes.post("/api/datasources/{dsId}/report/exports", ctx -> reportCtrl.get().submit(ctx));
@@ -504,6 +508,8 @@ public class WebServer {
         routes.get("/api/compare-jobs/{id}", ctx -> compareCtrl.get().detail(ctx));
         routes.delete("/api/compare-jobs/{id}", ctx -> compareCtrl.get().delete(ctx));
         routes.get("/api/compare-jobs/{id}/diffs", ctx -> compareCtrl.get().diffs(ctx));
+        // AI 判定留痕:补配/消歧/映射/时间/佐证逐次调用的输入/输出/逐条判定(门禁同 compare-jobs 前缀)
+        routes.get("/api/compare-jobs/{id}/ai-traces", ctx -> compareCtrl.get().aiTraces(ctx));
         routes.get("/api/compare-jobs/{id}/report", ctx -> compareCtrl.get().report(ctx));
         // 比对报告导出:服务端直存数据目录/compare(任务 ID 前缀命名,同名覆盖),返回 {path,name,size,checksum}
         routes.post("/api/compare-jobs/{id}/export", ctx -> compareCtrl.get().export(ctx));

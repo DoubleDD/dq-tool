@@ -6,6 +6,7 @@ import com.example.dq.model.TableStat
 
 import java.sql.Connection
 import java.sql.SQLException
+import java.sql.Statement
 
 /** MySQL 方言 */
 open class MySqlDialect : AbstractDialect() {
@@ -38,6 +39,33 @@ open class MySqlDialect : AbstractDialect() {
     /** MySQL 的 schema 即 catalog:USE 切库(OceanBase MySQL 模式继承同口径) */
     override fun currentSchema(conn: Connection): String? {
         return conn.catalog
+    }
+
+    override fun configureStreamingRead(conn: Connection, stmt: Statement) {
+        // fetchSize=Int.MIN_VALUE 触发 MySQL 驱动逐行流式读(不依赖 useCursorFetch 连接属性,最稳的开关);
+        // OceanBase MySQL 模式继承同口径
+        stmt.fetchSize = Int.MIN_VALUE
+    }
+
+    /** MySQL 系服务端语句上限:@@max_execution_time(毫秒,只杀 SELECT);先尝试本会话放宽 */
+    override fun probeServerStatementLimitSeconds(conn: Connection): Int? {
+        return try {
+            conn.createStatement().use { st ->
+                try {
+                    st.execute("SET SESSION max_execution_time = 0")
+                } catch (e: SQLException) {
+                    // 放宽失败(权限/不支持)不致命,下面的查询读到的是仍生效的值
+                }
+                st.executeQuery("SELECT @@max_execution_time").use { rs ->
+                    if (!rs.next()) return null
+                    val ms = rs.getLong(1)
+                    if (ms > 0) ((ms + 999) / 1000).toInt() else null
+                }
+            }
+        } catch (e: Exception) {
+            // 探测失败(老版本无此变量等)按无限制走流式,流式真被杀还有分页降级兜底
+            null
+        }
     }
 
     @Throws(SQLException::class)

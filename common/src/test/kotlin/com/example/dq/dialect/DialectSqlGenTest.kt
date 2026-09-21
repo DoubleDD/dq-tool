@@ -657,4 +657,37 @@ class DialectSqlGenTest {
         // 列名含方言引用字符时经 quote 转义
         assertEquals("SELECT MAX(`a``b`) FROM `db1`.`t`", MySqlDialect().maxValueSql("db1", "t", "a`b"))
     }
+
+    // ---------- 比对流式读:streamAllSql / PG 语句上限解析 ----------
+
+    @Test
+    fun `流式读SQL无排序无分页按方言转义`() {
+        // 无 ORDER BY、无 LIMIT:一次顺序全扫,行序不影响比对(行进内存 map 按身份值分桶)
+        assertEquals("SELECT `code`, `name` FROM `db1`.`t`",
+            MySqlDialect().streamAllSql("db1", "t", listOf("code", "name")))
+        assertEquals("SELECT \"code\", \"name\" FROM \"public\".\"t\"",
+            PostgresDialect().streamAllSql("public", "t", listOf("code", "name")))
+        assertEquals("SELECT \"code\", \"name\" FROM \"S\".\"t\"",
+            OracleDialect().streamAllSql("S", "t", listOf("code", "name")))
+        assertEquals("SELECT [code], [name] FROM [dbo].[t]",
+            SqlServerDialect().streamAllSql("dbo", "t", listOf("code", "name")))
+        // schema 为空:只 quote 表名;标识符经 quote 转义
+        assertEquals("SELECT `a``b` FROM `t`", MySqlDialect().streamAllSql("", "t", listOf("a`b")))
+        // 空列清单 = 全列
+        assertEquals("SELECT * FROM `db1`.`t`", MySqlDialect().streamAllSql("db1", "t", emptyList()))
+    }
+
+    @Test
+    fun `PG语句上限解析覆盖常见单位与异常值`() {
+        assertEquals(0, PostgresDialect.parsePgTimeoutSeconds("0"))
+        assertEquals(5, PostgresDialect.parsePgTimeoutSeconds("5000ms"))
+        assertEquals(30, PostgresDialect.parsePgTimeoutSeconds("30s"))
+        assertEquals(90, PostgresDialect.parsePgTimeoutSeconds("1min 30s"))
+        assertEquals(3600, PostgresDialect.parsePgTimeoutSeconds("1h"))
+        // 亚秒上限按 1s 计(保守);解析不出/null 按「未知」交回调用方
+        assertEquals(1, PostgresDialect.parsePgTimeoutSeconds("500ms"))
+        assertNull(PostgresDialect.parsePgTimeoutSeconds("abc"))
+        assertNull(PostgresDialect.parsePgTimeoutSeconds(null))
+        assertNull(PostgresDialect.parsePgTimeoutSeconds(""))
+    }
 }

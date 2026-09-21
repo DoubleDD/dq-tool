@@ -50,6 +50,11 @@ data class CreateCompareJobRequest(
     /** 对象名称(显示名)字段:可选,必须属于 fields;留空 = 自动取比对字段中第一个文本型非主键字段 */
     val displayField: String? = null,
     /**
+     * 对象名称(显示名)字段多选(V73,基准字段名,有序):取值口径 = 一行内按字段顺序取第一个非空的值;
+     * 与身份字段(keyFields)互斥,交集提交校验报 400。留空/null = 按 [displayField] 单值/自动口径旧行为
+     */
+    val displayFields: List<String>? = null,
+    /**
      * 对象对齐(匹配)逻辑,一任务一套。界面提供两种:EXACT(编码+名称)/ CODE_NAME_LLM(先编码后名称+
      * 大模型归一化);CODE_THEN_NAME 为旧版选项、界面不再提供,存量任务与直接调用仍兼容。
      * 留空 = EXACT;非 EXACT 要求显式给出对象名称字段。
@@ -120,6 +125,8 @@ data class CompareJobView(
     val keyFields: List<String>,
     /** 对象名称(显示名)字段(基准表实际列名);null = 该任务无可用显示字段,object_name 落空串 */
     val displayField: String?,
+    /** 对象名称字段数组(V73,基准表实际列名,有序;取值 = 按字段顺序第一个非空值);老任务由 [displayField] 退化单元素或空表 */
+    val displayFields: List<String>,
     /**
      * 对象对齐(匹配)逻辑:EXACT(code+name 都相等)/ CODE_THEN_NAME(先 code 后 name)/
      * CODE_NAME_LLM(1、2 没配上的残余再交大模型归一化配)。老任务为 null,等价于「只按 code 对齐」。
@@ -349,4 +356,61 @@ data class CompareImportView(
     val error: String?,
     val createdAt: LocalDateTime?,
     val finishedAt: LocalDateTime?,
+)
+
+/**
+ * 比对 AI 判定留痕(写入记录,落 AI 用量库 compare_ai_trace):
+ * 比对阶段每一次大模型调用(补配/同名消歧/映射推导/时间列/佐证字段)一条,
+ * request/response 为完整 prompt 与原始回答,resultJson 为逐条结构化判定结果(JSON 串,失败批次为 null)。
+ */
+data class CompareAiTrace(
+    val jobId: Long,
+    /** 比对目标 id;任务级调用(佐证字段识别/基准表时间列)为 null */
+    val targetId: Long? = null,
+    /** 目标快照 库.模式.表(展示用,任务/目标被删也能看) */
+    val targetLabel: String? = null,
+    /** 调用场景:COMPARE_MATCH / COMPARE_MAPPING / COMPARE_TIME / COMPARE_EVIDENCE */
+    val scene: String,
+    /** 判定环节:[STAGE_RESIDUE] 补配 / [STAGE_SAME_NAME] 消歧 / [STAGE_MAPPING] 映射 / [STAGE_TIME] 时间列 / [STAGE_EVIDENCE] 佐证 */
+    val stage: String,
+    /** 第几批(从 1 起;单调用场景恒 1) */
+    val batchNo: Int = 1,
+    val model: String? = null,
+    /** 完整 prompt([system] + [user],落库前截断 5 万字符,同 ai_usage_log 口径) */
+    val requestContent: String? = null,
+    /** 模型原始回答;调用失败批次记错误摘要 */
+    val responseContent: String? = null,
+    /** 逐条结构化判定结果 JSON(结构按 stage;失败批次为 null) */
+    val resultJson: String? = null,
+    /** 本次大模型调用耗时(毫秒;含失败调用) */
+    val durationMs: Long? = null,
+) {
+    companion object {
+        const val STAGE_RESIDUE = "RESIDUE"
+        const val STAGE_SAME_NAME = "SAME_NAME"
+        const val STAGE_MAPPING = "MAPPING"
+        const val STAGE_TIME = "TIME"
+        const val STAGE_EVIDENCE = "EVIDENCE"
+    }
+}
+
+/**
+ * 比对 AI 判定留痕视图(GET /api/compare-jobs/{id}/ai-traces,按 目标/时间/id 升序):
+ * resultJson 为解析后的 JSON 对象/数组(失败批次或解析失败为 null,前端兜底展示原文)。
+ */
+data class CompareAiTraceView(
+    val id: Long,
+    val jobId: Long,
+    val targetId: Long?,
+    val targetLabel: String?,
+    val scene: String,
+    val stage: String,
+    val batchNo: Int,
+    val model: String?,
+    val requestContent: String?,
+    val responseContent: String?,
+    val resultJson: Any?,
+    /** 本次大模型调用耗时(毫秒;老数据为 null) */
+    val durationMs: Long?,
+    val createdAt: LocalDateTime?,
 )

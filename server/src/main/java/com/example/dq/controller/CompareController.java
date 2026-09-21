@@ -153,6 +153,11 @@ public class CompareController {
         public Map<String, CompareTargetIdentity> identities;
     }
 
+    /** AI 判定留痕:该任务全部大模型调用(补配/消歧/映射/时间/佐证)的输入/输出/逐条判定,按 目标/时间/id 升序 */
+    public void aiTraces(Context ctx) {
+        ctx.json(service.listAiTraces(id(ctx)));
+    }
+
     /** 差异明细分页:query targetId/diffType/kw/page(size 缺省 20) 组合过滤 */
     public void diffs(Context ctx) {
         // targetId 可缺省:必须用 getOrNull()。Javalin 的 getOrDefault(T) 是 Kotlin 方法、形参非空,

@@ -55,7 +55,7 @@ class CompareTargetIdentityTest {
             // code 相等但 name 不同:组合身份不同,不算同一对象
             "C1\u0001丙" to rowOf("code" to "C1", "name" to "丙"),
             "C2\u0001乙" to rowOf("code" to "C2", "name" to "乙"))
-        val result = matchObjects(base, target, listOf("code", "name"), null, MatchMode.LEGACY)
+        val result = matchObjects(base, target, listOf("code", "name"), emptyList(), MatchMode.LEGACY)
         assertEquals(1, result.codeMatched)
         assertEquals("C2\u0001乙", result.pairs.single().baseKey)
     }
@@ -66,7 +66,7 @@ class CompareTargetIdentityTest {
         assertNull(compositeKey(rowOf("code" to null, "name" to "甲"), listOf("code", "name")))
         val base = mapOf("C1\u0001甲" to rowOf("code" to "C1", "name" to "甲"))
         val target = mapOf("C1" to rowOf("code" to "C1", "name" to null))
-        val result = matchObjects(base, target, listOf("code", "name"), null, MatchMode.LEGACY)
+        val result = matchObjects(base, target, listOf("code", "name"), emptyList(), MatchMode.LEGACY)
         assertEquals(0, result.codeMatched)
     }
 
@@ -89,7 +89,7 @@ class CompareTargetIdentityTest {
         // 用覆盖后的单身份配对:code 相等即同一对象,name 差异落到字段级
         val base = mapOf("C1" to rowOf("code" to "C1", "name" to "甲"))
         val target = mapOf("C1" to rowOf("code" to "C1", "name" to "丙"))
-        val result = matchObjects(base, target, identity, null, MatchMode.LEGACY)
+        val result = matchObjects(base, target, identity, emptyList(), MatchMode.LEGACY)
         assertEquals(1, result.codeMatched)
     }
 
@@ -143,7 +143,7 @@ class CompareTargetIdentityTest {
         // 单字段 LEGACY 配对与旧行为一致(编码 trim 后区分大小写)
         val base = mapOf("r001" to rowOf("code" to " r001 ", "name" to "甲"))
         val target = mapOf("r001" to rowOf("code" to "r001", "name" to "甲(改)"))
-        val result = matchObjects(base, target, listOf("code"), null, MatchMode.LEGACY)
+        val result = matchObjects(base, target, listOf("code"), emptyList(), MatchMode.LEGACY)
         assertEquals(1, result.codeMatched)
     }
 

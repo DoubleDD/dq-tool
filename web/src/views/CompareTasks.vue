@@ -156,7 +156,8 @@
             <el-button link type="primary" @click="openMappingReview(row)">字段审核</el-button>
             <el-button link type="primary" @click="router.push(`/compare/new?edit=${row.id}`)">编辑</el-button>
           </template>
-          <el-button v-if="row.status === 'DONE'" link type="primary" @click="router.push(`/compare/${row.id}/diff`)">查看详情</el-button>
+          <!-- 查看详情:DONE 看差异明细;RUNNING 也可进详情页(差异页自渲染「比对进行中」+进度条,随轮询到终态) -->
+          <el-button v-if="row.status === 'DONE' || row.status === 'RUNNING'" link type="primary" @click="router.push(`/compare/${row.id}/diff`)">查看详情</el-button>
           <!-- 导出表格:总览 sheet + 每差异行一 sheet,与详情页「导出比对报告」同一接口;导出中禁重点 -->
           <el-button v-if="row.status === 'DONE'" link type="primary" :disabled="exportingIds.has(row.id)" @click="exportReport(row)">导出表格</el-button>
           <!-- 已完成任务可再次编辑:进向导改配置,保存后直接按新配置重新比对(旧差异明细覆盖) -->

@@ -6,6 +6,7 @@ import com.example.dq.discovery.LanDiscoveryService
 import com.example.dq.model.AiScene
 import com.example.dq.repository.AiConfigRepository
 import com.example.dq.repository.AiUsageRepository
+import com.example.dq.repository.CompareAiTraceRepository
 import com.example.dq.repository.CompareImportRepository
 import com.example.dq.repository.CompareRepository
 import com.example.dq.repository.DataSourceRepository
@@ -123,6 +124,8 @@ class ServiceEnv(val config: AppConfig) {
     val tagRepo = TagRepository(jdbc)
     val aiConfigRepo = AiConfigRepository(jdbc)
     val aiUsageRepo = AiUsageRepository(aiUsageJdbc)
+    /** 比对 AI 判定留痕(与 AI 用量同库 dqaiusage;补配/消歧/映射/时间/佐证逐次调用落行,随任务删除级联清理) */
+    val compareAiTraceRepo = CompareAiTraceRepository(aiUsageJdbc)
     val systemSettingsRepo = SystemSettingsRepository(jdbc)
     val licenseRepo = LicenseRepository(jdbc)
     val licenseRecordRepo = LicenseRecordRepository(jdbc)
@@ -218,12 +221,18 @@ class ServiceEnv(val config: AppConfig) {
         aiMappingChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MAPPING) },
         // 导出「数据最新更新时间」的时间字段语义匹配(场景:比对时间)
         aiTimeChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_TIME) },
+        // 佐证字段兜底识别(场景:比对佐证;此前未注入走未装配默认实例,用量不落库)
+        aiEvidenceChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_EVIDENCE) },
         // 报告导出件目录(V65 起 <数据目录>/compare,服务端直存 + checksum 跟踪,「打开」置灰口径用)
-        compareDir = config.dataDir.resolve("compare"))
+        compareDir = config.dataDir.resolve("compare"),
+        // AI 判定留痕(补配/消歧/映射/时间/佐证逐次调用落 compare_ai_trace,删除任务级联清理)
+        aiTraceRepo = compareAiTraceRepo)
     /** 比对任务批量导入:一 sheet 一任务,数据源实测建档 + 大模型推导字段映射,任务落 PENDING 待人工审核 */
     val compareImportService = CompareImportService(compareImportRepo, dataSourceRepo, dataSourceService,
         metadataService, compareService, aiConfigService, config,
-        aiMappingChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MAPPING) })
+        aiMappingChat = { c, s, u -> aiService.chat(c, s, u, AiScene.COMPARE_MAPPING) },
+        // 映射推导的 AI 判定留痕(与比对任务同表,人工审核页按任务查「AI 推导依据」)
+        aiTraceRepo = compareAiTraceRepo)
 
     /**
      * 共享内核持久化初始化:建表/老库升级(Flyway,已最新时走快速路径跳过)+ 把上次异常退出的

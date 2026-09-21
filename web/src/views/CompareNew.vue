@@ -75,7 +75,8 @@
         />
       </div>
       <!-- 字段表:选定基准表即加载。没有勾选列——哪些字段参与比对由第 3 步连线决定(有连线的基准字段即比对字段);
-           这里只定两类身份字段:默认身份字段(编码,对齐用,可多选=组合身份,恒参与比对)/对象名称(差异明细「对象」列显示名) -->
+           这里只定两类身份字段:默认身份字段(编码,对齐用,可多选=组合身份,恒参与比对)/对象名称(差异明细「对象」列显示名,
+           可多选,按字段顺序取第一个非空值;与身份字段互斥,勾一边自动摘另一边) -->
       <div v-if="form.table" class="field-table-wrap">
         <el-table :data="columns" v-loading="columnsLoading" border row-key="name" height="100%">
           <!-- 默认身份字段(编码)多选:勾多个 = 任务级默认组合身份;各对比表可在第 3 步按连线单独收缩 -->
@@ -84,9 +85,9 @@
               <el-checkbox :model-value="keyFields.includes(row.name)" @change="(v) => toggleKeyField(row.name, v)">{{ '' }}</el-checkbox>
             </template>
           </el-table-column>
-          <el-table-column label="对象名称" width="90" align="center">
+          <el-table-column label="对象名称(可多选)" width="120" align="center">
             <template #default="{ row }">
-              <el-radio v-model="displayField" :value="row.name">{{ '' }}</el-radio>
+              <el-checkbox :model-value="displayFields.includes(row.name)" @change="(v) => toggleNameField(row.name, v)">{{ '' }}</el-checkbox>
             </template>
           </el-table-column>
           <el-table-column label="字段名" min-width="240" show-overflow-tooltip>
@@ -106,7 +107,8 @@
       <div class="step-tip">
         基准表为权威数据,其他系统的数据将按身份字段逐行对齐到该表;默认身份字段(编码)用于逐行对齐、恒参与比对
         (勾多个 = 组合身份,全部相等才算同一行;各对比表可在第 3 步按实际连线单独收缩身份字段),
-        对象名称决定差异明细「对象」列的名称(默认第一个文本型非主键字段);
+        对象名称决定差异明细「对象」列的名称(可多选,按勾选顺序取行内第一个非空值;默认第一个文本型非身份字段;
+        与身份字段互斥,勾一边自动摘另一边);
         其余字段是否参与比对由第 3 步连线决定——有连线的基准字段即比对字段
       </div>
     </div>
@@ -153,14 +155,12 @@
         :key-fields="keyFields"
         v-model="mappings"
       >
-        <!-- 列级对比:大模型预生成字段映射,放工具条最左(基准表全字段产出建议);人工在画布审核后可再手动增删 -->
+        <!-- 大模型预生成字段映射(恒显,不限列级对比):放工具条最左,基准表全字段产出建议;人工在画布审核后可再手动增删 -->
         <template #toolbar-prepend>
-          <template v-if="compareMode === 'COLUMN'">
-            <el-button size="small" type="primary" plain :loading="aiSuggesting" :disabled="!targets.length" @click="aiSuggestMapping">
-              AI 预生成字段映射
-            </el-button>
-            <!-- <span class="ai-suggest-tip">{{ aiSuggestNote || '大模型按字段名/注释逐目标产出映射建议,请在画布核对连线后再提交' }}</span> -->
-          </template>
+          <el-button size="small" type="primary" plain :loading="aiSuggesting" :disabled="!targets.length" @click="aiSuggestMapping">
+            AI 预生成字段映射
+          </el-button>
+          <!-- <span class="ai-suggest-tip">{{ aiSuggestNote || '大模型按字段名/注释逐目标产出映射建议,请在画布核对连线后再提交' }}</span> -->
         </template>
       </CompareFieldMapping>
       <!-- 目标级身份收缩弹窗:候选 = 该对比表已连线的默认身份字段,勾选的子集作为 targets[].identity.keys 提交;
@@ -238,8 +238,8 @@ const step = ref(0)
 const maxStep = ref(0)
 // 三个步骤标题,步骤条 v-for 用
 const STEP_TITLES = ['选择基准表', '选择对比表', '字段映射']
-// 对比模式复选框「列对比」(提交值落 compare_mode):勾选 = COLUMN 行级+列级,第 3 步出现「AI 预生成字段映射」;
-// 不勾选 = ROW 仅行级,映射人工连线。模式只影响提交元数据与映射来源,比对字段一律由第 3 步连线决定
+// 对比模式复选框「列对比」(提交值落 compare_mode):勾选 = COLUMN 行级+列级;不勾选 = ROW 仅行级。
+// 「AI 预生成字段映射」按钮恒显、与模式无关;模式只影响提交元数据,比对字段一律由第 3 步连线决定
 const columnCompare = ref(false)
 const compareMode = computed(() => (columnCompare.value ? 'COLUMN' : 'ROW'))
 const MODE_TIPS = {
@@ -270,15 +270,27 @@ const columnsLoading = ref(false)
 // 语义是「任务级默认身份/身份字段并集」:各对比表的有效身份 = 第 3 步已连线的 keyFields 子集(可人工收缩,见 identityOverrides)
 const keyFields = ref([])
 
-/** 勾选/取消默认身份字段:保持基准表字段顺序(keyFields 顺序即组合身份字段顺序) */
+/** 勾选/取消默认身份字段:保持基准表字段顺序(keyFields 顺序即组合身份字段顺序);
+ *  与对象名称字段互斥:勾上身份即从 displayFields 摘除(后端同样校验交集报 400) */
 function toggleKeyField(name, checked) {
   const set = new Set(keyFields.value)
   if (checked) set.add(name)
   else set.delete(name)
   keyFields.value = columns.value.map((c) => c.name).filter((n) => set.has(n))
+  if (checked) displayFields.value = displayFields.value.filter((n) => n !== name)
 }
-// 对象名称(显示名)字段:差异明细「对象」列的名称来源,默认第一个文本型非主键字段
-const displayField = ref('')
+// 对象名称(显示名)字段(V73 多选):差异明细「对象」列的名称来源,按字段顺序取行内第一个非空值;
+// 默认第一个文本型非身份字段;与身份字段互斥
+const displayFields = ref([])
+
+/** 勾选/取消对象名称字段:保持基准表字段顺序(顺序即 fallback 取值顺序);勾上即从 keyFields 摘除(互斥) */
+function toggleNameField(name, checked) {
+  const set = new Set(displayFields.value)
+  if (checked) set.add(name)
+  else set.delete(name)
+  displayFields.value = columns.value.map((c) => c.name).filter((n) => set.has(n))
+  if (checked) keyFields.value = keyFields.value.filter((n) => n !== name)
+}
 
 // 文本型 jdbcType(与后端 CompareService.isTextType 同一口径:字符型 + CLOB/NCLOB)
 const TEXT_JDBC_TYPES = new Set([1, 12, -1, -15, -9, -16, 2005, 2011])
@@ -298,10 +310,10 @@ const matchModeRequiresName = computed(() => matchMode.value !== 'EXACT')
 // 抽样条数(V70):留空 = 全量比对;填了 = 两侧各按身份字段排序取前 N 条比对(1~500000,后端校验同口径)
 const sampleRows = ref(null)
 
-/** 「自动」候选 = 第一个文本型非身份字段(按基准表字段顺序);无则空串(提交 null,object_name 落空串) */
+/** 「自动」候选 = 第一个文本型非身份字段(按基准表字段顺序);命中包单元素数组,无命中 [](提交空,object_name 落空串) */
 function autoDisplayField() {
   const hit = columns.value.find((c) => !keyFields.value.includes(c.name) && TEXT_JDBC_TYPES.has(c.jdbcType))
-  return hit?.name || ''
+  return hit ? [hit.name] : []
 }
 
 async function loadColumns() {
@@ -310,7 +322,7 @@ async function loadColumns() {
   suppressInvalidate = true
   columns.value = []
   keyFields.value = []
-  displayField.value = ''
+  displayFields.value = []
   try {
     const q = form.db ? `?db=${encodeURIComponent(form.db)}` : ''
     const list = await request.get(
@@ -320,7 +332,7 @@ async function loadColumns() {
     // 默认身份字段:主键列中 pkSeq 最小的;无主键则勾第一列
     const pk = [...columns.value].filter((c) => c.primaryKey).sort((a, b) => (a.pkSeq || 0) - (b.pkSeq || 0))
     keyFields.value = [(pk[0] || columns.value[0])?.name].filter(Boolean)
-    displayField.value = autoDisplayField()
+    displayFields.value = autoDisplayField()
     // 记录字段已按当前基准表加载:重选同一张表(回看场景)时不再清空重载,保住后两步已填数据
     loadedTableKey.value = baseTableKey()
   } catch {
@@ -555,7 +567,7 @@ function invalidateFrom(n) {
       // 基准表变了:本步随表加载的字段数据与身份字段选择一并失效,第 2 步(选择对比表)清单也作废
       columns.value = []
       keyFields.value = []
-      displayField.value = ''
+      displayFields.value = []
       matchMode.value = 'EXACT'
       loadedTableKey.value = ''
       targets.value = []
@@ -597,8 +609,8 @@ function next() {
     if (!columns.value.length) return ElMessage.warning('基准表字段未加载,无法继续')
     if (!keyFields.value.length) return ElMessage.warning('请至少勾选一个默认身份字段(对象编码)')
     // 「先编码后名称+大模型归一化」靠对象名称配对,没有名称字段就无法执行
-    if (matchModeRequiresName.value && !displayField.value) {
-      return ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请在「对象名称」列选择`)
+    if (matchModeRequiresName.value && !displayFields.value.length) {
+      return ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请在「对象名称」列勾选`)
     }
     step.value = 1
     maxStep.value = Math.max(maxStep.value, 1)
@@ -617,8 +629,8 @@ function validateSubmit() {
     ElMessage.warning('请至少添加 1 个对比表(数据源 + 库/模式 + 表)')
     return false
   }
-  if (matchModeRequiresName.value && !displayField.value) {
-    ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请回到第 1 步选择`)
+  if (matchModeRequiresName.value && !displayFields.value.length) {
+    ElMessage.warning(`匹配逻辑「${matchModeLabel.value}」需要指定对象名称字段,请回到第 1 步勾选`)
     return false
   }
   const unmapped = targets.value.filter((t, i) => !identityState(i).effective.length)
@@ -638,7 +650,7 @@ function validateSubmit() {
  */
 function buildPayload() {
   const picked = new Set(keyFields.value)
-  if (displayField.value) picked.add(displayField.value)
+  for (const n of displayFields.value) picked.add(n)
   for (const m of mappings.value) {
     for (const bf of Object.keys(m || {})) picked.add(bf)
   }
@@ -654,7 +666,9 @@ function buildPayload() {
     keyFields: [...keyFields.value],
     keyField: keyFields.value[0] || '',
     fields,
-    displayField: displayField.value || null,
+    // 对象名称字段多选(V73):有序数组,取值 = 行内按字段顺序第一个非空值;displayField 带第一项做旧列兼容
+    displayFields: [...displayFields.value],
+    displayField: displayFields.value[0] || null,
     // 对象对齐匹配逻辑(第 1 步选择):EXACT / CODE_NAME_LLM;编辑模式同样允许改(不做限制)
     matchMode: matchMode.value,
     // 对比模式(第 1 步复选框):ROW 仅行级 / COLUMN 行级+列级;编辑模式同样允许改
@@ -734,7 +748,7 @@ function parseJsonArray(v) {
   return out.length ? out : null
 }
 
-/** 解析目标级 identityJson({keys:[...]} 的 JSON 字符串或已解析对象)为 keys 数组;无覆盖返回 null */
+/** 解析目标级 identityKeys(字符串数组,或兼容 {keys:[...]}/JSON 字符串形态)为 keys 数组;无覆盖返回 null */
 function parseIdentityKeys(v) {
   if (v == null) return null
   let o = v
@@ -788,20 +802,21 @@ async function prefillEdit(jobId) {
       name: t.displayName || undefined
     }))
     mappings.value = (d.targets || []).map((t) => ({ ...(t.mapping || {}) }))
-    // 目标级身份覆盖:identityJson 解析反填(null = 按推导);人工收缩的勾选在身份条上还原
-    identityOverrides.value = (d.targets || []).map((t) => parseIdentityKeys(t.identityJson))
+    // 目标级身份覆盖:identityKeys(数组,null = 按推导)反填;人工收缩的勾选在身份条上还原
+    identityOverrides.value = (d.targets || []).map((t) => parseIdentityKeys(t.identityKeys))
   } finally {
     // 等本轮 watch 冲刷完再解除抑制:反填触发的数据链监听(基准四元组/对比表清单变化)全部被跳过
     await nextTick()
     suppressInvalidate = false
   }
   await loadColumns()
-  // 默认身份字段改回任务值:keyFieldsJson(JSON 数组)优先,老任务(null)退化为 [keyField] 单列;
+  // 默认身份字段改回任务值:详情视图 keyFields(数组,后端已把老任务归一为 [keyField] 单列)优先;
   // 基准表读不出(IMPORT_ERROR)时按任务原值兜底,便于修正后重选
-  const kf = parseJsonArray(job.keyFieldsJson)
+  const kf = parseJsonArray(job.keyFields)
   if (kf?.length) keyFields.value = kf
   else if (job.keyField) keyFields.value = [job.keyField]
-  if (job.displayField) displayField.value = job.displayField
+  // 对象名称字段反填(V73):详情视图 displayFields(数组,后端已把老任务由 displayField 退化)优先,旧字段兜底
+  displayFields.value = parseJsonArray(job.displayFields) || (job.displayField ? [job.displayField] : [])
 }
 
 onMounted(async () => {

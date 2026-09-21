@@ -78,7 +78,7 @@ tasks.named<JavaExec>("run") {
 // 或直接使用磁盘上已有的 web/dist;processResources 仅在有 dist 时拷入 static,缺失时跳过(API-only 调试)。
 // 测试依赖 buildWeb 产出 web/dist,保证 WebServerSmokeTest 的 classpath 静态用例可跑。
 // 交付 jar 不再内嵌前端:shadowJar 排除 static/**,前端由 jpackage static-dir / Tauri frontendDist 提供。
-val buildWeb by tasks.registering(Exec::class) {
+val buildWeb = tasks.register<Exec>("buildWeb") {
     group = "build"
     description = "构建前端产物 web/dist(增量;:server:test 的前置;打包脚本各自构建)"
 
@@ -109,17 +109,18 @@ val buildWeb by tasks.registering(Exec::class) {
 // 更新日志硬校验(发版强制):CHANGELOG.md 必须存在当前版本对应的 `## <展示版>` 段落
 // (展示版 = VERSION 去掉 0. 前缀,与页脚显示/页签「本次更新」口径一致;`## <原始VERSION>` 也接受)。
 // 挂在 processResources 前置:dev 运行与 release 打包都必经,缺失立即构建失败并提示填写
-val verifyChangelog by tasks.registering {
+val verifyChangelog = tasks.register("verifyChangelog") {
     group = "build"
     description = "校验 CHANGELOG.md 含当前版本段落(processResources 前置)"
     val changelogFile = rootProject.layout.projectDirectory.file("CHANGELOG.md")
+    // 配置期固化版本号:doLast 属执行期,直接读 project.version 会在 Gradle 10 报错(Task.project 弃用)
+    val projectVersion = project.version.toString()
     inputs.file(changelogFile)
-    inputs.property("version", project.version.toString())
+    inputs.property("version", projectVersion)
     doLast {
-        val version = project.version.toString()
-        val displayVersion = version.replaceFirst(Regex("^0\\."), "")
+        val displayVersion = projectVersion.replaceFirst(Regex("^0\\."), "")
         val lines = changelogFile.asFile.takeIf { it.isFile }?.readLines() ?: emptyList()
-        val found = lines.any { it.startsWith("## $displayVersion") || it.startsWith("## $version") }
+        val found = lines.any { it.startsWith("## $displayVersion") || it.startsWith("## $projectVersion") }
         if (!found) {
             throw GradleException(
                 "CHANGELOG.md 缺少当前版本($displayVersion)的更新段落,请以「## $displayVersion (YYYY-MM-DD)」标题补充本次更新内容;" +

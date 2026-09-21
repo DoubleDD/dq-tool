@@ -747,8 +747,8 @@ html.dark .sidebar-menu .el-menu-item.is-active {
 
 /**
  * 全局接口反馈通知(utils/notify.js,基于 ElNotification)的 macOS 风格微调:
- * 右上角弹出、从右向左滑入/滑出、自动堆叠均由组件自身实现,这里只调外观
- * (圆角/阴影/宽度上限/字号/类型着色);标题+摘要两行与「展开全部」由 components/NotifyBody.vue 渲染。
+ * 右下角弹出、从右向左滑入/滑出、自动堆叠均由组件自身实现,这里只调外观
+ * (圆角/阴影/宽度上限/字号/类型着色);标题+摘要两行(固定折叠)由 components/NotifyBody.vue 渲染。
  * 类型着色用 light-9(底)/light-5(边)变量,暗色主题下这两个变量自动变深,深浅主题通用。
  */
 .el-notification {

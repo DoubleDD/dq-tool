@@ -3,6 +3,7 @@ package com.example.dq.service
 import com.example.dq.config.AppConfig
 import com.example.dq.dialect.DialectFactory
 import com.example.dq.model.ColumnMeta
+import com.example.dq.model.CompareAiTrace
 import com.example.dq.model.DataSourceRequest
 import com.example.dq.model.PendingReason
 import com.example.dq.model.TestConnectionRequest
@@ -87,13 +88,15 @@ class CompareImportServiceTest {
         aiConfigured: Boolean = true,
         chat: CompareService.AiChat = fakeChat,
         tester: (TestConnectionRequest) -> String? = { testError },
+        traceRecorder: (CompareAiTrace) -> Unit = {},
     ) = CompareImportService(
         importRepo, dsRepo, dataSourceService, metadataService,
         compareService, null, config,
         aiConfigProvider = { if (aiConfigured) fakeConfig else null },
         columnsLister = columnsLister,
         aiMappingChat = chat,
-        dsTester = tester)
+        dsTester = tester,
+        aiTraceRecorder = traceRecorder)
 
     // ---------- Excel 构造 ----------
 
@@ -556,5 +559,60 @@ class CompareImportServiceTest {
         assertEquals("FAILED", importRepo.findById(id)!!.status)
         assertEquals("DS_REVIEW", importRepo.findById(reviewId)!!.status)
         assertNotNull(importRepo.findById(id)!!.error)
+    }
+
+    // ---------- AI 判定留痕(映射推导) ----------
+
+    @Test
+    fun `映射推导成功落 MAPPING 留痕 含推导映射与锁定项`() {
+        dataSourceService.create(DataSourceRequest(
+            "既有基准库", "jdbc:mysql://10.0.0.1:3306/base_db", "root", "pw1", null, null))
+        val traces = java.util.Collections.synchronizedList(ArrayList<CompareAiTrace>())
+        val service = newService(traceRecorder = { traces.add(it) })
+        val batch = service.submit("水库台账.xlsx", ByteArrayInputStream(xlsx("水库信息", listOf(
+            baseRow(), targetRow("10.0.0.2", code = "v_code", name = "v_name")))))
+        service.confirm(batch.id)
+        awaitBatchDone(batch.id)
+        val jobId = service.get(batch.id).jobIds.single()
+        awaitMappingSettled(jobId)
+        val targetId = compareService.detail(jobId).targets.single().id
+        val trace = traces.single { it.stage == CompareAiTrace.STAGE_MAPPING }
+        assertEquals(jobId, trace.jobId)
+        assertEquals(targetId, trace.targetId)
+        assertEquals("COMPARE_MAPPING", trace.scene)
+        assertEquals(1, trace.batchNo)
+        assertEquals("model", trace.model)
+        assertEquals("vendor_db.t_reservoir", trace.targetLabel)
+        assertTrue(trace.requestContent!!.contains("[system]") && trace.requestContent!!.contains("[user]"))
+        assertTrue(trace.responseContent!!.contains("v_type"))
+        // result_json:推导映射(锁定优先合并后)+ 锁定项分开落
+        val result = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+            .readValue(trace.resultJson, Map::class.java)
+        assertEquals(mapOf("reservoir_type" to "v_type",
+            "reservoir_code" to "v_code", "reservoir_name" to "v_name"), result["mapping"])
+        assertEquals(mapOf("reservoir_code" to "v_code", "reservoir_name" to "v_name"), result["locked"])
+    }
+
+    @Test
+    fun `映射推导调用失败也落留痕 仅锁定项加错误摘要`() {
+        dataSourceService.create(DataSourceRequest(
+            "既有基准库", "jdbc:mysql://10.0.0.1:3306/base_db", "root", "pw1", null, null))
+        val traces = java.util.Collections.synchronizedList(ArrayList<CompareAiTrace>())
+        val failingChat = CompareService.AiChat { _, _, _ -> throw IllegalStateException("模型超时") }
+        val service = newService(chat = failingChat, traceRecorder = { traces.add(it) })
+        val batch = service.submit("水库台账.xlsx", ByteArrayInputStream(xlsx("水库信息", listOf(
+            baseRow(), targetRow("10.0.0.2", code = "v_code", name = "v_name")))))
+        service.confirm(batch.id)
+        awaitBatchDone(batch.id)
+        val jobId = service.get(batch.id).jobIds.single()
+        awaitMappingSettled(jobId)
+        val trace = traces.single { it.stage == CompareAiTrace.STAGE_MAPPING }
+        assertEquals(jobId, trace.jobId)
+        assertTrue(trace.responseContent!!.contains("模型超时"), trace.responseContent)
+        // 失败也带结构:映射为空、仅保留表格锁定项(人工审核补线的依据)
+        val result = com.fasterxml.jackson.module.kotlin.jacksonObjectMapper()
+            .readValue(trace.resultJson, Map::class.java)
+        assertEquals(emptyMap<String, String>(), result["mapping"])
+        assertEquals(mapOf("reservoir_code" to "v_code", "reservoir_name" to "v_name"), result["locked"])
     }
 }

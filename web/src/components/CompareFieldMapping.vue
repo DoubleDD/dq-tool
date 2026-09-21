@@ -42,6 +42,8 @@ const targetFields = ref([])
 const baseTableComment = ref('')
 const targetTableComments = ref([])
 const loading = ref(false)
+// loadColumns 并发序号:每次调用自增,响应回来时序号已过期则丢弃(见 loadColumns 内守卫)
+let loadSeq = 0
 // 字段加载完成前不挂载画布(节点高度依赖字段行数,先建后补会让坐标与高度对不上)
 const loadedOnce = ref(false)
 const canvasReady = computed(() => loadedOnce.value && baseReady.value && baseFields.value.length > 0
@@ -76,6 +78,9 @@ function autoMatchFor(ti) {
 
 /** 拉基准表与各对比表字段 + 各表中文注释(表清单接口,按 schema 分组共享请求);基准表未选全不发请求(第三步用 v-show,向导第一步时组件已挂载) */
 async function loadColumns() {
+  // 并发过期守卫:基准表/对比表两个 watcher 会连发(编辑反填、快速增删对比表),
+  // 旧响应晚到会盖掉新数据——targetFields 与 targets 数量对不上时画布(canvasReady)卸载后不再恢复,连线全丢
+  const seq = ++loadSeq
   if (!baseReady.value) {
     baseFields.value = []
     targetFields.value = []
@@ -100,6 +105,7 @@ async function loadColumns() {
       Promise.all(specs.map((s) => request.get(columnsUrl(s)).catch(() => []))),
       Promise.all(schemaSpecs.map((s) => request.get(tablesUrl(s)).catch(() => [])))
     ])
+    if (seq !== loadSeq) return // 等待期间基准表/对比表又变了,本次结果过期丢弃(新一轮会写完)
     const commentOf = {}
     schemaKeys.forEach((k, i) => {
       for (const t of tablesLists[i] || []) commentOf[`${k}|${t.name}`] = t.comment || ''
@@ -112,7 +118,7 @@ async function loadColumns() {
     targetTableComments.value = props.targets.map((t) => commentOf[nodeKey(t)] || '')
     loadedOnce.value = true
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false // 过期调用的 finally 不抢 loading(新一轮还在转)
   }
 }
 

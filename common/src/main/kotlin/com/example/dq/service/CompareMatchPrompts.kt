@@ -19,8 +19,10 @@ object CompareMatchPrompts {
 
     private val mapper = jacksonObjectMapper()
 
-    /** 待配对对象(身份标识):编号 1 起,code/name 可为空(带上字段名便于模型理解) */
-    data class MatchItem(val seq: Int, val code: String?, val name: String?)
+    /** 待配对对象(身份标识):编号 1 起,code/name 可为空(带上字段名便于模型理解);
+     *  evidence = 佐证字段取值(佐证类型 label → 值,如 行政区划/位置/所在河流),供模型综合判同 */
+    data class MatchItem(val seq: Int, val code: String?, val name: String?,
+                         val evidence: Map<String, String?> = emptyMap())
 
     /** 同名二轮消歧的待判定对象:编码/名称 + 其余比对字段取值(供模型区分同名不同对象) */
     data class SameNameItem(val seq: Int, val code: String?, val name: String?,
@@ -28,9 +30,66 @@ object CompareMatchPrompts {
 
     /** 同名二轮消歧的系统 prompt:与首轮归一化(跨名称语义配对)目标不同,只判「同名是否同一对象」 */
     const val SAME_NAME_SYSTEM_PROMPT =
-        "你是数据治理专家。用户给出两份来自不同系统的同名对象清单(同名但未必是同一个对象)," +
+        "你是数据治理专家。用户给出若干组来自不同系统的同名对象清单(每组内对象同名但未必是同一个对象)," +
             "并附带各对象的其余字段取值。请根据字段取值判断哪些是同一个业务对象(同一地点/同一实体)," +
             "哪些只是重名的不同对象。只输出 JSON,不要解释。"
+
+    /** 一个同名歧义组的待判定内容(装批用):组序号 1 起(跨批全局编号)+ 组名 + 双侧条目(组内序号 1 起) */
+    data class SameNameGroupItems(val groupSeq: Int, val name: String,
+                                  val bases: List<SameNameItem>, val targets: List<SameNameItem>)
+
+    /** 组配批量消歧的配对结果:组序号 + 组内 基准侧序号 → 目标侧序号 */
+    data class GroupPair(val groupSeq: Int, val baseSeq: Int, val targetSeq: Int)
+
+    /**
+     * 组配批量消歧 prompt:多个同名组装进一次请求(每组一段,组内序号各自 1 起),
+     * 输出带组号的配对数组 [{"g":组号,"b":基准侧序号,"t":目标侧序号}];纯函数。
+     * 每组字段清单由调用方先做区分度裁剪(剔除身份/名称/全空/全同值/UUID 形态字段)
+     */
+    @JvmStatic
+    fun buildSameNameBatchPrompt(groups: List<SameNameGroupItems>,
+                                 fieldsByGroup: Map<Int, List<String>>): String {
+        val sb = StringBuilder()
+        sb.append("以下按组给出基准/目标两侧的同名对象(每组内名称相同,但同名不一定同一个对象)。")
+            .append("请逐组根据其余字段的取值判断哪些是同一个对象,哪些只是重名。\n")
+        for (g in groups) {
+            sb.append("\n== 同名组 ").append(g.groupSeq).append("(名称均为「")
+                .append(g.name.take(MAX_IDENTIFIER_CHARS)).append("」)==\n")
+            sb.append("比对字段: ").append(fieldsByGroup[g.groupSeq].orEmpty().joinToString(" / ")).append("\n")
+            sb.append("基准侧(共 ").append(g.bases.size).append(" 条):\n")
+            appendSameNameItems(sb, g.bases)
+            sb.append("目标侧(共 ").append(g.targets.size).append(" 条):\n")
+            appendSameNameItems(sb, g.targets)
+        }
+        sb.append("\n请输出同一个对象的配对数组,元素形如 {\"g\": <组号>, \"b\": <基准侧序号>, \"t\": <目标侧序号>},")
+            .append("序号为组内列出的 1 起编号,如 [{\"g\":1,\"b\":1,\"t\":2}]。")
+            .append("一条只能配一条,同组内同一序号不要重复出现;重名的不同对象不要强行配对,")
+            .append("判断不了或没有对应的不要输出。只输出 JSON 数组本身,没有配对时输出 []。")
+        return sb.toString()
+    }
+
+    /**
+     * 解析组配批量消歧回答:抽取首个 JSON 数组,只保留 g 在 [groups] 内、b/t 在该组合法序号内、
+     * 且组内序号不重复的配对(重复保留先出现的);g 缺失/非数值、b/t 解析不出一律丢弃;
+     * 带多余文字/坏 JSON 返回空,不抛异常。[groups] = 组号 → (合法基准序号集, 合法目标序号集)
+     */
+    @JvmStatic
+    fun parseGroupPairs(answer: String, groups: Map<Int, kotlin.Pair<Set<Int>, Set<Int>>>): List<GroupPair> {
+        val parsed = parseArray(answer)
+        val result = ArrayList<GroupPair>()
+        val used = HashSet<String>()
+        for (item in parsed) {
+            val g = seqOf(item["g"]) ?: continue
+            val b = seqOf(item["b"]) ?: continue
+            val t = seqOf(item["t"]) ?: continue
+            val valid = groups[g] ?: continue
+            if (b !in valid.first || t !in valid.second) continue
+            // 组内一对一:同组同侧序号重复只留先出现的(基准/目标序号各自独立判重)
+            if (!used.add("b$g|$b") || !used.add("t$g|$t")) continue
+            result.add(GroupPair(g, b, t))
+        }
+        return result
+    }
 
     /** 配对结果:基准侧序号 → 目标侧序号 */
     data class Pair(val baseSeq: Int, val targetSeq: Int)
@@ -39,20 +98,26 @@ object CompareMatchPrompts {
     const val MAX_IDENTIFIER_CHARS = 80
 
     const val SYSTEM_PROMPT =
-        "你是数据治理专家。用户给出若干基准对象,每条基准下方列出了它的候选目标对象(每项含对象编号与对象名称)," +
-            "请判断哪些候选与基准是同一个业务对象。判断依据:名称相同或语义相同(全称与简称、别名、俗称、" +
-            "括号补充说明、错别字、多音字、缺失名称等)即视为同一对象,不要因为编号格式不同就判为不同对象。" +
+        "你是数据治理专家。用户给出若干基准对象,每条基准下方列出了它的候选目标对象(每项含对象编号、" +
+            "对象名称及佐证属性取值),请判断哪些候选与基准是同一个业务对象。判断依据:名称相同或语义相同" +
+            "(全称与简称、别名、俗称、括号补充说明、错别字、多音字、缺失名称等)即视为同一对象," +
+            "不要因为编号格式不同就判为不同对象。两侧记录来自不同系统,任一字段取值都可能与对方不一致——" +
+            "取值不一致不代表不是同一主体,也不代表哪一侧是错的;请依据全部属性综合判断," +
+            "字段取值差异会在后续差异明细中如实呈现,不影响本次配对判断。" +
             "每条基准只可能匹配它列出的候选之一,没有对应候选时该基准不输出。只输出 JSON,不要解释。"
 
     /**
-     * 拼候选裁决 prompt:逐条「基准 #b: code=… | name=… / 候选: t. …; t. …」,
+     * 拼候选裁决 prompt:逐条「基准 #b: code=… | name=… | 佐证… / 候选: t. …; t. …」,
      * 目标只列该基准召回到的候选(按目标全局序号),输出格式与旧全量清单版一致
-     * (「基准序号 - 目标全局序号」配对数组);纯函数。
+     * (「基准序号 - 目标全局序号」配对数组);
+     * [regionConflicts] = 基准序号 → 区划单属性冲突的目标序号,候选条目后中性标注
+     * 「(行政区划与基准不一致)」——只是事实提示,不带对错暗示(判同不判对错);纯函数。
      */
     @JvmStatic
     fun buildCandidateMatchPrompt(baseCodeLabel: String, baseNameLabel: String,
                                   bases: List<MatchItem>, targetsBySeq: Map<Int, MatchItem>,
-                                  candidates: Map<Int, List<Int>>): String {
+                                  candidates: Map<Int, List<Int>>,
+                                  regionConflicts: Map<Int, Set<Int>> = emptyMap()): String {
         val sb = StringBuilder()
         sb.append("编号与名称可能不一致,请按业务含义判断同一个对象。每条基准只可能匹配它下方列出的候选目标," +
             "候选按目标全局序号编号;判断不了或没有对应候选时不要输出该基准。\n\n")
@@ -70,6 +135,9 @@ object CompareMatchPrompts {
                     val t = targetsBySeq[tSeq] ?: return@forEachIndexed
                     sb.append(t.seq).append(". ")
                     appendIdentity(sb, t, baseCodeLabel, baseNameLabel)
+                    if (regionConflicts[b.seq]?.contains(tSeq) == true) {
+                        sb.append("(行政区划与基准不一致)")
+                    }
                 }
                 sb.append('\n')
             }
@@ -86,13 +154,16 @@ object CompareMatchPrompts {
     fun filterPairsByCandidates(pairs: List<Pair>, candidates: Map<Int, List<Int>>): List<Pair> =
         pairs.filter { p -> candidates[p.baseSeq]?.contains(p.targetSeq) == true }
 
-    /** 单条身份渲染「code=… | name=…」,空值忽略,超长截断(候选裁决与清单共用) */
+    /** 单条身份渲染「code=… | name=… | 佐证=…」,空值忽略,超长截断(候选裁决与清单共用) */
     private fun appendIdentity(sb: StringBuilder, item: MatchItem, codeLabel: String, nameLabel: String) {
         val code = item.code?.takeIf { c -> c.isNotBlank() }?.take(MAX_IDENTIFIER_CHARS)
         val name = item.name?.takeIf { n -> n.isNotBlank() }?.take(MAX_IDENTIFIER_CHARS)
-        val parts = ArrayList<String>(2)
+        val parts = ArrayList<String>(2 + item.evidence.size)
         if (code != null) parts.add("$codeLabel=$code")
         if (name != null) parts.add("$nameLabel=$name")
+        for ((label, value) in item.evidence) {
+            value?.takeIf { it.isNotBlank() }?.take(MAX_IDENTIFIER_CHARS)?.let { parts.add("$label=$it") }
+        }
         sb.append(if (parts.isEmpty()) "(编号与名称均为空)" else parts.joinToString(" | "))
     }
 

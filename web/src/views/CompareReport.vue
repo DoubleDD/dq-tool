@@ -4,10 +4,13 @@
       <h3 style="margin: 0">质量报告</h3>
       <div class="toolbar-actions">
         <el-button @click="router.push(`/compare/${jobId}/diff`)">← 返回差异明细</el-button>
+        <el-button plain @click="aiTraceVisible = true">AI 判定</el-button>
         <el-button v-if="job && job.status === 'DONE' && !job.archived" type="warning" plain @click="archive(true)">归档报告</el-button>
         <el-button v-if="job && job.status === 'DONE' && job.archived" plain @click="archive(false)">取消归档</el-button>
       </div>
     </div>
+    <!-- AI 判定明细(任务级):大模型补配/消歧/映射/时间列/佐证字段逐批调用记录与判定结果 -->
+    <CompareAiTraceDialog v-model="aiTraceVisible" :job-id="jobId" />
 
     <div v-loading="loading">
       <template v-if="job">
@@ -119,6 +122,7 @@ import { ElTooltip } from 'element-plus'
 import { ElMessage } from '../utils/notify'
 import { getCompareJob, getCompareReport, setCompareArchived } from '../api'
 import { formatNumber } from '../utils/format'
+import CompareAiTraceDialog from '../components/CompareAiTraceDialog.vue'
 
 /** 指标单元格:FAILED 目标统一显示「比对失败」tooltip error;danger 时值标红 */
 const MetricCell = (props) => {
@@ -138,6 +142,8 @@ const jobId = route.params.id
 const job = ref(null)
 const report = ref(null)
 const loading = ref(false)
+// 「AI 判定」明细弹窗显隐
+const aiTraceVisible = ref(false)
 
 const baseTableLabel = computed(() => {
   if (!job.value) return ''

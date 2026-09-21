@@ -13,6 +13,7 @@ import java.sql.DatabaseMetaData
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.SQLException
+import java.sql.Statement
 import java.util.TreeMap
 import java.util.regex.Pattern
 /** 各方言的通用实现:元数据读取、分段规划、统计 SQL 模板 */
@@ -532,6 +533,20 @@ abstract class AbstractDialect : DbDialect {
                              where: String?, orderBy: String?, offset: Long, limit: Int): String {
         val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
         return pageRowsSql(from, columns, where, orderBy, offset, limit)
+    }
+
+    override fun streamAllSql(schema: String, table: String, columns: List<String>): String {
+        val from = if (schema.isBlank()) quote(table) else qualifiedTable(schema, table)
+        val cols = if (columns.isEmpty()) "*" else columns.joinToString(", ") { quote(it) }
+        return "SELECT $cols FROM $from"
+    }
+
+    override fun configureStreamingRead(conn: Connection, stmt: Statement) {
+        // 多数驱动默认就按 fetchSize 分批取数,显式设一批的量即可。
+        // SQL Server 例外:驱动默认 responseBuffering=full 会整表缓冲进客户端内存(fetchSize 被忽略),
+        // 真流式要连接 URL 属性 responseBuffering=adaptive,不便在池化连接上改——
+        // 单侧 50 万行上限 + 比对列为字段子集,客户端缓冲可接受,先不引入 URL 级改造
+        stmt.fetchSize = 1000
     }
 
     /** LIMIT/OFFSET 分页(MySQL/PG/Kingbase/OceanBase/达梦通用);拆出纯函数便于单测 */

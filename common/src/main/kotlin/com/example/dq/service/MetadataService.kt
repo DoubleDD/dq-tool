@@ -7,6 +7,8 @@ import com.example.dq.model.DataSourceConfig
 import com.example.dq.model.IndexMeta
 import com.example.dq.model.ScanStatus
 import com.example.dq.model.SchemaColumn
+import com.example.dq.model.SchemaDictApplyResult
+import com.example.dq.model.SchemaDictDescRequest
 import com.example.dq.model.SchemaStat
 import com.example.dq.model.TableStat
 import com.example.dq.repository.MetaCacheRepository
@@ -99,6 +101,51 @@ class MetadataService(
             }
             return databases.filter { it in filter }
         }
+
+        /** 批量设置描述:未命中库名样例最多返回条数(完整总数走 unmatchedTotal) */
+        private const val UNMATCHED_SAMPLE_LIMIT = 50
+
+        /**
+         * 字典表行解析(库名 -> 描述):两侧 trim,库名或描述为空的行跳过并计数(不清空已有描述);
+         * 同名库后者覆盖,LinkedHashMap 保持首次出现顺序
+         */
+        fun parseDictRows(rows: List<Pair<String?, String?>>): Pair<LinkedHashMap<String, String>, Int> {
+            val dict = LinkedHashMap<String, String>()
+            var skipped = 0
+            for ((rawName, rawDesc) in rows) {
+                val name = rawName?.trim().orEmpty()
+                val desc = rawDesc?.trim().orEmpty()
+                if (name.isEmpty() || desc.isEmpty()) {
+                    skipped++
+                } else {
+                    dict[name] = desc
+                }
+            }
+            return dict to skipped
+        }
+
+        /**
+         * 精准匹配:trim 后完全相等(大小写敏感)。matched 为命中库名(字典顺序),
+         * 未命中库名样例截断前 [UNMATCHED_SAMPLE_LIMIT] 个,总数走 unmatchedTotal
+         */
+        fun matchDictDescriptions(dict: Map<String, String>, candidates: Collection<String>): DictMatch {
+            val candidateSet = candidates.toSet()
+            val matched = ArrayList<String>()
+            val unmatched = ArrayList<String>()
+            var unmatchedTotal = 0
+            for (name in dict.keys) {
+                if (name in candidateSet) {
+                    matched.add(name)
+                } else {
+                    unmatchedTotal++
+                    if (unmatched.size < UNMATCHED_SAMPLE_LIMIT) unmatched.add(name)
+                }
+            }
+            return DictMatch(matched, unmatched, unmatchedTotal)
+        }
+
+        /** 字典名与候选库名的匹配结果 */
+        data class DictMatch(val matched: List<String>, val unmatched: List<String>, val unmatchedTotal: Int)
     }
 
     /**
@@ -433,8 +480,57 @@ class MetadataService(
         }
     }
 
+    /**
+     * 库列表「批量设置描述」:读字典表(库名 -> 描述)按库名精准匹配(trim 后完全相等、大小写敏感)回写 schema_doc。
+     * 字典表可来自另一个数据源(dictDatasourceId,空 = 目标数据源自身):读侧方言/连接按字典数据源,匹配候选与写入按目标数据源。
+     * 单库方言候选为 schema 清单,命中即写;多库方言候选为 database 清单,命中库对其下每个 schema 写同一描述。
+     * 已命中库的旧描述直接覆盖;空行跳过不清空;长度等约束沿用 [updateSchemaDescription](超长抛 400)
+     */
+    @Throws(SQLException::class)
+    fun applySchemaDescriptionsFromDict(datasourceId: Long, req: SchemaDictDescRequest): SchemaDictApplyResult {
+        val targetDialect = dialectOf(dataSourceService.get(datasourceId))
+        val targetMultiDb = targetDialect.supportsMultiDatabase()
+        val dictDsId = req.dictDatasourceId ?: datasourceId
+        val dictDialect = dialectOf(dataSourceService.get(dictDsId))
+        val dictMultiDb = dictDialect.supportsMultiDatabase()
+        // 字典表全量读取(面向小数据量,不设行上限与 queryTimeout);标识符全部过方言 quote
+        val sql = "SELECT ${dictDialect.quote(req.nameField!!)}, ${dictDialect.quote(req.descField!!)}" +
+            " FROM ${dictDialect.quote(req.schema!!)}.${dictDialect.quote(req.table!!)}"
+        val rows = ArrayList<Pair<String?, String?>>()
+        dataSourceService.getConnection(dictDsId, if (dictMultiDb) req.db else null).use { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.executeQuery(sql).use { rs ->
+                    while (rs.next()) {
+                        rows.add(rs.getString(1) to rs.getString(2))
+                    }
+                }
+            }
+        }
+        val (dict, skipped) = parseDictRows(rows)
+        val candidates = if (targetMultiDb) listDatabases(datasourceId) else listSchemas(datasourceId, null)
+        val match = matchDictDescriptions(dict, candidates)
+        for (name in match.matched) {
+            val desc = dict[name]
+            if (targetMultiDb) {
+                for (schema in listSchemas(datasourceId, name)) {
+                    updateSchemaDescription(datasourceId, name, schema, desc)
+                }
+            } else {
+                updateSchemaDescription(datasourceId, null, name, desc)
+            }
+        }
+        return SchemaDictApplyResult(rows.size, match.matched.size, skipped, match.unmatchedTotal, match.unmatched)
+    }
+
     /** 无库概念方言的 database 归一为空串,与 schema_doc/table_doc/meta_* 缓存口径一致 */
     private fun normalizeDb(database: String?): String = database ?: ""
+
+    /** 库描述 map(通用表选择器库/schema 栏描述展示用):schema_name -> description,空白描述不返回 */
+    fun schemaDescriptions(datasourceId: Long, database: String?): Map<String, String> {
+        dataSourceService.get(datasourceId) // 数据源不存在时抛异常
+        return schemaDocRepo.findByDatasource(datasourceId, normalizeDb(database))
+            .filterValues { it.isNotBlank() }
+    }
 
     /**
      * 库描述读取(schema_doc,比对目标默认显示名回落链等展示口径用):db/schema 按方言归一——

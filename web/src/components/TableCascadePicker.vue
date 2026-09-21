@@ -3,6 +3,7 @@
  * 表级四栏级联选择器(新建比对任务第一步「选择基准表」、第三步「选择比对系统」共用)。
  *
  * 栏位:数据源 → 数据库 → 模式(按数据库类型动态显示)→ 表(选项带注释)。
+ * 库/模式栏名称旁展示库描述(schema_doc,有才显示,过滤框同时匹配描述);栏宽默认 3 栏 3:3:4、4 栏 3:2:2:3。
  * - 多库方言(SQL Server / Kingbase):`/databases` 出库清单,再 `/schemas?db=` 出模式清单,四栏齐全;
  *   库清单为空(断网且无缓存/白名单滤空)时降级为单库链——db='' 直拉 `/schemas` 由后端本地缓存兜底,
  *   按三栏形态展示(effMultiDb),对齐库列表页 Schemas.vue 的 db='' 兜底;
@@ -58,6 +59,9 @@ const tables = ref([])
 const dbLoading = ref(false)
 const schemaLoading = ref(false)
 const tableLoading = ref(false)
+// 库/schema 栏描述(schema_doc):单库形态挂在第二栏,多库方言挂在模式栏;键为库/schema 名
+const lane2Descs = ref({})
+const schemaDescs = ref({})
 
 const currentDs = computed(() => props.datasources.find((d) => String(d.id) === String(props.datasourceId)))
 // 多库方言(SQL Server/Kingbase)先选库再选模式;与对象管理选表组件同一判定
@@ -87,12 +91,13 @@ const dsOptions = computed(() => {
 const dbOptions = computed(() => {
   const k = dbKeyword.value.trim().toLowerCase()
   if (!k) return lane2Options.value
-  return lane2Options.value.filter((d) => includesText(d, k))
+  // 单库形态第二栏带描述,过滤同时匹配库名与描述
+  return lane2Options.value.filter((d) => includesText(d, k) || includesText(lane2Descs.value[d], k))
 })
 const schemaOptions = computed(() => {
   const k = schemaKeyword.value.trim().toLowerCase()
   if (!k) return schemas.value
-  return schemas.value.filter((s) => includesText(s, k))
+  return schemas.value.filter((s) => includesText(s, k) || includesText(schemaDescs.value[s], k))
 })
 const tableOptions = computed(() => {
   const k = tableKeyword.value.trim().toLowerCase()
@@ -143,6 +148,11 @@ async function loadSchemas() {
     const list = await request.get(`/datasources/${id}/schemas${q}`).catch(() => [])
     if (id !== props.datasourceId || db !== props.db) return
     schemas.value = list
+    // 库/schema 描述(schema_doc,供栏内名称旁展示;无描述的库不出现):单库形态挂第二栏,多库方言挂模式栏
+    const descs = await request.get(`/datasources/${id}/schema-descriptions${q}`).catch(() => ({}))
+    if (id !== props.datasourceId || db !== props.db) return
+    if (effMultiDb.value) schemaDescs.value = descs || {}
+    else lane2Descs.value = descs || {}
   } finally {
     schemaLoading.value = false
   }
@@ -250,6 +260,8 @@ watch(() => props.datasourceId, async (id) => {
   databases.value = []
   schemas.value = []
   tables.value = []
+  lane2Descs.value = {}
+  schemaDescs.value = {}
   dbFallback.value = false
   dbKeyword.value = ''
   schemaKeyword.value = ''
@@ -273,6 +285,7 @@ watch(() => props.datasources, async (list) => {
 watch(() => props.db, async (db) => {
   schemas.value = []
   tables.value = []
+  schemaDescs.value = {}
   schemaKeyword.value = ''
   tableKeyword.value = ''
   if (!db || !multiDb.value) return
@@ -357,7 +370,7 @@ function resetWidths() {
   <!-- 单根 flex 容器:父级 step-body 撑满页面剩余高度时,面板与列表随之撑满,不留大片空白 -->
   <div class="cascade-wrap">
     <!-- 四栏级联面板:选中项高亮,下一栏随上一栏联动刷新;栏间分隔条可拖动调宽(双击恢复默认) -->
-    <div ref="cascadeRef" class="cascade">
+    <div ref="cascadeRef" class="cascade" :class="`cols-${visibleKeys.length}`">
       <!-- 第一栏:数据源 -->
       <div class="cascade-col col-ds" :style="colStyle('ds')">
         <div class="cascade-head">数据源<span class="cascade-count">{{ dsOptions.length }}</span></div>
@@ -390,6 +403,8 @@ function resetWidths() {
                          added: lane2Toggle && isTableAdded(d) }"
                @click="lane2Toggle ? onSchemaRowClick(d) : pickLane2(d)">
             <span class="cascade-name">{{ d }}</span>
+            <!-- 库描述(schema_doc):仅单库形态第二栏有,有才显示 -->
+            <span v-if="!effMultiDb && lane2Descs[d]" class="cascade-comment">{{ lane2Descs[d] }}</span>
             <el-tooltip v-if="lane2Toggle && !isTableDisabled(d)" :content="(isTableAdded(d) ? '移出' : '加入') + label"
                         placement="left" :show-after="200">
               <span class="cascade-toggle" :class="{ remove: isTableAdded(d) }" @click.stop="onSchemaRowClick(d)">
@@ -418,6 +433,8 @@ function resetWidths() {
                          added: schemaLevel && isTableAdded(s) }"
                @click="schemaLevel ? onSchemaRowClick(s) : pickSchema(s)">
             <span class="cascade-name">{{ s }}</span>
+            <!-- 模式描述(schema_doc,有才显示) -->
+            <span v-if="schemaDescs[s]" class="cascade-comment">{{ schemaDescs[s] }}</span>
             <el-tooltip v-if="schemaLevel && !isTableDisabled(s)" :content="(isTableAdded(s) ? '移出' : '加入') + label"
                         placement="left" :show-after="200">
               <span class="cascade-toggle" :class="{ remove: isTableAdded(s) }" @click.stop="onSchemaRowClick(s)">
@@ -516,19 +533,36 @@ function resetWidths() {
   width: 2px;
   background: var(--el-color-primary-light-5);
 }
-/* 宽度口径:默认左侧栏各占 20%,表栏吃剩余(四栏时即 40%;无模式栏时更宽);
-   拖动分隔条后对应栏位由行内 style 写死像素宽度,最右栏仍自适应 */
+/* 宽度口径:3 栏 3:3:4(数据源:库:表)、4 栏 3:2:2:3(数据源:库:模式:表),2 栏(schema 终态单库)
+   数据源栏 20%、最右栏吃剩余;拖动分隔条后对应栏位由行内 style 写死像素宽度,最右栏仍自适应 */
 .col-ds,
 .col-db,
 .col-schema {
   flex: 0 0 20%;
 }
+.cascade.cols-3 .col-ds,
+.cascade.cols-3 .col-db {
+  flex: 3 3 0;
+}
+.cascade.cols-3 .col-table {
+  flex: 4 4 0;
+}
+.cascade.cols-4 .col-ds {
+  flex: 3 3 0;
+}
+.cascade.cols-4 .col-db,
+.cascade.cols-4 .col-schema {
+  flex: 2 2 0;
+}
+.cascade.cols-4 .col-table {
+  flex: 3 3 0;
+}
 .col-table {
   flex: 1 1 40%;
 }
-/* schema 终态粒度:最右栏(第二/三栏)吃掉剩余空间 */
-.cascade-col.col-last {
-  flex: 1 1 40%;
+/* schema 终态粒度:最右栏(第二/三栏)吃掉剩余空间(置于比例规则之后,同优先级下覆盖) */
+.cascade .cascade-col.col-last {
+  flex: 4 4 0;
 }
 .cascade-head {
   display: flex;
@@ -635,6 +669,11 @@ function resetWidths() {
   text-overflow: ellipsis;
 }
 .col-table .cascade-name {
+  flex: 0 1 auto;
+}
+/* 库/模式栏带描述时:名称可压缩、描述吃剩余并省略(与表栏同口径) */
+.col-db .cascade-name,
+.col-schema .cascade-name {
   flex: 0 1 auto;
 }
 .cascade-comment {

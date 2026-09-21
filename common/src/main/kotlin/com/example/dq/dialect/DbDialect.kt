@@ -10,6 +10,7 @@ import com.example.dq.model.TableStat
 
 import java.sql.Connection
 import java.sql.SQLException
+import java.sql.Statement
 
 /** 数据库方言:各库元数据查询与统计 SQL 的差异抽象 */
 interface DbDialect {
@@ -200,4 +201,25 @@ interface DbDialect {
 
     /** 取单列最大值 SQL(数据比对导出「数据最新更新时间」取数用);标识符必须经 quote() */
     fun maxValueSql(schema: String, table: String, column: String): String
+
+    /**
+     * 全表流式读 SQL(数据比对取数用):无 ORDER BY、无分页,一次顺序全扫;
+     * 行集无序不影响比对(行进内存 map 按身份值分桶,与到达顺序无关)。标识符必须经 quote()
+     */
+    fun streamAllSql(schema: String, table: String, columns: List<String>): String
+
+    /**
+     * 流式读前配置连接/语句(数据比对取数用):各驱动的流式开关不同
+     * (MySQL 系 fetchSize=Int.MIN_VALUE 逐行流;PG 系需 conn.autoCommit=false + fetchSize 走服务端游标;
+     * Oracle/达梦默认按 fetchSize 分批即可)。默认实现只设 fetchSize;
+     * 改动 conn 状态(如 autoCommit)的方言由调用方负责读完后恢复
+     */
+    fun configureStreamingRead(conn: Connection, stmt: Statement)
+
+    /**
+     * 探测并尝试放宽服务端语句执行上限(比对流式读前调用;流式是单条长语句,
+     * 被服务端语句上限命中必然失败):返回仍生效的上限秒数(>0),null = 无限制/探测失败按无限制走。
+     * PG 系 SET/SHOW statement_timeout;MySQL 系 @@max_execution_time;其余方言默认不探测
+     */
+    fun probeServerStatementLimitSeconds(conn: Connection): Int? = null
 }

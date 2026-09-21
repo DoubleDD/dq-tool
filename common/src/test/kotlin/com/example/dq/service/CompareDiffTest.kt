@@ -38,7 +38,7 @@ class CompareDiffTest {
     fun `目标有基准无记 EXTRA`() {
         val target = mapOf("9" to rowOf("id" to "9", "name" to "乙"))
         val result = CompareService.diffObjects(baseMapOf(), target, listOf("id", "name"), listOf("id"),
-            displayField = "name")
+            displayFields = listOf("name"))
         assertEquals(1, result.extra.size)
         assertEquals("9", result.extra[0].objectKey)
         assertEquals("乙", result.extra[0].objectName)
@@ -173,7 +173,7 @@ class CompareDiffTest {
     fun `显示名取显示字段值无则空串`() {
         val base = baseMapOf("1" to rowOf("id" to "1", "name" to " 甲 "))
         val result = CompareService.diffObjects(base, emptyMap(), listOf("id", "name"), listOf("id"),
-            displayField = "name")
+            displayFields = listOf("name"))
         assertEquals("甲", result.missing[0].objectName)
         val noDisplay = CompareService.diffObjects(base, emptyMap(), listOf("id", "name"), listOf("id"))
         assertEquals("", noDisplay.missing[0].objectName)
@@ -230,5 +230,50 @@ class CompareDiffTest {
             col("capacity", Types.DECIMAL),
         ).associateBy { it.name.lowercase() }
         assertNull(CompareService.resolveDisplayField(null, listOf("code", "capacity"), keyIsText, "code"))
+    }
+
+    // ---------- 对象名称字段多选(V73):多选归一 + 与身份字段互斥 + 取值第一个非空 ----------
+
+    @Test
+    fun `多选名称字段逐个归一并保持顺序 未给出按单值旧逻辑`() {
+        val fields = listOf("id", "capacity", "reservoir_name", "remark")
+        assertEquals(listOf("remark", "reservoir_name"),
+            CompareService.resolveDisplayFields(listOf("REMARK", " reservoir_name "), null,
+                fields, baseCols(), listOf("id")))
+        // 未给多选:displayField 单值旧逻辑(忽略大小写归一)
+        assertEquals(listOf("remark"),
+            CompareService.resolveDisplayFields(null, "REMARK", fields, baseCols(), listOf("id")))
+        // 都未给:回退第一个文本型非身份字段
+        assertEquals(listOf("reservoir_name"),
+            CompareService.resolveDisplayFields(null, null, fields, baseCols(), listOf("id")))
+    }
+
+    @Test
+    fun `名称字段与身份字段重复报 400(多选与单值同口径)`() {
+        val fields = listOf("id", "capacity", "reservoir_name", "remark")
+        val e1 = assertThrows(IllegalArgumentException::class.java) {
+            CompareService.resolveDisplayFields(listOf("remark", "id"), null,
+                fields, baseCols(), listOf("id"))
+        }
+        assertTrue(e1.message!!.contains("身份字段与对象名称字段不能重复"))
+        // 单值旧路径同样互斥(身份字段忽略大小写命中)
+        val e2 = assertThrows(IllegalArgumentException::class.java) {
+            CompareService.resolveDisplayFields(null, "ID", fields, baseCols(), listOf("id"))
+        }
+        assertTrue(e2.message!!.contains("身份字段与对象名称字段不能重复"))
+    }
+
+    @Test
+    fun `多名称字段取第一个非空值 且名称配对按该口径 fallback`() {
+        // nameValue:按字段顺序取第一个 trim 后非空的值
+        assertEquals("甲水库", nameValue(mapOf("n1" to "  ", "n2" to "甲水库"), listOf("n1", "n2")))
+        assertEquals("甲水库", nameValue(mapOf("n1" to "甲水库", "n2" to "乙水库"), listOf("n1", "n2")))
+        assertNull(nameValue(mapOf("n1" to null, "n2" to " "), listOf("n1", "n2")))
+        // appendNamePairs:第一名称字段为空时回落第二名称字段配上
+        val base = mapOf("1" to rowOf("code" to "B-1", "n1" to null, "n2" to "甲水库"))
+        val target = mapOf("T-1" to rowOf("code" to "V-1", "n1" to "", "n2" to "甲水库"))
+        val pairs = ArrayList<MatchedPair>()
+        appendNamePairs(base, target, listOf("n1", "n2"), pairs, HashSet(), HashSet())
+        assertEquals(listOf(MatchedPair("1", "T-1", "NAME")), pairs)
     }
 }

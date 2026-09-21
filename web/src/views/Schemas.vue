@@ -22,6 +22,7 @@
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="filter">库过滤</el-dropdown-item>
+              <el-dropdown-item command="dictDesc">批量设置描述</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -127,6 +128,13 @@
       @submitted="loadSchemaStats"
     />
 
+    <!-- 批量设置描述:字典表(库名 -> 描述)按库名精准匹配回写,成功后刷新描述列 -->
+    <SchemaDescDictDialog
+      v-model="dictDescVisible"
+      :datasource-id="dsId"
+      @applied="loadSchemaStats()"
+    />
+
     <!-- 库描述编辑:用于 Word 报告「实例描述」列,空白保存即清除 -->
     <el-dialog v-model="descVisible" title="编辑库描述" width="480px" destroy-on-close :close-on-press-escape="false">
       <div style="margin-bottom: 8px; color: var(--el-text-color-secondary); font-size: 12px">
@@ -179,6 +187,7 @@ import { cellText, exportListToExcel } from '../utils/listExport'
 import { toSchemaFilter } from '../utils/schemaFilter'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import ScanDialog from '../components/ScanDialog.vue'
+import SchemaDescDictDialog from '../components/SchemaDescDictDialog.vue'
 const route = useRoute()
 const router = useRouter()
 const dsId = route.params.id
@@ -225,12 +234,16 @@ function onExportCommand(cmd) {
 // ---------- "更多"下拉 ----------
 function onMoreCommand(cmd) {
   if (cmd === 'filter') openFilter()
+  else if (cmd === 'dictDesc') dictDescVisible.value = true
 }
 
 // ---------- 整库表结构 Word 导出(所有白名单过滤后的库,实时元数据,同步下载;无需勾选) ----------
 function exportDbStruct() {
   downloadFile(`/api/datasources/${dsId}/export-dbstruct-word`)
 }
+
+// ---------- 批量设置描述(字典表按库名精准匹配回写 schema_doc;应用成功后刷新描述列) ----------
+const dictDescVisible = ref(false)
 
 // ---------- 库描述编辑(Word 报告「实例描述」列) ----------
 const descVisible = ref(false)

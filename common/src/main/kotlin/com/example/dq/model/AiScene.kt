@@ -16,6 +16,8 @@ enum class AiScene(val label: String) {
     COMPARE_MAPPING("比对映射"),
     /** 数据比对·导出:名称/注释未命中时,大模型从字段清单里挑「数据最新修改时间」字段 */
     COMPARE_TIME("比对时间"),
+    /** 数据比对·匹配逻辑 3:规则未命中时,大模型从比对字段里挑佐证字段(行政区划/位置/所在河流) */
+    COMPARE_EVIDENCE("比对佐证"),
     /** 「AI 配置」连通性测试 */
     TEST("连通测试"),
     ;

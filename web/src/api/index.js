@@ -228,7 +228,8 @@ export function cancelMetadataSync(id) {
 /** 提交比对任务;payload: {name, baseDatasourceId, baseDb, baseSchema, baseTable,
  *  keyFields[](任务级默认身份字段,基准字段名数组,至少 1 个), keyField(旧列兼容,恒 = keyFields[0]),
  *  fields[], targets[{datasourceId, db, schema, table, mapping?, identity?: {keys[]}|null(仅人工收缩身份时带,null=按推导)}],
- *  displayField?, matchMode?, compareMode?};返回 {jobId} */
+ *  displayFields[](V73 对象名称字段多选,有序,取值=行内第一个非空值,与 keyFields 互斥),
+ *  displayField?(旧列兼容,恒 = displayFields[0]), matchMode?, compareMode?};返回 {jobId} */
 export function createCompareJob(payload) {
   return request.post('/compare-jobs', payload)
 }
@@ -262,8 +263,8 @@ export function listActiveCompareJobs() {
   return request.get('/compare-jobs/active', { _silent: true })
 }
 
-/** 任务详情 { job, targets };job.keyFieldsJson = 任务级默认身份字段(JSON 数组字符串,老任务为 null → 用 keyField 单列兜底),
- *  targets[].identityJson = 目标级身份人工覆盖({keys:[...]} 或 null=按推导);silent=true 用于轮询(失败不弹全局提示) */
+/** 任务详情 { job, targets };job.keyFields = 任务级默认身份字段(字符串数组,老任务后端已归一为 [keyField] 单列),
+ *  targets[].identityKeys = 目标级身份人工覆盖(字符串数组,null=按推导);silent=true 用于轮询(失败不弹全局提示) */
 export function getCompareJob(id, silent = false) {
   return request.get(`/compare-jobs/${id}`, silent ? { _silent: true } : {})
 }
@@ -276,6 +277,18 @@ export function listCompareDiffs(id, params = {}, silent = false) {
 /** 质量报告 { targets, fieldIssues, baseCount, sameCount, diffObjectCount, missingTotal, extraTotal, avgFieldConsistency } */
 export function getCompareReport(id) {
   return request.get(`/compare-jobs/${id}/report`)
+}
+
+/** AI 判定明细(按目标+时间升序):[{ id, jobId, targetId, targetLabel, scene, stage, batchNo, model,
+ *  requestContent, responseContent, resultJson, durationMs(调用耗时毫秒,老数据 null), createdAt }];stage: RESIDUE 补配 / SAME_NAME 同名消歧 /
+ *  MAPPING 字段映射 / TIME 时间列识别 / EVIDENCE 佐证字段识别;
+ *  resultJson: RESIDUE={pairs:[{baseCode,baseName,targetCode,targetName}],unmatchedBase:[{code,name}]},
+ *  SAME_NAME={pairs:[{group,baseName,targetCode,targetName}]}, MAPPING={mapping,locked,failed?},
+ *  TIME={field}, EVIDENCE={fields:{类别:列名}};
+ *  失败批次:RESIDUE/SAME_NAME/TIME/EVIDENCE 的 resultJson 为 null、responseContent 为错误摘要,
+ *  MAPPING 失败仍带锁定项、以 resultJson.failed=true 标记 */
+export function listCompareAiTraces(id) {
+  return request.get(`/compare-jobs/${id}/ai-traces`)
 }
 
 /** 重新比对(按原目标清单重跑;RUNNING 时后端 409) */

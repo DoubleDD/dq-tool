@@ -1,7 +1,8 @@
 /**
- * 全局接口反馈通知(替代 ElMessage):基于 ElNotification,窗口右上角弹出、
- * 从右向左滑入(macOS 通知风格),标题+摘要两行,内容过长可点「展开全部/收起」
- * 原地展开查看完整内容,到时长自动关闭(超长内容给更长的展示时长)。
+ * 全局接口反馈通知(替代 ElMessage):基于 ElNotification,窗口右下角弹出、
+ * 从右向左滑入(macOS 通知风格),标题+摘要两行(固定两行折叠,不提供原地展开),
+ * 到时长自动关闭(success 2s / info 3s / warning 4s / error 5s,未显式指定时;
+ * 通知只报状态,要看完整内容去通知中心)。
  *
  * 对外暴露与 ElMessage 相同的调用形态,业务代码只改 import 来源:
  *   ElMessage.success/error/warning/info(text[, options])
@@ -13,12 +14,11 @@ import NotifyBody from '../components/NotifyBody.vue'
 import { addNotifyRecord } from '../stores/notifications'
 
 const TYPE_TITLES = { success: '操作成功', error: '操作失败', warning: '注意', info: '提示' }
-const TYPE_DURATIONS = { success: 3000, info: 4500, warning: 5000, error: 6000 }
-// 内容超过该长度判定为「长内容」,自动关闭时长放宽到 10s,给展开阅读留时间
-const LONG_TEXT_LEN = 50
-const LONG_DURATION = 10000
+// 未显式指定 duration 时按类型的默认时长:通知只报状态,完整内容去通知中心看
+const TYPE_DURATIONS = { success: 2000, info: 3000, warning: 4000, error: 5000 }
 
-// 相同内容在窗口期内重复弹出直接忽略(替代原 ElMessage 的 grouping 语义,防错误刷屏)
+// 通知中心留痕的窗口期去重(防双击/重试把历史刷成同一行);屏幕上的重复不忽略,
+// 由 open() 把旧条关掉、新条照常顶上
 const DEDUP_WINDOW_MS = 2000
 const recent = new Map()
 
@@ -26,81 +26,43 @@ const recent = new Map()
 // 这里把弹出串行化:每条等上一条渲染完成(nextTick)后再创建,保证高度可测、正确堆叠
 let openQueue = Promise.resolve()
 
-// top-right 堆叠的活跃通知(最新的在最前)。ElNotification 只在创建时算一次 top
-// (且新通知固定排最下),展开/收起改变高度后下方通知也不会跟随,这里统一接管定位。
-// 注意必须像 EP 自己的 close() 一样改组件的 offset prop——直接改 el.style.top 会在组件
-// 再渲染时被它自己的 style 绑定覆盖,导致新通知「从底部出现再斜着上移」。
-// 而根元素的 __vueParentComponent 是 BaseTransition(改它的 props 不触发正确重渲染),
-// 要沿 parent 链找到真正的 ElNotification 实例(特征:exposed.visible)
-const stack = []
-let notifySeq = 0
+// 屏幕同时可见通知上限:FIFO——新条从最上方进入,超出时最底下的旧条先关闭
+const MAX_VISIBLE = 5
+// 存活通知,按创建顺序(最旧在前,即视觉上最底下那条)
+const alive = []
 
-function findNotifyInstance(el) {
-  let inst = el?.__vueParentComponent
-  while (inst && !inst.exposed?.visible) inst = inst.parent
-  return inst || null
-}
-
-function setOffset(item, top) {
-  if (item.inst) item.inst.props.offset = top
-  else if (item.el) item.el.style.top = `${top}px`
-}
-
-function reflow() {
-  let top = 16
-  for (const item of stack) {
-    const el = item.el
-    if (!el || !el.isConnected) continue
-    setOffset(item, top)
-    top += el.offsetHeight + 16
-  }
-}
-
-function open(type, text, { duration, onClick, actions } = {}) {
+function open(type, text, { key, duration, onClick, actions } = {}) {
   const created = openQueue.then(async () => {
     await nextTick()
-    const item = { id: ++notifySeq }
+    // 同内容不叠加:屏幕上还挂着同 key 的旧条先关掉,新条照常从最上方进入
+    if (key) alive.find(it => it.key === key)?.close?.()
     // 操作按钮(如导出完成「打开文件/打开文件夹」):点击先关通知再执行业务动作
     const closer = { close: null }
     const wrapped = actions?.length
       ? actions.map(a => ({ label: a.label, onClick: () => { closer.close?.(); a.onClick() } }))
       : undefined
+    const item = { key }
     const handle = ElNotification({
       title: TYPE_TITLES[type] || TYPE_TITLES.info,
       type,
-      position: 'top-right',
+      position: 'bottom-right',
       duration,
       onClick,
-      customClass: `dq-notify-${item.id} dq-notify-${type}`,
-      message: h(NotifyBody, {
-        text,
-        actions: wrapped,
-        // 原地展开/收起,高度变化后重算堆叠,下方通知跟随上移/下移(top 有过渡动画)
-        onExpand: () => nextTick(reflow),
-        onCollapse: () => nextTick(reflow)
-      }),
+      message: h(NotifyBody, { text, actions: wrapped }),
       onClose: () => {
-        const i = stack.indexOf(item)
-        if (i >= 0) stack.splice(i, 1)
-        // EP 的 close() 在 userOnClose 之后还会按「创建顺序堆叠」自行上移剩余通知
-        // (与我们的置顶布局冲突),推迟到其调整完、渲染前再重排,后写的正确值生效
-        nextTick(reflow)
+        const i = alive.indexOf(item)
+        if (i >= 0) alive.splice(i, 1)
       }
     })
     closer.close = handle.close
     item.close = handle.close
-    item.el = document.querySelector(`.dq-notify-${item.id}`)
-    item.inst = findNotifyInstance(item.el)
-    // 新通知置顶:创建后立刻把它的 offset 钉在顶部(赶在入场过渡首帧前,动画即顶部纯水平滑入);
-    // 此时新通知高度尚不可测(v-show 隐藏态),等入场渲染完成后再重排,其余通知按实测高度下移腾位
-    setOffset(item, 16)
-    stack.unshift(item)
-    await nextTick()
-    reflow()
+    alive.push(item)
+    // FIFO:超出上限时关掉最旧的(堆叠最底下的),EP 会把其余通知原地下移补位
+    while (alive.length > MAX_VISIBLE) alive.shift().close?.()
     return item
   })
   // 队列容错:单条创建失败(极端)不拖死后续通知;返回值带 close 句柄,
-  // 供「正在导出」这类常驻提示完成后主动关闭(dedup 命中时 show 返回 undefined,调用方自行兜底)
+  // 供「正在导出」这类常驻提示完成后主动关闭
   openQueue = created.catch(() => {})
   return created
 }
@@ -110,17 +72,18 @@ function show(type, message, options = {}) {
   if (!text) return
   const now = Date.now()
   const key = `${type}\n${text}`
-  if (now - (recent.get(key) || 0) < DEDUP_WINDOW_MS) return
-  recent.set(key, now)
   // 顺手清理过期记录,避免 Map 无限增长
   for (const [k, t] of recent) if (now - t > DEDUP_WINDOW_MS) recent.delete(k)
-  let duration = options.duration ?? TYPE_DURATIONS[type] ?? 4500
-  if (text.length > LONG_TEXT_LEN) duration = Math.max(duration, LONG_DURATION)
+  const duration = options.duration ?? TYPE_DURATIONS[type] ?? 3000
   // 标题默认「操作成功/失败」等通用文案,业务可自定义(如「推导完成」);留痕到通知中心用同一标题。
   // exportPath 为导出成功通知的落盘路径(可序列化),通知中心抽屉据此重现「打开文件/打开文件夹」
   const title = options.title || TYPE_TITLES[type] || TYPE_TITLES.info
-  addNotifyRecord({ type, title, text, exportPath: options.exportPath })
-  return open(type, text, { duration, onClick: options.onClick, actions: options.actions })
+  // 留痕窗口期去重:屏幕上每次都替换旧条照常弹出,通知中心 2s 内同内容只记一条
+  if (now - (recent.get(key) || 0) >= DEDUP_WINDOW_MS) {
+    recent.set(key, now)
+    addNotifyRecord({ type, title, text, exportPath: options.exportPath })
+  }
+  return open(type, text, { key, duration, onClick: options.onClick, actions: options.actions })
 }
 
 function ElMessageCompat(options) {
