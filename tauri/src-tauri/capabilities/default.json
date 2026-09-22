@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "主窗口默认能力:前端由 dq 自定义协议从磁盘「当前业务版本 static 根」加载(用户注册的自定义协议在 IPC/ACL 里按 local 来源处理,见 tauri-2.11.5 webview/mod.rs is_local_url),不再需要 remote.urls;自定义命令 api_base/save_* 均在本文件 permissions 放行",
   "windows": ["main"],
-  "permissions": ["core:default", "allow-save-report-as", "allow-save-download", "allow-api-base"]
+  "permissions": ["core:default", "allow-save-report-as", "allow-save-download", "allow-api-base", "allow-manual-business-update"]
 }

@@ -116,6 +116,13 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
   (POST /api/system/open,后端 `SystemOpen.openDefault` 调系统默认关联程序,路径限数据目录内)。
   **ureq 是唯一 HTTP client**(阻塞式,不引 async runtime),仅为本命令引入;
   前端统一封装在 web `utils/download.js` 的 `downloadFile(apiPath)`,非 tauri 环境回退 Blob + a[download]
+  `manual_business_update()` —— 系统设置「选择升级包」手动离线业务升级(网络不通自动通道时用):
+  用户选本地 business zip(要求同目录有 Release 页同名 `.zip.sig`),Rust 侧串联文件选择框 →
+  minisign 验签 → 解压校验(版本号以包内 manifest.json 为准)→ 版本确认(低于当前弹降级确认)→
+  落位 `versions/<v>/` → 与自动通道共用 `SWITCH_LOCK` + `switch_to_version`(切 current → GC →
+  重启 → 就绪后 reload,失败自动回滚);离线拿不到 business-latest.json,**不做 minShell 检查**,
+  壳过旧靠就绪失败回滚兜底;开发模式(无 versions 目录)与 macOS 在命令入口拦截报错;
+  前端入口在系统设置页「应用更新」卡片(仅 Tauri 形态显示)
 - **必须关闭 Tauri 拖放处理器**(窗口构建链 `.disable_drag_drop_handler()`,2026-09):Tauri 默认开启拖放处理器,
   Windows 上 wry 会枚举 WebView2 子窗口 `RevokeDragDrop` + `RegisterDragDrop`,用只认 `CF_HDROP` 的
   `IDropTarget` 替换系统原本的 target(`wry/src/webview2/drag_drop.rs`),非文件拖拽在 `DragOver` 一律回
@@ -136,7 +143,7 @@ scripts\package-tauri-win-portable.bat # Windows 绿色免安装 zip(--no-bundle
 
 ## 自动更新(双通道:业务层 bizupdate + 全量 tauri-plugin-updater)
 
-- **业务层通道(bizupdate.rs,2026-09 分层分发新增,日常更新走这里)**:清单 `business-latest.json`(GitHub Releases 固定资产,`DQ_BUSINESS_MANIFEST` 环境变量可覆盖,测试用)→ 版本号大于当前业务版本且未被跳过 → 预下载业务 zip(jar + static + manifest.json,跨平台通用,几十 MB)→ **minisign 验签**(与全量通道同一把密钥对,公钥常量写在 bizupdate.rs)→ 解压校验后落位 `versions/<v>/` → 原生对话框「立即更新/暂不更新」→ 立即 = 切 `current` 指针 → GC 留新旧两版 → 重启 java → 就绪后 `location.reload()` 刷新页面(static 根在就绪成功后才切换,旧页面全程由旧 static 服务,不混版);**就绪失败自动回滚次新版**(与启动监督共用 `rollback_once`,更新路径回滚失败不 fatal,用户重启即恢复)。启用条件:安装版 + **绿色版**(原地换 `resources/versions` 文件,不再有 NSIS 破坏绿色形态的问题);**macOS 不启用**(.app 是签名整体,自修改 resources 会破坏 Gatekeeper 校验,mac 业务层仍由全量通道覆盖);开发模式不建线程。清单的 `minShell` 高于壳版本(取 tauri.conf.json 的 `version`,**不是** `CARGO_PKG_VERSION`——后者恒为 0.1.0)时该轮交回全量通道
+- **业务层通道(bizupdate.rs,2026-09 分层分发新增,日常更新走这里)**:清单 `business-latest.json`(GitHub Releases 固定资产,`DQ_BUSINESS_MANIFEST` 环境变量可覆盖,测试用)→ 版本号大于当前业务版本且未被跳过 → 预下载业务 zip(jar + static + manifest.json,跨平台通用,几十 MB)→ **minisign 验签**(与全量通道同一把密钥对,公钥常量写在 bizupdate.rs)→ 解压校验后落位 `versions/<v>/` → 原生对话框「立即更新/暂不更新」→ 立即 = 切 `current` 指针 → GC 留新旧两版 → 重启 java → 就绪后 `location.reload()` 刷新页面(static 根在就绪成功后才切换,旧页面全程由旧 static 服务,不混版);**就绪失败自动回滚次新版**(与启动监督共用 `rollback_once`,更新路径回滚失败不 fatal,用户重启即恢复)。启用条件:安装版 + **绿色版**(原地换 `resources/versions` 文件,不再有 NSIS 破坏绿色形态的问题);**macOS 不启用**(.app 是签名整体,自修改 resources 会破坏 Gatekeeper 校验,mac 业务层仍由全量通道覆盖);开发模式不建线程。清单的 `minShell` 高于壳版本(取 tauri.conf.json 的 `version`,**不是** `CARGO_PKG_VERSION`——后者恒为 0.1.0)时该轮交回全量通道。**手动离线升级**(2026-09-22,系统设置「应用更新」卡片,IPC `manual_business_update`):网络不通时用户把 Release 页的 business zip + 同名 `.zip.sig` 拷到本机同目录,手动选包安装——验签/校验/切换/回滚全部复用自动通道同一套函数(切换段已抽 `switch_to_version`,与自动轮询经 `SWITCH_LOCK` 互斥);同版本放行(修复重装)、更低版本弹降级确认;不做 minShell 检查(离线无清单),壳过旧由就绪失败回滚兜底;macOS 与开发模式不可用
 - **全量通道(tauri-plugin-updater,兜底)**:覆盖平台:Windows(NSIS)+ macOS(Apple Silicon / Intel);仅安装模式启用(开发模式不检查;绿色免安装版不检查 —— 更新包是 NSIS 安装包,会装进 Programs 目录,破坏绿色形态);与业务通道同一后台线程串联(每轮先业务后全量,`UPDATE_CHECK_INTERVAL` 30 分钟),全程阻塞式 API,不引 async runtime;**启动时立即检查一次,之后按间隔轮询**(loop + `std::thread::sleep`,失败后间隔照常、下一轮继续;下载完成后的确认对话框阻塞期间该线程停住,下一轮检查顺延)
 - 流程:`check()`(读 GitHub Releases 固定地址 `/releases/latest/download/latest.json`)→ 有新版则**后台静默预下载**(约 170MB,进度只打日志)→ 下完弹原生对话框(tauri-plugin-dialog,更新 UI 用原生对话框不与页面耦合)→ 「立即更新」= **先显式杀 java 子进程**(防孤儿占 H2 文件锁导致新实例后端起不来)再 `install()` + `app.restart()`;「暂不更新」= 版本号写入 `~/.dq-tool/update-skipped.txt`,同版本不再下载/提示,更新的版本出现时重新走流程;任何失败只记日志
 

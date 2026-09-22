@@ -87,11 +87,21 @@ fn main() {
         .register_uri_scheme_protocol("dq", move |_ctx, request| {
             protocol::handle(&static_root_protocol, request)
         })
-        // 自定义命令:导出任务「另存为」/通用下载「直存数据目录」(webview 经 __TAURI_INTERNALS__.invoke 调用)
+        // 自定义命令:导出任务「另存为」/通用下载「直存数据目录」/手动离线业务升级
+        // (webview 经 __TAURI_INTERNALS__.invoke 调用)
         .manage(backend.port_state())
         .manage(access_token)
         .manage(backend.ready_flag())
-        .invoke_handler(tauri::generate_handler![api_base, save_report_as, save_download])
+        // 手动离线升级命令需要:后端管理器(重启)、versions 目录(打包形态才有)、static 根(切换)
+        .manage(Arc::clone(&backend))
+        .manage(versions_dir.clone())
+        .manage(Arc::clone(&static_root))
+        .invoke_handler(tauri::generate_handler![
+            api_base,
+            save_report_as,
+            save_download,
+            manual_business_update
+        ])
         .setup(move |app| {
             let window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -523,6 +533,34 @@ async fn save_download(
     .map_err(|e| e.to_string())??;
     eprintln!("[dq-tool-tauri] 下载直存:{path} -> {display}");
     Ok(display)
+}
+
+/// 系统设置「手动选择升级包」:离线安装业务层更新包(business zip + 同目录 .zip.sig 验签)。
+/// 文件选择框/验签/解压校验/确认对话框/切换重启全流程在 bizupdate::manual_business_update,
+/// 阻塞操作放线程池;仅打包形态(安装/绿色)且非 macOS 可用(开发模式与 macOS 在此拦截)。
+#[tauri::command]
+async fn manual_business_update(
+    app: tauri::AppHandle,
+    mgr: tauri::State<'_, Arc<backend::BackendManager>>,
+    versions_dir: tauri::State<'_, Option<PathBuf>>,
+    static_root: tauri::State<'_, Arc<Mutex<PathBuf>>>,
+) -> Result<serde_json::Value, String> {
+    if cfg!(target_os = "macos") {
+        return Err(
+            "macOS 不支持手动业务升级(自修改会破坏应用签名),请下载全量安装包覆盖安装".into(),
+        );
+    }
+    let Some(vd) = versions_dir.inner().clone() else {
+        return Err("当前运行形态不支持手动升级(仅安装版/绿色版可用)".into());
+    };
+    let mgr = Arc::clone(mgr.inner());
+    let sr = Arc::clone(static_root.inner());
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        bizupdate::manual_business_update(&app, &mgr, &vd, &sr)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    serde_json::to_value(outcome).map_err(|e| e.to_string())
 }
 
 /// 从 Content-Disposition 解析文件名:后端统一 `attachment; filename*=UTF-8''<percent-encoded>`

@@ -1,0 +1,5 @@
+# manual_business_update 命令的应用层权限(ACL 强制校验的原因见 report.toml 头注)。
+[[permission]]
+identifier = "allow-manual-business-update"
+description = "允许调用 manual_business_update 命令(系统设置「选择升级包」:离线安装业务层更新包,文件选择框/验签/切换重启全在 Rust 侧)"
+commands.allow = ["manual_business_update"]

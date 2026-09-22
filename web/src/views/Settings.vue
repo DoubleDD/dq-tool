@@ -174,6 +174,21 @@
       </template>
     </el-dialog>
 
+    <!-- 应用更新:手动选择业务升级包离线升级(仅桌面 Tauri 形态;浏览器/jpackage 无 versions 概念) -->
+    <el-card v-if="tauriEnv" class="settings-card" shadow="never">
+      <template #header>
+        <span>应用更新</span>
+      </template>
+      <div class="settings-desc">
+        新版本一般自动检测更新;网络不通无法自动更新时,可在能联网的机器从 GitHub Release 页面下载
+        <b>dq-tool-&lt;版本&gt;-business.zip</b> 与同名的 <b>.zip.sig</b> 签名文件(两个文件放同一目录)拷到本机,
+        点「选择升级包」选中 zip,验签通过后重启后端完成升级(进行中的任务会中断,扫描可断点续扫)。
+      </div>
+      <div class="card-actions" style="padding-left: 0">
+        <el-button type="primary" :loading="manualUpdating" @click="pickManualUpdate">选择升级包…</el-button>
+      </div>
+    </el-card>
+
     <!-- 外观:主题 -->
     <el-card class="settings-card" shadow="never">
       <template #header>
@@ -195,6 +210,7 @@ import { ElMessageBox } from 'element-plus'
 import { ElMessage } from '../utils/notify'
 import request from '../api'
 import { downloadFile } from '../utils/download'
+import { isTauriEnv } from '../api/base'
 import { confirmImportFile } from '../utils/importFileIdentify'
 import AiConfigForm from '../components/AiConfigForm.vue'
 import { themeState, setThemeMode } from '../stores/theme'
@@ -463,6 +479,29 @@ async function confirmImport() {
     // 错误提示由响应拦截器统一弹出
   } finally {
     annotationImporting.value = false
+  }
+}
+
+// ---------- 应用更新(仅桌面 Tauri 形态) ----------
+// 离线业务层升级:文件选择框/验签/解压校验/确认/切换重启全部在 Rust 侧(manual_business_update),
+// 前端只负责触发与结果提示;安装成功后 Rust 会 location.reload() 刷新页面
+const tauriEnv = isTauriEnv()
+const manualUpdating = ref(false)
+
+async function pickManualUpdate() {
+  manualUpdating.value = true
+  try {
+    const r = await window.__TAURI_INTERNALS__.invoke('manual_business_update')
+    if (r?.status === 'installed') {
+      ElMessage.success(`已升级到业务版本 ${r.version},页面即将刷新`)
+    } else {
+      ElMessage.info('已取消升级')
+    }
+  } catch (e) {
+    // Rust 侧返回的中文错误(未找到 .sig/验签失败/形态不支持等),常驻让用户读全
+    ElMessage.error(`手动升级失败:${e}`, { duration: 0 })
+  } finally {
+    manualUpdating.value = false
   }
 }
 
