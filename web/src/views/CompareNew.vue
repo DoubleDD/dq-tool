@@ -104,6 +104,56 @@
           </el-table-column>
         </el-table>
       </div>
+      <!-- 库/模式名反查字典(可选):仅影响导出 xlsx 的表名定位行显示,不参与比对、不挂数据链;
+           开启后内嵌分栏选择器选字典表 + 三个字段下拉(选定字典表后懒拉字段清单) -->
+      <div class="dict-config">
+        <div class="dict-config-head">
+          <el-switch v-model="schemaDictEnabled" />
+          <span class="meta-label">库/模式名反查字典</span>
+          <el-tooltip placement="top" :show-after="200"
+                      content="导出表格中表名定位行 (库名.模式名) 按字典表反查替换为真实库/模式名,仅影响导出文件显示;按现有名称精准匹配(大小写敏感)">
+            <el-icon class="meta-help"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </div>
+        <template v-if="schemaDictEnabled">
+          <div class="dict-picker">
+            <TableCascadePicker
+              v-model:datasource-id="schemaDict.dsId"
+              v-model:db="schemaDict.db"
+              v-model:schema="schemaDict.schema"
+              v-model:table="schemaDict.table"
+              :datasources="datasources"
+              label="字典表"
+            />
+          </div>
+          <div class="dict-fields">
+            <span class="meta-label">现有名称字段</span>
+            <el-select v-model="schemaDictFields.nameField" filterable placeholder="选择字段"
+                       :loading="schemaDictColumnsLoading" :disabled="!schemaDict.table">
+              <el-option v-for="c in schemaDictColumns" :key="c.name" :value="c.name" :label="c.name">
+                <span>{{ c.name }}</span>
+                <span class="dict-col-meta">{{ c.displayType || c.typeName || '' }}{{ c.comment ? ` · ${c.comment}` : '' }}</span>
+              </el-option>
+            </el-select>
+            <span class="meta-label">真实库字段</span>
+            <el-select v-model="schemaDictFields.dbField" filterable placeholder="选择字段"
+                       :loading="schemaDictColumnsLoading" :disabled="!schemaDict.table">
+              <el-option v-for="c in schemaDictColumns" :key="c.name" :value="c.name" :label="c.name">
+                <span>{{ c.name }}</span>
+                <span class="dict-col-meta">{{ c.displayType || c.typeName || '' }}{{ c.comment ? ` · ${c.comment}` : '' }}</span>
+              </el-option>
+            </el-select>
+            <span class="meta-label">真实模式字段</span>
+            <el-select v-model="schemaDictFields.schemaField" filterable placeholder="选择字段"
+                       :loading="schemaDictColumnsLoading" :disabled="!schemaDict.table">
+              <el-option v-for="c in schemaDictColumns" :key="c.name" :value="c.name" :label="c.name">
+                <span>{{ c.name }}</span>
+                <span class="dict-col-meta">{{ c.displayType || c.typeName || '' }}{{ c.comment ? ` · ${c.comment}` : '' }}</span>
+              </el-option>
+            </el-select>
+          </div>
+        </template>
+      </div>
       <div class="step-tip">
         基准表为权威数据,其他系统的数据将按身份字段逐行对齐到该表;默认身份字段(编码)用于逐行对齐、恒参与比对
         (勾多个 = 组合身份,全部相等才算同一行;各对比表可在第 3 步按实际连线单独收缩身份字段),
@@ -309,6 +359,51 @@ const matchModeRequiresName = computed(() => matchMode.value !== 'EXACT')
 
 // 抽样条数(V70):留空 = 全量比对;填了 = 两侧各按身份字段排序取前 N 条比对(1~500000,后端校验同口径)
 const sampleRows = ref(null)
+
+// ---------- 库/模式名反查字典(可选):仅影响导出 xlsx 表名定位行 (库名.模式名) 的显示,不参与比对 ----------
+
+// 开关:关闭 = 提交 schemaDict 为 null(不反查);字典配置只是导出显示元数据,改动不清空任何步骤数据
+const schemaDictEnabled = ref(false)
+// 字典表四元组(数据源 id 用字符串,与 TableCascadePicker 的 v-model 口径一致)
+const schemaDict = reactive({ dsId: '', db: '', schema: '', table: '' })
+// 三个反查字段:现有名称 / 真实库 / 真实模式
+const schemaDictFields = reactive({ nameField: '', dbField: '', schemaField: '' })
+// 字典表字段清单(选定表后懒拉,与 SchemaDescDictDialog 同一接口口径)
+const schemaDictColumns = ref([])
+const schemaDictColumnsLoading = ref(false)
+// 编辑反填期间置位:抑制下方换表监听,避免逐字段赋值被误判成「用户换表」而清空刚反填的三个字段
+let suppressDictReset = false
+
+// 开启开关时默认把字典数据源带到基准数据源(可再跨数据源改)
+watch(schemaDictEnabled, (v) => {
+  if (v && !schemaDict.dsId) schemaDict.dsId = form.datasourceId
+})
+
+/** 拉取字典表字段清单(失败静默清空:三字段下拉只剩已选值,提交校验兜底) */
+async function loadSchemaDictColumns() {
+  schemaDictColumns.value = []
+  if (!schemaDict.table || !schemaDict.schema || !schemaDict.dsId) return
+  schemaDictColumnsLoading.value = true
+  try {
+    const q = schemaDict.db ? `?db=${encodeURIComponent(schemaDict.db)}` : ''
+    schemaDictColumns.value = await request.get(
+      `/datasources/${schemaDict.dsId}/schemas/${encodeURIComponent(schemaDict.schema)}/tables/${encodeURIComponent(schemaDict.table)}/columns${q}`) || []
+  } catch {
+    ElMessage.error('字典表字段列表加载失败,请重新选择字典表')
+  } finally {
+    schemaDictColumnsLoading.value = false
+  }
+}
+
+// 换字典表:清空三个字段选择并重新懒拉字段清单(级联清空 table='' 时只复位不拉取)
+watch(() => schemaDict.table, (table) => {
+  if (suppressDictReset) return
+  schemaDictFields.nameField = ''
+  schemaDictFields.dbField = ''
+  schemaDictFields.schemaField = ''
+  schemaDictColumns.value = []
+  if (table) loadSchemaDictColumns()
+})
 
 /** 「自动」候选 = 第一个文本型非身份字段(按基准表字段顺序);命中包单元素数组,无命中 [](提交空,object_name 落空串) */
 function autoDisplayField() {
@@ -640,6 +735,17 @@ function validateSubmit() {
     ElMessage.warning(`有 ${unmapped.length} 个对比表还没有有效身份字段:${names}。请回到第 3 步,每张对比表至少连一个默认身份字段(或保留有效的身份覆盖)`)
     return false
   }
+  // 库/模式名反查字典:开关开了就必须选齐(字典表四元组 + 三个字段),否则回第 1 步补齐或关掉
+  if (schemaDictEnabled.value) {
+    if (!schemaDict.dsId || !schemaDict.schema || !schemaDict.table) {
+      ElMessage.warning('已开启「库/模式名反查字典」:请回到第 1 步选好字典表,或关闭该配置')
+      return false
+    }
+    if (!schemaDictFields.nameField || !schemaDictFields.dbField || !schemaDictFields.schemaField) {
+      ElMessage.warning('已开启「库/模式名反查字典」:请回到第 1 步选齐现有名称/真实库/真实模式三个字段,或关闭该配置')
+      return false
+    }
+  }
   return true
 }
 
@@ -675,6 +781,19 @@ function buildPayload() {
     compareMode: compareMode.value,
     // 抽样条数(第 1 步,可空):两侧各按身份字段排序取前 N 条;null/0/空 = 全量比对
     sampleRows: sampleRows.value || null,
+    // 库/模式名反查字典(第 1 步,可空):开关关闭或配置不齐 = null(不反查);仅影响导出 xlsx 显示
+    schemaDict: schemaDictEnabled.value && schemaDict.dsId && schemaDict.schema && schemaDict.table &&
+      schemaDictFields.nameField && schemaDictFields.dbField && schemaDictFields.schemaField
+      ? {
+          datasourceId: Number(schemaDict.dsId),
+          db: schemaDict.db || null,
+          schema: schemaDict.schema,
+          table: schemaDict.table,
+          nameField: schemaDictFields.nameField,
+          dbField: schemaDictFields.dbField,
+          schemaField: schemaDictFields.schemaField
+        }
+      : null,
     targets: targets.value.map((t, i) => ({
       datasourceId: Number(t.datasourceId),
       db: t.db || null,
@@ -760,6 +879,47 @@ function parseIdentityKeys(v) {
 }
 
 /**
+ * 编辑预填前校正基准表位置(库/schema/表名):与元数据清单做忽略大小写匹配,命中回写清单实际值
+ * (批量导入等手写路径落库的大小写可能与服务端清单不同,级联选择器按名称精确匹配会选不中);
+ * 单库方言(MySQL 等)schema 槽位未命中时回退用 db 槽位命中并清空 db(与手工建任务口径一致);
+ * 任何一层清单读不到(数据源异常/断网)都保持原值
+ */
+async function reconcileBaseLocation(job) {
+  let db = job.baseDb || ''
+  let schema = job.baseSchema || ''
+  let table = job.baseTable || ''
+  const ds = datasources.value.find((d) => String(d.id) === String(job.baseDatasourceId))
+  const hit = (list, v) => (v ? list.find((n) => n.toLowerCase() === String(v).toLowerCase()) || null : null)
+  try {
+    if (isMultiDbDs(ds)) {
+      const dbs = await request.get(`/datasources/${job.baseDatasourceId}/databases`, { _silent: true }).catch(() => [])
+      db = hit(dbs, db) || db
+      if (schema) {
+        const schemas = await request.get(
+          `/datasources/${job.baseDatasourceId}/schemas?db=${encodeURIComponent(db)}`, { _silent: true }).catch(() => [])
+        schema = hit(schemas, schema) || schema
+      }
+    } else {
+      const schemas = await request.get(`/datasources/${job.baseDatasourceId}/schemas`, { _silent: true }).catch(() => [])
+      const found = hit(schemas, schema) || hit(schemas, db)
+      if (found) {
+        db = ''
+        schema = found
+      }
+    }
+    const tableSchema = schema || db
+    if (tableSchema && table) {
+      const q = db ? `?db=${encodeURIComponent(db)}` : ''
+      const tables = await request.get(
+        `/datasources/${job.baseDatasourceId}/schemas/${encodeURIComponent(tableSchema)}/tables${q}`,
+        { _silent: true }).catch(() => [])
+      table = hit(tables.map((t) => t.name), table) || table
+    }
+  } catch { /* 校正失败保持原值 */ }
+  return { db, schema, table }
+}
+
+/**
  * 编辑预填(?edit=<jobId>):拉任务详情反填三步全部数据——任务名、基准四元组、身份字段、
  * 对比表清单与既有连线。可编辑状态:PENDING(待处理,保存后仍待处理)与终态 DONE/FAILED/CANCELED
  * (已完成再次编辑,保存后直接重跑);所有内容均可改(含对比模式/匹配逻辑,与终态编辑同口径)。
@@ -785,13 +945,16 @@ async function prefillEdit(jobId) {
   }
   editJobStatus.value = job.status
   editJobPendingReason.value = job.pendingReason
+  // 基准表位置先按元数据清单校正(批量导入手写值可能大小写不符/「模式名称」误填),
+  // 在反填赋值前完成,既让级联高亮命中,又不打破数据链抑制窗口
+  const loc = await reconcileBaseLocation(job)
   suppressInvalidate = true
   try {
     form.name = job.name
     form.datasourceId = String(job.baseDatasourceId)
-    form.db = job.baseDb || ''
-    form.schema = job.baseSchema || ''
-    form.table = job.baseTable
+    form.db = loc.db
+    form.schema = loc.schema
+    form.table = loc.table
     columnCompare.value = job.compareMode === 'COLUMN'
     matchMode.value = job.matchMode || 'EXACT'
     // 抽样条数反填:老任务/全量任务为 null,输入框留空
@@ -804,12 +967,34 @@ async function prefillEdit(jobId) {
     mappings.value = (d.targets || []).map((t) => ({ ...(t.mapping || {}) }))
     // 目标级身份覆盖:identityKeys(数组,null = 按推导)反填;人工收缩的勾选在身份条上还原
     identityOverrides.value = (d.targets || []).map((t) => parseIdentityKeys(t.identityKeys))
+    // 库/模式名反查字典反填(可空):兼容 JSON 字符串与已解析对象两种形态;无效值按未配置处理
+    let sd = job.schemaDict
+    if (typeof sd === 'string') {
+      try { sd = JSON.parse(sd) } catch { sd = null }
+    }
+    if (sd && sd.table) {
+      suppressDictReset = true // 抑制换表监听:逐字段赋值不清空刚反填的三个字段
+      try {
+        schemaDictEnabled.value = true
+        schemaDict.dsId = String(sd.datasourceId)
+        schemaDict.db = sd.db || ''
+        schemaDict.schema = sd.schema || ''
+        schemaDict.table = sd.table || ''
+        schemaDictFields.nameField = sd.nameField || ''
+        schemaDictFields.dbField = sd.dbField || ''
+        schemaDictFields.schemaField = sd.schemaField || ''
+      } finally {
+        suppressDictReset = false
+      }
+    }
   } finally {
     // 等本轮 watch 冲刷完再解除抑制:反填触发的数据链监听(基准四元组/对比表清单变化)全部被跳过
     await nextTick()
     suppressInvalidate = false
   }
   await loadColumns()
+  // 字典表字段清单手动触发一次加载(换表监听被 suppressDictReset 跳过;清单只作选项,已选值不依赖它显示)
+  if (schemaDictEnabled.value && schemaDict.table) loadSchemaDictColumns()
   // 默认身份字段改回任务值:详情视图 keyFields(数组,后端已把老任务归一为 [keyField] 单列)优先;
   // 基准表读不出(IMPORT_ERROR)时按任务原值兜底,便于修正后重选
   const kf = parseJsonArray(job.keyFields)
@@ -944,6 +1129,48 @@ onMounted(async () => {
   margin-left: 8px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+
+/* 库/模式名反查字典配置块:弱边框分区,压在字段表与 step-tip 之间 */
+.dict-config {
+  flex: none;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+}
+.dict-config-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 字典表分栏选择器:固定紧凑高度(与基准表级联 compact 一致),栏内列表滚动 */
+.dict-picker {
+  margin-top: 8px;
+  height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+/* 三个字段下拉同一行:标签固定宽度,下拉均分剩余空间 */
+.dict-fields {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dict-fields .meta-label {
+  flex: none;
+  font-size: 12px;
+}
+.dict-fields :deep(.el-select) {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* 字段下拉选项右侧:类型/注释弱化灰(与 SchemaDescDictDialog 同款) */
+.dict-col-meta {
+  float: right;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .step-tip {

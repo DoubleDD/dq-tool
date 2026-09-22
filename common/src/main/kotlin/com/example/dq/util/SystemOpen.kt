@@ -60,10 +60,24 @@ object SystemOpen {
     fun reveal(path: Path) {
         when {
             os.contains("mac") -> start("open", "-R", path.toString())
-            os.contains("win") -> start("explorer", "/select,${path.toAbsolutePath()}")
+            os.contains("win") -> revealOnWindows(path.toAbsolutePath())
             else -> start("xdg-open", path.toAbsolutePath().parent.toString())
         }
         log.info("已打开文件目录: {}", path)
+    }
+
+    /**
+     * explorer /select 的坑:开关解析按 ASCII 逗号切分(引号救不回),超 MAX_PATH(260) 也打不开,
+     * 失败时静默打开「快速访问/此电脑」(观感像开了 C 盘);这两种情况退化为打开所在目录不选中文件。
+     * 路径内层加引号是微软文档写法,空格路径不加内层引号会被截断。
+     */
+    private fun revealOnWindows(target: Path) {
+        val s = target.toString()
+        if (',' in s || s.length > 250) {
+            start("explorer", (target.parent ?: target).toString())
+        } else {
+            start("explorer", "/select,\"$s\"")
+        }
     }
 
     /** 打开目录本身(导出任务「打开目录」:产物是一个文件夹而非单文件时) */

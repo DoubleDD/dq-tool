@@ -495,14 +495,19 @@ class CompareImportService(
             }
 
             // ② 基准表校验 + 字段归一(此刻数据源已实测;读不出/校验失败整任务转 IMPORT_ERROR)
+            // 先把表格手写的库/schema/表名归一为元数据实际值并回库:大小写/单库方言「模式名称」误填
+            // 会让前端编辑向导与字段审核按名称精确匹配时选不中,后续读取也走归一后的位置
             var keyField = ctx.keyField
             var displayField = ctx.displayField
             var fields = ctx.fallbackFields
             var baseFieldItems = fields.map { CompareMappingPrompts.ColumnItem(it, null, null) }
+            val (rawBaseDb, rawBaseSchema) = compareService.normalizeLocation(ctx.baseOutcome.dsId!!,
+                ctx.sheet.base.databaseName, ctx.sheet.base.schemaName)
+            val (baseDb, baseSchema, baseTable) = compareService.reconcileAndUpdateBaseLocation(ctx.jobId,
+                ctx.baseOutcome.dsId!!, rawBaseDb, rawBaseSchema, ctx.sheet.base.tableName)
             val baseColumns = try {
-                columnsLister(ctx.baseOutcome.dsId!!, ctx.sheet.base.databaseName,
-                    CompareService.effectiveSchema(ctx.sheet.base.schemaName, ctx.sheet.base.databaseName),
-                    ctx.sheet.base.tableName)
+                columnsLister(ctx.baseOutcome.dsId!!, baseDb,
+                    CompareService.effectiveSchema(baseSchema, baseDb), baseTable)
             } catch (e: Exception) {
                 log.warn("比对导入基准表读取失败: sheet={}, 表={}: {}", ctx.sheet.sheetName,
                     ctx.sheet.base.tableName, e.message)
@@ -549,8 +554,12 @@ class CompareImportService(
                 var traceMerged: Map<String, String>? = null
                 var traceDurationMs: Long? = null
                 try {
-                    val cols = columnsLister(outcome.dsId!!, row.databaseName,
-                        CompareService.effectiveSchema(row.schemaName, row.databaseName), row.tableName)
+                    val (rawTDb, rawTSchema) = compareService.normalizeLocation(outcome.dsId!!,
+                        row.databaseName, row.schemaName)
+                    val (tDb, tSchema, tTable) = compareService.reconcileAndUpdateTargetLocation(targetId,
+                        outcome.dsId!!, rawTDb, rawTSchema, row.tableName)
+                    val cols = columnsLister(outcome.dsId!!, tDb,
+                        CompareService.effectiveSchema(tSchema, tDb), tTable)
                     if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段")
                     for ((_, tc) in locked) {
                         if (cols.none { it.name.equals(tc, ignoreCase = true) }) {

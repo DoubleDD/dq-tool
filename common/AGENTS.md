@@ -104,6 +104,7 @@ src/main/resources/db/migration/
   V71__system_settings_heartbeat.sql  页面心跳间隔:system_settings.heartbeat_interval_seconds 列(秒,NULL=默认 5;系统设置页「页面心跳」秒/分/时可调,桌面看门狗按 max(配置超时, 3 个间隔) 判窗口关闭)
   V72__compare_target_display_name.sql 比对目标自定义显示名 compare_target.display_name(VARCHAR(256) 可空;向导清单铅笔编辑,展示回落链 自定义名 > 库描述(schema_doc) > ds_name 快照,导出侧在库描述前多一级 table_system 登记;重跑保留)
   V73__compare_job_display_fields.sql 比对对象名称字段多选:compare_job.display_fields_json(基准字段名 JSON array,有序;取值=按顺序第一个非空值,与身份字段互斥;NULL=老任务由 display_field 单列退化,旧列继续写第一项;ALTER IF NOT EXISTS)
+  V74__compare_job_schema_dict.sql   比对库/模式名反查字典:compare_job.schema_dict_json(字典表配置 JSON:数据源+库+schema+表+现有名称/真实库/真实模式三字段,字段名落库前归一为实际列名;仅影响导出 xlsx 表名第三行反查替换,NULL=不反查;ALTER IF NOT EXISTS)
 src/main/resources/db/migration-aiusage/   AI 用量独立库(dqaiusage)迁移脚本,独立 flyway_schema_history
   V1__ai_usage_log.sql      用量流水全量建表:token/费用/峰谷时段 + scan_job_id + 扫描标签快照(scan_label/scan_created_at)+ 请求/响应内容(request_content/response_content CLOB,记录截断 5 万字符,供 prompt 调优回溯)
   V2__compare_ai_trace.sql  比对 AI 判定留痕表 compare_ai_trace:比对阶段每次大模型调用一行(job_id/target_id/target_label 快照不跨库 join、scene/stage(RESIDUE/SAME_NAME/MAPPING/TIME/EVIDENCE)/batch_no、request/response 同 5 万字符截断、result_json 逐条结构化判定结果;随比对任务删除级联清理)

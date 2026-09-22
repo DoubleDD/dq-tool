@@ -5,6 +5,27 @@ import jakarta.validation.constraints.NotEmpty
 import jakarta.validation.constraints.NotNull
 import java.time.LocalDateTime
 
+/**
+ * 库/模式名反查字典(V74,创建/编辑比对任务可配,可跨数据源):字典表一行 = 现有名称 → 真实库名/真实模式名,
+ * 导出 xlsx 表名单元格第三行「(库名.模式名)」按字典反查替换显示;仅影响导出,不影响比对执行与页面展示。
+ * 匹配口径:查找键依次尝试 `db.schema` 合并串 → schema 单值 → db 单值,精准匹配(trim、大小写敏感),
+ * 首个命中生效。三个字段名提交时归一为字典表实际列名(忽略大小写)
+ */
+data class CompareSchemaDict(
+    /** 字典表所在数据源(可与基准/目标不同源) */
+    @field:NotNull val datasourceId: Long?,
+    /** 字典表所在库(多库方言用;单库方言留空) */
+    val db: String?,
+    @field:NotBlank val schema: String?,
+    @field:NotBlank val table: String?,
+    /** 现有名称字段(导出第三行显示用的库/模式名来源键) */
+    @field:NotBlank val nameField: String?,
+    /** 真实库名字段 */
+    @field:NotBlank val dbField: String?,
+    /** 真实模式名字段 */
+    @field:NotBlank val schemaField: String?,
+)
+
 /** 目标级身份字段人工覆盖:keys = 参与判同的基准字段(必须是任务级 keyFields 的子集);null = 按映射推导 */
 data class CompareTargetIdentity(
     val keys: List<String>? = null,
@@ -70,6 +91,11 @@ data class CreateCompareJobRequest(
      * 给出时须在 1~500000 之间(提交校验拦下,上限同单侧行数上限)
      */
     val sampleRows: Int? = null,
+    /**
+     * 库/模式名反查字典(V74,可选):配置后导出 xlsx 表名第三行按字典反查替换为真实库/模式名;
+     * 仅影响导出显示,不影响比对执行;留空/null = 不反查(旧行为)
+     */
+    val schemaDict: CompareSchemaDict? = null,
 )
 
 /** 对比模式(compare_job.compare_mode):决定新建向导默认比对多少字段、字段映射由谁生成;执行引擎同一套 */
@@ -163,6 +189,8 @@ data class CompareJobView(
     val sampleRows: Int? = null,
     /** 基准库描述(schema_doc,库列表页可编辑):基准表显示名回落链「库描述 > 数据源名」的一环,动态查非快照 */
     val baseSchemaDesc: String? = null,
+    /** 库/模式名反查字典配置(V74,编辑向导预填用);null = 未配置(导出第三行不反查) */
+    val schemaDict: CompareSchemaDict? = null,
 )
 
 /** 比对任务详情:任务字段 + 目标指标列表 */

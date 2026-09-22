@@ -119,6 +119,13 @@ class ComparePendingJobTest {
         assertEquals(Pair("hyd_ln", null), CompareService.normalizeDbSchema("hyd_ln", null, true))
         assertEquals(Pair("db", "dbo"), CompareService.normalizeDbSchema("db", "dbo", false))
         assertEquals(Pair("", null), CompareService.normalizeDbSchema("", null, false))
+        // schema 即 catalog 的方言(MySQL 系):忽略「模式名称」列(常误填别名),db 有值一律并回 schema;
+        // 库名空、库名写进「模式名称」列的现场实例兜底取模式名;本就合规的手工任务行不动
+        assertEquals(Pair("", "qysglpt_WI_USER_WI_USER"),
+            CompareService.normalizeDbSchema("qysglpt_WI_USER_WI_USER", "WI_USER", false, schemaIsCatalog = true))
+        assertEquals(Pair("", "mydb"), CompareService.normalizeDbSchema("", "mydb", false, schemaIsCatalog = true))
+        assertEquals(Pair("", "mydb"), CompareService.normalizeDbSchema("mydb", null, false, schemaIsCatalog = true))
+        assertEquals(Pair("", "mydb"), CompareService.normalizeDbSchema("mydb", "WI_USER", false, schemaIsCatalog = true))
     }
 
     @Test

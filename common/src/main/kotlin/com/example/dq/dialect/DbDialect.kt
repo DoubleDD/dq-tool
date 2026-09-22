@@ -66,6 +66,9 @@ interface DbDialect {
     /** 是否多库方言(如 SQL Server/Kingbase 先选库再选 schema);false 时 listSchemas 的 schema 即用户眼中的「库」 */
     fun supportsMultiDatabase(): Boolean = false
 
+    /** schema 即 catalog 的方言(MySQL 系,含 OceanBase MySQL 模式):schema 与「库」同义,不存在独立模式层 */
+    fun schemaIsCatalog(): Boolean = false
+
     /** 切换连接的目标数据库;不支持多库选择的方言忽略 */
     @Throws(SQLException::class)
     fun useDatabase(conn: Connection, database: String?) {

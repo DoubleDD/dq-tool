@@ -15,6 +15,7 @@ import com.example.dq.model.CompareJobPage
 import com.example.dq.model.CompareJobView
 import com.example.dq.model.CompareMode
 import com.example.dq.model.CompareReportView
+import com.example.dq.model.CompareSchemaDict
 import com.example.dq.model.CompareTargetIdentity
 import com.example.dq.model.CompareTargetSpec
 import com.example.dq.model.CompareTargetView
@@ -25,6 +26,7 @@ import com.example.dq.model.MappingSuggestRequest
 import com.example.dq.model.MappingSuggestTargetView
 import com.example.dq.model.MappingSuggestView
 import com.example.dq.model.PendingReason
+import com.example.dq.model.TableStat
 import com.example.dq.repository.CompareAiTraceRepository
 import com.example.dq.repository.CompareRepository
 import com.example.dq.repository.TableSystemRepository
@@ -116,6 +118,15 @@ class CompareService(
     private val aiTraceRepo: CompareAiTraceRepository? = null,
     /** AI 判定留痕记录点(默认写 [aiTraceRepo];测试注入捕获器,须线程安全——补配/消歧批次并发记录) */
     private val aiTraceRecorder: (CompareAiTrace) -> Unit = { t -> aiTraceRepo?.insert(t) },
+    /** 库清单读取点(多库方言位置归一用;默认 MetadataService 缓存优先,测试可注入 fake 避免连业务库) */
+    private val databaseLister: (datasourceId: Long) -> List<String> =
+        { dsId -> metadataService.listDatabases(dsId) },
+    /** schema 清单读取点(位置归一用;单库方言 db 传 null;默认 MetadataService 缓存优先,测试可注入 fake) */
+    private val schemaLister: (datasourceId: Long, db: String?) -> List<String> =
+        { dsId, db -> metadataService.listSchemas(dsId, db) },
+    /** 表清单读取点(位置归一用;默认 MetadataService 缓存优先,测试可注入 fake) */
+    private val tablesLister: (datasourceId: Long, db: String?, schema: String) -> List<TableStat> =
+        { dsId, db, schema -> metadataService.listTables(dsId, db, schema) },
 ) {
 
     /** 导出件 SHA-256 校验缓存:绝对路径 → (size, mtimeMillis, sha256hex);导出件写后不变,按 size+mtime 失效 */
@@ -146,11 +157,12 @@ class CompareService(
      */
     fun submit(req: CreateCompareJobRequest): Long {
         val r = resolveRequest(req)
-        val jobId = repo.insertJob(r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
+        val jobId = repo.insertJob(r.name, r.baseDatasourceId, r.baseDb, r.baseSchema, r.baseTable,
             r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size,
             r.displayFields.firstOrNull(),
             r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields), r.sampleRows,
-            r.displayFields.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
+            r.displayFields.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) },
+            r.schemaDictJson)
         for (t in r.targets) {
             repo.insertTarget(jobId, t.datasourceId, t.dsName, t.db, t.schema, t.table, t.mappingJson, t.identityJson,
                 t.displayName)
@@ -163,13 +175,15 @@ class CompareService(
 
     /** submit 的校验 + 归一结果(双侧字段都已归一为实际列名) */
     private data class ResolvedRequest(
-        val name: String, val baseDatasourceId: Long, val baseDb: String, val baseTable: String,
+        val name: String, val baseDatasourceId: Long, val baseDb: String, val baseSchema: String?, val baseTable: String,
         val keyField: String, val keyFields: List<String>, val fields: List<String>,
         /** 对象名称字段(V73,有序;取值 = 按字段顺序第一个非空值);空表 = 无可用名称字段 */
         val displayFields: List<String>,
         val matchMode: MatchMode, val compareMode: CompareMode, val targets: List<ResolvedTarget>,
         /** 抽样条数(双侧各按身份列排序取前 N 条);null = 全量比对 */
-        val sampleRows: Int? = null)
+        val sampleRows: Int? = null,
+        /** 库/模式名反查字典配置 JSON(V74,已校验并归一为字典表实际列名);null = 不反查 */
+        val schemaDictJson: String? = null)
 
     /**
      * submit / updatePending 共用的同步校验与归一:基准数据源存在、目标非空、fields 含全部身份字段、
@@ -179,7 +193,7 @@ class CompareService(
         val name = req.name?.trim().takeUnless { it.isNullOrEmpty() }
             ?: throw IllegalArgumentException("任务名称不能为空")
         val baseDsId = req.baseDatasourceId ?: throw IllegalArgumentException("请选择基准数据源")
-        val baseTable = req.baseTable?.trim().takeUnless { it.isNullOrEmpty() }
+        val baseTableRaw = req.baseTable?.trim().takeUnless { it.isNullOrEmpty() }
             ?: throw IllegalArgumentException("基准表不能为空")
         val keyField = req.keyField?.trim().takeUnless { it.isNullOrEmpty() }
             ?: throw IllegalArgumentException("请选择比对主键")
@@ -202,10 +216,11 @@ class CompareService(
         val specs = req.targets?.filter { it.datasourceId != null && !it.table.isNullOrBlank() }
         if (specs.isNullOrEmpty()) throw IllegalArgumentException("请至少添加一个比对目标")
 
-        // 基准侧:数据源存在 + 表字段映射(请求字段名归一为基准表实际列名,忽略大小写)
+        // 基准侧:数据源存在 + 库/schema/表名按元数据清单归一(手写路径大小写/单库方言「模式名称」误填;
+        // 清单读不到时保持原值)+ 表字段映射(请求字段名归一为基准表实际列名,忽略大小写)
         dataSourceService.get(baseDsId)
-        val baseDb = req.baseDb ?: ""
-        val baseColumns = columnsLister(baseDsId, baseDb, effectiveSchema(req.baseSchema, baseDb), baseTable)
+        val (baseDb, baseSchema, baseTable) = reconcileLocation(baseDsId, req.baseDb ?: "", req.baseSchema, baseTableRaw)
+        val baseColumns = columnsLister(baseDsId, baseDb, effectiveSchema(baseSchema, baseDb), baseTable)
         if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: $baseTable")
         val baseByName = baseColumns.associateBy { it.name.lowercase() }
         if (baseByName[keyField.lowercase()] == null) {
@@ -236,14 +251,19 @@ class CompareService(
                 "${matchMode.label}需要按对象名称配对,请在「选择基准表」里指定对象名称字段")
         }
 
+        // 库/模式名反查字典(V74,可选):字典数据源存在 + 字典表与三个字段存在(忽略大小写),
+        // 字段名归一为实际列名后序列化落库;仅影响导出第三行显示,不影响比对执行
+        val schemaDictJson = normalizeSchemaDict(req.schemaDict)
+            ?.let { objectMapper.writeValueAsString(it) }
+
         // 目标侧:数据源存在 + 表存在 + 有效身份列必须存在(缺其他比对列允许,比对时记「列缺失」);
         // 字段映射(第三步人工连线)可选:给出时键值都归一为双侧实际列名,且必须覆盖该目标有效身份字段全部
         val resolved = specs.map { spec ->
             val dsId = spec.datasourceId!!
             val ds = dataSourceService.get(dsId)
-            val db = spec.db ?: ""
-            val table = spec.table!!.trim()
-            val cols = columnsLister(dsId, db, effectiveSchema(spec.schema, db), table)
+            // 目标位置同基准侧归一(手写路径大小写/误填校正;清单读不到保持原值)
+            val (db, schema, table) = reconcileLocation(dsId, spec.db ?: "", spec.schema, spec.table!!.trim())
+            val cols = columnsLister(dsId, db, effectiveSchema(schema, db), table)
             if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段: ${ds.name}.$table")
             val colsByName = cols.associateBy { it.name.lowercase() }
             val mapping = normalizeMapping(spec.mapping, fields, baseByName, colsByName)
@@ -252,13 +272,42 @@ class CompareService(
             val identity = resolveIdentity(actualKeyFields, mapping ?: emptyMap(), identityKeys)
             ensureIdentityMapped(mapping, identity, ds.name, table)
             ensureIdentityColumns(mapping, identity, colsByName, ds.name, table)
-            ResolvedTarget(dsId, ds.name, db, spec.schema, table,
+            ResolvedTarget(dsId, ds.name, db, schema, table,
                 mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) },
                 identityKeys?.let { objectMapper.writeValueAsString(mapOf("keys" to it)) },
                 spec.displayName?.trim()?.takeIf { it.isNotEmpty() })
         }
-        return ResolvedRequest(name, baseDsId, baseDb, baseTable, actualKey, actualKeyFields, fields, displayFields,
-            matchMode, compareMode, resolved, sampleRows)
+        return ResolvedRequest(name, baseDsId, baseDb, baseSchema, baseTable, actualKey, actualKeyFields, fields, displayFields,
+            matchMode, compareMode, resolved, sampleRows, schemaDictJson)
+    }
+
+    /**
+     * 库/模式名反查字典(V74)归一与校验:非空时字典数据源必须存在;字典表字段清单经 [columnsLister]
+     * 读取(缓存优先路径),表不存在/无字段、三个字段(现有名称/真实库/真实模式)任一不存在
+     * (忽略大小写)都抛错;字段名归一为字典表实际列名。返回 null = 未配置(不反查)
+     */
+    private fun normalizeSchemaDict(raw: CompareSchemaDict?): CompareSchemaDict? {
+        val dict = raw ?: return null
+        val dictDsId = dict.datasourceId ?: throw IllegalArgumentException("请选择反查字典表所在数据源")
+        val dictDb = dict.db?.trim().orEmpty()
+        val dictSchema = dict.schema?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("反查字典表的库/模式不能为空")
+        val dictTable = dict.table?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("反查字典表不能为空")
+        val nameField = dict.nameField?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("反查字典表的现有名称字段不能为空")
+        val dbField = dict.dbField?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("反查字典表的真实库字段不能为空")
+        val schemaField = dict.schemaField?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("反查字典表的真实模式字段不能为空")
+        val ds = dataSourceService.get(dictDsId)
+        val cols = columnsLister(dictDsId, dictDb, effectiveSchema(dictSchema, dictDb), dictTable)
+        if (cols.isEmpty()) throw IllegalArgumentException("反查字典表不存在或没有字段: ${ds.name}.$dictTable")
+        val byName = cols.associateBy { it.name.lowercase() }
+        fun actual(field: String, label: String): String = byName[field.lowercase()]?.name
+            ?: throw IllegalArgumentException("反查字典表不存在${label}字段: $field")
+        return CompareSchemaDict(dictDsId, dictDb, dictSchema, dictTable,
+            actual(nameField, "现有名称"), actual(dbField, "真实库"), actual(schemaField, "真实模式"))
     }
 
     private data class ResolvedTarget(val datasourceId: Long, val dsName: String?,
@@ -499,9 +548,11 @@ class CompareService(
         ensureMappingReady(job)
         val fields = parseFields(job.fieldsJson)
         val jobKeyFields = jobKeyFields(job)
-        val baseColumns = columnsLister(job.baseDatasourceId, job.baseDb,
-            effectiveSchema(job.baseSchema, job.baseDb), job.baseTable)
-        if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: ${job.baseTable}")
+        // 手写位置(批量导入)先按元数据归一并回库:大小写/单库方言「模式名称」误填会让下面的校验误报不存在
+        val (baseDb, baseSchema, baseTable) = reconcileAndUpdateBaseLocation(jobId, job.baseDatasourceId,
+            job.baseDb, job.baseSchema, job.baseTable)
+        val baseColumns = columnsLister(job.baseDatasourceId, baseDb, effectiveSchema(baseSchema, baseDb), baseTable)
+        if (baseColumns.isEmpty()) throw IllegalArgumentException("基准表不存在或没有字段: $baseTable")
         val baseByName = baseColumns.associateBy { it.name.lowercase() }
         val targets = repo.listTargets(jobId)
         val targetsById = targets.associateBy { it.id }
@@ -510,8 +561,11 @@ class CompareService(
             val t = targetsById[targetId]
                 ?: throw IllegalArgumentException("目标不属于该任务: $targetId")
             val ds = dataSourceService.get(t.datasourceId)
-            val cols = columnsLister(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName)
-            if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段: ${ds.name}.${t.tableName}")
+            // 目标位置同基准侧归一并回库(DS_ERROR 修复数据源后的复活路径同样受益)
+            val (tDb, tSchema, tTable) = reconcileAndUpdateTargetLocation(targetId, t.datasourceId,
+                t.dbName, t.schemaName, t.tableName)
+            val cols = columnsLister(t.datasourceId, tDb, effectiveSchema(tSchema, tDb), tTable)
+            if (cols.isEmpty()) throw IllegalArgumentException("目标表不存在或没有字段: ${ds.name}.$tTable")
             val colsByName = cols.associateBy { it.name.lowercase() }
             // 未提交新映射时沿用库中既有映射做校验(只更新身份的场景)
             val mapping = if (targetId in mappings) normalizeMapping(mappings[targetId], fields, baseByName, colsByName)
@@ -525,8 +579,8 @@ class CompareService(
                 parseIdentityKeys(t.identityJson)
             }
             val identity = resolveIdentity(jobKeyFields, mapping ?: emptyMap(), identityKeys)
-            ensureIdentityMapped(mapping, identity, ds.name, t.tableName)
-            ensureIdentityColumns(mapping, identity, colsByName, ds.name, t.tableName)
+            ensureIdentityMapped(mapping, identity, ds.name, tTable)
+            ensureIdentityColumns(mapping, identity, colsByName, ds.name, tTable)
             if (targetId in mappings) {
                 repo.updateTargetMapping(targetId,
                     mapping?.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) })
@@ -553,12 +607,12 @@ class CompareService(
         if (job.status != "PENDING") throw IllegalStateException("仅「待处理」任务可以编辑")
         ensureMappingReady(job)
         val r = resolveRequest(req)
-        repo.replacePendingJob(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema, r.baseTable,
+        repo.replacePendingJob(jobId, r.name, r.baseDatasourceId, r.baseDb, r.baseSchema, r.baseTable,
             r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size,
             r.displayFields.firstOrNull(),
             r.matchMode.value, r.compareMode.value, objectMapper.writeValueAsString(r.keyFields),
             r.displayFields.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) },
-            r.sampleRows,
+            r.sampleRows, r.schemaDictJson,
             r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table,
                 it.mappingJson, it.identityJson, it.displayName) })
         log.info("待处理比对任务已更新: id={}, 名称={}, 目标数={}", jobId, r.name, r.targets.size)
@@ -578,12 +632,12 @@ class CompareService(
         }
         if (job.status == "RUNNING") throw IllegalStateException("任务运行中,不能编辑")
         val r = resolveRequest(req)
-        val updated = repo.replaceAndRestart(jobId, r.name, r.baseDatasourceId, r.baseDb, req.baseSchema,
+        val updated = repo.replaceAndRestart(jobId, r.name, r.baseDatasourceId, r.baseDb, r.baseSchema,
             r.baseTable, r.keyField, objectMapper.writeValueAsString(r.fields), 1 + r.targets.size,
             r.displayFields.firstOrNull(), r.matchMode.value, r.compareMode.value,
             objectMapper.writeValueAsString(r.keyFields),
             r.displayFields.takeIf { it.isNotEmpty() }?.let { objectMapper.writeValueAsString(it) },
-            r.sampleRows,
+            r.sampleRows, r.schemaDictJson,
             r.targets.map { CompareRepository.NewTarget(it.datasourceId, it.dsName, it.db, it.schema, it.table,
                 it.mappingJson, it.identityJson, it.displayName) })
         if (updated == 0) throw IllegalStateException("任务状态已变化,请刷新后重试")
@@ -1598,9 +1652,11 @@ class CompareService(
         val sampleReason = job.sampleRows?.let { "抽样比对:每侧仅取前 $it 条(按身份列排序)" }
         val rows = ArrayList<CompareExportOverviewRow>(targets.size + 1)
         val baseSystem = ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable)
+        // 库/模式名反查字典(V74):第三行定位按字典替换真实名称,未命中原样
+        val (baseLocDb, baseLocSchema) = ctx.displayLocation(job.baseDb, job.baseSchema)
         rows.add(CompareExportOverviewRow(
             // 导出文件内表名统一单元格内三行「表名 / 系统名 / （库.模式）」格式(空段省略)
-            tableName = tableDisplayName(baseSystem, job.baseDb, job.baseSchema, job.baseTable),
+            tableName = tableDisplayName(baseSystem, baseLocDb, baseLocSchema, job.baseTable),
             tableComment = ctx.comment(job.baseDatasourceId, job.baseDb, job.baseTable),
             systemName = baseSystem,
             rowCount = baseCount,
@@ -1618,8 +1674,9 @@ class CompareService(
         for (t in targets) {
             val targetCount = t.targetCountOrFallback()
             val system = ctx.systemName(t.datasourceId, t.dbName, t.tableName)
+            val (locDb, locSchema) = ctx.displayLocation(t.dbName, t.schemaName)
             rows.add(CompareExportOverviewRow(
-                tableName = tableDisplayName(system, t.dbName, t.schemaName, t.tableName),
+                tableName = tableDisplayName(system, locDb, locSchema, t.tableName),
                 tableComment = ctx.comment(t.datasourceId, t.dbName, t.tableName),
                 systemName = system,
                 rowCount = targetCount,
@@ -1724,6 +1781,8 @@ class CompareService(
         private val schemaDescs: Map<String, String> = emptyMap(),
         /** 明细表头用的字段注释:表键 → (字段小写 → 注释),由 exportContext 预取 */
         private val columnComments: Map<String, Map<String, String>> = emptyMap(),
+        /** 库/模式名反查字典(V74):现有名称(trim) → (真实库, 真实模式);空 = 不反查 */
+        private val locationDict: Map<String, Pair<String?, String?>> = emptyMap(),
     ) {
         /** 表中文名:表注释,取不到返回 null */
         fun comment(datasourceId: Long, db: String, table: String): String? =
@@ -1748,6 +1807,13 @@ class CompareService(
         fun fieldComment(datasourceId: Long, db: String, table: String, field: String): String? =
             columnComments[key(datasourceId, db, table)]?.get(field.lowercase())
 
+        /**
+         * 导出第三行定位显示(V74):按反查字典把 (库, 模式) 替换为真实名称;
+         * 未配置字典/未命中都原样返回(口径见 [CompareService.applyLocationDict])
+         */
+        fun displayLocation(db: String, schema: String?): Pair<String, String?> =
+            CompareService.applyLocationDict(locationDict, db, schema)
+
         companion object {
             /** 上下文键:数据源 + 库 + 表名(库名/表名忽略大小写) */
             fun key(datasourceId: Long, db: String, table: String): String =
@@ -1762,6 +1828,8 @@ class CompareService(
      */
     private fun exportContext(job: CompareRepository.JobRow,
                               targets: List<CompareRepository.TargetRow>): ExportContext {
+        // 库/模式名反查字典(V74):导出时整表读一次;读失败(断网/表删了/JSON 坏了)记 warn 降级空 map,导出必须能出文件
+        val locationDict = loadLocationDict(job.schemaDictJson)
         val comments = HashMap<String, String>()
         val systems = HashMap<String, String>()
         val fallbackSystem = HashMap<Long, String?>()
@@ -1845,7 +1913,49 @@ class CompareService(
             loadColumnComments(t.datasourceId, t.dbName, effectiveSchema(t.schemaName, t.dbName), t.tableName,
                 t.columnComments)
         }
-        return ExportContext(comments, systems, fallbackSystem, displayNames, schemaDescs, columnComments)
+        return ExportContext(comments, systems, fallbackSystem, displayNames, schemaDescs, columnComments,
+            locationDict)
+    }
+
+    /**
+     * 读库/模式名反查字典表(V74):三列 SELECT 整表一次读入,键 = 现有名称 trim(空跳过),
+     * 值 = (真实库 trim, 真实模式 trim),后行覆盖前行;标识符全部过方言 quote,多库方言连接带库。
+     * 任何失败(JSON 解析/数据源删除/断网/表删了)记 warn 降级为空 map,导出照常出文件
+     */
+    private fun loadLocationDict(schemaDictJson: String?): Map<String, Pair<String?, String?>> {
+        val dict = schemaDictJson?.let {
+            try {
+                objectMapper.readValue<CompareSchemaDict>(it)
+            } catch (e: Exception) {
+                log.warn("库/模式名反查字典配置解析失败,按不反查导出: {}", e.message)
+                return emptyMap()
+            }
+        } ?: return emptyMap()
+        return try {
+            val ds = dataSourceService.get(dict.datasourceId!!)
+            val dialect = dialectFactory.get(ds.dbType!!)
+            // 字典表全量读取(面向小数据量,不设行上限);表定位 = schema.table(多库方言连接级带库)
+            val sql = "SELECT ${dialect.quote(dict.nameField!!)}, ${dialect.quote(dict.dbField!!)}, " +
+                "${dialect.quote(dict.schemaField!!)} FROM ${dialect.quote(dict.schema!!)}.${dialect.quote(dict.table!!)}"
+            val map = LinkedHashMap<String, Pair<String?, String?>>()
+            dataSourceService.getConnection(dict.datasourceId,
+                if (dialect.supportsMultiDatabase()) dict.db else null).use { conn ->
+                conn.createStatement().use { stmt ->
+                    stmt.executeQuery(sql).use { rs ->
+                        while (rs.next()) {
+                            val name = rs.getString(1)?.trim()
+                            if (name.isNullOrEmpty()) continue
+                            map[name] = rs.getString(2)?.trim() to rs.getString(3)?.trim()
+                        }
+                    }
+                }
+            }
+            map
+        } catch (e: Exception) {
+            log.warn("库/模式名反查字典读取失败,按不反查导出: 数据源{} 表{}.{}: {}",
+                dict.datasourceId, dict.schema, dict.table, e.message)
+            emptyMap()
+        }
     }
 
     /** 总览 sheet:表头 + 一行一系统(首行基准表,与后续明细 sheet 序号一一对应) */
@@ -1907,15 +2017,17 @@ class CompareService(
         val baseComment = ctx.comment(job.baseDatasourceId, job.baseDb, job.baseTable).orEmpty()
         // 任务级对象名称字段(V73 多选):老任务由 displayField 单列退化;取值 = 按字段顺序第一个非空值
         val displayFields = jobDisplayFields(job)
-        // 表名单元格统一单元格内三行「表名 / 系统名 / （库.模式）」格式
+        // 表名单元格统一单元格内三行「表名 / 系统名 / （库.模式）」格式(第三行经反查字典 V74 替换)
+        val (baseLocDb, baseLocSchema) = ctx.displayLocation(job.baseDb, job.baseSchema)
         val baseTableLabel = tableDisplayName(ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable),
-            job.baseDb, job.baseSchema, job.baseTable)
+            baseLocDb, baseLocSchema, job.baseTable)
         var written = 0
         var truncated = false
         loop@ for (t in targets) {
             val targetComment = ctx.comment(t.datasourceId, t.dbName, t.tableName).orEmpty()
+            val (tLocDb, tLocSchema) = ctx.displayLocation(t.dbName, t.schemaName)
             val targetTableLabel = tableDisplayName(ctx.systemName(t.datasourceId, t.dbName, t.tableName),
-                t.dbName, t.schemaName, t.tableName)
+                tLocDb, tLocSchema, t.tableName)
             // 该目标的有效身份字段(人工覆盖 ?? 推导;基准侧字段名)
             val identity = identityByTarget[t.id] ?: listOf(job.keyField)
             // 业务侧身份/名称字段:显式映射(人工连线)里基准字段连到的目标列;
@@ -2027,8 +2139,9 @@ class CompareService(
                 val targetColumn = mappingLower[f.lowercase()] ?: f
                 val excelRow = sheet.createRow(r++)
                 excelRow.createCell(0).apply {
+                    val (locDb, locSchema) = ctx.displayLocation(t.dbName, t.schemaName)
                     setCellValue(tableDisplayName(
-                        ctx.systemName(t.datasourceId, t.dbName, t.tableName), t.dbName, t.schemaName, t.tableName))
+                        ctx.systemName(t.datasourceId, t.dbName, t.tableName), locDb, locSchema, t.tableName))
                     cellStyle = wrapStyle
                 }
                 excelRow.createCell(1).setCellValue(targetComment)
@@ -2078,8 +2191,9 @@ class CompareService(
         head.createCell(2).setCellValue("基准表字段数")
         targets.forEachIndexed { i, t ->
             val sys = ctx.systemName(t.datasourceId, t.dbName, t.tableName) ?: "数据源${t.datasourceId}"
-            // 业务表名用统一显示格式(表名/系统名/（库.模式）三行) + 指标名作第四行,多行需自动换行
-            val table = tableDisplayName(sys, t.dbName, t.schemaName, t.tableName)
+            // 业务表名用统一显示格式(表名/系统名/（库.模式）三行,第三行经反查字典 V74 替换) + 指标名作第四行,多行需自动换行
+            val (locDb, locSchema) = ctx.displayLocation(t.dbName, t.schemaName)
+            val table = tableDisplayName(sys, locDb, locSchema, t.tableName)
             listOf("对比字段数", "相同字段数", "不同字段数").forEachIndexed { j, metric ->
                 head.createCell(3 + i * 3 + j).apply {
                     setCellValue("$table\n$metric")
@@ -2193,15 +2307,17 @@ class CompareService(
         // 与各系统写在其 4 列块首格同口径,避免压在身份列下
         val sub = sheet.createRow(r++)
         sub.createCell(2).apply {
+            val (baseLocDb, baseLocSchema) = ctx.displayLocation(job.baseDb, job.baseSchema)
             setCellValue(tableDisplayName(ctx.systemName(job.baseDatasourceId, job.baseDb, job.baseTable),
-                job.baseDb, job.baseSchema, job.baseTable))
+                baseLocDb, baseLocSchema, job.baseTable))
             cellStyle = wrapStyle
         }
         targets.forEachIndexed { i, t ->
             sub.createCell(5 + i * 4).apply {
+                val (locDb, locSchema) = ctx.displayLocation(t.dbName, t.schemaName)
                 setCellValue(tableDisplayName(
                     ctx.systemName(t.datasourceId, t.dbName, t.tableName) ?: "数据源${t.datasourceId}",
-                    t.dbName, t.schemaName, t.tableName))
+                    locDb, locSchema, t.tableName))
                 cellStyle = wrapStyle
             }
         }
@@ -2594,16 +2710,82 @@ class CompareService(
      * 按数据源方言做库/schema 口径归一(批量导入落库与任务视图层共用):早期批量导入把表格「数据库名称」
      * 整体存进 db、schema 留空,与手工建任务口径(单库方言 db 空、schema=库名)不一致,前端编辑向导/
      * 字段审核画布按 schemas/{schema}/ 拼字段接口路径会 404(执行路径有 effectiveSchema 兜底,不受影响)。
-     * 数据源已删/方言取不到时按单库口径归一(与差异导出「模式」列显隐的假设一致),保证 schema 有值可读
+     * schema 即 catalog 的方言(MySQL 系)忽略「模式名称」列(常误填 Oracle 风格别名,不是真实库名),
+     * 库名并进 schema、db 置空。数据源已删/方言取不到时按单库口径归一(与差异导出「模式」列显隐的
+     * 假设一致),保证 schema 有值可读
      */
     fun normalizeLocation(datasourceId: Long, db: String?, schema: String?): Pair<String, String?> {
+        var multiDb = false
+        var schemaIsCatalog = false
+        try {
+            dataSourceService.get(datasourceId).dbType?.let {
+                val dialect = dialectFactory.get(it)
+                multiDb = dialect.supportsMultiDatabase()
+                schemaIsCatalog = dialect.schemaIsCatalog()
+            }
+        } catch (e: Exception) {
+            // 数据源已删/方言取不到:按单库口径归一(与差异导出「模式」列显隐的假设一致),保证 schema 有值可读
+        }
+        return normalizeDbSchema(db, schema, multiDb, schemaIsCatalog)
+    }
+
+    /**
+     * 把手写路径(比对导入表格)的库/schema/表名按元数据清单归一为实际值:
+     * - 大小写以服务端清单为准(前端编辑向导/字段审核按名称精确匹配,大小写不一致选不中);
+     * - 单库方言(MySQL 等,schema 即库)schema 槽位未命中清单时回退用 db 槽位命中(表格「模式名称」
+     *   常填 Oracle 风格别名而非真实库名),命中后 db 置空,与手工建任务口径(base_db='' + 库名)一致;
+     * - 清单读不到(数据源异常/断网)或都不命中时保持原值,只做命中校正、不做模糊猜测
+     */
+    fun reconcileLocation(datasourceId: Long, db: String, schema: String?, table: String): Triple<String, String?, String> {
         val multiDb = try {
             dataSourceService.get(datasourceId).dbType
                 ?.let { dialectFactory.get(it).supportsMultiDatabase() } == true
         } catch (e: Exception) {
             false
         }
-        return normalizeDbSchema(db, schema, multiDb)
+        var actualDb = db
+        var actualSchema = schema
+        if (multiDb) {
+            val dbs = runCatching { databaseLister(datasourceId) }.getOrElse { emptyList() }
+            actualDb = dbs.firstOrNull { it.equals(db, ignoreCase = true) } ?: db
+            if (!schema.isNullOrBlank()) {
+                val schemas = runCatching { schemaLister(datasourceId, actualDb) }.getOrElse { emptyList() }
+                actualSchema = schemas.firstOrNull { it.equals(schema, ignoreCase = true) } ?: schema
+            }
+        } else {
+            val schemas = runCatching { schemaLister(datasourceId, null) }.getOrElse { emptyList() }
+            val hit = schema?.takeIf { it.isNotBlank() }
+                ?.let { s -> schemas.firstOrNull { it.equals(s, ignoreCase = true) } }
+                ?: db.takeIf { it.isNotBlank() }
+                    ?.let { d -> schemas.firstOrNull { it.equals(d, ignoreCase = true) } }
+            if (hit != null) {
+                actualDb = ""
+                actualSchema = hit
+            }
+        }
+        val tableSchema = actualSchema?.takeIf { it.isNotBlank() } ?: actualDb
+        var actualTable = table
+        if (tableSchema.isNotBlank() && table.isNotBlank()) {
+            val tables = runCatching {
+                tablesLister(datasourceId, actualDb.ifBlank { null }, tableSchema)
+            }.getOrElse { emptyList() }
+            actualTable = tables.firstOrNull { it.name.equals(table, ignoreCase = true) }?.name ?: table
+        }
+        return Triple(actualDb, actualSchema, actualTable)
+    }
+
+    /** [reconcileLocation] 归一并回写基准表位置(值不变不写库);返回归一后的 (db, schema, table) 供后续校验/读取 */
+    fun reconcileAndUpdateBaseLocation(jobId: Long, datasourceId: Long, db: String, schema: String?, table: String): Triple<String, String?, String> {
+        val loc = reconcileLocation(datasourceId, db, schema, table)
+        if (loc != Triple(db, schema, table)) repo.updateBaseLocation(jobId, loc.first, loc.second, loc.third)
+        return loc
+    }
+
+    /** [reconcileLocation] 归一并回写目标表位置(值不变不写库);返回归一后的 (db, schema, table) 供后续校验/读取 */
+    fun reconcileAndUpdateTargetLocation(targetId: Long, datasourceId: Long, db: String, schema: String?, table: String): Triple<String, String?, String> {
+        val loc = reconcileLocation(datasourceId, db, schema, table)
+        if (loc != Triple(db, schema, table)) repo.updateTargetLocation(targetId, loc.first, loc.second, loc.third)
+        return loc
     }
 
     private fun toJobView(r: CompareRepository.JobRow): CompareJobView {
@@ -2625,8 +2807,20 @@ class CompareService(
             // 「打开文件」置灰口径(V65):已导出且 checksum 一致;「打开文件夹」始终可点(退化开 compare 目录)
             exportFileOk = exportFileOk(r.exportStatus, r.exportFile, r.exportChecksum),
             sampleRows = r.sampleRows,
-            baseSchemaDesc = schemaDescOf(r.baseDatasourceId, db, schema))
+            baseSchemaDesc = schemaDescOf(r.baseDatasourceId, db, schema),
+            schemaDict = parseSchemaDict(r.schemaDictJson))
     }
+
+    /** 库/模式名反查字典配置(V74)解析:JSON 损坏记 warn 返回 null 兜底(视图按未配置展示) */
+    private fun parseSchemaDict(json: String?): CompareSchemaDict? =
+        json?.let {
+            try {
+                objectMapper.readValue<CompareSchemaDict>(it)
+            } catch (e: Exception) {
+                log.warn("库/模式名反查字典配置 JSON 解析失败: {}", e.message)
+                null
+            }
+        }
 
     /**
      * 目标库描述(schema_doc,库列表页可编辑):默认显示名回落链「自定义名 > 库描述 > 数据源名快照」的一环。
@@ -3150,6 +3344,29 @@ class CompareService(
         /** 行 map 的键是否为身份列为空行的行内代理键(见 [NO_KEY_ROW_PREFIX]) */
         fun isNoKeyRow(key: String): Boolean = key.startsWith(NO_KEY_ROW_PREFIX)
 
+        /**
+         * 库/模式名反查字典应用(纯函数,V74):导出第三行「(库名.模式名)」按字典替换为真实名称。
+         * 查找键依次尝试 `db.schema` 合并串(db 空则不带点)→ schema 单值 → db 单值,
+         * 精准匹配(键与值都 trim,大小写敏感),首个命中生效;
+         * 命中返回 (真实库 trim, 真实模式 trim)(空串转 空/null);未命中原样返回 (db, schema)
+         */
+        fun applyLocationDict(dict: Map<String, Pair<String?, String?>>, db: String,
+                              schema: String?): Pair<String, String?> {
+            if (dict.isEmpty()) return db to schema
+            val d = db.trim()
+            val s = schema?.trim().orEmpty()
+            val keys = ArrayList<String>(3)
+            // 合并串:db 空则不带点(schema 单值);db/schema 都空无键可查
+            if (d.isNotEmpty() && s.isNotEmpty()) keys.add("$d.$s") else if (s.isNotEmpty()) keys.add(s)
+            if (s.isNotEmpty() && (keys.isEmpty() || keys[0] != s)) keys.add(s)
+            if (d.isNotEmpty()) keys.add(d)
+            for (k in keys) {
+                val hit = dict[k] ?: continue
+                return (hit.first?.trim().orEmpty()) to hit.second?.trim()?.takeIf { it.isNotEmpty() }
+            }
+            return db to schema
+        }
+
         /** 差异明细批量落库的每批行数 */
         private const val DIFF_BATCH_SIZE = 500
 
@@ -3311,11 +3528,19 @@ class CompareService(
         /**
          * 库/schema 存储口径归一(纯函数):单库方言「库就是 schema」——schema 空而 db 有值时把 db 并回
          * schema、db 置空,与手工建任务口径一致(前端选表/字段接口一律按 schemas/{schema}/ 拼路径,
-         * schema 空串会拼出 // 直接 404);多库方言(db/schema 各一层)或本就合规的行原样返回
+         * schema 空串会拼出 // 直接 404);schema 即 catalog 的方言(MySQL 系)进一步忽略「模式名称」
+         * (该列常误填 Oracle 风格别名,不是真实库名),db 有值一律并回 schema(库名空、库名写进
+         * 「模式名称」列的现场实例兜底取模式名);多库方言(db/schema 各一层)或本就合规的行原样返回
          */
-        internal fun normalizeDbSchema(db: String?, schema: String?, multiDb: Boolean): Pair<String, String?> =
-            if (!multiDb && schema.isNullOrBlank() && !db.isNullOrBlank()) Pair("", db.trim())
-            else Pair(db.orEmpty(), schema)
+        internal fun normalizeDbSchema(db: String?, schema: String?, multiDb: Boolean,
+                                       schemaIsCatalog: Boolean = false): Pair<String, String?> =
+            when {
+                multiDb -> Pair(db.orEmpty(), schema)
+                schemaIsCatalog -> Pair("",
+                    db?.trim()?.takeIf { it.isNotEmpty() } ?: schema?.trim()?.takeIf { it.isNotEmpty() })
+                schema.isNullOrBlank() && !db.isNullOrBlank() -> Pair("", db.trim())
+                else -> Pair(db.orEmpty(), schema)
+            }
 
         /** 是否文本型字段(显示名选取口径:字符型或 CLOB) */
         internal fun isTextType(c: ColumnMeta): Boolean =

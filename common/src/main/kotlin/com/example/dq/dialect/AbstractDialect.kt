@@ -76,6 +76,8 @@ abstract class AbstractDialect : DbDialect {
     /** MySQL 系用 catalog 定位库;PG/DM 系用 schema */
     protected open fun catalogBased(): Boolean = false
 
+    override fun schemaIsCatalog(): Boolean = catalogBased()
+
     /** 执行 "分组键, COUNT(*)" 两列聚合查询,供 countTablesBySchema 各实现复用 */
     @Throws(SQLException::class)
     protected fun queryCountByGroup(conn: Connection, sql: String): MutableMap<String, Int> {

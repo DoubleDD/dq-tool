@@ -27,14 +27,14 @@
         </template>
       </el-table-column>
       <el-table-column label="描述" min-width="220" prop="title" show-overflow-tooltip />
-      <!-- 文件列 = 文件名,点击系统默认应用直开;checksum 对不上(TAMPERED)仍可打开,旁边打「已篡改」标签提示;
+      <!-- 文件列 = 文件名,点击系统默认应用直开;checksum 对不上(TAMPERED)仍可打开,旁边打「已修改」标签提示;
            MISSING(磁盘上已删)删除线置灰禁点,「打开目录」降级开所在目录 -->
       <el-table-column label="文件" min-width="240">
         <template #default="{ row }">
           <template v-if="canOpen(row)">
             <el-button link type="primary" :title="row.fileName" @click="openFile(row)">{{ row.fileName }}</el-button>
             <el-tooltip v-if="row.fileState === 'TAMPERED'" content="文件内容与导出时不一致(校验和不匹配),可能已被修改" placement="top" :show-after="200">
-              <el-tag type="danger" size="small" style="margin-left: 4px">已篡改</el-tag>
+              <el-tag type="danger" size="small" style="margin-left: 4px">已修改</el-tag>
             </el-tooltip>
           </template>
           <span v-else :title="fileBlockTip(row)" :style="fileBlockStyle(row)">
@@ -180,7 +180,7 @@ function canOpen(row) {
   return !!row.fileName && !!row.relPath && row.fileState !== 'MISSING'
 }
 
-/** 禁点文件名的悬浮提示(仅 MISSING;TAMPERED 仍可打开,用「已篡改」标签提示) */
+/** 禁点文件名的悬浮提示(仅 MISSING;TAMPERED 仍可打开,用「已修改」标签提示) */
 function fileBlockTip(row) {
   if (row.fileState === 'MISSING') return '文件已被删除,无法打开;可打开所在目录查看'
   return row.fileName

@@ -81,7 +81,11 @@ class CompareImportServiceTest {
             SchemaStatRepository(jdbc), SchemaDocRepository(jdbc), metaCacheRepo)
         compareService = CompareService(compareRepo, dataSourceService, DialectFactory, metadataService,
             SystemSettingsService(SystemSettingsRepository(jdbc), config), TableSystemRepository(jdbc),
-            columnsLister = columnsLister)
+            columnsLister = columnsLister,
+            // 位置归一的清单读取置空(归一结果为原值):测试数据源指向不可达地址,避免真实连接拖死后台推导
+            databaseLister = { emptyList() },
+            schemaLister = { _, _ -> emptyList() },
+            tablesLister = { _, _, _ -> emptyList() })
     }
 
     private fun newService(
