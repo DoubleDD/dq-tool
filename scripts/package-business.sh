@@ -39,7 +39,8 @@ rm -rf "$STAGE"
 # 签名(可选):minisign 不在 PATH 时跳过(手动离线升级要求签名,跳过则不出整包);
 # 私钥为空口令,minisign 无免交互参数,用 echo 喂空行当空口令(同 release.yml business-manifest 任务)
 if command -v minisign >/dev/null 2>&1; then
-  base64 -d scripts/updater-private.key > build/.updater-private.key.tmp
+  # macOS 的 base64 不吃位置参数(GNU 才认 -d <file>),统一走 stdin 重定向
+  base64 -d < scripts/updater-private.key > build/.updater-private.key.tmp
   echo "" | minisign -S -s build/.updater-private.key.tmp -m "$ZIP"
   rm -f build/.updater-private.key.tmp
   base64 < "$ZIP.minisig" | tr -d '\n' > "$ZIP.sig"

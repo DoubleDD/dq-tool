@@ -1,5 +1,11 @@
 # 更新日志
 
+## 2.0.21 (2026-09-23)
+
+### 修复
+
+- **`make package-business` 在 macOS 上签名失败**:macOS 自带 base64 不支持位置参数(仅 GNU 认 `-d <file>`),私钥解码改走 stdin 重定向,macOS 与 Linux 均可正常签出 `.zip.sig`
+
 ## 2.0.20 (2026-09-23)
 
 ### 新增
