@@ -10,6 +10,7 @@ import com.example.dq.config.StartupLog;
 import com.example.dq.config.StartupStage;
 import com.example.dq.config.TrayManager;
 import com.example.dq.controller.AiConfigController;
+import com.example.dq.controller.AiTagBatchTaskController;
 import com.example.dq.controller.AiUsageController;
 import com.example.dq.controller.AnnotationController;
 import com.example.dq.controller.ChangelogController;
@@ -135,6 +136,7 @@ public class WebServer {
     private final AtomicReference<CompareController> compareCtrl = new AtomicReference<>();
     private final AtomicReference<CompareImportController> compareImportCtrl = new AtomicReference<>();
     private final AtomicReference<TagController> tagCtrl = new AtomicReference<>();
+    private final AtomicReference<AiTagBatchTaskController> aiTagBatchCtrl = new AtomicReference<>();
     private final AtomicReference<ManualCollectController> manualCollectCtrl = new AtomicReference<>();
     private final AtomicReference<ObjectCatalogController> objectCatalogCtrl = new AtomicReference<>();
     private final AtomicReference<AiConfigController> aiCtrl = new AtomicReference<>();
@@ -222,7 +224,7 @@ public class WebServer {
             cfg.startup.showJavalinBanner = false;
             registerRoutes(cfg.routes, licenseServiceRef,
                     dataSourceCtrl, scanCtrl, scanTransferCtrl, metaCtrl, metaSyncCtrl, reportCtrl, sampleExportCtrl, compareCtrl,
-                    compareImportCtrl, tagCtrl,
+                    compareImportCtrl, tagCtrl, aiTagBatchCtrl,
                     manualCollectCtrl, objectCatalogCtrl, aiCtrl, aiUsageCtrl,
                     settingsCtrl, licenseCtrl, previewCtrl, sqlConsoleCtrl, annotationCtrl, listExportCtrl, diagnosticsCtrl,
                     changelogCtrl, lanCtrl, relationCtrl,
@@ -259,6 +261,7 @@ public class WebServer {
                                 AtomicReference<CompareController> compareCtrl,
                                 AtomicReference<CompareImportController> compareImportCtrl,
                                 AtomicReference<TagController> tagCtrl,
+                                AtomicReference<AiTagBatchTaskController> aiTagBatchCtrl,
                                 AtomicReference<ManualCollectController> manualCollectCtrl,
                                 AtomicReference<ObjectCatalogController> objectCatalogCtrl,
                                 AtomicReference<AiConfigController> aiCtrl,
@@ -553,6 +556,12 @@ public class WebServer {
         // 批量打标(只增不删),与 GET 同路径不同方法;单表整体替换走 tables/{table}/tags
         routes.put("/api/datasources/{dsId}/schemas/{schema}/table-tags", ctx -> tagCtrl.get().batchAddTableTags(ctx));
         routes.put("/api/datasources/{dsId}/schemas/{schema}/tables/{table}/tags", ctx -> tagCtrl.get().replaceTableTags(ctx));
+
+        // ---- 批量 AI 打标后台任务(提交即返回 taskId,任务中心跟踪进度/弹完成通知) ----
+        routes.post("/api/datasources/{dsId}/schemas/{schema}/ai-tag-batch", ctx -> aiTagBatchCtrl.get().submit(ctx));
+        // 静态段 active 须先于 {id} 注册,避免被路径参数路由截获(同 /api/metadata-sync/latest 先例)
+        routes.get("/api/ai-tag-batch/active", ctx -> aiTagBatchCtrl.get().listActive(ctx));
+        routes.get("/api/ai-tag-batch/{id}", ctx -> aiTagBatchCtrl.get().detail(ctx));
 
         // ---- 人工采集(收藏重点关注的表) ----
         routes.get("/api/manual-collects", ctx -> manualCollectCtrl.get().list(ctx));
@@ -1048,6 +1057,7 @@ public class WebServer {
         compareCtrl.set(new CompareController(env.getCompareService(), env.getExportCenterService()));
         compareImportCtrl.set(new CompareImportController(env.getCompareImportService(), env.getExportCenterService()));
         tagCtrl.set(new TagController(env.getTagService()));
+        aiTagBatchCtrl.set(new AiTagBatchTaskController(env.getBatchAiTagTaskService()));
         manualCollectCtrl.set(new ManualCollectController(env.getManualCollectService()));
         objectCatalogCtrl.set(new ObjectCatalogController(env.getObjectCatalogService()));
         aiCtrl.set(new AiConfigController(env.getAiConfigService()));

@@ -31,6 +31,7 @@ make dev          # 开发:后端 10000(不构建前端);前端开发另起 make
 make build        # 交付 fat jar(纯 API 服务,不含前端;前端由 tauri/各打包脚本构建)
 make test         # ./gradlew :common:test :server:test
 make package      # macOS dmg 安装包(其他平台见 打包与发布)
+make package-business  # 业务层更新包 build/dq-tool-<v>-business.zip(jar + 前端,Tauri 业务层升级用)
 ```
 
 要求 JDK 25+、Node 24+(仅开发);详见下方「构建运行与测试」。

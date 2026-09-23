@@ -867,7 +867,9 @@ async function copyText(text, successMsg) {
 async function copyPreviewCell(row, column) {
   const v = row[column.property]
   if (v === null || v === undefined) return
-  copyText(String(v), '已复制单元格内容')
+  const text = String(v)
+  const brief = text.length > 80 ? text.slice(0, 80) + '…' : text
+  copyText(text, `已复制:${brief}`)
 }
 
 /** 复制整段建表 DDL */

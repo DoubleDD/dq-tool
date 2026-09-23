@@ -37,6 +37,7 @@ LICENSE_VERSION ?= $(VERSION:0.%=%)
 	package-win package-win-skip \
 	package-tauri-win package-tauri-win-skip \
 	package-tauri-win-portable package-tauri-win-portable-skip \
+	package-business package-business-skip \
 	license-keypair license clean
 
 help: ## 显示全部可用命令(按用途分组)
@@ -64,6 +65,8 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '  make %-22s %s\n' package-tauri-win-skip 'Windows 版(跳过构建)'
 	@printf '  make %-30s %s\n' package-tauri-win-portable      'Windows 绿色免安装 zip(仅 Windows 可用)'
 	@printf '  make %-30s %s\n' package-tauri-win-portable-skip  'Windows 绿色免安装 zip(跳过构建)'
+	@printf '  make %-22s %s\n' package-business      '业务层更新包 build/dq-tool-<v>-business.zip(jar + 前端,Tauri 业务层升级用)'
+	@printf '  make %-22s %s\n' package-business-skip '业务层更新包(跳过构建,用现有 jar + web/dist 重打)'
 	@printf '\n\033[1m授权码 / 清理\033[0m\n'
 	@printf '  make %-18s %s\n' license-keypair '生成授权密钥对(只需一次,公钥写入 license-public.key 并拷入 server/src/main/resources/)'
 	@printf '  make %-18s %s\n' license         '签发授权码(交互式;也可 customer=... expires=... 传参)[KEY=私钥文件]'
@@ -144,6 +147,12 @@ package-tauri-win-portable: ## Windows:构建并打 Tauri 2 绿色免安装 zip(
 
 package-tauri-win-portable-skip: ## Windows:跳过构建,重打 Tauri 2 绿色免安装 zip(仅 Windows 可用)
 	cmd //c "scripts\\package-tauri-win-portable.bat --skip-build"
+
+package-business: ## 业务层更新包(jar + 前端 static + manifest.json 打成 build/dq-tool-<v>-business.zip;布局同 CI business 包,可配 .sig 走 Tauri 手动离线业务升级)
+	scripts/package-business.sh
+
+package-business-skip: ## 业务层更新包(跳过构建,用现有 jar + web/dist 重打)
+	scripts/package-business.sh --skip-build
 
 # ── 授权码 / 清理 ────────────────────────────────────────────────────────────
 

@@ -181,8 +181,8 @@
       </template>
       <div class="settings-desc">
         新版本一般自动检测更新;网络不通无法自动更新时,可在能联网的机器从 GitHub Release 页面下载
-        <b>dq-tool-&lt;版本&gt;-business.zip</b> 与同名的 <b>.zip.sig</b> 签名文件(两个文件放同一目录)拷到本机,
-        点「选择升级包」选中 zip,验签通过后重启后端完成升级(进行中的任务会中断,扫描可断点续扫)。
+        <b>dq-tool-&lt;版本&gt;-business-bundle.zip</b> 整包拷到本机,点「选择升级包」选中它,
+        程序解包后自行核对签名,验签通过后重启后端完成升级(进行中的任务会中断,扫描可断点续扫)。
       </div>
       <div class="card-actions" style="padding-left: 0">
         <el-button type="primary" :loading="manualUpdating" @click="pickManualUpdate">选择升级包…</el-button>

@@ -95,6 +95,14 @@ check "字段注释中文正常(水库编码)" "水库编码,12位水利对象�
   "$(q "SELECT COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='reservoir_base' AND TABLE_NAME='reservoir_base_info' AND COLUMN_NAME='reservoir_code'")"
 
 echo
+echo "=== 5. config.sys_dict 字典表 ==="
+check "sys_dict 行数" 14 "$(q 'SELECT COUNT(*) FROM config.sys_dict')"
+check "sys_dict 字段注释(数据库实例名称)" "数据库实例名称" \
+  "$(q "SELECT COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='config' AND TABLE_NAME='sys_dict' AND COLUMN_NAME='db_code'")"
+check "db_code 均有对应库(未命中数)" 0 \
+  "$(q "SELECT COUNT(*) FROM config.sys_dict d LEFT JOIN information_schema.SCHEMATA s ON s.SCHEMA_NAME=d.db_code WHERE s.SCHEMA_NAME IS NULL")"
+
+echo
 if [ "$FAIL" -eq 0 ]; then
   echo "✅ 自检通过:该环境符合「缺失3 / 多余4 / 差异5」的预期。"
 else

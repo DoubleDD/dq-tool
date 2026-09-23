@@ -13,8 +13,9 @@
 //! 会破坏 Gatekeeper 校验,mac 业务层仍由全量 updater 覆盖);开发模式不启用(main 不建线程)。
 //!
 //! 手动离线升级(manual_business_update):现场网络不通自动通道时,系统设置页「选择升级包」
-//! 触发——用户选本地 business zip(要求同目录有 Release 页同名 .zip.sig),验签/解压校验/
-//! 确认对话框/落位/切换重启全部复用自动通道同一套函数;离线拿不到 business-latest.json,
+//! 触发——用户选本地整包(-business-bundle.zip,内含业务 zip + .sig,程序解包后自行验签;
+//! 兼容旧形态:裸业务 zip + 同目录同名 .zip.sig),验签/解压校验/确认对话框/落位/切换重启
+//! 全部复用自动通道同一套函数;离线拿不到 business-latest.json,
 //! 不做 minShell 检查,壳过旧时靠切换后「就绪失败自动回滚」兜底。
 
 use std::path::{Path, PathBuf};
@@ -248,8 +249,9 @@ fn switch_to_version(
     }
 }
 
-/// 手动离线升级(系统设置「选择升级包」):用户选本地 business zip,要求同目录有
-/// Release 页同名的 .zip.sig(base64 单行 minisig,与清单 signature 字段同格式)。
+/// 手动离线升级(系统设置「选择升级包」):用户选本地整包(-business-bundle.zip,
+/// 内含业务 zip + .zip.sig,解包后自行验签);兼容旧形态裸业务 zip(要求同目录有
+/// Release 页同名的 .zip.sig,base64 单行 minisig,与清单 signature 字段同格式)。
 /// 验签 → 解压校验 → 版本确认 → 落位 versions/<v>/ → 切换重启,全部复用自动通道函数。
 /// 离线拿不到 business-latest.json,不做 minShell 检查:壳过旧时切换后就绪失败,
 /// 由 switch_to_version 自动回滚兜底。macOS/开发模式由调用方(main.rs)拦截,不进这里。
@@ -272,24 +274,38 @@ pub fn manual_business_update(
     };
     let zip_path = picked.into_path().map_err(|e| format!("升级包路径不可用:{e}"))?;
 
-    // 签名文件约定:与 zip 同目录、全名追加 .sig(Release 页三个附件中的 .zip.sig)
-    let mut sig_os = zip_path.as_os_str().to_os_string();
-    sig_os.push(".sig");
-    let sig_path = PathBuf::from(sig_os);
-    let signature = std::fs::read_to_string(&sig_path).map_err(|_| {
-        format!(
-            "未找到签名文件,请将 Release 页面同名的 {} 与升级包放在同一目录后重试",
-            sig_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| ".zip.sig".to_string())
-        )
-    })?;
-    verify_signature(&zip_path, signature.trim())?;
+    // 整包形态:解出内层业务 zip 到暂存文件并取出签名;裸 zip 形态:读同目录同名 .sig
+    let staging_zip = versions_dir.join(".staging-manual.zip");
+    let _ = std::fs::remove_file(&staging_zip); // 清上次中断残留
+    let (biz_zip, signature) = match try_open_bundle(&zip_path, &staging_zip)? {
+        Some(bundle) => bundle,
+        None => {
+            let mut sig_os = zip_path.as_os_str().to_os_string();
+            sig_os.push(".sig");
+            let sig_path = PathBuf::from(sig_os);
+            let signature = std::fs::read_to_string(&sig_path).map_err(|_| {
+                format!(
+                    "所选文件不是整包(-business-bundle.zip),且同目录未找到签名文件 {}。\
+                     请从 Release 页面下载 -business-bundle.zip 整包,或将同名的 .zip.sig 与升级包放在同一目录后重试",
+                    sig_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| ".zip.sig".to_string())
+                )
+            })?;
+            (zip_path.clone(), signature)
+        }
+    };
+    if let Err(e) = verify_signature(&biz_zip, signature.trim()) {
+        let _ = std::fs::remove_file(&staging_zip);
+        return Err(e);
+    }
     eprintln!("[dq-tool-tauri] 手动升级包验签通过,解压...");
 
     let staging_dir = versions_dir.join(".staging-manual");
-    if let Err(e) = extract_zip(&zip_path, &staging_dir) {
+    let extract_result = extract_zip(&biz_zip, &staging_dir);
+    let _ = std::fs::remove_file(&staging_zip); // 整包内层 zip 暂存文件,解压后不再需要
+    if let Err(e) = extract_result {
         let _ = std::fs::remove_dir_all(&staging_dir);
         return Err(e);
     }
@@ -356,6 +372,53 @@ pub fn manual_business_update(
     std::fs::rename(&staging_dir, &final_dir).map_err(|e| format!("落位 versions/{v} 失败:{e}"))?;
     switch_to_version(app, mgr, versions_dir, static_root, &final_dir, &v)?;
     Ok(ManualOutcome { status: "installed", version: Some(v) })
+}
+
+/// 探测并解开手动升级整包:zip 根下含一个 `*.zip`(内层业务包)与对应 `*.zip.sig`(签名)
+/// 即视为整包 —— 解出内层 zip 到 `staging_zip` 暂存文件并读出签名文本返回;
+/// 不是整包(裸业务 zip / 任意 zip)返回 None,由调用方走同目录 .sig 的兼容路径。
+/// 条目匹配只看文件名后缀,不要求同名对应(打包端与 CI 都按 <name>.zip + <name>.zip.sig 产出)
+fn try_open_bundle(zip_path: &Path, staging_zip: &Path) -> Result<Option<(PathBuf, String)>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("打开升级包失败:{e}"))?;
+    let mut archive = match zip::ZipArchive::new(std::io::BufReader::new(file)) {
+        Ok(a) => a,
+        // 连 zip 都不是:留给后续裸 zip 路径的 extract_zip 报「不是合法 zip」
+        Err(_) => return Ok(None),
+    };
+    let mut inner_idx = None;
+    let mut sig_idx = None;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|e| format!("读取升级包条目失败:{e}"))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name();
+        if name.ends_with(".zip.sig") {
+            sig_idx = Some(i);
+        } else if name.ends_with(".zip") {
+            inner_idx = Some(i);
+        }
+    }
+    let (Some(ii), Some(si)) = (inner_idx, sig_idx) else {
+        return Ok(None);
+    };
+    {
+        let mut inner_entry = archive
+            .by_index(ii)
+            .map_err(|e| format!("读取整包内业务包条目失败:{e}"))?;
+        let mut out =
+            std::fs::File::create(staging_zip).map_err(|e| format!("创建暂存文件失败:{e}"))?;
+        std::io::copy(&mut inner_entry, &mut out).map_err(|e| format!("解出整包内业务包失败:{e}"))?;
+    }
+    let mut signature = String::new();
+    archive
+        .by_index(si)
+        .map_err(|e| format!("读取整包内签名条目失败:{e}"))?
+        .read_to_string(&mut signature)
+        .map_err(|e| format!("读取整包内签名失败:{e}"))?;
+    eprintln!("[dq-tool-tauri] 识别为整包,已解出内层业务包与签名");
+    Ok(Some((staging_zip.to_path_buf(), signature)))
 }
 
 /// 读暂存目录内 manifest.json 的版本号并校验可解析

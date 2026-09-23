@@ -5,6 +5,7 @@ import com.example.dq.dialect.DialectFactory
 import com.example.dq.discovery.LanDiscoveryService
 import com.example.dq.model.AiScene
 import com.example.dq.repository.AiConfigRepository
+import com.example.dq.repository.AiTagBatchTaskRepository
 import com.example.dq.repository.AiUsageRepository
 import com.example.dq.repository.CompareAiTraceRepository
 import com.example.dq.repository.CompareImportRepository
@@ -40,6 +41,8 @@ import com.example.dq.service.AiService
 import com.example.dq.service.AiUsageService
 import com.example.dq.service.AnnotationTransferService
 import com.example.dq.service.AutoTagService
+import com.example.dq.service.BatchAiTagService
+import com.example.dq.service.BatchAiTagTaskService
 import com.example.dq.service.ChangelogService
 import com.example.dq.service.CompareImportService
 import com.example.dq.service.CompareService
@@ -135,6 +138,8 @@ class ServiceEnv(val config: AppConfig) {
     val objectCatalogRepo = ObjectCatalogRepository(jdbc)
     val tableRelationRepo = TableRelationRepository(jdbc)
     val relationInferJobRepo = RelationInferJobRepository(jdbc)
+    /** 批量 AI 打标后台任务(V75;后台任务中心跟踪进度,重启残留置 FAILED) */
+    val aiTagBatchTaskRepo = AiTagBatchTaskRepository(jdbc)
     val metaSyncRepo = MetaSyncRepository(jdbc)
     val compareRepo = CompareRepository(jdbc)
     val compareImportRepo = CompareImportRepository(jdbc)
@@ -170,6 +175,10 @@ class ServiceEnv(val config: AppConfig) {
     val metadataService = MetadataService(dataSourceService, dialectFactory, scanRepo, schemaStatRepo, schemaDocRepo, metaCacheRepo)
     /** AI 表说明:表/字段结构复用 metadataService 的缓存优先路径(不再直连业务库绕过缓存) */
     val tableDocService = TableDocService(tableDocRepo, aiConfigService, aiService, metadataService)
+    /** 批量 AI 打标(表列表批量打标弹窗 AI 页签):逐表把候选标记交模型选其一落标,source=AI */
+    val batchAiTagService = BatchAiTagService(aiConfigService, aiService, tagService, tagRepo, metadataService)
+    /** 批量 AI 打标后台任务:提交即返回,固定 2 线程池逐表执行,任务中心跟踪进度(模板同 WordReportExportService) */
+    val batchAiTagTaskService = BatchAiTagTaskService(batchAiTagService, aiTagBatchTaskRepo, dataSourceRepo)
     val tableSystemService = TableSystemService(tableSystemRepo)
     val scanDocService = ScanDocService(aiConfigService, scanRepo, tableDocRepo, tableDocService, scanAiTracker)
     private val chunkRunner = ChunkRunner(scanRepo, dataSourceService, dialectFactory, systemSettingsService, executor,
@@ -248,6 +257,7 @@ class ServiceEnv(val config: AppConfig) {
         wordReportExportService.recoverUnfinished()
         sampleExportService.recoverUnfinished()
         relationInferJobRepo.failRunningOnStartup()
+        batchAiTagTaskService.recoverUnfinished()
         metaSyncService.recoverUnfinished()
         compareService.recoverUnfinished()
         compareImportService.recoverUnfinished()

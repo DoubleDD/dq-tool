@@ -16,6 +16,16 @@
 - **备份表不参与 AI 打标**:表名以 `_copy`/`_bak`/`_backup`/`_tmp` + 可选序号结尾(不区分大小写,`BackupTableRule` 全项目唯一口径,与 Word 报告「数据冗余分析」同一份规则)的表,由扫描系统联动直接打「备份表」标记,AI 自动打标**直接跳过、不调大模型**(判定不依赖大模型配置,故先于配置/候选检查),并顺手清掉该表历史扫描留下的 AI 来源标记(source=AI;人工 MANUAL 与系统标记不动):这类备份/临时表本就无需业务分类,跳过既省 token 又避免陈旧 AI 标记与新系统标记并存。
 未配置大模型/无候选标记静默跳过,同 job 首次 LLM 失败后熔断剩余表;前端共享扫描对话框 `ScanDialog.vue` 有复选(默认勾选),勾选时出现「旧标签处理」单选组(跳过/增量追加/全量覆盖),**提交扫描前前端统一校验 AI 可用性**(`utils/aiCheck.js confirmAiUsable`:先查 `GET /api/ai-config` 的 available 即合并默认配置后有效配置完整,完整再 `POST /api/ai-config/test` 传 {} 实测已存生效配置),不可用弹确认框「将跳过 AI 相关功能」,用户选继续则照常提交、AI 部分由后端静默跳过,选取消留在弹窗。打标与「生成表描述」同属扫描的 AI 收尾阶段:经 `ScanAiTracker` 计数,全部表终态且 AI 清零前任务不收尾(详见 [扫描与Excel导出](扫描与Excel导出.md))。
 
+### 批量 AI 打标(表列表批量打标弹窗 AI 页签,异步后台任务)
+
+不依赖扫描,表列表勾选多张表 → 「批量打标」弹窗切到「AI 打标」页签,候选为**可用于 AI 打标的 USER 标记**(kind=USER 且 tagType=AI,前端默认全选、可取消勾选),「开始打标」先 `confirmAiUsable` 校验 AI 可用性,再 `POST /api/datasources/{dsId}/schemas/{schema}/ai-tag-batch?db=`(body `{tableNames, tagIds}`)——提交校验(数据源存在/表清单非空/`requireUsable`:大模型已配置且勾选 ∩ AI 候选非空)通过后**立即返回 `{taskId}` 关窗**,任务体后台执行(固定 2 线程池,一任务占一 worker、任务内逐表顺序执行,模板同 WordReportExportService;任务落 H2 `ai_tag_batch_task` V75,状态机 PENDING→RUNNING→DONE/FAILED,服务重启残留置 FAILED 不做断点续跑)。进度与完成经**后台任务中心**跟踪:前端 `stores/backgroundTasks.js` 的 `ai-tag` kind 适配器 1s 轮询 `GET /api/ai-tag-batch/active`(active 视图含每个未完成任务——含 PENDING 排队——的 datasourceId/dbName/schemaName/**tableNames 表名清单** V76 落库,JSON 数组),行内显示「批量 AI 打标 N 张表 · 打标中 done/total」;表列表页按 数据源+库+schema 匹配合并活跃任务的 tableNames 得「打标中的表」集合,**标记列对集合内的表前置旋转 loading 图标**(已有标签照常展示),任务从 active 消失即终态、回源 `GET /api/ai-tag-batch/{id}` 弹完成通知(可点击跳表列表页;业务页不随通知自动刷新,但**打标中集合从非空变空时表列表自动重拉打标 map** 显示最新标签,与推导/比对「页面不自动刷新」惯例不冲突——这是本页自己 watch 集合的增量刷新),汇总口径 成功打标/未匹配/跳过失败 三类计数落任务行(tagged/unmatched/skipped_count)。
+
+任务体逐表调 `BatchAiTagService.tagTable` 并分类计数(每张表处理前推进 `progress_done/stage=表名`):
+
+- **上下文口径**:表注释 + 字段(含字段注释),经 MetadataService 缓存优先路径取元数据(未扫描的表也可打标,回源失败有缓存则降级);不传 AI 表描述、**不抽样业务数据**(与扫描后自动打标的抽样口径不同);prompt 组装/回答解析复用 `AutoTagService` 的纯函数(`buildClassifyPrompt`/`parseTag`,ColumnMeta 转 ScanColumnView 只取 名称/展示类型/注释)。
+- **落标**:模型选中的标记以 **source=AI** 幂等落标(`ensureTableTag`);表上已有同标记(任意来源)不重复打、保留原关系来源(同扫描打标的边界口径);模型回答 NONE/幻觉标记则该表不打标(计未匹配)。
+- **备份表直接跳过不调大模型**(`BackupTableRule` 同一份规则,先于配置/候选检查,计跳过);单表异常(表不存在/候选标记被删/元数据回源失败等)计 跳过/失败 不中断其余表;非扫描场景(无 scanJobId、不经扫描队列、无任务级熔断),AI 用量按场景 AUTO_TAG 照常统计(不关联扫描任务)。
+
 ## 备份表系统标记
 
 与「空表」同款的**系统标记**(`tag_def.kind=BACKUP`,`tag_type=0` 系统、不可作为 AI 打标候选;V55 迁移按 name 幂等插入,升级时若已存在用户自建的「备份表」标记会连同其打标关系一并转为系统标记,关系不丢):

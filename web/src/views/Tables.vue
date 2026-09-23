@@ -111,6 +111,10 @@
       </el-table-column>
       <el-table-column v-if="colVisible('tags')" key="tags" label="标记" min-width="160">
         <template #default="{ row }">
+          <!-- 批量 AI 打标进行中的表:标记格前置旋转图标(任务中心同款的 is-spinning 惯例),已有标签照常展示 -->
+          <el-tooltip v-if="aiTaggingTables.has(row.name)" content="AI 打标中" placement="top" :show-after="200">
+            <el-icon class="ai-tag-spin tag-loading-icon"><Loading /></el-icon>
+          </el-tooltip>
           <template v-if="(tableTags[row.name] || []).length">
             <el-tag
               v-for="tag in tableTags[row.name]"
@@ -282,7 +286,7 @@
 import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from '../utils/notify'
-import { ArrowDown, QuestionFilled, Refresh, Setting } from '@element-plus/icons-vue'
+import { ArrowDown, Loading, QuestionFilled, Refresh, Setting } from '@element-plus/icons-vue'
 import request, { submitReportExport } from '../api'
 import TableTagDialog from '../components/TableTagDialog.vue'
 import BatchTagDialog from '../components/BatchTagDialog.vue'
@@ -291,6 +295,7 @@ import ScanDialog from '../components/ScanDialog.vue'
 import Breadcrumb from '../components/Breadcrumb.vue'
 import ExportButton from '../components/ExportButton.vue'
 import { ensureDsName, getDsName, syncTab } from '../stores/tabs'
+import { backgroundTasks } from '../stores/backgroundTasks'
 import { formatBytes, formatDateTime, formatNumber } from '../utils/format'
 import { cellText, exportListToExcel } from '../utils/listExport'
 
@@ -543,6 +548,24 @@ async function onBatchTagged() {
   const base = `/datasources/${dsId}/schemas/${encodeURIComponent(schema)}`
   tableTags.value = await request.get(`${base}/table-tags${dbQuery()}`).catch(() => ({}))
 }
+
+// 批量 AI 打标进行中的表名集合(并集):全局后台任务跟踪器(1s 轮询 ai-tag kind)里
+// 匹配本页 数据源/库/schema 的任务合并;PENDING 排队中的表同样算「打标中」
+const aiTaggingTables = computed(() => {
+  const set = new Set()
+  for (const t of backgroundTasks.list) {
+    if (t.kind !== 'ai-tag') continue
+    if (String(t.datasourceId) !== String(dsId) || (t.dbName || '') !== db || t.schemaName !== schema) continue
+    for (const name of t.tableNames || []) set.add(name)
+  }
+  return set
+})
+
+// 打标中的表全部终态(集合从非空变空)时重拉本库打标 map 显示最新标签;
+// 只在确实经历过打标中任务时触发(初载 0→N 不触发,N→0 才触发),他库任务不影响本页集合
+watch(() => aiTaggingTables.value.size, (now, prev) => {
+  if (prev > 0 && now === 0) onBatchTagged()
+})
 
 const scanDialogVisible = ref(false)
 // 行内"扫描"按钮带出的单表目标;为空则按勾选/全库走(字段/提交逻辑内聚在 ScanDialog 组件,打开时组件自行重置默认值)
@@ -828,6 +851,19 @@ onUnmounted(() => {
 }
 .table-tag {
   margin: 0 4px 2px 0;
+}
+/* 批量 AI 打标进行中:标记列前置旋转图标(与头栏后台任务指示器同款旋转动画) */
+.tag-loading-icon {
+  vertical-align: -2px;
+  margin-right: 4px;
+  color: var(--el-color-primary);
+}
+.tag-loading-icon.ai-tag-spin {
+  animation: dq-ai-tag-spin 1.2s linear infinite;
+}
+@keyframes dq-ai-tag-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 /* 列设置弹层:复选框纵向排列 */
 .col-setting {

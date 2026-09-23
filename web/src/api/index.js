@@ -86,6 +86,11 @@ export function listActiveInferJobs() {
   return request.get('/relation-infer-jobs/active', { _silent: true })
 }
 
+/** 全部未完成批量 AI 打标任务(跨库,后台任务中心 1s 轮询口径) */
+export function listActiveAiTagTasks() {
+  return request.get('/ai-tag-batch/active', { _silent: true })
+}
+
 /** 关系列表;params: { datasourceId, dbName, schemaName, status?, table? } */
 export function listRelations(params) {
   return request.get('/relations', { params })

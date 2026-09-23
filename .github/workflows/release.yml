@@ -1,8 +1,9 @@
 # 打 tag(如 v1.0)触发:构建安装包并附加到 GitHub Release
 #   当前启用:Windows x64 jpackage 免安装 zip(server,浏览器 --app 模式)+ windows-tauri NSIS 安装包
 #   + windows-tauri-portable 绿色免安装 zip + updater-manifest(合并签名生成 latest.json,仅 tag 触发)
-#   + business-manifest(业务层更新包签名并生成 business-latest.json,仅 tag 触发;业务包本体
-#     由 windows-tauri 任务产出,内容 = resources\versions\<v>\ 的 jar + 前端,跨平台通用);
+#   + business-manifest(业务层更新包签名 + 打手动离线整包 business-bundle.zip 并生成
+#     business-latest.json,仅 tag 触发;业务包本体由 windows-tauri 任务产出,
+#     内容 = resources\versions\<v>\ 的 jar + 前端,跨平台通用);
 #   macos-tauri 已停用;
 #   Windows ARM64 / macOS jpackage dmg / Linux deb+rpm 注释停用,需要时取消注释即可
 # 也可在 Actions 页面手动触发(workflow_dispatch),用 target 下拉框只构建其中一个平台
@@ -454,6 +455,17 @@ jobs:
           base64 -w0 "$z.minisig" > "$z.sig"
           ls -la "$z" "$z.sig"
 
+      # 手动离线升级整包:业务 zip + .sig 打成一个 zip,现场只需拷贝/选择这一个文件
+      # (应用内「选择升级包」解包后自行验签;裸 zip + .sig 两个附件仍保留,
+      #  自动更新通道的 business-latest.json url 指向裸 zip,旧版壳手动升级也仍可用)
+      - name: Build manual offline bundle
+        run: |
+          set -euo pipefail
+          z=$(ls dq-tool-*-business.zip)
+          b="${z%-business.zip}-business-bundle.zip"
+          zip -q -X "$b" "$z" "$z.sig"
+          ls -la "$b"
+
       - name: Generate business-latest.json
         env:
           TAG: ${{ github.ref_name }}
@@ -482,6 +494,7 @@ jobs:
           files: |
             dq-tool-*-business.zip
             dq-tool-*-business.zip.sig
+            dq-tool-*-business-bundle.zip
             business-latest.json
 
   # ── 以下平台暂时停用(2026-08),需要时取消注释恢复 ──────────────────────────

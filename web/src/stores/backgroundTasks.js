@@ -1,5 +1,5 @@
 /**
- * 后台任务中心:统一跟踪关系推导(relation-infer)与数据比对(compare)两类后台长任务。
+ * 后台任务中心:统一跟踪关系推导(relation-infer)、数据比对(compare)与批量 AI 打标(ai-tag)三类后台长任务。
  *
  * - 任务种类注册表 KINDS:每种任务一个适配器(fetch 活动清单/toRow 行渲染/notify 终态文案与落点),
  *   新任务类型(扫描/元数据同步/报告导出)接入只需加一个适配器;
@@ -14,7 +14,7 @@
  */
 import { reactive } from 'vue'
 import router, { fetchLicenseStatus, grantedMenus } from '../router'
-import request, { listActiveCompareJobs, listActiveInferJobs, getCompareJob } from '../api'
+import request, { listActiveCompareJobs, listActiveInferJobs, listActiveAiTagTasks, getCompareJob } from '../api'
 import { ElMessage } from '../utils/notify'
 
 const POLL_INTERVAL = 1000
@@ -26,6 +26,12 @@ const INFER_STAGE_TEXT = { NAME_MATCH: '名字匹配', SEMANTIC_TABLE: '语义�
 function inferLink(j) {
   const db = j.dbName ? `?db=${encodeURIComponent(j.dbName)}&tab=er` : '?tab=er'
   return `/datasources/${j.datasourceId}/schemas/${encodeURIComponent(j.schemaName)}/tables/${encodeURIComponent(j.anchorTable)}${db}`
+}
+
+/** AI 打标结果落点:表列表页(带 db query);完成后点击重拉打标 map 看结果 */
+function aiTagLink(t) {
+  const db = t.dbName ? `?db=${encodeURIComponent(t.dbName)}` : ''
+  return `/datasources/${t.datasourceId}/schemas/${encodeURIComponent(t.schemaName)}/tables${db}`
 }
 
 /** 任务种类注册表:key = kind,适配器见文件头注释 */
@@ -71,6 +77,32 @@ const KINDS = {
     notify: (j) => j.status === 'DONE'
       ? { type: 'success', title: '比对完成', text: `任务「${j.name}」已完成,点击前往差异明细查看结果`, link: `/compare/${j.id}/diff` }
       : { type: 'error', title: '比对失败', text: `任务「${j.name}」:${(j.error || '').slice(0, 200) || '未知错误'}` }
+  },
+  'ai-tag': {
+    label: 'AI 打标',
+    fetch: listActiveAiTagTasks,
+    toRow: (t) => ({
+      key: `ai-tag:${t.id}`,
+      kind: 'ai-tag',
+      id: t.id,
+      raw: t,
+      title: `批量 AI 打标 ${t.tableCount} 张表`,
+      locate: [t.dbName, t.schemaName].filter(Boolean).join('.'),
+      stage: t.status === 'PENDING' ? '排队中' : `打标中 ${t.progressDone}/${t.progressTotal}`,
+      percent: t.progressTotal ? Math.min(100, Math.round((t.progressDone / t.progressTotal) * 100)) : 0,
+      steps: `${t.progressDone}/${t.progressTotal}`,
+      extra: '',
+      link: aiTagLink(t),
+      startedAt: t.startedAt,
+      // 业务页(表列表)匹配/合并「打标中的表」用:数据源+库+schema+表名清单(PENDING 排队也算打标中)
+      datasourceId: t.datasourceId,
+      dbName: t.dbName || '',
+      schemaName: t.schemaName,
+      tableNames: t.tableNames || []
+    }),
+    notify: (t) => t.status === 'DONE'
+      ? { type: 'success', title: 'AI 打标完成', text: `成功打标 ${t.taggedCount} 张,未匹配 ${t.unmatchedCount} 张,跳过/失败 ${t.skippedCount} 张`, link: aiTagLink(t) }
+      : { type: 'error', title: 'AI 打标失败', text: [t.dbName, t.schemaName].filter(Boolean).join('.') + `:${(t.error || '').slice(0, 200) || '未知错误'}` }
   }
 }
 
@@ -102,9 +134,9 @@ let ticking = false // 防重入:上一轮未跑完不叠下一轮
 
 /** 消失任务回源详情定终态(静默,失败按 null 处理不通知) */
 function fetchTerminal(kind, id) {
-  return kind === 'compare'
-    ? getCompareJob(id, true).then((d) => d?.job).catch(() => null)
-    : request.get(`/relation-infer-jobs/${id}`, { _silent: true }).catch(() => null)
+  if (kind === 'compare') return getCompareJob(id, true).then((d) => d?.job).catch(() => null)
+  if (kind === 'ai-tag') return request.get(`/ai-tag-batch/${id}`, { _silent: true }).catch(() => null)
+  return request.get(`/relation-infer-jobs/${id}`, { _silent: true }).catch(() => null)
 }
 
 async function tick() {

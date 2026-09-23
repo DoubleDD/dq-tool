@@ -82,6 +82,22 @@ if "%LAYOUT%"=="jpackage" set "DATA=%USERPROFILE%\.dq-tool\data"
 for %%d in ("%DATA%") do set "LOGS=%%~dpdlogs"
 call :log data=%DATA%
 
+rem Max heap: the settings page writes dq.jvm.xmx-mb (plain MB) to
+rem <data dir>\config.properties. Pass it at launch so the jar does not have to
+rem self-restart to apply it - a re-exec would detach from this console and trip
+rem the "Server stopped" pause below while the real server keeps running.
+rem Mirrors JvmMemoryConfig / tauri configured_xmx_mb: default 1024, range 512-8192.
+set "XMX=1024"
+set "XMX_RAW="
+if exist "%DATA%\config.properties" for /f "tokens=2 delims==" %%a in ('findstr /b /c:"dq.jvm.xmx-mb=" "%DATA%\config.properties"') do set "XMX_RAW=%%a"
+if not defined XMX_RAW goto XMX_DONE
+echo(%XMX_RAW%| findstr /r "^[0-9][0-9]*$" >nul || goto XMX_DONE
+if %XMX_RAW% LSS 512 goto XMX_DONE
+if %XMX_RAW% GTR 8192 goto XMX_DONE
+set "XMX=%XMX_RAW%"
+:XMX_DONE
+call :log xmx=%XMX%m
+
 echo [dq-tool] Starting dq-tool in browser mode (%LAYOUT% layout)...
 echo [dq-tool]   data dir : %DATA%
 echo [dq-tool]   logs     : %LOGS%
@@ -90,7 +106,7 @@ echo [dq-tool] close the browser window, use the tray menu "Quit", or close this
 echo.
 call :log launching java
 
-"%JAVA%" -Djava.awt.headless=false "-Ddq.data-dir=%DATA%" "-Ddq.web.static-dir=%STATIC%" -Xmx1g -jar "%JAR%"
+"%JAVA%" -Djava.awt.headless=false "-Ddq.data-dir=%DATA%" "-Ddq.web.static-dir=%STATIC%" -Xmx%XMX%m -jar "%JAR%"
 call :log java exited, errorlevel=%ERRORLEVEL%
 
 echo.

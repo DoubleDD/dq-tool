@@ -9,6 +9,7 @@
 |---|---|---|---|
 | `reservoir_base` | `reservoir_base_info` | 基准库(国标规范) | 100 |
 | `reservoir_vendor` | `t_reservoir_info` | 三方厂商库(不规范) | 101 |
+| `config` | `sys_dict` | 系统-库-模式字典(模拟互联网数据集) | 14 |
 
 另有 4 张从 `test-data/水库_预览.xlsx`(辽宁省各系统水库数据导出)灌入的**真实形态测试表**,
 表结构/脏数据形态保留原样,用于跨系统比对、对象匹配、人工连线等场景,见第 9 节。
@@ -202,7 +203,8 @@ docker-test-env/compare-mysql/
     ├── 02-base-data.sql          # 基准库 100 条(由 gen-base-data.py 生成)
     ├── 03-vendor-schema.sql      # 厂商库 + 不规范表结构
     ├── 04-vendor-data.sql        # 厂商库数据:复制97 + 改5 + 追加4
-    └── 05-init-user.sql          # 应用账号 dq 及授权
+    ├── 05-init-user.sql          # 应用账号 dq 及授权
+    └── 06-config-dict.sql        # config.sys_dict:系统-库-模式字典(模拟互联网数据集)
 ```
 
 需要重建基准数据(例如改随机种子)时:
@@ -308,4 +310,40 @@ SELECT RESERVOIR_CODE, RESERVOIR_NAME FROM reservoir_vendor.t_reservoir_info WHE
 python3 docker-test-env/compare-mysql/test-data/load-preview-data.py > /tmp/load-preview.sql
 docker exec -i test-mysql-compare mysql -uroot -p'Test@12345' --default-character-set=utf8mb4 \
   < /tmp/load-preview.sql
+```
+
+---
+
+## 10. config.sys_dict 系统字典表
+
+`06-config-dict.sql` 复刻了互联网数据集的 `config.sys_dict`(系统-库-模式字典),
+字段结构与其完全一致,数据按线上预览录入 14 行:
+
+| 字段 | 类型 | 注释 |
+|---|---|---|
+| `sys_name` | `VARCHAR(30)` | 系统名称 |
+| `sys_code` | `VARCHAR(30)` | 系统编码 |
+| `sys_db` | `VARCHAR(30)` | 系统库名 |
+| `sys_seg` | `VARCHAR(30)` | 系统模式名称 |
+| `db_code` | `VARCHAR(64)` | 数据库实例名称 |
+
+**`db_code` 的值与本实例「库列表」中的库名一一对应**(线上是实例名拼接串,测试环境直接落到库名),
+同一系统的多行共享同一个库名(模拟「一个实例多库」):
+
+| 系统 | 行数 | db_code(库名) |
+|---|---|---|
+| 辽宁省防汛抗旱综合信息平台 | 10 | `fxkhzxhxxpt` |
+| 河库水文业务系统(水资源管理) | 1 | `hyd_ln` |
+| 国家防汛抗旱指挥系统二期工程数据汇集平台 | 1 | `hsybdd` |
+| 辽宁省大中型数字灌区系统 | 1 | `xsdstll` |
+| 辽宁省防指二期旱情信息采集系统 | 1 | `shzhfy` |
+
+其中 `fxkhzxhxxpt` / `hsybdd` / `shzhfy` / `skjzpc` / `xsdstll` 由该脚本一并建为空库并授权,
+保证每个 `db_code` 都能解析到真实存在的库(`verify.sh` 第 5 组有断言)。
+
+> 初始化脚本只在数据卷为空时执行一次。**已有数据卷的环境**需要手动补灌:
+
+```bash
+docker exec -i test-mysql-compare mysql -uroot -p'Test@12345' --default-character-set=utf8mb4 \
+  < docker-test-env/compare-mysql/mysql-init/06-config-dict.sql
 ```
