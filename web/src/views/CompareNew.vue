@@ -106,14 +106,14 @@
           </el-table-column>
         </el-table>
       </div>
-      <!-- 库/模式名反查字典(可选):仅影响导出 xlsx 的表名定位行显示,不参与比对、不挂数据链;
-           开启后内嵌分栏选择器选字典表 + 三个字段下拉(选定字典表后懒拉字段清单) -->
+      <!-- 库/模式名反查字典(可选):仅影响导出 xlsx 的表名定位行与系统名显示,不参与比对、不挂数据链;
+           开启后内嵌分栏选择器选字典表 + 四个字段下拉(选定字典表后懒拉字段清单) -->
       <div class="dict-config">
         <div class="dict-config-head">
           <el-switch v-model="schemaDictEnabled" />
           <span class="meta-label">库/模式名反查字典</span>
           <el-tooltip placement="top" :show-after="200"
-                      content="导出表格中表名定位行 (库名.模式名) 按字典表反查替换为真实库/模式名,仅影响导出文件显示;按现有名称精准匹配(大小写敏感)">
+                      content="导出表格中表名定位行 (库名.模式名) 与系统名按字典表反查替换为真实名称,仅影响导出文件显示;按现有名称精准匹配(忽略大小写)">
             <el-icon class="meta-help"><QuestionFilled /></el-icon>
           </el-tooltip>
         </div>
@@ -147,6 +147,14 @@
             </el-select>
             <span class="meta-label">真实模式字段</span>
             <el-select v-model="schemaDictFields.schemaField" filterable placeholder="选择字段"
+                       :loading="schemaDictColumnsLoading" :disabled="!schemaDict.table">
+              <el-option v-for="c in schemaDictColumns" :key="c.name" :value="c.name" :label="c.name">
+                <span>{{ c.name }}</span>
+                <span class="dict-col-meta">{{ c.displayType || c.typeName || '' }}{{ c.comment ? ` · ${c.comment}` : '' }}</span>
+              </el-option>
+            </el-select>
+            <span class="meta-label">真实系统字段</span>
+            <el-select v-model="schemaDictFields.systemField" filterable placeholder="选择字段"
                        :loading="schemaDictColumnsLoading" :disabled="!schemaDict.table">
               <el-option v-for="c in schemaDictColumns" :key="c.name" :value="c.name" :label="c.name">
                 <span>{{ c.name }}</span>
@@ -362,14 +370,14 @@ const matchModeRequiresName = computed(() => matchMode.value !== 'EXACT')
 // 抽样条数(V70):留空 = 全量比对;填了 = 两侧各按身份字段排序取前 N 条比对(1~500000,后端校验同口径)
 const sampleRows = ref(null)
 
-// ---------- 库/模式名反查字典(可选):仅影响导出 xlsx 表名定位行 (库名.模式名) 的显示,不参与比对 ----------
+// ---------- 库/模式名反查字典(可选):仅影响导出 xlsx 系统名与表名定位行 (库名.模式名) 的显示,不参与比对 ----------
 
 // 开关:关闭 = 提交 schemaDict 为 null(不反查);字典配置只是导出显示元数据,改动不清空任何步骤数据
 const schemaDictEnabled = ref(false)
 // 字典表四元组(数据源 id 用字符串,与 TableCascadePicker 的 v-model 口径一致)
 const schemaDict = reactive({ dsId: '', db: '', schema: '', table: '' })
-// 三个反查字段:现有名称 / 真实库 / 真实模式
-const schemaDictFields = reactive({ nameField: '', dbField: '', schemaField: '' })
+// 四个反查字段:现有名称 / 真实库 / 真实模式 / 真实系统
+const schemaDictFields = reactive({ nameField: '', dbField: '', schemaField: '', systemField: '' })
 // 字典表字段清单(选定表后懒拉,与 SchemaDescDictDialog 同一接口口径)
 const schemaDictColumns = ref([])
 const schemaDictColumnsLoading = ref(false)
@@ -381,7 +389,7 @@ watch(schemaDictEnabled, (v) => {
   if (v && !schemaDict.dsId) schemaDict.dsId = form.datasourceId
 })
 
-/** 拉取字典表字段清单(失败静默清空:三字段下拉只剩已选值,提交校验兜底) */
+/** 拉取字典表字段清单(失败静默清空:字段下拉只剩已选值,提交校验兜底) */
 async function loadSchemaDictColumns() {
   schemaDictColumns.value = []
   if (!schemaDict.table || !schemaDict.schema || !schemaDict.dsId) return
@@ -397,12 +405,13 @@ async function loadSchemaDictColumns() {
   }
 }
 
-// 换字典表:清空三个字段选择并重新懒拉字段清单(级联清空 table='' 时只复位不拉取)
+// 换字典表:清空四个字段选择并重新懒拉字段清单(级联清空 table='' 时只复位不拉取)
 watch(() => schemaDict.table, (table) => {
   if (suppressDictReset) return
   schemaDictFields.nameField = ''
   schemaDictFields.dbField = ''
   schemaDictFields.schemaField = ''
+  schemaDictFields.systemField = ''
   schemaDictColumns.value = []
   if (table) loadSchemaDictColumns()
 })
@@ -737,14 +746,14 @@ function validateSubmit() {
     ElMessage.warning(`有 ${unmapped.length} 个对比表还没有有效身份字段:${names}。请回到第 3 步,每张对比表至少连一个默认身份字段(或保留有效的身份覆盖)`)
     return false
   }
-  // 库/模式名反查字典:开关开了就必须选齐(字典表四元组 + 三个字段),否则回第 1 步补齐或关掉
+  // 库/模式名反查字典:开关开了就必须选齐(字典表四元组 + 四个字段),否则回第 1 步补齐或关掉
   if (schemaDictEnabled.value) {
     if (!schemaDict.dsId || !schemaDict.schema || !schemaDict.table) {
       ElMessage.warning('已开启「库/模式名反查字典」:请回到第 1 步选好字典表,或关闭该配置')
       return false
     }
-    if (!schemaDictFields.nameField || !schemaDictFields.dbField || !schemaDictFields.schemaField) {
-      ElMessage.warning('已开启「库/模式名反查字典」:请回到第 1 步选齐现有名称/真实库/真实模式三个字段,或关闭该配置')
+    if (!schemaDictFields.nameField || !schemaDictFields.dbField || !schemaDictFields.schemaField || !schemaDictFields.systemField) {
+      ElMessage.warning('已开启「库/模式名反查字典」:请回到第 1 步选齐现有名称/真实库/真实模式/真实系统四个字段,或关闭该配置')
       return false
     }
   }
@@ -785,7 +794,7 @@ function buildPayload() {
     sampleRows: sampleRows.value || null,
     // 库/模式名反查字典(第 1 步,可空):开关关闭或配置不齐 = null(不反查);仅影响导出 xlsx 显示
     schemaDict: schemaDictEnabled.value && schemaDict.dsId && schemaDict.schema && schemaDict.table &&
-      schemaDictFields.nameField && schemaDictFields.dbField && schemaDictFields.schemaField
+      schemaDictFields.nameField && schemaDictFields.dbField && schemaDictFields.schemaField && schemaDictFields.systemField
       ? {
           datasourceId: Number(schemaDict.dsId),
           db: schemaDict.db || null,
@@ -793,7 +802,8 @@ function buildPayload() {
           table: schemaDict.table,
           nameField: schemaDictFields.nameField,
           dbField: schemaDictFields.dbField,
-          schemaField: schemaDictFields.schemaField
+          schemaField: schemaDictFields.schemaField,
+          systemField: schemaDictFields.systemField
         }
       : null,
     targets: targets.value.map((t, i) => ({
@@ -975,7 +985,7 @@ async function prefillEdit(jobId) {
       try { sd = JSON.parse(sd) } catch { sd = null }
     }
     if (sd && sd.table) {
-      suppressDictReset = true // 抑制换表监听:逐字段赋值不清空刚反填的三个字段
+      suppressDictReset = true // 抑制换表监听:逐字段赋值不清空刚反填的字段
       try {
         schemaDictEnabled.value = true
         schemaDict.dsId = String(sd.datasourceId)
@@ -985,6 +995,8 @@ async function prefillEdit(jobId) {
         schemaDictFields.nameField = sd.nameField || ''
         schemaDictFields.dbField = sd.dbField || ''
         schemaDictFields.schemaField = sd.schemaField || ''
+        // 老任务 JSON 无 systemField(反查不带系统名):反填空串,编辑提交时校验会要求补选
+        schemaDictFields.systemField = sd.systemField || ''
       } finally {
         suppressDictReset = false
       }

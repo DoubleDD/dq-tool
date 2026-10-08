@@ -86,6 +86,12 @@ class MetadataService(
         }
     }
 
+    /** 字典名与候选库名的匹配结果 */
+    data class DictMatch(val matched: List<DictMatched>, val unmatched: List<String>, val unmatchedTotal: Int)
+
+    /** 一条命中:dictKey 字典键(取描述),candidate 目标数据源真实库名(回写/展开 schema 用) */
+    data class DictMatched(val dictKey: String, val candidate: String)
+
     companion object {
         /**
          * 库过滤规则:未配置白名单(null/空)时用**默认规则** —— 全部业务库(排除方言系统库),
@@ -125,17 +131,20 @@ class MetadataService(
         }
 
         /**
-         * 精准匹配:trim 后完全相等(大小写敏感)。matched 为命中库名(字典顺序),
-         * 未命中库名样例截断前 [UNMATCHED_SAMPLE_LIMIT] 个,总数走 unmatchedTotal
+         * 精准匹配:trim 后完全相等、忽略大小写(字典名与候选库名分属两套环境,标识符大小写习惯常不一致)。
+         * matched 为命中条目(字典顺序),同时带字典键(取描述)与候选真实库名(回写用);
+         * 候选间仅大小写不同视为同一库,取清单顺序第一个;未命中库名样例截断前 [UNMATCHED_SAMPLE_LIMIT] 个,总数走 unmatchedTotal
          */
         fun matchDictDescriptions(dict: Map<String, String>, candidates: Collection<String>): DictMatch {
-            val candidateSet = candidates.toSet()
-            val matched = ArrayList<String>()
+            val byLower = LinkedHashMap<String, String>()
+            for (candidate in candidates) byLower.putIfAbsent(candidate.lowercase(), candidate)
+            val matched = ArrayList<DictMatched>()
             val unmatched = ArrayList<String>()
             var unmatchedTotal = 0
             for (name in dict.keys) {
-                if (name in candidateSet) {
-                    matched.add(name)
+                val hit = byLower[name.lowercase()]
+                if (hit != null) {
+                    matched.add(DictMatched(name, hit))
                 } else {
                     unmatchedTotal++
                     if (unmatched.size < UNMATCHED_SAMPLE_LIMIT) unmatched.add(name)
@@ -143,9 +152,6 @@ class MetadataService(
             }
             return DictMatch(matched, unmatched, unmatchedTotal)
         }
-
-        /** 字典名与候选库名的匹配结果 */
-        data class DictMatch(val matched: List<String>, val unmatched: List<String>, val unmatchedTotal: Int)
     }
 
     /**
@@ -481,7 +487,7 @@ class MetadataService(
     }
 
     /**
-     * 库列表「批量设置描述」:读字典表(库名 -> 描述)按库名精准匹配(trim 后完全相等、大小写敏感)回写 schema_doc。
+     * 库列表「批量设置描述」:读字典表(库名 -> 描述)按库名精准匹配(trim 后完全相等、忽略大小写)回写 schema_doc。
      * 字典表可来自另一个数据源(dictDatasourceId,空 = 目标数据源自身):读侧方言/连接按字典数据源,匹配候选与写入按目标数据源。
      * 单库方言候选为 schema 清单,命中即写;多库方言候选为 database 清单,命中库对其下每个 schema 写同一描述。
      * 已命中库的旧描述直接覆盖;空行跳过不清空;长度等约束沿用 [updateSchemaDescription](超长抛 400)
@@ -509,14 +515,14 @@ class MetadataService(
         val (dict, skipped) = parseDictRows(rows)
         val candidates = if (targetMultiDb) listDatabases(datasourceId) else listSchemas(datasourceId, null)
         val match = matchDictDescriptions(dict, candidates)
-        for (name in match.matched) {
-            val desc = dict[name]
+        for (m in match.matched) {
+            val desc = dict[m.dictKey]
             if (targetMultiDb) {
-                for (schema in listSchemas(datasourceId, name)) {
-                    updateSchemaDescription(datasourceId, name, schema, desc)
+                for (schema in listSchemas(datasourceId, m.candidate)) {
+                    updateSchemaDescription(datasourceId, m.candidate, schema, desc)
                 }
             } else {
-                updateSchemaDescription(datasourceId, null, name, desc)
+                updateSchemaDescription(datasourceId, null, m.candidate, desc)
             }
         }
         return SchemaDictApplyResult(rows.size, match.matched.size, skipped, match.unmatchedTotal, match.unmatched)

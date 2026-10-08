@@ -6,10 +6,11 @@ import jakarta.validation.constraints.NotNull
 import java.time.LocalDateTime
 
 /**
- * 库/模式名反查字典(V74,创建/编辑比对任务可配,可跨数据源):字典表一行 = 现有名称 → 真实库名/真实模式名,
- * 导出 xlsx 表名单元格第三行「(库名.模式名)」按字典反查替换显示;仅影响导出,不影响比对执行与页面展示。
- * 匹配口径:查找键依次尝试 `db.schema` 合并串 → schema 单值 → db 单值,精准匹配(trim、大小写敏感),
- * 首个命中生效。三个字段名提交时归一为字典表实际列名(忽略大小写)
+ * 库/模式名反查字典(V74,创建/编辑比对任务可配,可跨数据源):字典表一行 = 现有名称 → 真实库名/真实模式名/真实系统名,
+ * 导出 xlsx 表名单元格第三行「(库名.模式名)」与第二行「系统名」按字典反查替换显示;仅影响导出,不影响比对执行与页面展示。
+ * 匹配口径:查找键依次尝试 `db.schema` 合并串 → schema 单值 → db 单值,trim 后**忽略大小写**匹配,
+ * 首个命中生效。字段名提交时归一为字典表实际列名(忽略大小写)。
+ * [systemField] 为后加可选字段:老任务 JSON 无此字段按 null 兜底(只反查库/模式名,系统名走原回落链)
  */
 data class CompareSchemaDict(
     /** 字典表所在数据源(可与基准/目标不同源) */
@@ -24,6 +25,8 @@ data class CompareSchemaDict(
     @field:NotBlank val dbField: String?,
     /** 真实模式名字段 */
     @field:NotBlank val schemaField: String?,
+    /** 真实系统名字段(后加可选;配置后导出第二行系统名按字典替换,命中优先于 table_system 登记/库描述/数据源名) */
+    val systemField: String? = null,
 )
 
 /** 目标级身份字段人工覆盖:keys = 参与判同的基准字段(必须是任务级 keyFields 的子集);null = 按映射推导 */

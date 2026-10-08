@@ -65,7 +65,7 @@ help: ## 显示全部可用命令(按用途分组)
 	@printf '  make %-22s %s\n' package-tauri-win-skip 'Windows 版(跳过构建)'
 	@printf '  make %-30s %s\n' package-tauri-win-portable      'Windows 绿色免安装 zip(仅 Windows 可用)'
 	@printf '  make %-30s %s\n' package-tauri-win-portable-skip  'Windows 绿色免安装 zip(跳过构建)'
-	@printf '  make %-22s %s\n' package-business      '业务层更新包 build/dq-tool-<v>-business.zip(jar + 前端,Tauri 业务层升级用)'
+	@printf '  make %-22s %s\n' package-business      '业务层更新整包 build/dq-tool-<v>-business-bundle.zip(jar + 前端 + 签名,手动离线升级用)'
 	@printf '  make %-22s %s\n' package-business-skip '业务层更新包(跳过构建,用现有 jar + web/dist 重打)'
 	@printf '\n\033[1m授权码 / 清理\033[0m\n'
 	@printf '  make %-18s %s\n' license-keypair '生成授权密钥对(只需一次,公钥写入 license-public.key 并拷入 server/src/main/resources/)'
@@ -148,7 +148,7 @@ package-tauri-win-portable: ## Windows:构建并打 Tauri 2 绿色免安装 zip(
 package-tauri-win-portable-skip: ## Windows:跳过构建,重打 Tauri 2 绿色免安装 zip(仅 Windows 可用)
 	cmd //c "scripts\\package-tauri-win-portable.bat --skip-build"
 
-package-business: ## 业务层更新包(jar + 前端 static + manifest.json 打成 build/dq-tool-<v>-business.zip;布局同 CI business 包,可配 .sig 走 Tauri 手动离线业务升级)
+package-business: ## 业务层更新整包(jar + 前端 static + manifest.json 打业务 zip 签名后再打成 build/dq-tool-<v>-business-bundle.zip;本地只留整包,需装 minisign)
 	scripts/package-business.sh
 
 package-business-skip: ## 业务层更新包(跳过构建,用现有 jar + web/dist 重打)

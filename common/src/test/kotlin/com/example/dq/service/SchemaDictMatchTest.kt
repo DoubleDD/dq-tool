@@ -37,16 +37,30 @@ class SchemaDictMatchTest {
     }
 
     @Test
-    fun `精准匹配 trim 后完全相等且大小写敏感`() {
+    fun `精准匹配 trim 后完全相等且忽略大小写`() {
         val dict = linkedMapOf(
             "order_db" to "订单",
-            "Order_DB" to "大小写不同",
+            "QYSGLPT_WI_USER_WI_USER" to "区域",
             "user_db" to "用户",
         )
-        val match = MetadataService.matchDictDescriptions(dict, listOf("order_db", "user_db"))
-        assertEquals(listOf("order_db", "user_db"), match.matched)
-        assertEquals(listOf("Order_DB"), match.unmatched)
-        assertEquals(1, match.unmatchedTotal)
+        val match = MetadataService.matchDictDescriptions(dict, listOf("qysglpt_wi_user_wi_user", "ORDER_DB", "user_db"))
+        assertEquals(
+            listOf(
+                MetadataService.DictMatched("order_db", "ORDER_DB"),
+                MetadataService.DictMatched("QYSGLPT_WI_USER_WI_USER", "qysglpt_wi_user_wi_user"),
+                MetadataService.DictMatched("user_db", "user_db"),
+            ),
+            match.matched,
+        )
+        assertTrue(match.unmatched.isEmpty())
+        assertEquals(0, match.unmatchedTotal)
+    }
+
+    @Test
+    fun `候选间仅大小写不同取清单顺序第一个`() {
+        val dict = linkedMapOf("order_db" to "订单")
+        val match = MetadataService.matchDictDescriptions(dict, listOf("Order_DB", "ORDER_DB"))
+        assertEquals(listOf(MetadataService.DictMatched("order_db", "Order_DB")), match.matched)
     }
 
     @Test

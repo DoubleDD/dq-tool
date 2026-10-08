@@ -251,8 +251,8 @@ class CompareService(
                 "${matchMode.label}需要按对象名称配对,请在「选择基准表」里指定对象名称字段")
         }
 
-        // 库/模式名反查字典(V74,可选):字典数据源存在 + 字典表与三个字段存在(忽略大小写),
-        // 字段名归一为实际列名后序列化落库;仅影响导出第三行显示,不影响比对执行
+        // 库/模式名反查字典(V74,可选):字典数据源存在 + 字典表与四个字段存在(忽略大小写),
+        // 字段名归一为实际列名后序列化落库;仅影响导出系统名/(库.模式)显示,不影响比对执行
         val schemaDictJson = normalizeSchemaDict(req.schemaDict)
             ?.let { objectMapper.writeValueAsString(it) }
 
@@ -283,7 +283,7 @@ class CompareService(
 
     /**
      * 库/模式名反查字典(V74)归一与校验:非空时字典数据源必须存在;字典表字段清单经 [columnsLister]
-     * 读取(缓存优先路径),表不存在/无字段、三个字段(现有名称/真实库/真实模式)任一不存在
+     * 读取(缓存优先路径),表不存在/无字段、四个字段(现有名称/真实库/真实模式/真实系统)任一不存在
      * (忽略大小写)都抛错;字段名归一为字典表实际列名。返回 null = 未配置(不反查)
      */
     private fun normalizeSchemaDict(raw: CompareSchemaDict?): CompareSchemaDict? {
@@ -300,6 +300,8 @@ class CompareService(
             ?: throw IllegalArgumentException("反查字典表的真实库字段不能为空")
         val schemaField = dict.schemaField?.trim().takeUnless { it.isNullOrEmpty() }
             ?: throw IllegalArgumentException("反查字典表的真实模式字段不能为空")
+        val systemField = dict.systemField?.trim().takeUnless { it.isNullOrEmpty() }
+            ?: throw IllegalArgumentException("反查字典表的真实系统字段不能为空")
         val ds = dataSourceService.get(dictDsId)
         val cols = columnsLister(dictDsId, dictDb, effectiveSchema(dictSchema, dictDb), dictTable)
         if (cols.isEmpty()) throw IllegalArgumentException("反查字典表不存在或没有字段: ${ds.name}.$dictTable")
@@ -307,7 +309,8 @@ class CompareService(
         fun actual(field: String, label: String): String = byName[field.lowercase()]?.name
             ?: throw IllegalArgumentException("反查字典表不存在${label}字段: $field")
         return CompareSchemaDict(dictDsId, dictDb, dictSchema, dictTable,
-            actual(nameField, "现有名称"), actual(dbField, "真实库"), actual(schemaField, "真实模式"))
+            actual(nameField, "现有名称"), actual(dbField, "真实库"), actual(schemaField, "真实模式"),
+            actual(systemField, "真实系统"))
     }
 
     private data class ResolvedTarget(val datasourceId: Long, val dsName: String?,
@@ -1781,16 +1784,19 @@ class CompareService(
         private val schemaDescs: Map<String, String> = emptyMap(),
         /** 明细表头用的字段注释:表键 → (字段小写 → 注释),由 exportContext 预取 */
         private val columnComments: Map<String, Map<String, String>> = emptyMap(),
-        /** 库/模式名反查字典(V74):现有名称(trim) → (真实库, 真实模式);空 = 不反查 */
-        private val locationDict: Map<String, Pair<String?, String?>> = emptyMap(),
+        /** 库/模式名反查字典(V74):现有名称(trim 小写归一) → (真实库, 真实模式, 真实系统);空 = 不反查 */
+        private val locationDict: Map<String, CompareService.Companion.LocationDictEntry> = emptyMap(),
+        /** 反查字典命中的真实系统名(V74):表键 → 系统名,口径排在自定义显示名之后、table_system 登记之前 */
+        private val dictSystems: Map<String, String> = emptyMap(),
     ) {
         /** 表中文名:表注释,取不到返回 null */
         fun comment(datasourceId: Long, db: String, table: String): String? =
             comments[key(datasourceId, db, table)]
 
-        /** 所属系统:自定义显示名(V72)> table_system 登记值 > 库描述(schema_doc)> 数据源名,逐级回落 */
+        /** 所属系统:自定义显示名(V72)> 反查字典真实系统名(V74)> table_system 登记值 > 库描述(schema_doc)> 数据源名,逐级回落 */
         fun systemName(datasourceId: Long, db: String, table: String): String? =
             displayNames[key(datasourceId, db, table)]
+                ?: dictSystems[key(datasourceId, db, table)]
                 ?: systems[key(datasourceId, db, table)]
                 ?: schemaDescs[key(datasourceId, db, table)]
                 ?: fallbackSystem[datasourceId]
@@ -1808,10 +1814,10 @@ class CompareService(
             columnComments[key(datasourceId, db, table)]?.get(field.lowercase())
 
         /**
-         * 导出第三行定位显示(V74):按反查字典把 (库, 模式) 替换为真实名称;
-         * 未配置字典/未命中都原样返回(口径见 [CompareService.applyLocationDict])
+         * 导出定位显示(V74):按反查字典把 (库, 模式) 替换为真实名称,并带出真实系统名(供系统名口径用);
+         * 未配置字典/未命中都原样返回、系统名为 null(口径见 [CompareService.applyLocationDict])
          */
-        fun displayLocation(db: String, schema: String?): Pair<String, String?> =
+        fun displayLocation(db: String, schema: String?): CompareService.Companion.LocationDictEntry =
             CompareService.applyLocationDict(locationDict, db, schema)
 
         companion object {
@@ -1830,6 +1836,19 @@ class CompareService(
                               targets: List<CompareRepository.TargetRow>): ExportContext {
         // 库/模式名反查字典(V74):导出时整表读一次;读失败(断网/表删了/JSON 坏了)记 warn 降级空 map,导出必须能出文件
         val locationDict = loadLocationDict(job.schemaDictJson)
+        // 反查命中情况留痕(现场排障):每个 (库, 模式) 记一行 info,区分「没配置/没读到/键没匹配上」
+        logLocationDictLookup(job, targets, job.schemaDictJson != null, locationDict)
+        // 反查命中的真实系统名(V74):按 (库, 模式) 逐侧反查一次,命中且字典给了系统名才登记;
+        // 系统名口径排在自定义显示名(V72)之后、table_system 登记之前;未命中/字典未配系统字段走原回落链
+        val dictSystems = HashMap<String, String>()
+        if (locationDict.isNotEmpty()) {
+            applyLocationDict(locationDict, job.baseDb, job.baseSchema).system
+                ?.let { dictSystems[ExportContext.key(job.baseDatasourceId, job.baseDb, job.baseTable)] = it }
+            targets.forEach { t ->
+                applyLocationDict(locationDict, t.dbName, t.schemaName).system
+                    ?.let { dictSystems[ExportContext.key(t.datasourceId, t.dbName, t.tableName)] = it }
+            }
+        }
         val comments = HashMap<String, String>()
         val systems = HashMap<String, String>()
         val fallbackSystem = HashMap<Long, String?>()
@@ -1914,30 +1933,39 @@ class CompareService(
                 t.columnComments)
         }
         return ExportContext(comments, systems, fallbackSystem, displayNames, schemaDescs, columnComments,
-            locationDict)
+            locationDict, dictSystems)
     }
 
     /**
-     * 读库/模式名反查字典表(V74):三列 SELECT 整表一次读入,键 = 现有名称 trim(空跳过),
-     * 值 = (真实库 trim, 真实模式 trim),后行覆盖前行;标识符全部过方言 quote,多库方言连接带库。
-     * 任何失败(JSON 解析/数据源删除/断网/表删了)记 warn 降级为空 map,导出照常出文件
+     * 读库/模式名反查字典表(V74):整表一次读入,键 = 现有名称 trim 后**小写归一**
+     * (匹配忽略大小写;仅大小写差异的两行视为同键,后行覆盖前行),值为 (真实库, 真实模式, 真实系统)(均已 trim,真实库 null 转空串);
+     * 配置了真实系统字段读四列,老任务 JSON 无 systemField 读三列(系统名恒 null,走原回落链)。
+     * 标识符全部过方言 quote,多库方言连接带库。
+     * 任何失败(JSON 解析/数据源删除/断网/表删了)记 warn 降级为空 map,导出照常出文件;
+     * 正常路径记 info(未配置/字典配置/读到条数与样例键),供现场排查反查不生效
      */
-    private fun loadLocationDict(schemaDictJson: String?): Map<String, Pair<String?, String?>> {
-        val dict = schemaDictJson?.let {
-            try {
-                objectMapper.readValue<CompareSchemaDict>(it)
-            } catch (e: Exception) {
-                log.warn("库/模式名反查字典配置解析失败,按不反查导出: {}", e.message)
-                return emptyMap()
-            }
-        } ?: return emptyMap()
+    private fun loadLocationDict(schemaDictJson: String?): Map<String, LocationDictEntry> {
+        if (schemaDictJson == null) {
+            log.info("库/模式名反查:任务未配置反查字典(schema_dict_json 为空),按原始库/模式名显示")
+            return emptyMap()
+        }
+        val dict = try {
+            objectMapper.readValue<CompareSchemaDict>(schemaDictJson)
+        } catch (e: Exception) {
+            log.warn("库/模式名反查字典配置解析失败,按不反查导出: {}", e.message)
+            return emptyMap()
+        }
+        log.info("库/模式名反查:字典配置=数据源{},表 {}.{}.{},字段 现有名称={} 真实库={} 真实模式={} 真实系统={}",
+            dict.datasourceId, dict.db.orEmpty(), dict.schema, dict.table,
+            dict.nameField, dict.dbField, dict.schemaField, dict.systemField ?: "(未配置)")
         return try {
             val ds = dataSourceService.get(dict.datasourceId!!)
             val dialect = dialectFactory.get(ds.dbType!!)
             // 字典表全量读取(面向小数据量,不设行上限);表定位 = schema.table(多库方言连接级带库)
+            val systemCol = dict.systemField?.let { ", ${dialect.quote(it)}" } ?: ""
             val sql = "SELECT ${dialect.quote(dict.nameField!!)}, ${dialect.quote(dict.dbField!!)}, " +
-                "${dialect.quote(dict.schemaField!!)} FROM ${dialect.quote(dict.schema!!)}.${dialect.quote(dict.table!!)}"
-            val map = LinkedHashMap<String, Pair<String?, String?>>()
+                "${dialect.quote(dict.schemaField!!)}$systemCol FROM ${dialect.quote(dict.schema!!)}.${dialect.quote(dict.table!!)}"
+            val map = LinkedHashMap<String, LocationDictEntry>()
             dataSourceService.getConnection(dict.datasourceId,
                 if (dialect.supportsMultiDatabase()) dict.db else null).use { conn ->
                 conn.createStatement().use { stmt ->
@@ -1945,16 +1973,50 @@ class CompareService(
                         while (rs.next()) {
                             val name = rs.getString(1)?.trim()
                             if (name.isNullOrEmpty()) continue
-                            map[name] = rs.getString(2)?.trim() to rs.getString(3)?.trim()
+                            map[name.lowercase()] = LocationDictEntry(rs.getString(2)?.trim().orEmpty(),
+                                rs.getString(3)?.trim(),
+                                if (dict.systemField != null) rs.getString(4)?.trim() else null)
                         }
                     }
                 }
             }
+            // 样例键为归一后的小写键,与「尝试键」同口径,可直接比对
+            log.info("库/模式名反查:字典读取完成,共 {} 条{}", map.size,
+                if (map.isEmpty()) "(字典表无有效行,现有名称字段全空或全表为空)"
+                else ",样例键=" + map.keys.take(20))
             map
         } catch (e: Exception) {
             log.warn("库/模式名反查字典读取失败,按不反查导出: 数据源{} 表{}.{}: {}",
                 dict.datasourceId, dict.schema, dict.table, e.message)
             emptyMap()
+        }
+    }
+
+    /**
+     * 反查命中情况留痕(V74 排障):对本次导出涉及的每个 (库, 模式) 记一行 info——
+     * 命中(替换为真实库/模式/系统)/未命中(原样显示,附尝试过的查找键,便于和字典样例键比对);
+     * 配置了字典但读到 0 条记 warn(读取失败原因见上方 warn)
+     */
+    private fun logLocationDictLookup(job: CompareRepository.JobRow, targets: List<CompareRepository.TargetRow>,
+                                      configured: Boolean, dict: Map<String, LocationDictEntry>) {
+        if (!configured) return // 未配置的 info 已在 loadLocationDict 记过
+        if (dict.isEmpty()) {
+            log.warn("库/模式名反查:任务已配置反查字典但读到 0 条,全部按原始库/模式名显示")
+            return
+        }
+        // 与 displayLocation 实际输入同口径:原始 (db, schema),不走 effectiveSchema
+        val pairs = LinkedHashSet<Pair<String, String?>>()
+        pairs.add(job.baseDb to job.baseSchema)
+        targets.forEach { pairs.add(it.dbName to it.schemaName) }
+        for ((db, schema) in pairs) {
+            val hit = applyLocationDict(dict, db, schema)
+            if (hit.db != db || hit.schema != schema) {
+                log.info("库/模式名反查命中:({},{}) → ({},{}) 系统={}",
+                    db, schema.orEmpty(), hit.db, hit.schema.orEmpty(), hit.system ?: "(字典未给,走原回落链)")
+            } else {
+                log.info("库/模式名反查未命中:({},{}),尝试键={},按原始值显示",
+                    db, schema.orEmpty(), locationDictKeys(db, schema))
+            }
         }
     }
 
@@ -3345,26 +3407,45 @@ class CompareService(
         fun isNoKeyRow(key: String): Boolean = key.startsWith(NO_KEY_ROW_PREFIX)
 
         /**
-         * 库/模式名反查字典应用(纯函数,V74):导出第三行「(库名.模式名)」按字典替换为真实名称。
-         * 查找键依次尝试 `db.schema` 合并串(db 空则不带点)→ schema 单值 → db 单值,
-         * 精准匹配(键与值都 trim,大小写敏感),首个命中生效;
-         * 命中返回 (真实库 trim, 真实模式 trim)(空串转 空/null);未命中原样返回 (db, schema)
+         * 反查字典条目(V74):一行 = 现有名称 → (真实库, 真实模式, 真实系统);
+         * 也作 [applyLocationDict] 的返回类型——未命中时 db/schema 为原始入参、system 为 null
+         * (字典未配系统字段或字典值空也回落 null,系统名走原回落链)。
+         * [db] 恒非空:读取侧 null 已转空串(空段省略口径),命中返回时仍可能为空串
          */
-        fun applyLocationDict(dict: Map<String, Pair<String?, String?>>, db: String,
-                              schema: String?): Pair<String, String?> {
-            if (dict.isEmpty()) return db to schema
-            val d = db.trim()
-            val s = schema?.trim().orEmpty()
+        data class LocationDictEntry(val db: String, val schema: String?, val system: String?)
+
+        /**
+         * 库/模式名反查字典应用(纯函数,V74):导出「(库名.模式名)」与「系统名」按字典替换为真实名称。
+         * 查找键见 [locationDictKeys](已小写归一),**忽略大小写**精准匹配(值 trim),
+         * 首个命中生效;命中返回字典值(模式/系统空串转 null);未命中原样返回 (db, schema, null)。
+         * 注意:[dict] 的键须为 trim + 小写归一后的键([loadLocationDict] 读取时已归一)
+         */
+        fun applyLocationDict(dict: Map<String, LocationDictEntry>, db: String,
+                              schema: String?): LocationDictEntry {
+            if (dict.isEmpty()) return LocationDictEntry(db, schema, null)
+            for (k in locationDictKeys(db, schema)) {
+                val hit = dict[k] ?: continue
+                return LocationDictEntry(hit.db.trim(),
+                    hit.schema?.trim()?.takeIf { it.isNotEmpty() },
+                    hit.system?.trim()?.takeIf { it.isNotEmpty() })
+            }
+            return LocationDictEntry(db, schema, null)
+        }
+
+        /**
+         * 反查查找键(按尝试顺序):`db.schema` 合并串(db 空则不带点)→ schema 单值 → db 单值;
+         * db/schema 都空无键可查。键 trim 后**小写归一**(匹配忽略大小写:字典里登记的大小写
+         * 与任务落库的库/模式名常常不一致,如字典 `qysglpt_WI_USER_WI_USER` vs 任务 `qysglpt_wi_user_wi_user`)
+         */
+        fun locationDictKeys(db: String, schema: String?): List<String> {
+            val d = db.trim().lowercase()
+            val s = schema?.trim().orEmpty().lowercase()
             val keys = ArrayList<String>(3)
-            // 合并串:db 空则不带点(schema 单值);db/schema 都空无键可查
+            // 合并串:db 空则不带点(schema 单值)
             if (d.isNotEmpty() && s.isNotEmpty()) keys.add("$d.$s") else if (s.isNotEmpty()) keys.add(s)
             if (s.isNotEmpty() && (keys.isEmpty() || keys[0] != s)) keys.add(s)
             if (d.isNotEmpty()) keys.add(d)
-            for (k in keys) {
-                val hit = dict[k] ?: continue
-                return (hit.first?.trim().orEmpty()) to hit.second?.trim()?.takeIf { it.isNotEmpty() }
-            }
-            return db to schema
+            return keys
         }
 
         /** 差异明细批量落库的每批行数 */
