@@ -10,7 +10,7 @@
         <el-button :loading="loading" @click="load">刷新</el-button>
         <!-- 批量导入:一 sheet 一任务(本页整体已在 compare 授权门禁内,不再单独判) -->
         <el-button @click="openImport">导入表格</el-button>
-        <el-button type="primary" @click="router.push('/compare/new')">+ 新建比对任务</el-button>
+        <el-button type="primary" @click="openNew">+ 新建比对任务</el-button>
       </div>
     </div>
     <!-- 筛选条:服务端筛选(与错误中心同模式);表的标记命中口径=基准表或任一比对目标表打了所选标记之一 -->
@@ -306,6 +306,11 @@ import { ackTask } from '../stores/backgroundTasks'
 import CompareMappingReview from '../components/CompareMappingReview.vue'
 
 const router = useRouter()
+
+/** 显式新建始终使用新的 fullPath，让 keep-alive 创建空白向导；点击既有页签仍恢复该页签的草稿 */
+function openNew() {
+  router.push({ path: '/compare/new', query: { fresh: Date.now() } })
+}
 
 const tasks = ref([])
 const loading = ref(false)
